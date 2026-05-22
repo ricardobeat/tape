@@ -1,0 +1,944 @@
+/// Duktape bytecode definitions — instruction encoding, opcodes, and compiled
+/// function representation.
+///
+/// Duktape uses a register-based virtual machine with fixed-width 32-bit
+/// instructions.  Each instruction packs an 8-bit opcode and up to three
+/// operand fields into a single `uint`:
+///
+///   ```
+///   31       24 23       16 15        8 7         0
+///   +---------+-----------+-----------+-----------+
+///   |    C    |     B     |     A     |  opcode   |
+///   +---------+-----------+-----------+-----------+
+///   ```
+///
+/// Alternative operand layouts share the same 32 bits:
+///
+///   - **A-BC** : A (8 bits, 8–15) + BC (16 bits, 16–31)
+///   - **ABC**  : full 24-bit operand (bits 8–31)
+///   - **A-sBx**: A (8 bits) + signed Bx (16 bits, bias-encoded)
+///   - **sABC** : signed 24-bit operand (bias-encoded)
+///
+/// The `Instruction` bitstruct provides both direct field access and
+/// convenience methods for every layout.
+module duktape::bytecode;
+
+import duktape::types;
+import duktape::hobject;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Bias applied to a 16-bit signed operand so it can be stored unsigned.
+/// Value range: -(2^15) .. +(2^15 - 1)  →  stored as 0 .. 65535.
+const uint BC_BIAS  = 0x8000;
+
+/// Bias applied to a 24-bit signed operand.
+/// Value range: -(2^23) .. +(2^23 - 1)  →  stored as 0 .. 16777215.
+const uint ABC_BIAS = 0x80_0000;
+
+/// Maximum unsigned value that fits in the 8-bit A, B, or C fields.
+const uint MAX_A  = 0xFF;
+const uint MAX_B  = 0xFF;
+const uint MAX_C  = 0xFF;
+
+/// Maximum unsigned value for the 16-bit BC combined field.
+const uint MAX_BC  = 0xFFFF;
+
+/// Maximum unsigned value for the 24-bit ABC combined field.
+const uint MAX_ABC = 0xFF_FFFF;
+
+/// Maximum positive signed BC value (after removing bias).
+const int  MAX_SBC  = 0x7FFF;
+/// Minimum (most-negative) signed BC value.
+const int  MIN_SBC  = -0x8000;
+
+/// Maximum positive signed ABC value.
+const int  MAX_SABC = 0x7F_FFFF;
+/// Minimum (most-negative) signed ABC value.
+const int  MIN_SABC = -0x80_0000;
+
+// ============================================================================
+// Opcode — all virtual-machine operations
+// ============================================================================
+
+/// Bytecode operation codes.
+///
+/// Each opcode is 8 bits wide, giving 256 possible operations.  The enum
+/// values are arranged in logical groups: load/store, arithmetic, unary,
+/// bitwise, comparison, control flow, property access, object creation,
+/// function calls, variable access, closures, iterators, exception
+/// handling, and miscellaneous.
+enum Opcode : char {
+    // ---- Load / Store ----------------------------------------------------
+
+    /// `A = reg[B]`  — register-to-register copy.
+    LDREG,
+    /// `A = constants[BC]`  — load from the constant pool (A-BC format).
+    LDCONST,
+    /// `A = (int)sBx`  — load a signed 16-bit immediate (A-sBx format).
+    LDINT,
+    /// `A = (A << 16) | BC`  — extend a previously loaded integer with
+    /// the low 16 bits (A-BC format).
+    LDINTX,
+    /// `A = undefined`.
+    LDUNDEF,
+    /// `A = null`.
+    LDNULL,
+    /// `A = true`.
+    LDTRUE,
+    /// `A = false`.
+    LDFALSE,
+    /// `A = this`  — load the current `this` binding.
+    LDTHIS,
+
+    // ---- Arithmetic (A = B op C) -----------------------------------------
+
+    /// `A = B + C`.
+    ADD,
+    /// `A = B - C`.
+    SUB,
+    /// `A = B * C`.
+    MUL,
+    /// `A = B / C`.
+    DIV,
+    /// `A = B % C`.
+    MOD,
+    /// `A = B ** C`  — exponentiation.
+    EXP,
+
+    // ---- Unary (A = op B) ------------------------------------------------
+
+    /// `A = +B`  — unary plus (ToNumber coercion).
+    UNP,
+    /// `A = -B`  — unary minus.
+    UNM,
+    /// `A = ~B`  — bitwise NOT.
+    BNOT,
+    /// `A = !B`  — logical NOT.
+    LNOT,
+    /// `A = typeof B`.
+    TYPEOF,
+    /// `A = void B`  — always produces `undefined`.
+    VOID,
+
+    // ---- Bitwise (A = B op C) --------------------------------------------
+
+    /// `A = B & C`  — bitwise AND.
+    BAND,
+    /// `A = B | C`  — bitwise OR.
+    BOR,
+    /// `A = B ^ C`  — bitwise XOR.
+    BXOR,
+    /// `A = B << C`  — left shift.
+    SHL,
+    /// `A = B >> C`  — signed right shift.
+    SHR,
+    /// `A = B >>> C`  — unsigned right shift.
+    USHR,
+
+    // ---- Comparison (A = B op C) -----------------------------------------
+
+    /// `A = (B == C)`  — abstract equality.
+    EQ,
+    /// `A = (B != C)`  — abstract inequality.
+    NEQ,
+    /// `A = (B === C)`  — strict equality.
+    SEQ,
+    /// `A = (B !== C)`  — strict inequality.
+    SNEQ,
+    /// `A = (B < C)`.
+    LT,
+    /// `A = (B <= C)`.
+    LE,
+    /// `A = (B > C)`.
+    GT,
+    /// `A = (B >= C)`.
+    GE,
+    /// `A = (B instanceof C)`.
+    INSTANCEOF,
+    /// `A = (B in C)`.
+    IN,
+
+    // ---- Control flow ----------------------------------------------------
+
+    /// `PC += sABC`  — unconditional relative jump (signed 24-bit offset,
+    /// sABC format).
+    JUMP,
+    /// `if (A) PC += sBC`  — branch when truthy (A-sBx format).
+    IF_TRUE,
+    /// `if (!A) PC += sBC`  — branch when falsy (A-sBx format).
+    IF_FALSE,
+
+    // ---- Property access -------------------------------------------------
+
+    /// `A = B[C]`  — get property.
+    GETPROP,
+    /// `A[B] = C`  — put (set) property.
+    PUTPROP,
+    /// `A = delete B[C]`  — delete property.
+    DELPROP,
+
+    // ---- Object / Array creation -----------------------------------------
+
+    /// `A = {}`  — create a new empty plain object.
+    NEWOBJ,
+    /// `A = []`  — create a new empty array.
+    NEWARR,
+    /// Set array length: `A.length = BC` (A-BC format).
+    SETALEN,
+
+    // ---- Function calls --------------------------------------------------
+
+    /// `A = B(C..C+N)`  — function call.  A = result register,
+    /// B = function register, C = first argument register.
+    CALL,
+    /// `A = B.C(...)`  — method call (receiver is B).
+    CALL_PROP,
+    /// `A = new B(C...)`  — constructor invocation.
+    NEW_OBJ,
+    /// Tail-call optimisation: reuses the current stack frame.
+    TAILCALL,
+    /// `return A`  — return register A's value.
+    RET,
+    /// `return undefined`  — implicit return.
+    RETUNDEF,
+
+    // ---- Variable access -------------------------------------------------
+
+    /// `A = variable[constants[BC]]`  — read a variable by name
+    /// looked up in the constant pool (A-BC format).
+    GETVAR,
+    /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
+    PUTVAR,
+    /// `A = delete variable[constants[BC]]`  — delete a variable (A-BC).
+    DELVAR,
+
+    // ---- Closures --------------------------------------------------------
+
+    /// `A = create_closure(inner_funcs[BC])`  — instantiate an inner
+    /// function template as a closure (A-BC format).
+    CLOSURE,
+    /// `A = outer_scope[BC]`  — read a captured (bound) variable from an
+    /// enclosing scope (A-BC format).
+    GETBOUND,
+
+    // ---- Iterator / for-in -----------------------------------------------
+
+    /// Initialise a for-in iterator over object A.  B = iterator state
+    /// register.
+    INITFOR,
+    /// `A = next key, B = has_next`  — advance the for-in iterator.
+    NEXTFOR,
+
+    // ---- Exception handling ----------------------------------------------
+
+    /// Push a try block; the catch handler is at `PC + BC` (A-BC format).
+    TRY,
+    /// Pop the current try block.
+    ENDTRY,
+    /// `throw A`  — throw an exception.
+    THROW,
+    /// `A = <caught exception>`  — store the caught value.
+    CATCH,
+    /// Enter the finally block.
+    FINALLY,
+    /// Exit the finally block (may re-throw or continue).
+    ENDFINALLY,
+
+    // ---- Miscellaneous ---------------------------------------------------
+
+    /// No operation.
+    NOP,
+    /// Trigger a debugger breakpoint.
+    DEBUGGER,
+    /// Labelled `break` — target label encoded in BC (A-BC format).
+    BREAK,
+    /// Labelled `continue` — target label encoded in BC (A-BC format).
+    CONTINUE,
+
+    // ---- Special property initialisation ----------------------------------
+
+    /// `A[B] = C`  — initialise a data property without triggering setters.
+    INITSET,
+    /// Define getter: `Object.defineProperty(A, B, {get: C})`.
+    INITGET,
+    /// Define setter: `Object.defineProperty(A, B, {set: C})`.
+    INITSETI,
+    /// Create the `arguments` exotic object for the current activation.
+    CSVARI,
+
+    /// Sentinel — not a real opcode; marks the end of the enum.
+    LAST_OP,
+}
+
+// ============================================================================
+// Opcode metadata
+// ============================================================================
+
+/// Describes which operand layout an opcode uses.
+enum OpFormat : char {
+    /// Standard A, B, C  (three 8-bit operands).
+    ABC,
+    /// A (8-bit) + BC (16-bit unsigned combined).
+    A_BC,
+    /// A (8-bit) + sBx (16-bit signed / bias-encoded).
+    A_SBX,
+    /// Full 24-bit unsigned operand (bits 8–31).
+    WIDE_ABC,
+    /// Full 24-bit signed operand (bias-encoded).
+    WIDE_SABC,
+    /// No operands (opcode-only).
+    NONE,
+}
+
+/// Return the operand format for a given opcode.
+fn OpFormat get_op_format(Opcode op) {
+    switch (op) {
+        // A-BC format (16-bit combined second operand)
+        case LDCONST:   return A_BC;
+        case LDINTX:    return A_BC;
+        case SETALEN:   return A_BC;
+        case GETVAR:    return A_BC;
+        case PUTVAR:    return A_BC;
+        case DELVAR:    return A_BC;
+        case CLOSURE:   return A_BC;
+        case GETBOUND:  return A_BC;
+        case TRY:       return A_BC;
+        case BREAK:     return A_BC;
+        case CONTINUE:  return A_BC;
+
+        // A-sBx format (signed 16-bit second operand)
+        case LDINT:     return A_SBX;
+        case IF_TRUE:   return A_SBX;
+        case IF_FALSE:  return A_SBX;
+
+        // Full signed 24-bit
+        case JUMP:      return WIDE_SABC;
+
+        // No operands
+        case NOP:       return NONE;
+        case RETUNDEF:  return NONE;
+        case DEBUGGER:  return NONE;
+        case ENDTRY:    return NONE;
+        case ENDFINALLY: return NONE;
+
+        // Everything else: standard A, B, C
+        default:        return ABC;
+    }
+}
+
+// ============================================================================
+// Instruction — the 32-bit encoded instruction word
+// ============================================================================
+
+/// A single 32-bit bytecode instruction.
+///
+/// The bitstruct provides named access to the four 8-bit fields.  Higher-
+/// level layouts (A-BC, ABC, A-sBx, sABC) are accessed through methods.
+bitstruct Instruction : uint {
+    /// Opcode (bits 0–7).
+    Opcode op  : 0..7;
+    /// A operand — usually the destination register (bits 8–15).
+    uint   a   : 8..15;
+    /// B operand — source register or constant index (bits 16–23).
+    uint   b   : 16..23;
+    /// C operand — source register or constant index (bits 24–31).
+    uint   c   : 24..31;
+}
+
+// ============================================================================
+// Instruction — static constructors
+// ============================================================================
+
+/// Encode an instruction in standard A-B-C format.
+///
+/// All three operands are 8 bits wide.
+fn Instruction make_abc(Opcode op, uint a, uint b, uint c) {
+    return {
+        .op = op,
+        .a  = a & MAX_A,
+        .b  = b & MAX_B,
+        .c  = c & MAX_C,
+    };
+}
+
+/// Encode an instruction in A-BC format.
+///
+/// A is 8 bits; BC is a 16-bit unsigned value split across the B and C
+/// fields (B = low byte, C = high byte of BC).
+fn Instruction make_a_bc(Opcode op, uint a, uint bc) {
+    return {
+        .op = op,
+        .a  = a & MAX_A,
+        .b  = bc & 0xFF,
+        .c  = (bc >> 8) & 0xFF,
+    };
+}
+
+/// Encode an instruction in the wide ABC format.
+///
+/// The full 24-bit unsigned operand occupies bits 8–31 (A, B, C fields
+/// concatenated).  A = bits 8–15, B = bits 16–23, C = bits 24–31.
+fn Instruction make_abc_wide(Opcode op, uint abc) {
+    return {
+        .op = op,
+        .a  = abc & 0xFF,
+        .b  = (abc >> 8) & 0xFF,
+        .c  = (abc >> 16) & 0xFF,
+    };
+}
+
+/// Encode an instruction in A-sBx format.
+///
+/// A is 8 bits; sBx is a signed 16-bit value stored with a bias so that
+/// the raw bits are always non-negative.
+fn Instruction make_a_sbx(Opcode op, uint a, int sbx) {
+    uint bc = (uint)(sbx + (int)BC_BIAS);
+    return make_a_bc(op, a, bc);
+}
+
+/// Encode an instruction in the signed wide sABC format.
+///
+/// sABC is a signed 24-bit value stored with a bias.
+fn Instruction make_sabc(Opcode op, int sabc) {
+    uint abc = (uint)(sabc + (int)ABC_BIAS);
+    return make_abc_wide(op, abc);
+}
+
+// ============================================================================
+// Instruction — field accessors
+// ============================================================================
+
+/// Returns the opcode.
+fn Opcode Instruction.get_op(&self) @inline {
+    return self.op;
+}
+
+/// Returns the 8-bit A operand.
+fn uint Instruction.get_a(&self) @inline {
+    return self.a;
+}
+
+/// Returns the 8-bit B operand.
+fn uint Instruction.get_b(&self) @inline {
+    return self.b;
+}
+
+/// Returns the 8-bit C operand.
+fn uint Instruction.get_c(&self) @inline {
+    return self.c;
+}
+
+/// Returns the 16-bit unsigned BC combined operand.
+///
+/// B is the low byte, C is the high byte:  `BC = C << 8 | B`.
+fn uint Instruction.get_bc(&self) @inline {
+    return ((uint)self.c << 8) | (uint)self.b;
+}
+
+/// Returns the signed 16-bit BC operand (bias-decoded).
+fn int Instruction.get_sbc(&self) @inline {
+    return (int)self.get_bc() - (int)BC_BIAS;
+}
+
+/// Returns the unsigned 24-bit ABC operand (all three fields concatenated).
+///
+/// `ABC = C << 16 | B << 8 | A`.
+fn uint Instruction.get_abc(&self) @inline {
+    return ((uint)self.c << 16) | ((uint)self.b << 8) | (uint)self.a;
+}
+
+/// Returns the signed 24-bit ABC operand (bias-decoded).
+fn int Instruction.get_sabc(&self) @inline {
+    return (int)self.get_abc() - (int)ABC_BIAS;
+}
+
+// ============================================================================
+// Instruction — raw word access
+// ============================================================================
+
+/// Returns the raw 32-bit word.
+fn uint Instruction.to_raw(&self) @inline {
+    return (uint)*self;
+}
+
+/// Creates an Instruction from a raw 32-bit word.
+fn Instruction from_raw(uint raw) @inline {
+    return (Instruction)raw;
+}
+
+// ============================================================================
+// Instruction — human-readable disassembly (for debugging)
+// ============================================================================
+
+/// Writes a one-line textual disassembly of the instruction into `buf`.
+/// Returns a slice over the characters that were written.
+///
+/// Format examples:
+///   `ADD       r3 = r1, r2`
+///   `LDCONST   r0 = K[42]`
+///   `JUMP      +17`
+fn usz Instruction.disassemble(&self, char[] buf) {
+    if (buf.len == 0) { return 0; }
+
+    Opcode op = self.op;
+    OpFormat fmt = get_op_format(op);
+    usz pos = 0;
+
+    // Write opcode name (we use the ordinal as a compact representation;
+    // a full name table could be added later).
+    pos = write_opcode_name(op, buf, pos);
+
+    // Pad to column 14 for alignment.
+    while (pos < 14 && pos < buf.len) {
+        buf[pos] = ' ';
+        pos++;
+    }
+
+    switch (fmt) {
+        case ABC:
+            pos = write_str(buf, pos, "r");
+            pos = write_uint(buf, pos, self.a);
+            pos = write_str(buf, pos, " = r");
+            pos = write_uint(buf, pos, self.b);
+            pos = write_str(buf, pos, ", r");
+            pos = write_uint(buf, pos, self.c);
+
+        case A_BC:
+            pos = write_str(buf, pos, "r");
+            pos = write_uint(buf, pos, self.a);
+            pos = write_str(buf, pos, ", ");
+            pos = write_uint(buf, pos, self.get_bc());
+
+        case A_SBX:
+            pos = write_str(buf, pos, "r");
+            pos = write_uint(buf, pos, self.a);
+            pos = write_str(buf, pos, ", ");
+            pos = write_int(buf, pos, self.get_sbc());
+
+        case WIDE_SABC:
+            pos = write_int(buf, pos, self.get_sabc());
+
+        case WIDE_ABC:
+            pos = write_uint(buf, pos, self.get_abc());
+
+        case NONE:
+            // nothing extra
+            break;
+    }
+
+    return pos;
+}
+
+// ============================================================================
+// CompiledFunction — bytecode container
+// ============================================================================
+
+/// Flags specific to compiled function templates.
+bitstruct FuncFlags : uint {
+    /// HeapHeader-compatible type (always HType.OBJECT).
+    HType htype         : 0..1;
+    /// GC reachable.
+    bool  reachable     : 2;
+    /// GC temporary root.
+    bool  temproot      : 3;
+    /// Finaliser present.
+    bool  finalizable   : 4;
+    /// Finaliser already ran.
+    bool  finalized     : 5;
+    /// Read-only.
+    bool  readonly      : 6;
+
+    // ---- Function-specific flags (bits 7+) ----
+
+    /// Function uses strict-mode semantics.
+    bool  is_strict     : 7;
+    /// Function is a named function expression.
+    bool  is_namebinding: 8;
+    /// Function has a `...rest` parameter.
+    bool  has_rest      : 9;
+    /// Function uses `arguments` (needs Arguments exotic object).
+    bool  uses_arguments: 10;
+    /// Function uses `eval` (may create dynamic bindings).
+    bool  uses_eval     : 11;
+    /// Function is an arrow function (lexical `this`).
+    bool  is_arrow      : 12;
+    /// Function is a generator.
+    bool  is_generator  : 13;
+    /// Function is an async function.
+    bool  is_async      : 14;
+    /// Function body has direct `eval()` calls — prevents optimisations.
+    bool  has_direct_eval: 15;
+    /// Function is a constructor method.
+    bool  is_constructable: 16;
+}
+
+/// A compiled function template — the immutable bytecode representation of
+/// an ECMAScript function produced by the compiler.
+///
+/// One CompiledFunction may be shared by many closures (each with its own
+/// set of captured variable bindings).  The struct stores everything the
+/// VM needs to execute the function:
+///   - The instruction stream (`code`).
+///   - The constant pool for literal values (`constants`).
+///   - Templates for inner (nested) functions (`inner_funcs`).
+///   - Register budget and argument counts.
+///   - Source-level metadata for debugging.
+struct CompiledFunction {
+    // ---- Inline HeapHeader (binary-compatible with HeapHeader*) ----------
+
+    /// Bit-packed flags — HeapHeader-compatible prefix + function metadata.
+    FuncFlags       flags;
+    /// Reference count.
+    uint            refcount;
+    /// Next pointer in the heap GC linked list.
+    HeapHeader*     next;
+    /// Previous pointer in the heap GC linked list.
+    HeapHeader*     prev;
+
+    // ---- Bytecode -------------------------------------------------------
+
+    /// The instruction stream.  Each element is a 32-bit encoded
+    /// `Instruction`.
+    Instruction*    code;
+    /// Number of instructions in `code`.
+    uint            code_count;
+
+    /// Constant pool — literal values (numbers, strings, etc.) referenced
+    /// by LDCONST and friends.
+    TVal*           constants;
+    /// Number of entries in `constants`.
+    uint            const_count;
+
+    /// Inner (nested) function templates.  CLOSURE instructions index
+    /// into this array.
+    CompiledFunction** inner_funcs;
+    /// Number of inner function templates.
+    uint            inner_count;
+
+    // ---- Register / argument layout -------------------------------------
+
+    /// Total number of registers the activation record must allocate.
+    ushort          num_regs;
+    /// Number of formal parameters (used for call-setup).
+    ushort          num_args;
+    /// "Declared" formal count exposed as `Function.length`.  May differ
+    /// from `num_args` when rest parameters are present.
+    ushort          num_formals;
+
+    // ---- Source-level debug info ----------------------------------------
+
+    /// First source line covered by this function.
+    uint            source_line_start;
+    /// Last source line covered by this function.
+    uint            source_line_end;
+
+    /// Function name (empty slice for anonymous functions).
+    char*           name_ptr;
+    /// Length of the function name in bytes.
+    uint            name_len;
+
+    /// Source filename from which this function was compiled.
+    char*           filename_ptr;
+    /// Length of the filename in bytes.
+    uint            filename_len;
+
+    /// Optional per-instruction line-number table.  When non-null the
+    /// table has `code_count` entries, one per instruction.
+    uint*           line_table;
+}
+
+// ============================================================================
+// CompiledFunction — HeapHeader compatibility
+// ============================================================================
+
+/// Returns a HeapHeader pointer to this compiled function
+/// (binary-compatible cast).
+fn HeapHeader* CompiledFunction.as_header(&self) @inline {
+    return (HeapHeader*)self;
+}
+
+/// Increments the reference count.
+fn void CompiledFunction.incref(&self) {
+    self.refcount++;
+}
+
+/// Decrements the reference count and returns the new value.
+fn uint CompiledFunction.decref(&self) {
+    self.refcount--;
+    return self.refcount;
+}
+
+// ============================================================================
+// CompiledFunction — flag accessors
+// ============================================================================
+
+/// Returns `true` when the function uses strict-mode semantics.
+fn bool CompiledFunction.is_strict(&self) {
+    return self.flags.is_strict;
+}
+
+/// Returns `true` when the function is an arrow function.
+fn bool CompiledFunction.is_arrow(&self) {
+    return self.flags.is_arrow;
+}
+
+/// Returns `true` when the function is a generator.
+fn bool CompiledFunction.is_generator(&self) {
+    return self.flags.is_generator;
+}
+
+/// Returns `true` when the function is async.
+fn bool CompiledFunction.is_async(&self) {
+    return self.flags.is_async;
+}
+
+/// Returns `true` when the function can be used as a constructor.
+fn bool CompiledFunction.is_constructable(&self) {
+    return self.flags.is_constructable;
+}
+
+/// Returns `true` when the function uses `arguments`.
+fn bool CompiledFunction.uses_arguments(&self) {
+    return self.flags.uses_arguments;
+}
+
+/// Returns `true` when the function contains direct `eval()` calls.
+fn bool CompiledFunction.has_direct_eval(&self) {
+    return self.flags.has_direct_eval;
+}
+
+/// Returns `true` when the function has a rest parameter.
+fn bool CompiledFunction.has_rest(&self) {
+    return self.flags.has_rest;
+}
+
+// ============================================================================
+// CompiledFunction — code access
+// ============================================================================
+
+/// Returns the instruction at the given program-counter index.
+///
+/// No bounds checking is performed — the caller must ensure `pc` is
+/// within `[0, code_count)`.
+fn Instruction CompiledFunction.get_insn(&self, uint pc) @inline {
+    return self.code[pc];
+}
+
+/// Returns the constant at the given index in the constant pool.
+///
+/// No bounds checking — the caller must ensure `idx < const_count`.
+fn TVal CompiledFunction.get_const(&self, uint idx) @inline {
+    return self.constants[idx];
+}
+
+/// Returns the inner function template at the given index.
+///
+/// No bounds checking — the caller must ensure `idx < inner_count`.
+fn CompiledFunction* CompiledFunction.get_inner(&self, uint idx) @inline {
+    return self.inner_funcs[idx];
+}
+
+/// Returns the function name as a char slice.
+fn char[] CompiledFunction.get_name(&self) {
+    if (self.name_ptr == null || self.name_len == 0) {
+        char[] empty;
+        return empty;
+    }
+    return self.name_ptr[:self.name_len];
+}
+
+/// Returns the source filename as a char slice.
+fn char[] CompiledFunction.get_filename(&self) {
+    if (self.filename_ptr == null || self.filename_len == 0) {
+        char[] empty;
+        return empty;
+    }
+    return self.filename_ptr[:self.filename_len];
+}
+
+/// Returns the source line number for the instruction at `pc`.
+///
+/// If no line table is present, returns 0.
+fn uint CompiledFunction.get_line(&self, uint pc) {
+    if (self.line_table == null || pc >= self.code_count) {
+        return 0;
+    }
+    return self.line_table[pc];
+}
+
+// ============================================================================
+// Opcode name table (for disassembly / debugging)
+// ============================================================================
+
+/// String names for each opcode, indexed by ordinal.
+const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
+    [Opcode.LDREG.ordinal]       = "LDREG",
+    [Opcode.LDCONST.ordinal]     = "LDCONST",
+    [Opcode.LDINT.ordinal]       = "LDINT",
+    [Opcode.LDINTX.ordinal]      = "LDINTX",
+    [Opcode.LDUNDEF.ordinal]     = "LDUNDEF",
+    [Opcode.LDNULL.ordinal]      = "LDNULL",
+    [Opcode.LDTRUE.ordinal]      = "LDTRUE",
+    [Opcode.LDFALSE.ordinal]     = "LDFALSE",
+    [Opcode.LDTHIS.ordinal]      = "LDTHIS",
+    [Opcode.ADD.ordinal]         = "ADD",
+    [Opcode.SUB.ordinal]         = "SUB",
+    [Opcode.MUL.ordinal]         = "MUL",
+    [Opcode.DIV.ordinal]         = "DIV",
+    [Opcode.MOD.ordinal]         = "MOD",
+    [Opcode.EXP.ordinal]         = "EXP",
+    [Opcode.UNP.ordinal]         = "UNP",
+    [Opcode.UNM.ordinal]         = "UNM",
+    [Opcode.BNOT.ordinal]        = "BNOT",
+    [Opcode.LNOT.ordinal]        = "LNOT",
+    [Opcode.TYPEOF.ordinal]      = "TYPEOF",
+    [Opcode.VOID.ordinal]        = "VOID",
+    [Opcode.BAND.ordinal]        = "BAND",
+    [Opcode.BOR.ordinal]         = "BOR",
+    [Opcode.BXOR.ordinal]        = "BXOR",
+    [Opcode.SHL.ordinal]         = "SHL",
+    [Opcode.SHR.ordinal]         = "SHR",
+    [Opcode.USHR.ordinal]        = "USHR",
+    [Opcode.EQ.ordinal]          = "EQ",
+    [Opcode.NEQ.ordinal]         = "NEQ",
+    [Opcode.SEQ.ordinal]         = "SEQ",
+    [Opcode.SNEQ.ordinal]        = "SNEQ",
+    [Opcode.LT.ordinal]          = "LT",
+    [Opcode.LE.ordinal]          = "LE",
+    [Opcode.GT.ordinal]          = "GT",
+    [Opcode.GE.ordinal]          = "GE",
+    [Opcode.INSTANCEOF.ordinal]  = "INSTANCEOF",
+    [Opcode.IN.ordinal]          = "IN",
+    [Opcode.JUMP.ordinal]        = "JUMP",
+    [Opcode.IF_TRUE.ordinal]     = "IF_TRUE",
+    [Opcode.IF_FALSE.ordinal]    = "IF_FALSE",
+    [Opcode.GETPROP.ordinal]     = "GETPROP",
+    [Opcode.PUTPROP.ordinal]     = "PUTPROP",
+    [Opcode.DELPROP.ordinal]     = "DELPROP",
+    [Opcode.NEWOBJ.ordinal]      = "NEWOBJ",
+    [Opcode.NEWARR.ordinal]      = "NEWARR",
+    [Opcode.SETALEN.ordinal]     = "SETALEN",
+    [Opcode.CALL.ordinal]        = "CALL",
+    [Opcode.CALL_PROP.ordinal]   = "CALL_PROP",
+    [Opcode.NEW_OBJ.ordinal]     = "NEW_OBJ",
+    [Opcode.TAILCALL.ordinal]    = "TAILCALL",
+    [Opcode.RET.ordinal]         = "RET",
+    [Opcode.RETUNDEF.ordinal]    = "RETUNDEF",
+    [Opcode.GETVAR.ordinal]      = "GETVAR",
+    [Opcode.PUTVAR.ordinal]      = "PUTVAR",
+    [Opcode.DELVAR.ordinal]      = "DELVAR",
+    [Opcode.CLOSURE.ordinal]     = "CLOSURE",
+    [Opcode.GETBOUND.ordinal]    = "GETBOUND",
+    [Opcode.INITFOR.ordinal]     = "INITFOR",
+    [Opcode.NEXTFOR.ordinal]     = "NEXTFOR",
+    [Opcode.TRY.ordinal]         = "TRY",
+    [Opcode.ENDTRY.ordinal]      = "ENDTRY",
+    [Opcode.THROW.ordinal]       = "THROW",
+    [Opcode.CATCH.ordinal]       = "CATCH",
+    [Opcode.FINALLY.ordinal]     = "FINALLY",
+    [Opcode.ENDFINALLY.ordinal]  = "ENDFINALLY",
+    [Opcode.NOP.ordinal]         = "NOP",
+    [Opcode.DEBUGGER.ordinal]    = "DEBUGGER",
+    [Opcode.BREAK.ordinal]       = "BREAK",
+    [Opcode.CONTINUE.ordinal]    = "CONTINUE",
+    [Opcode.INITSET.ordinal]     = "INITSET",
+    [Opcode.INITGET.ordinal]     = "INITGET",
+    [Opcode.INITSETI.ordinal]    = "INITSETI",
+    [Opcode.CSVARI.ordinal]      = "CSVARI",
+    [Opcode.LAST_OP.ordinal]     = "LAST_OP",
+};
+
+/// Return the human-readable name for an opcode, or "???" for unknown
+/// values.
+fn char* get_opcode_name(Opcode op) {
+    uint idx = (uint)op.ordinal;
+    if (idx <= Opcode.LAST_OP.ordinal) {
+        char* name = OPCODE_NAMES[idx];
+        if (name != null) {
+            return name;
+        }
+    }
+    return "???";
+}
+
+// ============================================================================
+// Internal helpers for disassembly buffer writing
+// ============================================================================
+
+/// Write an opcode name into `buf` starting at `pos`.  Returns new pos.
+fn usz write_opcode_name(Opcode op, char[] buf, usz pos) {
+    char* name = get_opcode_name(op);
+    usz i = 0;
+    while (name[i] != 0 && pos < buf.len) {
+        buf[pos] = name[i];
+        pos++;
+        i++;
+    }
+    return pos;
+}
+
+/// Write a C string into `buf` starting at `pos`.  Returns new pos.
+fn usz write_str(char[] buf, usz pos, char* s) {
+    usz i = 0;
+    while (s[i] != 0 && pos < buf.len) {
+        buf[pos] = s[i];
+        pos++;
+        i++;
+    }
+    return pos;
+}
+
+/// Write an unsigned integer (decimal) into `buf` starting at `pos`.
+fn usz write_uint(char[] buf, usz pos, uint val) {
+    // Small stack buffer for decimal digits (max 10 digits for uint).
+    char[12] tmp;
+    usz len = 0;
+
+    if (val == 0) {
+        if (pos < buf.len) {
+            buf[pos] = '0';
+            pos++;
+        }
+        return pos;
+    }
+
+    uint v = val;
+    while (v > 0) {
+        tmp[len] = (char)('0' + (v % 10));
+        len++;
+        v /= 10;
+    }
+
+    // Write in reverse order.
+    for (usz i = len; i > 0 && pos < buf.len; ) {
+        i--;
+        buf[pos] = tmp[i];
+        pos++;
+    }
+    return pos;
+}
+
+/// Write a signed integer (decimal) into `buf` starting at `pos`.
+fn usz write_int(char[] buf, usz pos, int val) {
+    if (val < 0) {
+        if (pos < buf.len) {
+            buf[pos] = '-';
+            pos++;
+        }
+        // Handle INT_MIN carefully.
+        if (val == -2147483647 - 1) {
+            return write_uint(buf, pos, (uint)2147483648);
+        }
+        return write_uint(buf, pos, (uint)(-val));
+    }
+    if (val > 0) {
+        if (pos < buf.len) {
+            buf[pos] = '+';
+            pos++;
+        }
+    }
+    return write_uint(buf, pos, (uint)val);
+}
