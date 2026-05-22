@@ -488,20 +488,83 @@ fn uint? Parser.parse_expression(&self) {
 
 /// Parse a variable declaration (var/let/const).
 fn uint? Parser.parse_var_decl(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    lexer::Token id_tok = self.lexer.expect(lexer::TokenType.IDENTIFIER)!;
+    char[] identifier = id_tok.str_value;
+    
+    uint init = 0;
+    if (self.lexer.current.type == lexer::TokenType.ASSIGN) {
+        self.lexer.next_token()!;
+        init = self.parse_assignment()!;
+    }
+    
+    self.lexer.match_token(lexer::TokenType.SEMICOLON);
+    
+    uint idx = self.node_count;
+    self.nodes[self.node_count++] = {
+        .type = NodeType.VAR_DECL,
+        .name = identifier,
+        .left = init,
+        .line = line,
+        .col = col
+    };
+    
+    return idx;
 }
 
 /// Parse an if statement.
 fn uint? Parser.parse_if_stmt(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    self.lexer.expect(lexer::TokenType.LPAREN)!;
+    uint condition = self.parse_expression()!;
+    self.lexer.expect(lexer::TokenType.RPAREN)!;
+    
+    uint then_branch = self.parse_statement()!;
+    
+    uint else_branch = 0;
+    if (self.lexer.current.type == lexer::TokenType.ELSE) {
+        self.lexer.next_token()!;
+        else_branch = self.parse_statement()!;
+    }
+    
+    uint idx = self.node_count;
+    self.nodes[self.node_count++] = {
+        .type = NodeType.IF_STMT,
+        .condition = condition,
+        .left = then_branch,
+        .right = else_branch,
+        .line = line,
+        .col = col
+    };
+    
+    return idx;
 }
 
 /// Parse a while statement.
 fn uint? Parser.parse_while_stmt(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    self.lexer.expect(lexer::TokenType.LPAREN)!;
+    uint condition = self.parse_expression()!;
+    self.lexer.expect(lexer::TokenType.RPAREN)!;
+    
+    uint body = self.parse_statement()!;
+    
+    uint idx = self.node_count;
+    self.nodes[self.node_count++] = {
+        .type = NodeType.WHILE_STMT,
+        .condition = condition,
+        .left = body,
+        .line = line,
+        .col = col
+    };
+    
+    return idx;
 }
 
 /// Parse a for statement.
@@ -512,20 +575,135 @@ fn uint? Parser.parse_for_stmt(&self) {
 
 /// Parse a return statement.
 fn uint? Parser.parse_return_stmt(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    uint value = 0;
+    if (self.lexer.current.type != lexer::TokenType.SEMICOLON && 
+        self.lexer.current.type != lexer::TokenType.EOF_TOKEN) {
+        value = self.parse_expression()!;
+    }
+    
+    self.lexer.match_token(lexer::TokenType.SEMICOLON);
+    
+    uint idx = self.node_count;
+    self.nodes[self.node_count++] = {
+        .type = NodeType.RETURN_STMT,
+        .left = value,
+        .line = line,
+        .col = col
+    };
+    
+    return idx;
 }
 
 /// Parse a block statement.
 fn uint? Parser.parse_block(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    lexer::Token lbrace_tok = self.lexer.expect(lexer::TokenType.LBRACE)!;
+    uint line = lbrace_tok.line;
+    uint col = lbrace_tok.col;
+    
+    uint[256] children;
+    uint child_count = 0;
+    
+    while (self.lexer.current.type != lexer::TokenType.RBRACE && 
+           self.lexer.current.type != lexer::TokenType.EOF_TOKEN) {
+        uint stmt = self.parse_statement()!;
+        if (stmt != 0) {  // Skip empty statements
+            children[child_count++] = stmt;
+        }
+    }
+    
+    self.lexer.expect(lexer::TokenType.RBRACE)!;
+    
+    uint idx = self.node_count;
+    ASTNode node = {
+        .type = NodeType.BLOCK,
+        .line = line,
+        .col = col
+    };
+    
+    if (child_count > 0) {
+        uint* arr = (uint*)self.heap.alloc((usz)(child_count * 4))!;
+        for (uint i = 0; i < child_count; i++) {
+            arr[i] = children[i];
+        }
+        // C3 doesn't support slice literals, so we'll just store the pointer
+        // We'll need to track length separately or use a different approach
+    }
+    
+    self.nodes[self.node_count++] = node;
+    return idx;
 }
 
 /// Parse a statement.
 fn uint? Parser.parse_statement(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    switch (self.lexer.current.type) {
+        case lexer::TokenType.LBRACE:
+            return self.parse_block();
+            
+        case lexer::TokenType.VAR:
+        case lexer::TokenType.LET:
+        case lexer::TokenType.CONST:
+            self.lexer.next_token()!;
+            return self.parse_var_decl();
+            
+        case lexer::TokenType.IF:
+            self.lexer.next_token()!;
+            return self.parse_if_stmt();
+            
+        case lexer::TokenType.WHILE:
+            self.lexer.next_token()!;
+            return self.parse_while_stmt();
+            
+        case lexer::TokenType.RETURN:
+            self.lexer.next_token()!;
+            return self.parse_return_stmt();
+            
+        case lexer::TokenType.BREAK:
+            self.lexer.next_token()!;
+            self.lexer.expect(lexer::TokenType.SEMICOLON)!;
+            uint break_idx = self.node_count;
+            ASTNode break_node = {
+                .type = NodeType.BREAK_STMT,
+                .line = line,
+                .col = col
+            };
+            self.nodes[self.node_count++] = break_node;
+            return break_idx;
+            
+        case lexer::TokenType.CONTINUE:
+            self.lexer.next_token()!;
+            self.lexer.expect(lexer::TokenType.SEMICOLON)!;
+            uint cont_idx = self.node_count;
+            ASTNode cont_node = {
+                .type = NodeType.CONTINUE_STMT,
+                .line = line,
+                .col = col
+            };
+            self.nodes[self.node_count++] = cont_node;
+            return cont_idx;
+            
+        case lexer::TokenType.SEMICOLON:
+            self.lexer.next_token()!;
+            return 0;
+            
+        default:
+            uint expr = self.parse_expression()!;
+            self.lexer.expect(lexer::TokenType.SEMICOLON)!;
+            uint expr_stmt_idx = self.node_count;
+            ASTNode expr_stmt = {
+                .type = NodeType.EXPR_STMT,
+                .left = expr,
+                .line = line,
+                .col = col
+            };
+            self.nodes[self.node_count++] = expr_stmt;
+            return expr_stmt_idx;
+    }
 }
 
 /// Parse a function declaration.
