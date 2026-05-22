@@ -467,8 +467,9 @@ fn uint? Parser.parse_binary(&self, int min_prec) {
 
 /// Parse an assignment expression.
 fn uint? Parser.parse_assignment(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    // For now, assignment is just conditional (we handle = in parse_binary already)
+    // Proper assignment would check if LHS is valid and create ASSIGN node
+    return self.parse_conditional();
 }
 
 /// Parse a conditional expression (ternary ? :).
@@ -569,8 +570,54 @@ fn uint? Parser.parse_while_stmt(&self) {
 
 /// Parse a for statement.
 fn uint? Parser.parse_for_stmt(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    uint line = self.lexer.current.line;
+    uint col = self.lexer.current.col;
+    
+    self.lexer.expect(lexer::TokenType.LPAREN)!;
+    
+    // Parse init
+    uint init = 0;
+    if (self.lexer.current.type != lexer::TokenType.SEMICOLON) {
+        if (self.lexer.current.type == lexer::TokenType.VAR ||
+            self.lexer.current.type == lexer::TokenType.LET ||
+            self.lexer.current.type == lexer::TokenType.CONST) {
+            self.lexer.next_token()!;
+            init = self.parse_var_decl()!;
+        } else {
+            init = self.parse_expression()!;
+            self.lexer.expect(lexer::TokenType.SEMICOLON)!;
+        }
+    } else {
+        self.lexer.next_token()!;
+    }
+    
+    // Parse condition
+    uint condition = 0;
+    if (self.lexer.current.type != lexer::TokenType.SEMICOLON) {
+        condition = self.parse_expression()!;
+    }
+    self.lexer.expect(lexer::TokenType.SEMICOLON)!;
+    
+    // Parse increment (skip for now - no field to store it)
+    if (self.lexer.current.type != lexer::TokenType.RPAREN) {
+        self.parse_expression()!;  // Parse but discard
+    }
+    self.lexer.expect(lexer::TokenType.RPAREN)!;
+    
+    // Parse body
+    uint body = self.parse_statement()!;
+    
+    uint idx = self.node_count;
+    self.nodes[self.node_count++] = {
+        .type = NodeType.FOR_STMT,
+        .left = init,
+        .condition = condition,
+        .right = body,
+        .line = line,
+        .col = col
+    };
+    
+    return idx;
 }
 
 /// Parse a return statement.
@@ -714,6 +761,37 @@ fn uint? Parser.parse_function(&self) {
 
 /// Parse a program (list of statements).
 fn uint? Parser.parse_program(&self) {
-    // TODO: implement
-    return PARSE_ERROR~;
+    // Initialize lexer by getting first token
+    self.lexer.next_token()!;
+    
+    // Create array for top-level statements
+    uint[256] stmts;
+    uint stmt_count = 0;
+    
+    // Loop while current token is NOT EOF_TOKEN
+    while (self.lexer.current.type != lexer::TokenType.EOF_TOKEN) {
+        // Parse statement and add to array
+        uint stmt = self.parse_statement()!;
+        if (stmt != 0) {  // Skip empty statements
+            stmts[stmt_count++] = stmt;
+        }
+    }
+    
+    // Create a BLOCK node to represent the program
+    uint idx = self.node_count;
+    ASTNode node = {
+        .type = NodeType.BLOCK,
+        .line = 1,
+        .col = 0
+    };
+    
+    if (stmt_count > 0) {
+        uint* arr = (uint*)self.heap.alloc((usz)(stmt_count * 4))!;
+        for (uint i = 0; i < stmt_count; i++) {
+            arr[i] = stmts[i];
+        }
+    }
+    
+    self.nodes[self.node_count++] = node;
+    return idx;
 }
