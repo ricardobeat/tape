@@ -4,7 +4,7 @@ A port of the [Duktape JavaScript engine](https://duktape.org/) from C to [C3](h
 
 ## Status
 
-**Work in Progress** — Core infrastructure modules implemented (~4500 lines)
+**Work in Progress** — Core infrastructure and compiler implemented (~7500 lines)
 
 ### Completed Modules ✅
 
@@ -49,9 +49,26 @@ A port of the [Duktape JavaScript engine](https://duktape.org/) from C to [C3](h
   - Comment handling
   - Strict mode support
 
+- **`parser.c3`** (797 lines) — JavaScript parser
+  - AST-based recursive descent parser
+  - Expression parsing with precedence climbing
+  - All operators: unary, binary, ternary, assignment
+  - Member access (dot and bracket notation)
+  - Control flow: if/else, while, for, return, break, continue
+  - Variable declarations (var/let/const)
+  - Block statements
+  - Expression statements
+
+- **`compiler.c3`** (2188 lines) — Bytecode compiler
+  - Direct bytecode emission from parse tree
+  - Register allocation
+  - Scope management with lexical scoping
+  - Constant pool generation
+  - Jump patching for control flow
+  - Loop and try/catch handling
+
 ### Next Steps 🔨
 
-- **Compiler** — Parse tokens and generate bytecode
 - **Executor** — Bytecode interpreter with call stack
 - **Value Stack & API** — Public C API for embedding
 - **Garbage Collector** — Mark-and-sweep with refcounting
@@ -73,12 +90,14 @@ This produces `out/duktape.a` static library.
 ```
 duktape-c3/
 ├── src/           # Core modules
-│   ├── types.c3
-│   ├── heap.c3
-│   ├── hstring.c3
-│   ├── hobject.c3
-│   ├── bytecode.c3
-│   └── lexer.c3
+│   ├── types.c3      # Type system
+│   ├── heap.c3       # Memory management
+│   ├── hstring.c3    # Interned strings
+│   ├── hobject.c3    # JavaScript objects
+│   ├── bytecode.c3   # VM instructions
+│   ├── lexer.c3      # Tokenizer
+│   ├── parser.c3     # Parser (AST)
+│   └── compiler.c3   # Bytecode compiler
 ├── cli/           # CLI REPL (todo)
 ├── test/          # Tests (todo)
 └── project.json   # C3 project config
