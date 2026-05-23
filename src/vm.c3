@@ -61,6 +61,8 @@ struct Activation {
     uint flags;
     /// The 'this' binding for this activation (full TVal)
     TVal this_binding;
+    /// For construct calls: the originally created object (before constructor ran)
+    HObject* new_target;
     /// Value stack pointer to function (borrowed; for lightfuncs)
     TVal tv_func;
 }
@@ -423,7 +425,9 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
             case UNDEFINED: return true;
             case NULL_VAL:  return true;
             case BOOLEAN:   return a.boolean == b.boolean;
-            case NUMBER:    return a.number == b.number;
+            case NUMBER:
+                if (math::is_nan(a.number) && math::is_nan(b.number)) return false;
+                return a.number == b.number;
             case FASTINT:   return a.fastint == b.fastint;
             case STRING:    return a.pointer == b.pointer;
             case OBJECT:    return a.pointer == b.pointer;
@@ -541,8 +545,18 @@ fn TVal handle_return(Vm* vm, TVal val) {
 
     // Write result to caller's frame at the saved retval_byteoff
     if (callee_result_byteoff != 0 && callee_result_byteoff < vm.valstack_size * TVal::size) {
+        // For construct calls: if return value is not an object, use new_target
+        TVal final_val = val;
+        if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+            if (final_val.tag != OBJECT || final_val.pointer == null) {
+                if (callee_act.new_target != null) {
+                    final_val.tag = OBJECT;
+                    final_val.pointer = callee_act.new_target;
+                }
+            }
+        }
         TVal* result_slot = ptr_from_byteoff(vm.valstack, callee_result_byteoff);
-        *result_slot = val;
+        *result_slot = final_val;
     }
 
     // Restore valstack_top to match caller's nregs
@@ -924,7 +938,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     case UNDEFINED: seq_r = true; break;
                     case NULL_VAL:  seq_r = true; break;
                     case BOOLEAN:   seq_r = (rb.boolean == rc.boolean); break;
-                    case NUMBER:    seq_r = (rb.number == rc.number); break;
+                    case NUMBER:
+                        // NaN !== NaN per IEEE 754 / ES spec
+                        if (math::is_nan(rb.number) || math::is_nan(rc.number)) {
+                            seq_r = false;
+                        } else {
+                            seq_r = (rb.number == rc.number);
+                        }
+                        break;
                     case FASTINT:   seq_r = (rb.fastint == rc.fastint); break;
                     case STRING:    seq_r = (rb.pointer == rc.pointer); break;
                     default: break;
@@ -946,7 +967,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     case UNDEFINED: sneq_r = false; break;
                     case NULL_VAL:  sneq_r = false; break;
                     case BOOLEAN:   sneq_r = (rb.boolean != rc.boolean); break;
-                    case NUMBER:    sneq_r = (rb.number != rc.number); break;
+                    case NUMBER:
+                        // NaN !== NaN per IEEE 754
+                        if (math::is_nan(rb.number) && math::is_nan(rc.number)) {
+                            sneq_r = true;  // NaN !== NaN
+                        } else {
+                            sneq_r = (rb.number != rc.number);
+                        }
+                        break;
                     case FASTINT:   sneq_r = (rb.fastint != rc.fastint); break;
                     case STRING:    sneq_r = (rb.pointer != rc.pointer); break;
                     default: sneq_r = true; break;
@@ -1217,10 +1245,107 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.pointer = null;
             break;
 
-        case Opcode.NEW_OBJ:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+        case Opcode.NEW_OBJ: {
+            // Compiler convention: A=result_reg, B=callee_reg, C=nargs
+            uint result_reg = insn.a;
+            uint callee_reg = insn.b;
+            uint nargs = insn.c;
+
+            TVal* func_slot = regs_base + callee_reg;
+            TVal func_val = *func_slot;
+
+            if (func_val.tag != OBJECT) {
+                regs_base[result_reg].tag = UNDEFINED;
+                regs_base[result_reg].pointer = null;
+                break;
+            }
+
+            HObject* hobj = (HObject*)func_val.pointer;
+            if (hobj == null || !hobj.is_callable() || hobj.comp_func == null) {
+                regs_base[result_reg].tag = UNDEFINED;
+                regs_base[result_reg].pointer = null;
+                break;
+            }
+
+            CompiledFunction* target = hobj.comp_func;
+
+            // Step 1: Create new object
+            HObject*? new_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+            if (catch err = new_obj_raw) {
+                regs_base[result_reg].tag = UNDEFINED;
+                regs_base[result_reg].pointer = null;
+                break;
+            }
+            HObject* new_obj = new_obj_raw;
+
+            // Step 2: Set prototype from constructor.prototype
+            HString* proto_key = intern_string(vm, "prototype");
+            TVal? proto_val = hobj.get_prop_proto(proto_key);
+            if (try pv = proto_val) {
+                if (pv.tag == OBJECT && pv.pointer != null) {
+                    new_obj.prototype = (HObject*)pv.pointer;
+                }
+            }
+
+            // Step 3: Place new object in this-slot
+            TVal this_tval;
+            this_tval.tag = OBJECT;
+            this_tval.pointer = new_obj;
+            regs_base[callee_reg + 1] = this_tval;
+            uint frame_start = callee_reg + 2;
+            uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
+            uint needed = new_bottom_idx + target.num_regs;
+
+            if (!ensure_valstack(vm, needed)) {
+                regs_base[result_reg].tag = UNDEFINED;
+                regs_base[result_reg].pointer = null;
+                break;
+            }
+
+            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            func_slot = regs_base + callee_reg;
+
+            if (vm.activation_count >= MAX_CALLS) {
+                regs_base[result_reg].tag = UNDEFINED;
+                regs_base[result_reg].pointer = null;
+                break;
+            }
+
+            Activation* new_act = &vm.activations[vm.activation_count];
+            vm.activation_count++;
+
+            new_act.parent = act;
+            new_act.func = target;
+            new_act.var_env = hobj.var_env;
+            new_act.lex_env = hobj.lex_env;
+            new_act.cat = null;
+            new_act.curr_pc = target.code;
+            new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
+            new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+            new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
+            new_act.flags = ACT_FLAG_STRICT | ACT_FLAG_CONSTRUCT;
+            new_act.this_binding = this_tval;
+            new_act.new_target = new_obj;
+
+            TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            uint new_nregs = target.num_regs;
+
+            // Copy args
+            TVal* old_args = regs_base + callee_reg + 2;
+            for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
+                new_regs[i] = old_args[i];
+            }
+            for (uint i = nargs; i < new_nregs; i++) {
+                new_regs[i].tag = UNDEFINED;
+                new_regs[i].pointer = null;
+            }
+
+            vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
+            vm.valstack_bottom = new_act.bottom_byteoff;
+
+            needs_restart = true;
             break;
+        }
 
         case Opcode.TAILCALL:
             break;

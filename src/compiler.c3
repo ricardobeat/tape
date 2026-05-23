@@ -149,6 +149,11 @@ struct CompilerContext {
     // Track last identifier resolved via GETVAR (for assignment write-back)
     bool last_was_getvar;
     uint last_getvar_name_idx;
+    /// LHS mode: when true, member_expr saves obj/key without emitting GETPROP
+    bool lhs_mode;
+    bool last_was_member;
+    ushort last_member_obj_reg;
+    ushort last_member_prop_reg;
 
     // Global scope flag: when true, all var decls use environment only (no register cache)
     bool is_global;
@@ -1334,9 +1339,31 @@ fn ushort? CompilerContext.expression(&self) {
 
 /// Parse an assignment expression.
 fn ushort? CompilerContext.assignment_expr(&self) {
+    // Parse LHS with lhs_mode enabled — member_expr saves (obj, key) without GETPROP
+    self.lhs_mode = true;
+    self.last_was_member = false;
     ushort left = self.conditional_expr()!;
+    self.lhs_mode = false;
 
-    TokenType tt = self.peek_type();
+    TokenType tt2 = self.peek_type();
+
+    // If LHS was a member expression but next token is NOT an assignment,
+    // free the saved obj/key registers (GETPROP was already emitted)
+    if (self.last_was_member && tt2 != TokenType.ASSIGN
+        && tt2 != TokenType.PLUS_ASSIGN && tt2 != TokenType.MINUS_ASSIGN
+        && tt2 != TokenType.STAR_ASSIGN && tt2 != TokenType.SLASH_ASSIGN
+        && tt2 != TokenType.PERCENT_ASSIGN && tt2 != TokenType.STARSTAR_ASSIGN
+        && tt2 != TokenType.SHL_ASSIGN && tt2 != TokenType.SHR_ASSIGN
+        && tt2 != TokenType.USHR_ASSIGN && tt2 != TokenType.BIT_AND_ASSIGN
+        && tt2 != TokenType.BIT_OR_ASSIGN && tt2 != TokenType.BIT_XOR_ASSIGN
+        && tt2 != TokenType.LOG_AND_ASSIGN && tt2 != TokenType.LOG_OR_ASSIGN
+        && tt2 != TokenType.NULLISH_ASSIGN) {
+        self.free_reg(self.last_member_prop_reg);
+        self.free_reg(self.last_member_obj_reg);
+        self.last_was_member = false;
+    }
+
+    TokenType tt = tt2;
 
     // Check for assignment operators
     Opcode compound_op;
@@ -1398,22 +1425,34 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     // Consume the assignment operator
     self.advance()!;
 
-    // Save GETVAR info from LHS (will be overwritten by RHS evaluation)
+    // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
+    bool lhs_was_member = self.last_was_member;
+    ushort lhs_member_obj = self.last_member_obj_reg;
+    ushort lhs_member_prop = self.last_member_prop_reg;
 
     // Compile right-hand side
     ushort right = self.assignment_expr()!;
 
     if (is_assign) {
-        // Simple assignment: left = right
-        if (left != right) {
-            self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
-        }
-        self.free_reg(right);
-        // If LHS was resolved via GETVAR, write back to environment
-        if (lhs_was_getvar) {
-            self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+        if (lhs_was_member) {
+            // Member expression assignment: obj.prop = right
+            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+            self.free_reg(lhs_member_prop);
+            self.free_reg(lhs_member_obj);
+            self.free_reg(right);
+            left = right;
+        } else {
+            // Simple assignment: left = right
+            if (left != right) {
+                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+            }
+            self.free_reg(right);
+            // If LHS was resolved via GETVAR, write back to environment
+            if (lhs_was_getvar) {
+                self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+            }
         }
         return left;
     }
@@ -1909,10 +1948,20 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort prop_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
 
+            // Always emit GETPROP
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)prop_reg);
-            self.free_reg(prop_reg);
-            self.free_reg(obj);
+
+            if (self.lhs_mode) {
+                // LHS mode: keep obj/prop alive for possible PUTPROP
+                self.last_was_member = true;
+                self.last_member_obj_reg = obj;
+                self.last_member_prop_reg = prop_reg;
+            } else {
+                // RHS mode: free obj/prop immediately
+                self.free_reg(prop_reg);
+                self.free_reg(obj);
+            }
             obj = result;
         } else if (self.match(TokenType.LBRACKET)) {
             ushort idx_reg = self.expression()!;
@@ -1920,8 +1969,15 @@ fn ushort? CompilerContext.member_expr(&self) {
 
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)idx_reg);
-            self.free_reg(idx_reg);
-            self.free_reg(obj);
+
+            if (self.lhs_mode) {
+                self.last_was_member = true;
+                self.last_member_obj_reg = obj;
+                self.last_member_prop_reg = idx_reg;
+            } else {
+                self.free_reg(idx_reg);
+                self.free_reg(obj);
+            }
             obj = result;
         } else {
             break;

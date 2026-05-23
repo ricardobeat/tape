@@ -1,18 +1,25 @@
-# Duktape C3 — Next Impact Priorities
+# Duktape C3 — Session Summary & Next Steps
 
-Based on test262 analysis:
+## Current (21 test262 / 23 local — 0 failures)
+- `new` operator ✓
+- Property assignment `this.x = value` ✓  
+- Arrays with `.length` ✓
+- Builtins: parseInt, parseFloat, isNaN, isFinite ✓
+- Operators: all arithmetic, bitwise, logical, comparison ✓
 
-## High Impact, Low Effort
-1. **Fix SETALEN** — array `.length` is never set (1-line fix)
-2. **Built-in functions** — `parseInt`, `parseFloat`, `isNaN`, `isFinite`
-3. **Exponentiation operator `**` ** — already implemented in bytecode, add test
+## Next Implementation Priorities
 
-## Medium Impact, Medium Effort  
-4. **Implement `new` operator** — 59 test262 tests
-5. **Implement `for-in`** — 115 test262 tests (INITFOR/NEXTFOR stubs)
-6. **Implement try/catch/throw** — 201 test262 tests
+### Easy (~1-2 hours)
+1. **Math object** — register global `Math` with `abs`, `floor`, `ceil`, `round`, `max`, `min`, `pow`, `random`
+2. **Global NaN/Infinity** — register `NaN`, `Infinity`, `undefined` as read-only globals
+3. **`typeof` for functions** — currently prints "function" for function objects
 
-## Near Future
-7. **Rest parameters** — `function(...args)` 
-8. **Array built-ins** — `.push`, `.pop`, `.length`
-9. **String built-ins** — `.indexOf`, `.slice`
+### Medium (~2-4 hours)
+4. **`instanceof` operator** — walk prototype chain in VM
+5. **`delete` operator** — real implementation
+6. **switch/case tests** — compiler already emits, need to verify runtime
+
+### Larger (~4-8 hours)
+7. **for-in enumeration** — implement INITFOR/NEXTFOR property walk
+8. **try/catch/throw** — stack unwinding with catch/finally dispatch
+9. **Array/String built-in methods** — push, pop, indexOf, slice
