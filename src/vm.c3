@@ -1254,6 +1254,20 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal* func_slot = regs_base + callee_reg;
             TVal func_val = *func_slot;
 
+            // Handle lightfunc built-in constructors (Error, TypeError, etc.)
+            if (func_val.tag == LIGHTFUNC) {
+                uint fn_idx = (uint)func_val.fastint;
+                builtins::BuiltinContext ctx;
+                ctx.vm = vm;
+                ctx.regs = vm.valstack;
+                ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                ctx.argc = (ushort)nargs;
+                ctx.result = regs_base + result_reg;
+                ctx.heap = vm.heap;
+                builtins::dispatch_builtin(fn_idx, &ctx);
+                break;
+            }
+
             if (func_val.tag != OBJECT) {
                 regs_base[result_reg].tag = UNDEFINED;
                 regs_base[result_reg].pointer = null;

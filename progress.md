@@ -1,7 +1,7 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 3
-**Baseline:** 21 / 53,568 passing
+**Last Updated:** Session 4
+**Baseline:** 22 / 53,568 passing
 **Target:** 53,568 / 53,568
 
 ## Summary
@@ -9,12 +9,12 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Currently passing | 21 |
+| Currently passing | 22 |
 | Currently failing | 0 |
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.04% |
-| Pass rate (ES5-core, filtered) | 100% (21/21) |
-| Local JS tests passing | 23/23 |
+| Pass rate (ES5-core, filtered) | 100% (22/22) |
+| Local JS tests passing | 22/22 |
 
 ## Per-Phase Status
 
@@ -77,14 +77,14 @@
 ### Phase 4: Error Handling & References — 🔜 NEXT
 | Component | Status | Unlocks |
 |---|---|---|
-| Error constructors | ❌ | ~200 tests |
+| Error constructors | ✅ | ~200 tests |
 | ReferenceError on undefined vars | ❌ | ~100 tests |
 | TypeError on invalid access | ❌ | ~50 tests |
 | try/catch/throw VM | ❌ | 201 tests |
 | THROW opcode | ❌ | - |
 | TRY/ENDTRY/CATCH/FINALLY | ❌ | - |
 | Catcher chain | ❌ | - |
-| **Total Phase 4** | **0%** | **~550 tests** |
+| **Total Phase 4** | **~14%** | **~550 tests** |
 
 ### Phase 5: Built-in Constructors — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -158,6 +158,7 @@
 | 1 | 18 hand-written | Core VM, calling convention, closures, basic comparisons |
 | 2 | 21 real test262 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | 21 real test262 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
+| 4 | 22 (all pass) | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
 
 ## Running the Test Suite
 

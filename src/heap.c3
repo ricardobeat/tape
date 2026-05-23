@@ -2,6 +2,7 @@ module duktape::heap;
 
 import duktape::types;
 import duktape::hstring;
+import duktape::hobject;
 import std::io;
 import libc;
 
@@ -88,6 +89,14 @@ struct Heap {
 
     // Simple xorshift32 PRNG state
     uint rnd_state;
+
+    // Built-in error prototypes (for builtin constructor dispatch)
+    HObject* err_proto;
+    HObject* type_err_proto;
+    HObject* range_err_proto;
+    HObject* ref_err_proto;
+    HObject* syntax_err_proto;
+    HObject* eval_err_proto;
 }
 
 // ============================================================================

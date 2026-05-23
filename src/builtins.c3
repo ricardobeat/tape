@@ -16,7 +16,14 @@ const uint BUILTIN_PARSE_INT   = 2;
 const uint BUILTIN_PARSE_FLOAT = 3;
 const uint BUILTIN_IS_NAN      = 4;
 const uint BUILTIN_IS_FINITE   = 5;
-const uint BUILTIN_COUNT       = 6;
+const uint BUILTIN_ERROR           = 6;
+const uint BUILTIN_TYPE_ERROR      = 7;
+const uint BUILTIN_RANGE_ERROR     = 8;
+const uint BUILTIN_REFERENCE_ERROR = 9;
+const uint BUILTIN_SYNTAX_ERROR    = 10;
+const uint BUILTIN_EVAL_ERROR      = 11;
+const uint BUILTIN_ERROR_PROTO_TOSTRING = 12;
+const uint BUILTIN_COUNT       = 13;
 
 struct BuiltinContext {
     void* vm;
@@ -25,6 +32,7 @@ struct BuiltinContext {
     ushort argc;
     TVal* result;
     Heap* heap;
+    TVal  this_val;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -194,6 +202,181 @@ fn void builtin_is_finite(BuiltinContext* ctx) {
     ctx.result.boolean = !math::is_nan(d) && !math::is_inf(d);
 }
 
+// ============================================================================
+// Intern helper (mirrors vm.c3 intern_string but needs only Heap)
+// ============================================================================
+
+fn HString* builtin_intern_string(Heap* heap, char[] data) {
+    uint hash = heap.hash_string(data);
+    HString* existing = heap.str_table_lookup(data, hash);
+    if (existing != null) {
+        return existing;
+    }
+    HString*? new_s = hstring::hstring_alloc(heap, data, hash);
+    if (try s = new_s) {
+        heap.str_table_insert(s);
+        return s;
+    }
+    return null;
+}
+
+// ============================================================================
+// ToString helper (ES3 ToString for primitive types)
+// ============================================================================
+
+fn HString* builtin_to_string(Heap* heap, TVal* val) {
+    switch (val.tag) {
+        case STRING:
+            return (HString*)val.pointer;
+        case NUMBER: {
+            char[64] buf;
+            int len = libc::snprintf(&buf, 64, "%.17g", val.number);
+            if (len < 0 || len >= 64) return null;
+            return builtin_intern_string(heap, buf[:len]);
+        }
+        case FASTINT: {
+            char[64] buf;
+            int len = libc::snprintf(&buf, 64, "%ld", (long)val.fastint);
+            if (len < 0 || len >= 64) return null;
+            return builtin_intern_string(heap, buf[:len]);
+        }
+        case BOOLEAN:
+            return builtin_intern_string(heap, val.boolean ? "true" : "false");
+        case UNDEFINED:
+            return builtin_intern_string(heap, "undefined");
+        case NULL_VAL:
+            return builtin_intern_string(heap, "null");
+        case OBJECT:
+            return builtin_intern_string(heap, "[object Object]");
+        case LIGHTFUNC:
+            return builtin_intern_string(heap, "[function]");
+        default:
+            return null;
+    }
+}
+
+// ============================================================================
+// Error constructor builtins
+// ============================================================================
+
+/// Shared constructor: create an error object with ObjClass.ERROR,
+/// set prototype to `proto`, and set .message from args[0] if provided.
+fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (catch err = err_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* err = err_raw;
+    err.prototype = proto;
+
+    // Set .message if first arg is provided and not undefined
+    if (ctx.argc > 0) {
+        TVal* msg_arg = &ctx.regs[ctx.base_reg];
+        if (msg_arg.tag != UNDEFINED) {
+            HString* msg_str = builtin_to_string(ctx.heap, msg_arg);
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.fastint = 0;
+    ctx.result.pointer = err;
+}
+
+fn void builtin_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.err_proto);
+}
+
+fn void builtin_type_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.type_err_proto);
+}
+
+fn void builtin_range_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.range_err_proto);
+}
+
+fn void builtin_reference_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.ref_err_proto);
+}
+
+fn void builtin_syntax_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.syntax_err_proto);
+}
+
+fn void builtin_eval_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.eval_err_proto);
+}
+
+// ============================================================================
+// Error.prototype.toString — returns "name: message" per ES5 §15.11.4.4
+// ============================================================================
+
+fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
+    // Get 'this' value (stored at base_reg - 1 in the value stack)
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+
+    // Default name is "Error"
+    HString* name_str = builtin_intern_string(ctx.heap, "Error");
+    HString* msg_str  = builtin_intern_string(ctx.heap, "");
+
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+
+        // Read .name property
+        HString* name_key = builtin_intern_string(ctx.heap, "name");
+        TVal? name_prop = obj.get_prop_proto(name_key);
+        if (try nv = name_prop) {
+            io::eprintfn("DEBUG toString: name found tag=%d", nv.tag);
+            if (!nv.is_undefined()) {
+                HString* tmp = builtin_to_string(ctx.heap, &nv);
+                if (tmp != null) name_str = tmp;
+            }
+        }
+
+        // Read .message property
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        TVal? msg_prop = obj.get_prop_proto(msg_key);
+        if (try mv = msg_prop) {
+            if (!mv.is_undefined()) {
+                HString* tmp = builtin_to_string(ctx.heap, &mv);
+                if (tmp != null) {
+                    msg_str = tmp;
+                }
+            }
+        }
+    }
+    if (name_str.blen == 0) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = msg_str;
+    } else if (msg_str.blen == 0) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = name_str;
+    } else {
+        // Format: "name: message"
+        usz total = (usz)name_str.blen + 2 + (usz)msg_str.blen;
+        char[256] buf;
+        char* name_cstr = name_str.get_cstr();
+        char* msg_cstr = msg_str.get_cstr();
+        int len = libc::snprintf(&buf, 256, "%s: %s", name_cstr, msg_cstr);
+        if (len > 0 && len < 256) {
+            HString* result_str = builtin_intern_string(ctx.heap, buf[:len]);
+            ctx.result.tag = STRING;
+            ctx.result.pointer = result_str;
+        } else {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+        }
+    }
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -208,6 +391,20 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_is_nan(ctx);
         case BUILTIN_IS_FINITE:
             builtin_is_finite(ctx);
+        case BUILTIN_ERROR:
+            builtin_error(ctx);
+        case BUILTIN_TYPE_ERROR:
+            builtin_type_error(ctx);
+        case BUILTIN_RANGE_ERROR:
+            builtin_range_error(ctx);
+        case BUILTIN_REFERENCE_ERROR:
+            builtin_reference_error(ctx);
+        case BUILTIN_SYNTAX_ERROR:
+            builtin_syntax_error(ctx);
+        case BUILTIN_EVAL_ERROR:
+            builtin_eval_error(ctx);
+        case BUILTIN_ERROR_PROTO_TOSTRING:
+            builtin_error_prototype_to_string(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -284,6 +481,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Math object
     if (!register_math_object(global_env, heap)) return false;
+
+    // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
+    if (!register_error_builtins(global_env, heap)) return false;
 
     return true;
 }
@@ -394,20 +594,34 @@ fn bool set_num_prop(HObject* obj, Heap* heap, char[] name, double val) {
 
 fn bool register_named_value(EnvRecord* global_env, Heap* heap, char[] name, TVal val) {
     uint hash = heap.hash_string(name);
-    HString*? key = hstring::hstring_alloc(heap, name, hash);
-    if (catch err = key) return false;
-    heap.str_table_insert(key);
+    HString* existing = heap.str_table_lookup(name, hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
     return env::env_declare(global_env, key, val);
 }
 
 fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
                                   TValTag tag, double number_val, long fastint_val) {
     uint hash = heap.hash_string(name);
-    HString*? key = hstring::hstring_alloc(heap, name, hash);
-    if (catch err = key) {
-        return false;
+    HString* existing = heap.str_table_lookup(name, hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) {
+            return false;
+        }
+        heap.str_table_insert(new_key);
+        key = new_key;
     }
-    heap.str_table_insert(key);
     TVal val;
     val.tag = tag;
     if (tag == FASTINT) {
@@ -426,15 +640,113 @@ fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
 
 fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, uint fn_index) {
     uint hash = heap.hash_string(name);
-    HString*? key = hstring::hstring_alloc(heap, name, hash);
-    if (catch err = key) {
-        return false;
+    HString* existing = heap.str_table_lookup(name, hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) {
+            return false;
+        }
+        heap.str_table_insert(new_key);
+        key = new_key;
     }
-    heap.str_table_insert(key);
 
     TVal val;
     val.tag = LIGHTFUNC;
     val.fastint = (long)fn_index;
     env::env_declare(global_env, key, val);
+    return true;
+}
+
+// ============================================================================
+// Error built-in registration
+// ============================================================================
+
+/// Helper: create a prototype object for an error type.
+/// proto_parent is the [[Prototype]] (e.g. Error.prototype for subclasses).
+fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] name_str) {
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.ERROR);
+    if (catch err = proto_raw) return null;
+    HObject* proto = proto_raw;
+    proto.prototype = proto_parent;
+
+    // Set .name property
+    HString* name_key = builtin_intern_string(heap, "name");
+    HString* name_hstr = builtin_intern_string(heap, name_str);
+    TVal name_tv;
+    name_tv.tag = STRING;
+    name_tv.pointer = name_hstr;
+    proto.put_prop(name_key, name_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set .message property (empty string)
+    HString* msg_key = builtin_intern_string(heap, "message");
+    HString* msg_hstr = builtin_intern_string(heap, "");
+    TVal msg_tv;
+    msg_tv.tag = STRING;
+    msg_tv.pointer = msg_hstr;
+    proto.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+
+    return proto;
+}
+
+/// Register all Error constructors and prototypes.
+fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
+    // --- Create Error.prototype ---
+    HObject* err_proto = register_error_prototype(heap, null, "Error");
+    if (err_proto == null) return false;
+    heap.err_proto = err_proto;
+
+    // Add .toString() method to Error.prototype
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.tag = LIGHTFUNC;
+    tostring_tv.fastint = (long)BUILTIN_ERROR_PROTO_TOSTRING;
+    err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // --- Create TypeError.prototype ---
+    HObject* type_err_proto = register_error_prototype(heap, err_proto, "TypeError");
+    if (type_err_proto == null) return false;
+    heap.type_err_proto = type_err_proto;
+
+    // --- Create RangeError.prototype ---
+    HObject* range_err_proto = register_error_prototype(heap, err_proto, "RangeError");
+    if (range_err_proto == null) return false;
+    heap.range_err_proto = range_err_proto;
+
+    // --- Create ReferenceError.prototype ---
+    HObject* ref_err_proto = register_error_prototype(heap, err_proto, "ReferenceError");
+    if (ref_err_proto == null) return false;
+    heap.ref_err_proto = ref_err_proto;
+
+    // --- Create SyntaxError.prototype ---
+    HObject* syntax_err_proto = register_error_prototype(heap, err_proto, "SyntaxError");
+    if (syntax_err_proto == null) return false;
+    heap.syntax_err_proto = syntax_err_proto;
+
+    // --- Create EvalError.prototype ---
+    HObject* eval_err_proto = register_error_prototype(heap, err_proto, "EvalError");
+    if (eval_err_proto == null) return false;
+    heap.eval_err_proto = eval_err_proto;
+
+    // --- Register Error global constructor ---
+    if (!register_simple_builtin(global_env, heap, "Error", BUILTIN_ERROR)) return false;
+
+    // --- Register TypeError ---
+    if (!register_simple_builtin(global_env, heap, "TypeError", BUILTIN_TYPE_ERROR)) return false;
+
+    // --- Register RangeError ---
+    if (!register_simple_builtin(global_env, heap, "RangeError", BUILTIN_RANGE_ERROR)) return false;
+
+    // --- Register ReferenceError ---
+    if (!register_simple_builtin(global_env, heap, "ReferenceError", BUILTIN_REFERENCE_ERROR)) return false;
+
+    // --- Register SyntaxError ---
+    if (!register_simple_builtin(global_env, heap, "SyntaxError", BUILTIN_SYNTAX_ERROR)) return false;
+
+    // --- Register EvalError ---
+    if (!register_simple_builtin(global_env, heap, "EvalError", BUILTIN_EVAL_ERROR)) return false;
+
     return true;
 }

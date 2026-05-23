@@ -75,7 +75,7 @@
 - [x] Member expression LHS for assignment (this.x = value)
 
 ### Phase 4: Error Handling & References 🔜 NEXT
-- [ ] 4a. Error constructors (Error, TypeError, ReferenceError, RangeError, SyntaxError, EvalError)
+- [x] **4a. Error constructors (Error, TypeError, ReferenceError, RangeError, SyntaxError, EvalError)**
 - [ ] 4b. ReferenceError on undeclared variable access
 - [ ] 4c. TypeError on primitive value access
 - [ ] 4d. RangeError on invalid array length
