@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Quick test262 runner — runs a subset of tests
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VM="$SCRIPT_DIR/../out/test_vm"
+
+make_harness() {
+  cat "$SCRIPT_DIR/../test262/harness/sta.js"
+  echo 'var __test262_pass = 0, __test262_fail = 0;'
+  echo 'Test262Error = function(m) { __test262_fail++; print("FAIL: " + (m || "")); };'
+  echo 'Test262Error.prototype.toString = function() { return "Test262Error"; };'
+  echo 'Test262Error.thrower = function(m) { new Test262Error(m); };'
+  echo 'function $DONOTEVALUATE() {}'
+}
+
+run_one() {
+  local f="$1"
+  local name="$(basename "$(dirname "$f")")/$(basename "$f" .js)"
+  local tmp="${TMPDIR}/t_$$_$(basename "$f")"
+  make_harness > "$tmp"
+  cat "$f" >> "$tmp"
+  echo 'if (__test262_fail) print("RESULT: FAIL"); else print("RESULT: PASS");' >> "$tmp"
+  "$VM" "$tmp" 2>&1 | grep "^RESULT:" || echo "RESULT: ERROR"
+  rm -f "$tmp"
+}
+
+CATS=("$@")
+if [ ${#CATS[@]} -eq 0 ]; then
+  CATS=(
+    "test262/test/language/expressions/strict-equals"
+    "test262/test/language/expressions/equals"
+    "test262/test/language/expressions/typeof"
+    "test262/test/language/expressions/logical-not"
+    "test262/test/language/expressions/addition"
+    "test262/test/language/expressions/subtraction"
+    "test262/test/language/expressions/multiplication"
+    "test262/test/language/expressions/division"
+    "test262/test/language/expressions/modulus"
+    "test262/test/language/expressions/bitwise-not"
+  )
+fi
+
+P=0; F=0; S=0
+for cat in "${CATS[@]}"; do
+  for f in "$SCRIPT_DIR/../$cat"/*.js; do
+    [ -f "$f" ] || continue
+    # Skip bigint/symbol/proxy tests
+    if grep -qE "BigInt|Symbol|Proxy|Proxy|Map\b|Set\b" "$f" 2>/dev/null; then
+      S=$((S+1)); continue
+    fi
+    # Skip $DONOTEVALUATE
+    if grep -q '\$DONOTEVALUATE' "$f" 2>/dev/null; then
+      S=$((S+1)); continue
+    fi
+    local r="$(run_one "$f")"
+    if echo "$r" | grep -q "PASS"; then
+      P=$((P+1))
+    else
+      F=$((F+1))
+      echo "FAIL: $name"
+    fi
+  done
+done
+echo "Pass: $P  Fail: $F  Skip: $S"

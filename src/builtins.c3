@@ -276,7 +276,84 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
     if (!register_global_constant(global_env, heap, "Infinity", NUMBER, double::inf, 0)) return false;
 
+    // Register Number constructor
+    if (!register_number_object(global_env, heap)) return false;
+
+    // Register Object constructor (simple)
+    if (!register_object_constructor(global_env, heap)) return false;
+
     return true;
+}
+
+fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
+    HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = obj_raw) return false;
+    TVal obj_tv;
+    obj_tv.tag = OBJECT;
+    obj_tv.fastint = 0;
+    obj_tv.pointer = obj_raw;
+    return register_named_value(global_env, heap, "Object", obj_tv);
+}
+
+fn bool register_number_object(EnvRecord* global_env, Heap* heap) {
+    HObject*? num_obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = num_obj_raw) return false;
+    HObject* num_obj = num_obj_raw;
+
+    if (!set_num_prop(num_obj, heap, "NaN", double::nan)) return false;
+    // Debug: verify NaN property was stored
+    {
+        uint test_hash = heap.hash_string("NaN");
+        HString*? test_key = hstring::hstring_alloc(heap, "NaN", test_hash);
+        if (try tk = test_key) {
+            heap.str_table_insert(tk);
+            TVal? check = num_obj.get_prop_proto(tk);
+            if (try cv = check) {
+                // Silently verify
+            }
+        }
+    }
+    if (!set_num_prop(num_obj, heap, "POSITIVE_INFINITY", double::inf)) return false;
+    if (!set_num_prop(num_obj, heap, "NEGATIVE_INFINITY", -double::inf)) return false;
+    if (!set_num_prop(num_obj, heap, "MAX_VALUE", 1.7976931348623157e+308)) return false;
+    if (!set_num_prop(num_obj, heap, "MIN_VALUE", 5e-324)) return false;
+    if (!set_num_prop(num_obj, heap, "MAX_SAFE_INTEGER", 9007199254740991.0)) return false;
+    if (!set_num_prop(num_obj, heap, "MIN_SAFE_INTEGER", -9007199254740991.0)) return false;
+    if (!set_num_prop(num_obj, heap, "EPSILON", 2.220446049250313e-16)) return false;
+
+    TVal num_tv;
+    num_tv.tag = OBJECT;
+    num_tv.fastint = 0;   // must set fastint before pointer (union-safe: only one field used)
+    num_tv.pointer = num_obj;
+    return register_named_value(global_env, heap, "Number", num_tv);
+}
+
+fn bool set_num_prop(HObject* obj, Heap* heap, char[] name, double val) {
+    uint hash = heap.hash_string(name);
+    // Use lookup-first to avoid duplicate HString pointers
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = NUMBER;
+    tv.number = val;
+    obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    return true;
+}
+
+fn bool register_named_value(EnvRecord* global_env, Heap* heap, char[] name, TVal val) {
+    uint hash = heap.hash_string(name);
+    HString*? key = hstring::hstring_alloc(heap, name, hash);
+    if (catch err = key) return false;
+    heap.str_table_insert(key);
+    return env::env_declare(global_env, key, val);
 }
 
 fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
