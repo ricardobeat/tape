@@ -1401,8 +1401,24 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         ra.number = v.number;
                         ra.pointer = v.pointer;
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        // ReferenceError: variable not declared
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.ref_err_proto;
+                            char[160] buf;
+                            int len = libc::snprintf(&buf, 160, "%s is not defined",
+                                                     name_hstr.get_cstr());
+                            if (len > 0 && len < 160) {
+                                HString* msg_str = intern_string(vm, buf[:len]);
+                                TVal msg_val;
+                                msg_val.tag = STRING;
+                                msg_val.pointer = msg_str;
+                                HString* msg_key = intern_string(vm, "message");
+                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                        return VM_ERROR~;
                     }
                 } else {
                     ra.tag = UNDEFINED;
