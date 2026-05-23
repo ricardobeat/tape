@@ -90,6 +90,9 @@ struct Heap {
     // Simple xorshift32 PRNG state
     uint rnd_state;
 
+    // Fixed hash seed (set at heap creation, never changes)
+    uint hash_seed;
+
     // Built-in error prototypes (for builtin constructor dispatch)
     HObject* err_proto;
     HObject* type_err_proto;
@@ -179,6 +182,9 @@ fn Heap*? create(
 
     // PRNG seed (non-zero required for xorshift32)
     h.rnd_state = 0xDEAD_BEEF;
+
+    // Fixed hash seed (never changes after creation)
+    h.hash_seed = h.rnd_state;
 
     // Allocate the initial string table
     usz tbl_bytes = HString*::size * INITIAL_STR_TABLE_SIZE;
@@ -347,7 +353,7 @@ const uint FNV1A_PRIME        = 0x0100_0193;
  * state for HashDoS mitigation.
  */
 fn uint Heap.hash_string(&self, char[] data) {
-    uint h = FNV1A_OFFSET_BASIS ^ self.rnd_state;
+    uint h = FNV1A_OFFSET_BASIS ^ self.hash_seed;
     foreach (b : data) {
         h ^= (uint)b;
         h *= FNV1A_PRIME;

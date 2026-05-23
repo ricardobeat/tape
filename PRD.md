@@ -84,17 +84,17 @@
 - [x] 4g. Catcher chain for nested try/catch with cross-activation propagation
 - **Unlocks:** ~500+ tests (try/throw + error semantics)
 
-### Phase 5: Built-in Constructors
+### Phase 5: Built-in Constructors ✅ COMPLETE
 - [x] 5a. Boolean constructor (new Boolean(), Boolean())
 - [x] 5b. String constructor (new String(), String())
 - [x] 5c. Number constructor as function (Number())
 - [x] 5d. Object constructor as function (Object() with primitive wrapping)
 - [x] 5e. Array constructor
-- [ ] 5f. Function constructor (new Function('return 1'))
+- [x] 5f. Function constructor (new Function('return 1'))
 - **Unlocks:** ~800+ tests
 
 ### Phase 6: Built-in Prototype Methods
-- [ ] 6a. Math methods: abs, floor, ceil, round, max, min, pow, sqrt, exp, log, sin, cos, tan, random
+- [x] 6a. Math methods: abs, floor, ceil, round, max, min, pow, sqrt, exp, log, sin, cos, tan, random
 - [ ] 6b. String.prototype: indexOf, slice, charAt, charCodeAt, substring, substr, toUpperCase, toLowerCase, trim, split, replace, match, search, concat
 - [ ] 6c. Array.prototype: push, pop, shift, unshift, join, indexOf, lastIndexOf, slice, concat, forEach, map, filter, reduce, some, every, sort, reverse, splice
 - [ ] 6d. Number.prototype: toFixed, toExponential, toPrecision, toString

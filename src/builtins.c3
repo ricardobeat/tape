@@ -10,6 +10,15 @@ import std::io;
 import std::math;
 import libc;
 
+// Math library externals (link-time resolved via @MathLibc)
+extern fn double math_pow(double x, double y) @MathLibc("pow");
+extern fn double math_sqrt(double x)          @MathLibc("sqrt");
+extern fn double math_exp(double x)           @MathLibc("exp");
+extern fn double math_log(double x)           @MathLibc("log");
+extern fn double math_sin(double x)           @MathLibc("sin");
+extern fn double math_cos(double x)           @MathLibc("cos");
+extern fn double math_tan(double x)           @MathLibc("tan");
+
 const uint BUILTIN_PRINT       = 0;
 const uint BUILTIN_CONSOLE_LOG = 1;
 const uint BUILTIN_PARSE_INT   = 2;
@@ -36,7 +45,21 @@ const uint BUILTIN_OBJECT                  = 22;
 const uint BUILTIN_OBJECT_PROTO_TOSTRING   = 23;
 const uint BUILTIN_OBJECT_PROTO_VALUEOF    = 24;
 const uint BUILTIN_ARRAY                   = 25;
-const uint BUILTIN_COUNT                   = 26;
+const uint BUILTIN_MATH_ABS   = 26;
+const uint BUILTIN_MATH_FLOOR = 27;
+const uint BUILTIN_MATH_CEIL  = 28;
+const uint BUILTIN_MATH_ROUND = 29;
+const uint BUILTIN_MATH_MAX   = 30;
+const uint BUILTIN_MATH_MIN   = 31;
+const uint BUILTIN_MATH_POW   = 32;
+const uint BUILTIN_MATH_SQRT  = 33;
+const uint BUILTIN_MATH_EXP   = 34;
+const uint BUILTIN_MATH_LOG   = 35;
+const uint BUILTIN_MATH_SIN   = 36;
+const uint BUILTIN_MATH_COS   = 37;
+const uint BUILTIN_MATH_TAN   = 38;
+const uint BUILTIN_MATH_RANDOM = 39;
+const uint BUILTIN_COUNT                   = 40;
 
 struct BuiltinContext {
     void* vm;
@@ -1107,6 +1130,158 @@ fn void builtin_array(BuiltinContext* ctx) {
     ctx.result.pointer = arr;
 }
 
+// ============================================================================
+// Math method builtins
+// ============================================================================
+
+/// Helper: get numeric arg at index i, defaulting to NaN if absent.
+fn double math_arg(BuiltinContext* ctx, ushort i) {
+    if (i >= ctx.argc) return double::nan;
+    TVal* arg = &ctx.regs[ctx.base_reg + i];
+    if (arg.tag == FASTINT) return (double)arg.fastint;
+    if (arg.tag == NUMBER) return arg.number;
+    // Non-numeric — need ToNumber
+    TVal num;
+    builtin_to_number(arg, &num);
+    return num.tag == FASTINT ? (double)num.fastint : num.number;
+}
+
+fn void builtin_math_abs(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math::abs(x);
+}
+
+fn void builtin_math_floor(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math::floor(x);
+}
+
+fn void builtin_math_ceil(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math::ceil(x);
+}
+
+fn void builtin_math_round(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    // ES5 §15.8.2.15: round half away from zero
+    if (math::is_nan(x)) {
+        ctx.result.number = double::nan;
+    } else if (math::is_inf(x) || x == 0.0) {
+        ctx.result.number = x;
+    } else {
+        // round half up (away from zero)
+        double frac = x - math::floor(x);
+        if (frac < 0.5) {
+            ctx.result.number = math::floor(x);
+        } else if (frac > 0.5) {
+            ctx.result.number = math::ceil(x);
+        } else {
+            // exactly 0.5 — round away from zero
+            ctx.result.number = math::floor(x) + 1.0;
+        }
+    }
+}
+
+fn void builtin_math_max(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = -double::inf;
+        return;
+    }
+    double max = math_arg(ctx, 0);
+    for (ushort i = 1; i < ctx.argc; i++) {
+        double v = math_arg(ctx, i);
+        if (math::is_nan(v)) {
+            max = double::nan;
+        } else if (v > max || math::is_nan(max)) {
+            max = v;
+        }
+    }
+    ctx.result.tag = NUMBER;
+    ctx.result.number = max;
+}
+
+fn void builtin_math_min(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = double::inf;
+        return;
+    }
+    double min = math_arg(ctx, 0);
+    for (ushort i = 1; i < ctx.argc; i++) {
+        double v = math_arg(ctx, i);
+        if (math::is_nan(v)) {
+            min = double::nan;
+        } else if (v < min || math::is_nan(min)) {
+            min = v;
+        }
+    }
+    ctx.result.tag = NUMBER;
+    ctx.result.number = min;
+}
+
+fn void builtin_math_pow(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    double y = math_arg(ctx, 1);
+    ctx.result.tag = NUMBER;
+    if (math::is_nan(y) && x != 1.0) {
+        ctx.result.number = double::nan;
+    } else {
+        ctx.result.number = math_pow(x, y);
+    }
+}
+
+fn void builtin_math_sqrt(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_sqrt(x);
+}
+
+fn void builtin_math_exp(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_exp(x);
+}
+
+fn void builtin_math_log(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_log(x);
+}
+
+fn void builtin_math_sin(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_sin(x);
+}
+
+fn void builtin_math_cos(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_cos(x);
+}
+
+fn void builtin_math_tan(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_tan(x);
+}
+
+/// Math.random() — uses the heap's PRNG state (xorshift32).
+fn void builtin_math_random(BuiltinContext* ctx) {
+    uint state = ctx.heap.rnd_state;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    ctx.heap.rnd_state = state;
+    ctx.result.tag = NUMBER;
+    ctx.result.number = (double)state / 4294967296.0;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -1161,6 +1336,34 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_proto_valueOf(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
+        case BUILTIN_MATH_ABS:
+            builtin_math_abs(ctx);
+        case BUILTIN_MATH_FLOOR:
+            builtin_math_floor(ctx);
+        case BUILTIN_MATH_CEIL:
+            builtin_math_ceil(ctx);
+        case BUILTIN_MATH_ROUND:
+            builtin_math_round(ctx);
+        case BUILTIN_MATH_MAX:
+            builtin_math_max(ctx);
+        case BUILTIN_MATH_MIN:
+            builtin_math_min(ctx);
+        case BUILTIN_MATH_POW:
+            builtin_math_pow(ctx);
+        case BUILTIN_MATH_SQRT:
+            builtin_math_sqrt(ctx);
+        case BUILTIN_MATH_EXP:
+            builtin_math_exp(ctx);
+        case BUILTIN_MATH_LOG:
+            builtin_math_log(ctx);
+        case BUILTIN_MATH_SIN:
+            builtin_math_sin(ctx);
+        case BUILTIN_MATH_COS:
+            builtin_math_cos(ctx);
+        case BUILTIN_MATH_TAN:
+            builtin_math_tan(ctx);
+        case BUILTIN_MATH_RANDOM:
+            builtin_math_random(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -1305,11 +1508,48 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!set_num_prop_lookup(math, heap, "LOG10E", 0.4342944819032518)) return false;
     if (!set_num_prop_lookup(math, heap, "SQRT1_2", 0.7071067811865476)) return false;
     if (!set_num_prop_lookup(math, heap, "SQRT2", 1.4142135623730951)) return false;
+
+    // Math methods (registered as lightfuncs on the Math object)
+    if (!register_math_method(math, heap, "abs",    BUILTIN_MATH_ABS))    return false;
+    if (!register_math_method(math, heap, "floor",  BUILTIN_MATH_FLOOR))  return false;
+    if (!register_math_method(math, heap, "ceil",   BUILTIN_MATH_CEIL))   return false;
+    if (!register_math_method(math, heap, "round",  BUILTIN_MATH_ROUND))  return false;
+    if (!register_math_method(math, heap, "max",    BUILTIN_MATH_MAX))    return false;
+    if (!register_math_method(math, heap, "min",    BUILTIN_MATH_MIN))    return false;
+    if (!register_math_method(math, heap, "pow",    BUILTIN_MATH_POW))    return false;
+    if (!register_math_method(math, heap, "sqrt",   BUILTIN_MATH_SQRT))   return false;
+    if (!register_math_method(math, heap, "exp",    BUILTIN_MATH_EXP))    return false;
+    if (!register_math_method(math, heap, "log",    BUILTIN_MATH_LOG))    return false;
+    if (!register_math_method(math, heap, "sin",    BUILTIN_MATH_SIN))    return false;
+    if (!register_math_method(math, heap, "cos",    BUILTIN_MATH_COS))    return false;
+    if (!register_math_method(math, heap, "tan",    BUILTIN_MATH_TAN))    return false;
+    if (!register_math_method(math, heap, "random", BUILTIN_MATH_RANDOM)) return false;
+
     TVal math_tv;
     math_tv.tag = OBJECT;
     math_tv.fastint = 0;
     math_tv.pointer = math;
     return register_named_value(global_env, heap, "Math", math_tv);
+}
+
+/// Helper: register a Math method as a lightfunc property on the Math object.
+fn bool register_math_method(HObject* math, Heap* heap, char[] name, uint fn_index) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = LIGHTFUNC;
+    tv.fastint = (long)fn_index;
+    math.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    return true;
 }
 
 fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
