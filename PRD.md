@@ -74,14 +74,14 @@
 - [x] `new` operator: create object, set prototype, construct call
 - [x] Member expression LHS for assignment (this.x = value)
 
-### Phase 4: Error Handling & References 🔜 NEXT
+### Phase 4: Error Handling & References ✅ COMPLETE
 - [x] **4a. Error constructors (Error, TypeError, ReferenceError, RangeError, SyntaxError, EvalError)**
 - [x] **4b. ReferenceError on undeclared variable access**
 - [x] **4c. TypeError on primitive value access**
-- [ ] 4d. RangeError on invalid array length
-- [ ] 4e. try/catch/throw VM implementation (stack unwinding)
-- [ ] 4f. TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcode handlers
-- [ ] 4g. Catcher chain for nested try/catch
+- [x] 4d. RangeError on invalid array length
+- [x] 4e. try/catch/throw VM implementation (stack unwinding)
+- [x] 4f. TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcode handlers
+- [x] 4g. Catcher chain for nested try/catch with cross-activation propagation
 - **Unlocks:** ~500+ tests (try/throw + error semantics)
 
 ### Phase 5: Built-in Constructors

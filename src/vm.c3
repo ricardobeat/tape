@@ -134,32 +134,72 @@ struct Vm {
 // ============================================================================
 
 /// Walk the catcher chain and throw a value.
-/// If a catcher with CATCH_ENABLED or FINALLY_ENABLED is found:
-///   - Store the thrown value
-///   - Jump to the appropriate handler PC
-///   - Set needs_restart = true
-///   - Return true
-/// If no catcher is found, return false (caller should return VM_ERROR~).
+/// Searches the full activation chain, unwinding intermediate activations
+/// when a catcher is found in a parent activation.
+///
+/// Returns true if a catcher was found (execution continues after restart).
+/// Returns false if no catcher was found anywhere in the call stack
+/// (caller should return VM_ERROR~).
 fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                        Instruction** curr_pc, bool* needs_restart) {
-    Catcher* cat = (Catcher*)act.cat;
-    while (cat != null) {
-        if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
-            cat.thrown_val = thrown_val;
-            cat.flags &= ~CATCHER_FLAG_CATCH_ENABLED; // Don't re-enter catch
-            *curr_pc = cat.catch_pc;
-            act.curr_pc = *curr_pc;
-            *needs_restart = true;
-            return true;
+    // Walk through current and parent activations
+    Activation* search_act = act;
+    while (search_act != null) {
+        Catcher* cat = (Catcher*)search_act.cat;
+        while (cat != null) {
+            if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
+                cat.thrown_val = thrown_val;
+                cat.flags &= ~CATCHER_FLAG_CATCH_ENABLED;
+                *curr_pc = cat.catch_pc;
+                search_act.curr_pc = *curr_pc;
+                *needs_restart = true;
+
+                // If we found the catcher in a parent activation, unwind
+                // intermediate activations so the VM resumes at the right level.
+                if (search_act != act) {
+                    // Pop all activations down to the one with the catcher
+                    while (vm.activation_count > 0
+                           && &vm.activations[vm.activation_count - 1] != search_act) {
+                        vm.activation_count--;
+                    }
+                    // Restore the valstack_bottom for the target activation
+                    vm.valstack_bottom = search_act.bottom_byteoff;
+                    // Restore valstack_top to match the target function's nregs
+                    if (search_act.func != null) {
+                        CompiledFunction* target_func = (CompiledFunction*)search_act.func;
+                        uint target_nregs = target_func.num_regs;
+                        uint target_bottom_idx = search_act.bottom_byteoff / TVal::size;
+                        vm.valstack_top = (TVal*)((usz)vm.valstack
+                            + (usz)(target_bottom_idx + target_nregs) * TVal::size);
+                    }
+                }
+                return true;
+            }
+            if (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) {
+                cat.thrown_val = thrown_val;
+                *curr_pc = cat.finally_pc;
+                search_act.curr_pc = *curr_pc;
+                *needs_restart = true;
+
+                if (search_act != act) {
+                    while (vm.activation_count > 0
+                           && &vm.activations[vm.activation_count - 1] != search_act) {
+                        vm.activation_count--;
+                    }
+                    vm.valstack_bottom = search_act.bottom_byteoff;
+                    if (search_act.func != null) {
+                        CompiledFunction* target_func = (CompiledFunction*)search_act.func;
+                        uint target_nregs = target_func.num_regs;
+                        uint target_bottom_idx = search_act.bottom_byteoff / TVal::size;
+                        vm.valstack_top = (TVal*)((usz)vm.valstack
+                            + (usz)(target_bottom_idx + target_nregs) * TVal::size);
+                    }
+                }
+                return true;
+            }
+            cat = cat.parent;
         }
-        if (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) {
-            cat.thrown_val = thrown_val;
-            *curr_pc = cat.finally_pc;
-            act.curr_pc = *curr_pc;
-            *needs_restart = true;
-            return true;
-        }
-        cat = cat.parent;
+        search_act = search_act.parent;
     }
     return false;
 }

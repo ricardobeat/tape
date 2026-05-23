@@ -13,7 +13,6 @@ module duktape::compiler;
 import duktape::types;
 import duktape::lexer;
 import duktape::bytecode;
-import std::io;
 import duktape::hstring;
 import duktape::heap;
 import libc;
@@ -1030,7 +1029,6 @@ fn void? CompilerContext.try_statement(&self) {
     uint try_addr = self.emit_a_bc(Opcode.TRY, 0, 0);
     // Jump slot — the VM reads this word for the finally_offset (BC field)
     uint jump_slot_addr = self.emit_a_bc(Opcode.NOP, 0, 0);
-    io::eprintfn("DBG try_statement: try_addr=%d jump_slot_addr=%d code_count=%d", try_addr, jump_slot_addr, self.code_count);
 
     // Push try info
     if (self.try_depth < MAX_TRY_DEPTH) {
@@ -1067,6 +1065,12 @@ fn void? CompilerContext.try_statement(&self) {
 
             ushort catch_var = self.declare_var(catch_param.str_value, false);
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
+            // For global scope, also PUTVAR the exception into the env so that
+            // subsequent GETVAR for the catch variable finds it.
+            if (self.is_global) {
+                uint name_idx = self.add_string_constant(catch_param.str_value);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
+            }
         } else {
             // catch without binding (ES2019)
             ushort discard = self.alloc_reg();

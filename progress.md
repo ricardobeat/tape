@@ -74,17 +74,18 @@
 | `new` operator | ✅ | constructor.js |
 | Member LHS assignment | ✅ | constructor.js |
 
-### Phase 4: Error Handling & References — 🔜 NEXT
+### Phase 4: Error Handling & References — ✅
 | Component | Status | Unlocks |
 |---|---|---|
 | Error constructors | ✅ | ~200 tests |
 | ReferenceError on undefined vars | ✅ | ~100 tests |
 | TypeError on invalid access | ✅ | ~50 tests |
-| try/catch/throw VM | ❌ | 201 tests |
-| THROW opcode | ❌ | - |
-| TRY/ENDTRY/CATCH/FINALLY | ❌ | - |
-| Catcher chain | ❌ | - |
-| **Total Phase 4** | **~42%** | **~550 tests** |
+| try/catch/throw VM | ✅ | 201 tests |
+| THROW opcode | ✅ | - |
+| TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY | ✅ | - |
+| Catcher chain with activation unwinding | ✅ | - |
+| FINALLY block support | ✅ | - |
+| **Total Phase 4** | **~100%** | **~550 tests** |
 
 ### Phase 5: Built-in Constructors — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -161,6 +162,7 @@
 | 4 | 22 (all pass) | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
 | 5 | 22 (all pass) | ReferenceError on undeclared variable access in GETVAR |
 | 6 | 22 (all pass) | TypeError on primitive value access in GETPROP (null/undefined), PUTPROP (null/undefined), CALL (non-function), NEW_OBJ (non-constructor) |
+| 7 | 22 (all pass) | **try/catch/throw VM implementation** — Catcher chain with activation unwinding, TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcodes, cross-activation throw propagation, error sites changed from `return VM_ERROR~` to `vm_throw_value()` for proper catchability, compiler modified to encode catch/finally flags in TRY instruction with jump slot for finally offset, global-scope PUTVAR after CATCH for env-based variable resolution |
 
 ## Running the Test Suite
 
