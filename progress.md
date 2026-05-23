@@ -79,12 +79,12 @@
 |---|---|---|
 | Error constructors | ✅ | ~200 tests |
 | ReferenceError on undefined vars | ✅ | ~100 tests |
-| TypeError on invalid access | ❌ | ~50 tests |
+| TypeError on invalid access | ✅ | ~50 tests |
 | try/catch/throw VM | ❌ | 201 tests |
 | THROW opcode | ❌ | - |
 | TRY/ENDTRY/CATCH/FINALLY | ❌ | - |
 | Catcher chain | ❌ | - |
-| **Total Phase 4** | **~28%** | **~550 tests** |
+| **Total Phase 4** | **~42%** | **~550 tests** |
 
 ### Phase 5: Built-in Constructors — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -160,6 +160,7 @@
 | 3 | 21 real test262 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | 22 (all pass) | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
 | 5 | 22 (all pass) | ReferenceError on undeclared variable access in GETVAR |
+| 6 | 22 (all pass) | TypeError on primitive value access in GETPROP (null/undefined), PUTPROP (null/undefined), CALL (non-function), NEW_OBJ (non-constructor) |
 
 ## Running the Test Suite
 

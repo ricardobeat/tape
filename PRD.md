@@ -77,7 +77,7 @@
 ### Phase 4: Error Handling & References 🔜 NEXT
 - [x] **4a. Error constructors (Error, TypeError, ReferenceError, RangeError, SyntaxError, EvalError)**
 - [x] **4b. ReferenceError on undeclared variable access**
-- [ ] 4c. TypeError on primitive value access
+- [x] **4c. TypeError on primitive value access**
 - [ ] 4d. RangeError on invalid array length
 - [ ] 4e. try/catch/throw VM implementation (stack unwinding)
 - [ ] 4f. TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcode handlers

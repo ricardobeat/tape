@@ -1077,6 +1077,31 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
                 }
+            } else if (rb.tag == NULL_VAL || rb.tag == UNDEFINED) {
+                // TypeError: Cannot read properties of null/undefined
+                HString* name_hstr = null;
+                if (rc.tag == STRING) {
+                    name_hstr = (HString*)rc.pointer;
+                }
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    if (name_hstr != null) {
+                        int len = libc::snprintf(&buf, 160, "Cannot read properties of %s (reading '%s')",
+                                                 (rb.tag == NULL_VAL ? "null" : "undefined"),
+                                                 name_hstr.get_cstr());
+                        if (len > 0 && len < 160) {
+                            HString* msg_str = intern_string(vm, buf[:len]);
+                            TVal msg_val;
+                            msg_val.tag = STRING;
+                            msg_val.pointer = msg_str;
+                            HString* msg_key = intern_string(vm, "message");
+                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                    }
+                }
+                return VM_ERROR~;
             } else {
                 ra.tag = UNDEFINED;
                 ra.pointer = null;
@@ -1090,6 +1115,31 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (key != null) {
                     hobj.put_prop(key, *rc, hobject::PROP_FLAGS_WEC);
                 }
+            } else if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
+                // TypeError: Cannot set properties of null/undefined
+                HString* name_hstr = null;
+                if (rb.tag == STRING) {
+                    name_hstr = (HString*)rb.pointer;
+                }
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    if (name_hstr != null) {
+                        int len = libc::snprintf(&buf, 160, "Cannot set properties of %s (setting '%s')",
+                                                 (ra.tag == NULL_VAL ? "null" : "undefined"),
+                                                 name_hstr.get_cstr());
+                        if (len > 0 && len < 160) {
+                            HString* msg_str = intern_string(vm, buf[:len]);
+                            TVal msg_val;
+                            msg_val.tag = STRING;
+                            msg_val.pointer = msg_str;
+                            HString* msg_key = intern_string(vm, "message");
+                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                    }
+                }
+                return VM_ERROR~;
             }
             break;
 
@@ -1167,16 +1217,46 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             if (func_val.tag != OBJECT) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
-                break;
+                // TypeError: value is not a function
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a function",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+                return VM_ERROR~;
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
             if (hobj == null || !hobj.is_callable() || hobj.comp_func == null) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
-                break;
+                // TypeError: object is not callable (e.g., a non-function object)
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err2 = err_raw2) {
+                    err2.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a function",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+                return VM_ERROR~;
             }
 
             CompiledFunction* target = hobj.comp_func;
@@ -1269,16 +1349,46 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             if (func_val.tag != OBJECT) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
-                break;
+                // TypeError: value is not a constructor
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+                return VM_ERROR~;
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
             if (hobj == null || !hobj.is_callable() || hobj.comp_func == null) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
-                break;
+                // TypeError: object is not a constructor
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err2 = err_raw2) {
+                    err2.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+                return VM_ERROR~;
             }
 
             CompiledFunction* target = hobj.comp_func;
