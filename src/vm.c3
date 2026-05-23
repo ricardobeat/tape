@@ -1279,10 +1279,125 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
             break;
 
-        case Opcode.INSTANCEOF:
+        case Opcode.INSTANCEOF: {
+            // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression
+            // Right side must be an object (or LIGHTFUNC in our internal repr.)
+            // Right side must be callable (has [[HasInstance]])
+            // [[HasInstance]] §15.3.5.3: if Type(lval) is not Object → false
+            //   Get rval.prototype, walk lval's prototype chain
             ra.tag = BOOLEAN;
             ra.boolean = false;
+
+            TVal rval = *rc;
+            if (rval.tag == LIGHTFUNC) {
+                // LIGHTFUNC builtins are callable; look up their prototype
+                uint fn_idx = (uint)rval.fastint;
+                HObject* proto_obj = null;
+                switch (fn_idx) {
+                    case 6:  proto_obj = vm.heap.err_proto;         break; // BUILTIN_ERROR
+                    case 7:  proto_obj = vm.heap.type_err_proto;    break; // BUILTIN_TYPE_ERROR
+                    case 8:  proto_obj = vm.heap.range_err_proto;   break; // BUILTIN_RANGE_ERROR
+                    case 9:  proto_obj = vm.heap.ref_err_proto;     break; // BUILTIN_REFERENCE_ERROR
+                    case 10: proto_obj = vm.heap.syntax_err_proto;  break; // BUILTIN_SYNTAX_ERROR
+                    case 11: proto_obj = vm.heap.eval_err_proto;    break; // BUILTIN_EVAL_ERROR
+                    case 13: proto_obj = vm.heap.bool_proto;        break; // BUILTIN_BOOLEAN
+                    case 16: proto_obj = vm.heap.string_proto;      break; // BUILTIN_STRING
+                    case 22: proto_obj = vm.heap.object_proto;      break; // BUILTIN_OBJECT
+                    case 25: proto_obj = vm.heap.array_proto;       break; // BUILTIN_ARRAY
+                    default: break;
+                }
+                if (proto_obj != null && rb.tag == OBJECT) {
+                    HObject* cur = (HObject*)rb.pointer;
+                    const uint MAX_PROTO_DEPTH = 256;
+                    uint depth = 0;
+                    while (cur != null && depth < MAX_PROTO_DEPTH) {
+                        if (cur == proto_obj) {
+                            ra.boolean = true;
+                            break;
+                        }
+                        cur = cur.prototype;
+                        depth++;
+                    }
+                }
+                break;
+            }
+
+            if (rval.tag != OBJECT) {
+                // TypeError: right-hand side must be an object
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not an object");
+                    TVal msg_tv;
+                    msg_tv.tag = STRING;
+                    msg_tv.pointer = msg_val;
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
+
+            HObject* rfunc = (HObject*)rval.pointer;
+            if (rfunc == null || !rfunc.is_callable()) {
+                // TypeError: right-hand side must be callable
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not callable");
+                    TVal msg_tv;
+                    msg_tv.tag = STRING;
+                    msg_tv.pointer = msg_val;
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
+
+            // §15.3.5.3 step 1: If Type(lval) is not Object → false
+            if (rb.tag != OBJECT) {
+                break;
+            }
+
+            // Get rval.prototype
+            HString* proto_key_str = intern_string(vm, "prototype");
+            TVal proto_val = get_prop_with_proto(rfunc, proto_key_str);
+            if (proto_val.tag != OBJECT) {
+                // ES5 §15.3.5.3 step 3: If Type(O) is not Object, throw a TypeError.
+                // But gracefully handle missing .prototype by returning false.
+                ra.boolean = false;
+                break;
+            }
+
+            HObject* proto_obj = (HObject*)proto_val.pointer;
+            HObject* cur = (HObject*)rb.pointer;
+            const uint MAX_PROTO_DEPTH = 256;
+            uint depth = 0;
+            while (cur != null && depth < MAX_PROTO_DEPTH) {
+                if (cur == proto_obj) {
+                    ra.boolean = true;
+                    break;
+                }
+                cur = cur.prototype;
+                depth++;
+            }
             break;
+        }
 
         case Opcode.IN:
             ra.tag = BOOLEAN;
@@ -2040,6 +2155,24 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     func_obj.comp_func = template;
                     func_obj.var_env = act.var_env;
                     func_obj.lex_env = act.lex_env;
+
+                    // ES5 §13.2: create .prototype property (plain object with .constructor)
+                    HObject*? proto_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                    if (try proto_obj = proto_obj_raw) {
+                        proto_obj.prototype = vm.heap.object_proto;
+                        // Set .constructor on the prototype object
+                        HString* constr_key = intern_string(vm, "constructor");
+                        TVal constr_val;
+                        constr_val.tag = OBJECT;
+                        constr_val.pointer = func_obj;
+                        proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
+                        // Set .prototype on the function
+                        HString* proto_key = intern_string(vm, "prototype");
+                        TVal proto_tv;
+                        proto_tv.tag = OBJECT;
+                        proto_tv.pointer = proto_obj;
+                        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+                    }
 
                     ra.tag = OBJECT;
                     ra.pointer = func_obj;

@@ -1,7 +1,7 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 18
-**Baseline:** 29 / 53,568 passing
+**Last Updated:** Session 19
+**Baseline:** 30 / 53,568 passing
 **Target:** 53,568 / 53,568
 
 ## Summary
@@ -9,12 +9,12 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Currently passing | 29 |
+| Currently passing | 30 |
 | Currently failing | 0 |
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.05% |
 | Pass rate (ES5-core, filtered) | 100% (25/25) |
-| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions |
+| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions + 22 instanceof assertions |
 
 ## Per-Phase Status
 
@@ -116,14 +116,14 @@
 | Component | Status | Unlocks |
 |---|---|---|
 | for-in | ✅ | 115 tests |
-| instanceof | ❌ | 43 tests |
+| instanceof | ✅ | 43 tests |
 | delete | ❌ | 69 tests |
 | in operator | ❌ | 36 tests |
 | switch/case | ❌ | 111 tests |
 | Labeled break/continue | ❌ | ~50 tests |
 | with statement | ❌ | 181 tests |
 | eval | ❌ | ~200 tests |
-| **Total Phase 7** | **~12%** | **~805 tests** |
+| **Total Phase 7** | **~25%** | **~805 tests** |
 
 ### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -177,6 +177,7 @@
 | 16 | 55 (all pass) | **Phase 6d: Number.prototype methods** — toFixed, toExponential, toPrecision, toString with radix (2-36) implemented. Added `number_proto_get_this` helper, `number_to_radix_str` helper, and `is_neg_zero` helper. 55 new JS assertions covering all methods on both primitives and wrapper objects. Noted pre-existing compiler constant-pool bug with `(-Infinity)` expressions in large test files. |
 | 17 | 55 (all pass) | **Phase 6f: Function.prototype methods** — call, apply, bind implemented. Added re-dispatch mechanism in CALL handler for builtins to trigger new activations. Added Function.prototype with `.call`, `.apply`, `.bind` as LIGHTFUNCs. Bound functions supported with internal property storage. Fixed `this_binding` bug in CALL handler for compiled functions. Also fixed `.length` on bound functions. 10 new JS assertions. |
 || 18 | 8 (all pass) | **Phase 7a: for-in enumeration** — INITFOR/NEXTFOR opcodes implemented with ForInState and collect_forin_keys helper (own + prototype chain, dedup). Added PUTVAR sync for for-in variable at global scope (compiler fix). 8 new JS assertions. 26/26 tests passing. |
+|| 19 | 22 (all pass) | **Phase 7b: instanceof operator** — Full ES5 §11.8.6 implementation with LIGHTFUNC builtin mapping (Error constructors, Boolean, String, Object, Array). CLOSURE handler updated to set `.prototype` and `.prototype.constructor` per ES5 §13.2. 22 new JS assertions. |
 
 ## Running the Test Suite
 
