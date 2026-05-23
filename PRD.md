@@ -102,7 +102,7 @@
 - [x] 6f. Function.prototype: call, apply, bind
 - **Unlocks:** ~2,000+ tests
 
-### Phase 7: Remaining ES5 Features
+### Phase 7: Remaining ES5 Features ✅ COMPLETE
 - [x] 7a. for-in property enumeration (INITFOR/NEXTFOR)
 - [x] 7b. instanceof operator (prototype chain walk)
 - [x] 7c. delete operator (DELPROP)
@@ -110,7 +110,7 @@
 - [x] 7e. switch/case statement (runtime verification)
 - [x] 7f. break/continue with labels
 - [x] 7g. with statement
-- [ ] 7h. eval (direct and indirect)
+- [x] 7h. eval (direct and indirect)
 - **Unlocks:** ~500+ tests
 
 ### Phase 8: ES5 Built-in Objects
@@ -156,6 +156,7 @@
 |---|---|---|---|
 | ES5 Operators | 2,117 | ~21 | 2-3 |
 | ES5 Statements | 1,125 | ~0 | 4,7 |
+| ES5 eval | ~200 | ~0 | 7h |
 | ES5 Literals | 237 | ~0 | 5 |
 | ES5 Built-ins (language) | ~500 | ~0 | 5-6 |
 | ES5 Built-ins (global objects) | ~2,000 | ~0 | 8 |

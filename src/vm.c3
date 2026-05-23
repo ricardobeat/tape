@@ -1696,6 +1696,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.is_constructor = false;
                 ctx.needs_re_dispatch = false;
                 ctx.re_nargs = 0;
+                ctx.global_env = vm.global_env;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
 
@@ -1784,6 +1785,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.is_constructor = false;
                     ctx.needs_re_dispatch = false;
                     ctx.re_nargs = 0;
+                    ctx.global_env = vm.global_env;
                     builtins::dispatch_builtin(fn_idx, &ctx);
 
                     if (ctx.needs_re_dispatch) {
@@ -1915,6 +1917,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.heap = vm.heap;
                 ctx.this_val = regs_base[callee_reg + 1];
                 ctx.is_constructor = true;
+                ctx.global_env = vm.global_env;
                 builtins::dispatch_builtin(fn_idx, &ctx);
                 break;
             }
@@ -1991,6 +1994,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.heap = vm.heap;
                     ctx.this_val = regs_base[callee_reg + 1];
                     ctx.is_constructor = true;
+                    ctx.global_env = vm.global_env;
                     builtins::dispatch_builtin(fn_idx, &ctx);
                     break;
                 }

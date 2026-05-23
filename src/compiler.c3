@@ -166,6 +166,11 @@ struct CompilerContext {
 
     // Global scope flag: when true, all var decls use environment only (no register cache)
     bool is_global;
+
+    // Eval mode: when true, expression statements save their last result
+    // to eval_acc_reg for eval's implicit return value.
+    bool   eval_mode;
+    ushort eval_acc_reg;
 }
 
 // ============================================================================
@@ -186,6 +191,27 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 
     // Emit implicit "return undefined" at end of program
     ctx.emit_simple(Opcode.RETUNDEF);
+
+    return ctx.finish()!;
+}
+
+/// Compile source as eval code (Program, returns last expression value).
+/// Eval code differs from a regular program in that the value of the last
+/// expression statement is returned (not undefined).
+fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
+    CompilerContext ctx;
+    ctx.init(lex, heap);
+    ctx.is_global = true;
+    ctx.eval_mode = true;
+    ctx.eval_acc_reg = ctx.alloc_reg();
+
+    // Parse statements until EOF
+    while (!ctx.is_at_end()) {
+        ctx.statement()!;
+    }
+
+    // Return the accumulated eval result (or undefined if no expression)
+    ctx.emit_a_bc(Opcode.RET, (uint)ctx.eval_acc_reg, 0);
 
     return ctx.finish()!;
 }
@@ -1437,6 +1463,10 @@ fn void? CompilerContext.continue_statement(&self) {
 /// Parse expression statement.
 fn void? CompilerContext.expression_statement(&self) {
     ushort reg = self.expression()!;
+    if (self.eval_mode) {
+        // Preserve the expression result for eval's implicit return value
+        self.emit_abc(Opcode.LDREG, (uint)self.eval_acc_reg, (uint)reg, 0);
+    }
     self.free_reg(reg);
     self.match(TokenType.SEMICOLON);
 }

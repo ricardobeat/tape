@@ -2,10 +2,13 @@
 module duktape::builtins;
 
 import duktape::types;
+import duktape::bytecode;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
 import duktape::env;
+import duktape::compiler;
+import duktape::lexer;
 import std::io;
 import std::math;
 import libc;
@@ -98,7 +101,8 @@ const uint BUILTIN_FUNCTION_PROTO_CALL  = 77;
 const uint BUILTIN_FUNCTION_PROTO_APPLY = 78;
 const uint BUILTIN_FUNCTION_PROTO_BIND  = 79;
 const uint BUILTIN_BOUND_CALL           = 80;
-const uint BUILTIN_COUNT               = 81;
+const uint BUILTIN_EVAL                 = 81;
+const uint BUILTIN_COUNT               = 82;
 
 struct BuiltinContext {
     void* vm;
@@ -115,6 +119,8 @@ struct BuiltinContext {
     bool  needs_re_dispatch;
     /// New argument count for re-dispatch (only valid when needs_re_dispatch).
     ushort re_nargs;
+    /// Global environment pointer (for eval and other scope-sensitive builtins).
+    EnvRecord* global_env;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -452,6 +458,95 @@ fn void builtin_is_finite(BuiltinContext* ctx) {
     double d = string_to_double(&ctx.regs[ctx.base_reg]);
     ctx.result.tag = BOOLEAN;
     ctx.result.boolean = !math::is_nan(d) && !math::is_inf(d);
+}
+
+// ============================================================================
+// Eval (ES5 §15.1.2.1)
+// ============================================================================
+
+fn void builtin_eval(BuiltinContext* ctx) {
+    // ES5 §15.1.2.1: eval(x)
+    if (ctx.argc < 1) {
+        // No args → return undefined
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal* arg = &ctx.regs[ctx.base_reg];
+
+    // If Type(x) is not String, return x unchanged
+    if (arg.tag != STRING) {
+        ctx.result.tag = arg.tag;
+        ctx.result.fastint = arg.fastint;
+        ctx.result.number = arg.number;
+        ctx.result.pointer = arg.pointer;
+        return;
+    }
+
+    HString* source = (HString*)arg.pointer;
+    char* src_cstr = source.get_cstr();
+    usz src_len = source.blen;
+
+    // Compile the source string as eval code
+    Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
+    CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap);
+    CompiledFunction* func;
+    if (try f = cf) {
+        func = f;
+    } else {
+        // Compilation failed: throw SyntaxError
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.syntax_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in eval code");
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            TVal err_tv;
+            err_tv.tag = OBJECT;
+            err_tv.pointer = err;
+            ctx.result.tag = err_tv.tag;
+            ctx.result.pointer = err_tv.pointer;
+        } else {
+            ctx.result.set_undefined();
+        }
+        return;
+    }
+
+    // Create an HObject for the compiled function
+    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* func_obj = func_obj_raw;
+    func_obj.flags.callable = true;
+    func_obj.comp_func = func;
+    func_obj.builtin_fn_index = -1;
+
+    // For eval, use the global environment
+    func_obj.var_env = ctx.global_env;
+    func_obj.lex_env = ctx.global_env;
+
+    // Replace the callee slot with the compiled function HObject
+    TVal func_tv;
+    func_tv.tag = OBJECT;
+    func_tv.pointer = func_obj;
+    ctx.regs[ctx.base_reg - 2] = func_tv;
+
+    // Set this binding to the global object (required for indirect eval per §10.4.2)
+    if (ctx.global_env != null && ctx.global_env.bindings != null) {
+        TVal this_tv;
+        this_tv.tag = OBJECT;
+        this_tv.pointer = ctx.global_env.bindings;
+        ctx.regs[ctx.base_reg - 1] = this_tv;
+    }
+
+    // Signal the CALL handler to re-dispatch to the compiled function with 0 args
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
 }
 
 // ============================================================================
@@ -3788,6 +3883,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_function_proto_bind(ctx);
         case BUILTIN_BOUND_CALL:
             builtin_bound_call(ctx);
+        case BUILTIN_EVAL:
+            builtin_eval(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -3851,6 +3948,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register isFinite
     if (!register_simple_builtin(global_env, heap, "isFinite", BUILTIN_IS_FINITE)) return false;
+
+    // Register eval (ES5 §15.1.2.1)
+    if (!register_simple_builtin(global_env, heap, "eval", BUILTIN_EVAL)) return false;
 
     // Register global constants: NaN, Infinity, undefined
     if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
