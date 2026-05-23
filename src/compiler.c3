@@ -13,6 +13,7 @@ module duktape::compiler;
 import duktape::types;
 import duktape::lexer;
 import duktape::bytecode;
+import std::io;
 import duktape::hstring;
 import duktape::heap;
 import libc;
@@ -1010,12 +1011,26 @@ fn void? CompilerContext.throw_statement(&self) {
 }
 
 /// Parse try/catch/finally statement.
+///
+/// Bytecode layout:
+///   TRY A=flags, BC=catch_offset     — A bit0=catch, bit1=finally
+///   NOP A=0,    BC=finally_offset    — jump slot (0 if no finally)
+///   <try block>
+///   ENDTRY
+///   JUMP -> finally_or_after
+///   [CATCH rX  — at try_addr + catch_offset]
+///   [<catch block>]
+///   [FINALLY   — at try_addr + finally_offset (if has_finally)]
+///   [<finally block>]
+///   [ENDFINALLY]
 fn void? CompilerContext.try_statement(&self) {
     self.expect(TokenType.TRY)!;
 
-    // Emit TRY instruction — BC will be patched to the catch handler offset
-    ushort try_reg = self.alloc_reg();
-    uint try_addr = self.emit_a_bc(Opcode.TRY, (uint)try_reg, 0);
+    // Emit TRY instruction (placeholder: A=0, BC=0, jump_slot BC=0)
+    uint try_addr = self.emit_a_bc(Opcode.TRY, 0, 0);
+    // Jump slot — the VM reads this word for the finally_offset (BC field)
+    uint jump_slot_addr = self.emit_a_bc(Opcode.NOP, 0, 0);
+    io::eprintfn("DBG try_statement: try_addr=%d jump_slot_addr=%d code_count=%d", try_addr, jump_slot_addr, self.code_count);
 
     // Push try info
     if (self.try_depth < MAX_TRY_DEPTH) {
@@ -1027,19 +1042,22 @@ fn void? CompilerContext.try_statement(&self) {
     // Compile try block
     self.block()!;
 
-    // Emit ENDTRY to pop the try handler
+    // Emit ENDTRY to pop the try handler (normal exit)
     self.emit_simple(Opcode.ENDTRY);
 
-    // Jump over catch/finally
-    uint jump_over_catch = self.emit_jump(Opcode.JUMP);
+    // Jump (skips catch handler; target patched later)
+    uint jump_over = self.emit_jump(Opcode.JUMP);
 
-    // Patch TRY instruction to point to catch handler
+    // catch handler starts here
     uint catch_target = self.code_count;
-    uint catch_offset = catch_target - try_addr;
-    self.code[try_addr] = bytecode::make_a_bc(Opcode.TRY, (uint)try_reg, catch_offset);
 
     // Parse catch clause
+    bool has_catch = false;
+    bool has_finally = false;
+    uint finally_tgt = 0;
+
     if (self.match(TokenType.CATCH)) {
+        has_catch = true;
         uint catch_scope = self.scope_depth;
         ushort catch_saved_reg = self.next_reg;
 
@@ -1047,7 +1065,6 @@ fn void? CompilerContext.try_statement(&self) {
             Token catch_param = self.expect(TokenType.IDENTIFIER)!;
             self.expect(TokenType.RPAREN)!;
 
-            // Declare catch variable and emit CATCH to store the exception
             ushort catch_var = self.declare_var(catch_param.str_value, false);
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
         } else {
@@ -1064,12 +1081,13 @@ fn void? CompilerContext.try_statement(&self) {
         self.free_regs_to(catch_saved_reg);
     }
 
-    // Jump target after catch/finally for normal flow
-    uint jump_over_finally = NO_PATCH;
-
+    // Parse finally clause
     if (self.match(TokenType.FINALLY)) {
-        // Patch the jump-over-catch to land here
-        self.patch_jump(jump_over_catch);
+        has_finally = true;
+        finally_tgt = self.code_count;
+
+        // Patch the jump from the try block to land at FINALLY
+        self.patch_jump(jump_over);
 
         // Emit FINALLY marker
         self.emit_simple(Opcode.FINALLY);
@@ -1080,15 +1098,23 @@ fn void? CompilerContext.try_statement(&self) {
         // Emit ENDFINALLY
         self.emit_simple(Opcode.ENDFINALLY);
     } else {
-        self.patch_jump(jump_over_catch);
+        // Patch jump to skip catch handler
+        self.patch_jump(jump_over);
     }
+
+    // Patch TRY instruction: A=flags, BC=catch_offset
+    uint try_flags = (has_catch ? 1u : 0u) | (has_finally ? 2u : 0u);
+    uint catch_offset = catch_target - try_addr;
+    self.code[try_addr] = bytecode::make_a_bc(Opcode.TRY, try_flags, catch_offset);
+
+    // Patch jump slot: BC=finally_offset (0 if no finally)
+    uint finally_off = has_finally ? (finally_tgt - try_addr) : 0;
+    self.code[jump_slot_addr] = bytecode::make_a_bc(Opcode.NOP, 0, finally_off);
 
     // Pop try info
     if (self.try_depth > 0) {
         self.try_depth--;
     }
-
-    self.free_reg(try_reg);
 }
 
 /// Parse switch statement.

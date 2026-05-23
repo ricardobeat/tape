@@ -46,6 +46,7 @@ struct Activation {
     EnvRecord* lex_env;
     /// Current catcher chain (null if none)
     void* cat;
+
     /// Next instruction to execute (points into bytecode; stable pointer)
     /// null for native calls
     Instruction* curr_pc;
@@ -72,6 +73,29 @@ const uint ACT_FLAG_TAILCALLED     = 1u << 1;
 const uint ACT_FLAG_CONSTRUCT      = 1u << 2;
 const uint ACT_FLAG_PREVENT_YIELD  = 1u << 3;
 const uint ACT_FLAG_DIRECT_EVAL    = 1u << 4;
+
+// ============================================================================
+// Catcher — exception handler chain entry
+// ============================================================================
+
+/// Flags for catcher struct.
+const uint CATCHER_FLAG_CATCH_ENABLED    = 1u << 0;
+const uint CATCHER_FLAG_FINALLY_ENABLED  = 1u << 1;
+
+/// A catcher entry pushed by TRY for exception handling.
+/// Singly-linked list rooted in Activation.cat.
+struct Catcher {
+    /// Previous (parent) catcher in the chain, or null if none.
+    Catcher* parent;
+    /// Flags: CATCHER_FLAG_*
+    uint flags;
+    /// The thrown exception value (set by THROW, read by CATCH).
+    TVal thrown_val;
+    /// Absolute PC of the catch handler (CATCH instruction).
+    Instruction* catch_pc;
+    /// Absolute PC of the finally handler (FINALLY instruction), or null if none.
+    Instruction* finally_pc;
+}
 
 // ============================================================================
 // VM state (matches duk_hthread)
@@ -103,6 +127,41 @@ struct Vm {
 
     // Error state
     bool has_error;
+}
+
+// ============================================================================
+// Catcher chain — helper functions
+// ============================================================================
+
+/// Walk the catcher chain and throw a value.
+/// If a catcher with CATCH_ENABLED or FINALLY_ENABLED is found:
+///   - Store the thrown value
+///   - Jump to the appropriate handler PC
+///   - Set needs_restart = true
+///   - Return true
+/// If no catcher is found, return false (caller should return VM_ERROR~).
+fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
+                       Instruction** curr_pc, bool* needs_restart) {
+    Catcher* cat = (Catcher*)act.cat;
+    while (cat != null) {
+        if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
+            cat.thrown_val = thrown_val;
+            cat.flags &= ~CATCHER_FLAG_CATCH_ENABLED; // Don't re-enter catch
+            *curr_pc = cat.catch_pc;
+            act.curr_pc = *curr_pc;
+            *needs_restart = true;
+            return true;
+        }
+        if (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) {
+            cat.thrown_val = thrown_val;
+            *curr_pc = cat.finally_pc;
+            act.curr_pc = *curr_pc;
+            *needs_restart = true;
+            return true;
+        }
+        cat = cat.parent;
+    }
+    return false;
 }
 
 /// Helper to get byte offset from valstack base to a pointer
@@ -1100,8 +1159,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
             } else {
                 ra.tag = UNDEFINED;
                 ra.pointer = null;
@@ -1138,8 +1204,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
             }
             break;
 
@@ -1233,8 +1306,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_key = intern_string(vm, "message");
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
+                break;
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
@@ -1255,8 +1336,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
+                    TVal err_val2;
+                    err_val2.tag = OBJECT;
+                    err_val2.pointer = err2;
+                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
+                break;
             }
 
             CompiledFunction* target = hobj.comp_func;
@@ -1365,8 +1454,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_key = intern_string(vm, "message");
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
+                break;
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
@@ -1387,8 +1484,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
+                    TVal err_val2;
+                    err_val2.tag = OBJECT;
+                    err_val2.pointer = err2;
+                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
                 }
-                return VM_ERROR~;
+                break;
             }
 
             CompiledFunction* target = hobj.comp_func;
@@ -1527,8 +1632,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 HString* msg_key = intern_string(vm, "message");
                                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                             }
+                            TVal err_val;
+                            err_val.tag = OBJECT;
+                            err_val.pointer = err;
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
                         }
-                        return VM_ERROR~;
                     }
                 } else {
                     ra.tag = UNDEFINED;
@@ -1604,27 +1716,119 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             rb.boolean = false;
             break;
 
-        // === EXCEPTION HANDLING (stubs) ===
+        // === EXCEPTION HANDLING ===
 
-        case Opcode.TRY:
+        case Opcode.TRY: {
+            // Encoding: A = flags (bit0=catch, bit1=finally)
+            //           BC = catch_offset (from TRY PC to CATCH instruction)
+            // The next instruction word stores finally_offset in its BC field.
+            uint flags = insn.a;
+            uint catch_offset = insn.get_bc();
+
+            // Read the jump slot (next instruction word) for finally_offset
+            Instruction jump_slot = *curr_pc;
+            curr_pc++;
+            act.curr_pc = curr_pc;
+            uint finally_offset = jump_slot.get_bc(); // BC field stores finally offset
+
+            // Compute absolute handler PCs
+            Instruction* base_pc = curr_pc - 2; // back to TRY instruction
+            Instruction* catch_pc = base_pc + (int)catch_offset;
+            Instruction* finally_pc = (finally_offset != 0)
+                ? (base_pc + (int)finally_offset)
+                : null;
+
+            // Allocate catcher
+            Catcher* cat = (Catcher*)libc::malloc(Catcher::size);
+            if (cat == null) {
+                // Out of memory — skip catcher creation, try block will run unprotected
+                break;
+            }
+            cat.parent = (Catcher*)act.cat;
+            cat.flags = flags;
+            cat.thrown_val.tag = UNDEFINED;
+            cat.thrown_val.pointer = null;
+            cat.catch_pc = catch_pc;
+            cat.finally_pc = finally_pc;
+
+            act.cat = (void*)cat;
             break;
+        }
 
-        case Opcode.ENDTRY:
+        case Opcode.ENDTRY: {
+            // Pop the catcher (normal exit from try block)
+            Catcher* cat = (Catcher*)act.cat;
+            if (cat != null) {
+                act.cat = (void*)cat.parent;
+                libc::free(cat);
+            }
             break;
+        }
 
-        case Opcode.THROW:
-            return VM_ERROR~;
-
-        case Opcode.CATCH:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+        case Opcode.THROW: {
+            TVal thrown_val = *ra;
+            if (!vm_throw_value(vm, thrown_val, act, &curr_pc, &needs_restart)) {
+                return VM_ERROR~;
+            }
             break;
+        }
+
+        case Opcode.CATCH: {
+            // Read the thrown exception from the nearest catcher
+            Catcher* cat = (Catcher*)act.cat;
+            if (cat != null) {
+                ra.tag = cat.thrown_val.tag;
+                ra.fastint = cat.thrown_val.fastint;
+                ra.number = cat.thrown_val.number;
+                ra.pointer = cat.thrown_val.pointer;
+
+                // Clear thrown value
+                cat.thrown_val.tag = UNDEFINED;
+                cat.thrown_val.pointer = null;
+
+                // If no finally handler, pop the catcher now.
+                // If there IS a finally, keep the catcher on the chain so that
+                // re-throws in the catch block are handled by the finally handler.
+                if (cat.finally_pc == null) {
+                    act.cat = (void*)cat.parent;
+                    libc::free(cat);
+                }
+            } else {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+            }
+            break;
+        }
 
         case Opcode.FINALLY:
+            // No-op marker — the catcher's finally_pc points here.
+            // When entered via normal fall-through (after catch or via jump),
+            // there may or may not be a catcher on the chain.
             break;
 
-        case Opcode.ENDFINALLY:
+        case Opcode.ENDFINALLY: {
+            // Check if we entered the finally block via a pending exception.
+            // Look for a catcher with FINALLY_ENABLED that has a pending thrown_val.
+            Catcher* cat = (Catcher*)act.cat;
+            if (cat != null && (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
+                bool has_pending = (cat.thrown_val.tag != UNDEFINED);
+                TVal pending_val = cat.thrown_val;
+
+                // Pop the finally catcher
+                act.cat = (void*)cat.parent;
+                libc::free(cat);
+
+                if (has_pending) {
+                    // Re-throw the pending exception
+                    if (!vm_throw_value(vm, pending_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                }
+                // else: normal continuation, nothing to re-throw
+            }
+            // else: entered via normal flow (no catcher), nothing to do
             break;
+        }
 
         // === MISC ===
 
