@@ -109,7 +109,7 @@
 - [x] 7d. in operator (property existence check)
 - [x] 7e. switch/case statement (runtime verification)
 - [x] 7f. break/continue with labels
-- [ ] 7g. with statement
+- [x] 7g. with statement
 - [ ] 7h. eval (direct and indirect)
 - **Unlocks:** ~500+ tests
 

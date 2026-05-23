@@ -271,6 +271,16 @@ enum Opcode : char {
     /// Create the `arguments` exotic object for the current activation.
     CSVARI,
 
+    // ---- with statement ---------------------------------------------------
+
+    /// `with_start A`  — begin a `with` block.  Register A holds the
+    /// object that becomes the new scope's binding object.  The runtime
+    /// pushes a new object env-record onto `act.var_env`.
+    WITH_START,
+    /// End the current `with` block — pop the with-scope from the
+    /// environment chain.
+    WITH_END,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -310,6 +320,7 @@ fn OpFormat get_op_format(Opcode op) {
         case TRY:       return A_BC;
         case BREAK:     return A_BC;
         case CONTINUE:  return A_BC;
+        case WITH_START: return A_BC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -325,6 +336,7 @@ fn OpFormat get_op_format(Opcode op) {
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;
+        case WITH_END:  return NONE;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -850,6 +862,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.INITGET.ordinal]     = "INITGET",
     [Opcode.INITSETI.ordinal]    = "INITSETI",
     [Opcode.CSVARI.ordinal]      = "CSVARI",
+    [Opcode.WITH_START.ordinal]  = "WITH_START",
+    [Opcode.WITH_END.ordinal]    = "WITH_END",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

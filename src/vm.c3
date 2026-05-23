@@ -2463,6 +2463,96 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.CSVARI:
             break;
 
+        // === WITH STATEMENT ===
+
+        case Opcode.WITH_START: {
+            // Register A holds the with-object.  Call ToObject
+            // (primitives are wrapped), then push a new env record onto
+            // the current activation's var_env chain.
+            TVal obj_val = *ra;
+            HObject* obj;
+
+            if (obj_val.tag == OBJECT) {
+                obj = (HObject*)obj_val.pointer;
+            } else if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+                // TypeError: with cannot be applied to null/undefined
+                HString* msg_key = intern_string(vm, "message");
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[80] buf;
+                    int len = libc::snprintf(&buf, 80,
+                        "Cannot use 'with' on %s",
+                        (obj_val.tag == NULL_VAL ? "null" : "undefined"));
+                    if (len > 0 && len < 80) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            } else if (obj_val.tag == BOOLEAN) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.BOOLEAN);
+                if (catch _err = wrapped) { break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.bool_proto;
+                obj.primitive_value.tag = BOOLEAN;
+                obj.primitive_value.boolean = obj_val.boolean;
+            } else if (obj_val.tag == STRING) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.STRING);
+                if (catch _err = wrapped) { break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.string_proto;
+                obj.primitive_value.tag = STRING;
+                obj.primitive_value.pointer = obj_val.pointer;
+            } else if (obj_val.tag == NUMBER || obj_val.tag == FASTINT) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.NUMBER);
+                if (catch _err = wrapped) { break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.number_proto;
+                obj.primitive_value = obj_val;
+            } else {
+                // POINTER or BUFFER
+                break;
+            }
+
+            // Create a with-env record wrapping the object and push it
+            // onto the current activation's var_env.
+            EnvRecord*? env_raw = env::env_create_with_object(act.var_env, obj);
+            if (try new_env = env_raw) {
+                act.var_env = new_env;
+            } else {
+                return VM_ERROR~;
+            }
+            break;
+        }
+
+        case Opcode.WITH_END: {
+            // Pop the current with-env from the scope chain.
+            if (act.var_env != null && act.var_env.parent != null) {
+                EnvRecord* pop_env = act.var_env;
+                act.var_env = act.var_env.parent;
+                // Free the env record (not the bindings — the bindings
+                // is the user's object and remains alive via other refs).
+                if (pop_env != vm.global_env) {
+                    pop_env.parent = null;
+                    pop_env.bindings = null;
+                    libc::free(pop_env);
+                }
+            }
+            break;
+        }
+
         default:
             io::eprintfn("Unknown opcode: %d", op.ordinal);
             return VM_ERROR~;

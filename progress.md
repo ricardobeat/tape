@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 23
+**Last Updated:** Session 24
 **Baseline:** 43 / 53,568 passing
 **Target:** 53,568 / 53,568
 
@@ -14,7 +14,7 @@
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.08% |
 | Pass rate (ES5-core, filtered) | 100% (25/25) |
-| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions + 22 instanceof assertions + 16 switch assertions + 13 labeled break/continue assertions |
+| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions + 22 instanceof assertions + 16 switch assertions + 13 labeled break/continue assertions + 26 with assertions |
 
 ## Per-Phase Status
 
@@ -121,9 +121,9 @@
 | in operator | ✅ | 36 tests |
 | switch/case | ✅ | 111 tests |
 | Labeled break/continue | ✅ | ~50 tests |
-| with statement | ❌ | 181 tests |
+| with statement | ✅ | 181 tests |
 | eval | ❌ | ~200 tests |
-| **Total Phase 7** | **~75%** | **~805 tests** |
+| **Total Phase 7** | **~88%** | **~805 tests** |
 
 ### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -182,6 +182,7 @@
 || 21 | 23 (all pass) | **Phase 7c: delete operator** — Full ES5 §11.4.1 implementation: `DELPROP` opcode handler calls `es_delete_prop()` on the object (returns `true` if property deleted or not found, `false` if non-configurable). Compiler uses `del_mode` flag (separate from `lhs_mode` to avoid reset by `expression()` inside bracket notation) to detect member expressions and patch the last emitted `GETPROP` to `DELPROP`. Handles chained member expressions (`delete a.b.c`), bracket notation, array elements, and primitives (`delete null.foo` returns `true`). 23 new JS assertions in `test/delete.js`. |
 || 22 | 16 (all pass) | **Phase 7e: switch/case** — Rewrote switch_statement() with fall-through redirect jumps for correct ES5 §12.11 fall-through. Handles break, fall-through, empty cases, string/boolean/expression cases, nested switch, and default anywhere (including middle of case list). Also fixed: OBJECT/LIGHTFUNC/POINTER/BUFFER pointer comparison in SEQ/SNEQ, and builtin_is_nan using ToNumber instead of string_to_double. 16 new JS assertions in test/switch.js. |
 || 23 | 13 (all pass) | **Phase 7f: Labeled break/continue** - Full ES5 12.12 implementation: identifier-colon label detection in compiler (pushback-based lookahead), updated LabelInfo with loop_index/is_loop, labeled break adds JUMP to any labels loop break chain, labeled continue emits JUMP to labels continue_target (error on non-loop), non-loop labels use virtual loop entries for break tracking. Lexer: pushback() for single-token backtracking, peek() checks pushback buffer. 13 new JS assertions in test/labeled_break_continue.js. |
+|| 24 | 26 (all pass) | **Phase 7g: with statement** — Full ES5 §12.10 implementation: WITH_START/WITH_END opcodes, compiler parsing with env push/pop, runtime env chain manipulation with `is_with` flag, prototype chain walking for with-env variable resolution (has_prop_proto/get_prop_proto), ToObject wrapping for primitives, env_put skips with-envs for unresolvable references (creates in enclosing non-with scope), proper WITH_END env cleanup. 26 new JS assertions in test/with.js covering basic access, assignment, shadowing, outer fallback, nested with, var declarations, primitives, increment, multiple assignments, nested functions. Unlocks: 181 test262 tests. |
 
 ## Running the Test Suite
 

@@ -679,6 +679,8 @@ fn void? CompilerContext.statement(&self) {
             self.try_statement()!;
         case TokenType.SWITCH:
             self.switch_statement()!;
+        case TokenType.WITH:
+            self.with_statement()!;
         case TokenType.BREAK:
             self.break_statement()!;
         case TokenType.CONTINUE:
@@ -1146,6 +1148,34 @@ fn void? CompilerContext.try_statement(&self) {
     if (self.try_depth > 0) {
         self.try_depth--;
     }
+}
+
+/// Parse a `with` statement (ES5 §12.10).
+///
+/// Bytecode layout:
+///   <expr>                              — push object onto valstack (in a register)
+///   WITH_START A                        — A = register holding the with-object
+///   <statement>
+///   WITH_END                            — pop the with-env from the scope chain
+fn void? CompilerContext.with_statement(&self) {
+    self.expect(TokenType.WITH)!;
+
+    // Parse `(expr)`
+    self.expect(TokenType.LPAREN)!;
+    ushort obj_reg = self.expression()!;
+    self.expect(TokenType.RPAREN)!;
+
+    // Emit WITH_START — pushes a new object env-record wrapping obj_reg
+    self.emit_a_bc(Opcode.WITH_START, (uint)obj_reg, 0);
+
+    // Compile the body
+    self.statement()!;
+
+    // Emit WITH_END — restores the previous env chain
+    self.emit_simple(Opcode.WITH_END);
+
+    // Free the object register
+    self.free_reg(obj_reg);
 }
 
 /// Parse switch statement with correct fall-through (ES5 §12.11).
