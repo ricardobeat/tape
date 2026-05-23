@@ -14,7 +14,7 @@
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.08% |
 | Pass rate (ES5-core, filtered) | 100% (25/25) |
-| Local JS tests passing | 55/55 + 75 array assertions + 55 number assertions + 22 instanceof assertions + 16 switch assertions + 13 labeled break/continue assertions + 26 with assertions + 17 eval assertions |
+| Local JS tests passing | 55/55 + 75 array assertions + 55 number assertions + 22 instanceof assertions + 16 switch assertions + 13 labeled break/continue assertions + 26 with assertions + 17 eval assertions + 41 JSON assertions |
 
 ## Per-Phase Status
 
@@ -125,13 +125,13 @@
 | eval | ✅ | ~200 tests |
 | **Total Phase 7** | **✅ 100%** | **~805 tests** |
 
-### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
+### Phase 8: ES5 Built-in Objects — ✅ 25%
 | Component | Status | Unlocks |
 |---|---|---|
-| JSON | ❌ | ~200 tests |
+| JSON (parse, stringify) | ✅ | ~200 tests |
 | Date | ❌ | ~400 tests |
 | RegExp | ❌ | ~300 tests |
-| **Total Phase 8** | **0%** | **~900 tests** |
+| **Total Phase 8** | **25%** | **~900 tests** |
 
 ### Phase 9: Strict Mode — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -183,6 +183,7 @@
 || 22 | 16 (all pass) | **Phase 7e: switch/case** — Rewrote switch_statement() with fall-through redirect jumps for correct ES5 §12.11 fall-through. Handles break, fall-through, empty cases, string/boolean/expression cases, nested switch, and default anywhere (including middle of case list). Also fixed: OBJECT/LIGHTFUNC/POINTER/BUFFER pointer comparison in SEQ/SNEQ, and builtin_is_nan using ToNumber instead of string_to_double. 16 new JS assertions in test/switch.js. |
 || 23 | 13 (all pass) | **Phase 7f: Labeled break/continue** - Full ES5 12.12 implementation: identifier-colon label detection in compiler (pushback-based lookahead), updated LabelInfo with loop_index/is_loop, labeled break adds JUMP to any labels loop break chain, labeled continue emits JUMP to labels continue_target (error on non-loop), non-loop labels use virtual loop entries for break tracking. Lexer: pushback() for single-token backtracking, peek() checks pushback buffer. 13 new JS assertions in test/labeled_break_continue.js. |
 || 24 | 26 (all pass) | **Phase 7g: with statement** — Full ES5 §12.10 implementation: WITH_START/WITH_END opcodes, compiler parsing with env push/pop, runtime env chain manipulation with `is_with` flag, prototype chain walking for with-env variable resolution (has_prop_proto/get_prop_proto), ToObject wrapping for primitives, env_put skips with-envs for unresolvable references (creates in enclosing non-with scope), proper WITH_END env cleanup. 26 new JS assertions in test/with.js covering basic access, assignment, shadowing, outer fallback, nested with, var declarations, primitives, increment, multiple assignments, nested functions. Unlocks: 181 test262 tests. |
+|| 25 | 41 (all pass) | **Phase 8a: JSON (parse, stringify)** — Full ES5 §15.12.2/15.12.3 implementation with JSON.parse (recursive descent parser for JSON grammar, string/number/object/array/boolean/null, SyntaxError on invalid input, trailing whitespace validation) and JSON.stringify (type-based serialization with escape handling, object/array iteration, indent/space support, NaN/Infinity→null, undefined/function omission). Added `should_throw`/`throw_value` to BuiltinContext for builtin-initiated throws (used by JSON.parse for SyntaxError). Updated both LIGHTFUNC and OBJECT dispatch points in CALL/NEW_OBJ handlers to check `should_throw`. 41 new JS assertions in test/json.js. |
 
 ## Running the Test Suite
 

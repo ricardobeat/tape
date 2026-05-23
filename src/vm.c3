@@ -1697,8 +1697,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.needs_re_dispatch = false;
                 ctx.re_nargs = 0;
                 ctx.global_env = vm.global_env;
+                ctx.should_throw = false;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
+
+                if (ctx.should_throw) {
+                    if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    break;
+                }
 
                 if (ctx.needs_re_dispatch) {
                     // Builtin (.call/.apply/bound) modified the stack — re-dispatch
@@ -1786,7 +1794,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.needs_re_dispatch = false;
                     ctx.re_nargs = 0;
                     ctx.global_env = vm.global_env;
+                    ctx.should_throw = false;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+
+                    if (ctx.should_throw) {
+                        if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
 
                     if (ctx.needs_re_dispatch) {
                         // Re-dispatch from bound function: re-read target from stack
@@ -1917,8 +1933,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.heap = vm.heap;
                 ctx.this_val = regs_base[callee_reg + 1];
                 ctx.is_constructor = true;
+                ctx.needs_re_dispatch = false;
+                ctx.re_nargs = 0;
                 ctx.global_env = vm.global_env;
+                ctx.should_throw = false;
                 builtins::dispatch_builtin(fn_idx, &ctx);
+                if (ctx.should_throw) {
+                    if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    break;
+                }
                 break;
             }
 
@@ -1994,8 +2019,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.heap = vm.heap;
                     ctx.this_val = regs_base[callee_reg + 1];
                     ctx.is_constructor = true;
+                    ctx.needs_re_dispatch = false;
+                    ctx.re_nargs = 0;
                     ctx.global_env = vm.global_env;
+                    ctx.should_throw = false;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+                    if (ctx.should_throw) {
+                        if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
                     break;
                 }
                 // Object claims to be callable but has no compiled function

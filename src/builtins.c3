@@ -102,7 +102,9 @@ const uint BUILTIN_FUNCTION_PROTO_APPLY = 78;
 const uint BUILTIN_FUNCTION_PROTO_BIND  = 79;
 const uint BUILTIN_BOUND_CALL           = 80;
 const uint BUILTIN_EVAL                 = 81;
-const uint BUILTIN_COUNT               = 82;
+const uint BUILTIN_JSON_PARSE           = 82;
+const uint BUILTIN_JSON_STRINGIFY       = 83;
+const uint BUILTIN_COUNT               = 84;
 
 struct BuiltinContext {
     void* vm;
@@ -121,6 +123,10 @@ struct BuiltinContext {
     ushort re_nargs;
     /// Global environment pointer (for eval and other scope-sensitive builtins).
     EnvRecord* global_env;
+    /// When true, the builtin wants to throw an error (used by JSON.parse etc).
+    bool  should_throw;
+    /// The value to throw (only valid when should_throw is true).
+    TVal  throw_value;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -3243,6 +3249,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         inner_ctx.is_constructor = false;
         inner_ctx.needs_re_dispatch = false;
         inner_ctx.re_nargs = 0;
+        inner_ctx.should_throw = false;
         // Shift remaining args to start at base_reg
         for (ushort i = 0; i < remaining; i++) {
             ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
@@ -3330,6 +3337,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             inner_ctx.is_constructor = false;
             inner_ctx.needs_re_dispatch = false;
             inner_ctx.re_nargs = 0;
+            inner_ctx.should_throw = false;
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
             return;
         }
@@ -3421,6 +3429,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         inner_ctx.is_constructor = false;
         inner_ctx.needs_re_dispatch = false;
         inner_ctx.re_nargs = 0;
+        inner_ctx.should_throw = false;
 
         // Write extracted args onto stack
         for (uint i = 0; i < actual_count; i++) {
@@ -3711,6 +3720,7 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         inner_ctx.is_constructor = ctx.is_constructor;
         inner_ctx.needs_re_dispatch = false;
         inner_ctx.re_nargs = 0;
+        inner_ctx.should_throw = false;
 
         for (uint i = 0; i < total_argc && i < 65535; i++) {
             ctx.regs[ctx.base_reg + i] = all_args[i];
@@ -3735,6 +3745,956 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
 
     ctx.result.tag = UNDEFINED;
     ctx.result.pointer = null;
+}
+
+// ============================================================================
+// JSON.parse (ES5 §15.12.2)
+// ============================================================================
+
+struct JsonParseCtx {
+    char* src;
+    uint pos;
+    uint len;
+    Heap* heap;
+}
+
+fn void json_skip_ws(JsonParseCtx* jctx) {
+    while (jctx.pos < jctx.len) {
+        char c = jctx.src[jctx.pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            jctx.pos++;
+        } else {
+            break;
+        }
+    }
+}
+
+/// Parse a 4-digit hex escape (\uXXXX).
+fn uint json_parse_hex4(JsonParseCtx* jctx) {
+    uint val = 0;
+    for (int i = 0; i < 4; i++) {
+        if (jctx.pos >= jctx.len) return 0xFFFFFFFF;
+        char c = jctx.src[jctx.pos];
+        uint d;
+        if (c >= '0' && c <= '9') {
+            d = (uint)(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            d = (uint)(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            d = (uint)(c - 'A' + 10);
+        } else {
+            return 0xFFFFFFFF;
+        }
+        val = (val << 4) | d;
+        jctx.pos++;
+    }
+    return val;
+}
+
+/// Parse a JSON string (between quotes).
+fn HString*? json_parse_string(JsonParseCtx* jctx) {
+    if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '\"') {
+        return null;
+    }
+    jctx.pos++; // skip opening quote
+
+    char[1024] buf;
+    usz out_len = 0;
+
+    while (jctx.pos < jctx.len) {
+        char c = jctx.src[jctx.pos];
+        if (c == '\"') {
+            jctx.pos++; // skip closing quote
+            return builtin_intern_string(jctx.heap, buf[:out_len]);
+        }
+        if (c == '\\') {
+            jctx.pos++;
+            if (jctx.pos >= jctx.len) return null;
+            char esc = jctx.src[jctx.pos];
+            jctx.pos++;
+            char ch;
+            switch (esc) {
+                case '\"': ch = '\"'; break;
+                case '\\': ch = '\\'; break;
+                case '/':  ch = '/';  break;
+                case 'b':  ch = '\b'; break;
+                case 'f':  ch = '\f'; break;
+                case 'n':  ch = '\n'; break;
+                case 'r':  ch = '\r'; break;
+                case 't':  ch = '\t'; break;
+                case 'u': {
+                    uint cp = json_parse_hex4(jctx);
+                    if (cp == 0xFFFFFFFF) return null;
+                    // Simple ASCII-range unicode (for now, just low bytes)
+                    if (cp <= 0x7F) {
+                        ch = (char)cp;
+                    } else if (cp <= 0x7FF) {
+                        // UTF-8 2-byte sequence
+                        if (out_len + 2 > 1024) return null;
+                        buf[out_len++] = (char)(0xC0 | (cp >> 6));
+                        ch = (char)(0x80 | (cp & 0x3F));
+                    } else {
+                        // UTF-8 3-byte sequence
+                        if (out_len + 3 > 1024) return null;
+                        buf[out_len++] = (char)(0xE0 | (cp >> 12));
+                        buf[out_len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        ch = (char)(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                default:
+                    return null;
+            }
+            if (out_len >= 1024) return null;
+            buf[out_len++] = ch;
+        } else if (c < 0x20) {
+            // Control characters not allowed
+            return null;
+        } else {
+            if (out_len >= 1024) return null;
+            buf[out_len++] = c;
+            jctx.pos++;
+        }
+    }
+    return null; // unterminated string
+}
+
+/// Parse a JSON number.
+fn TVal json_parse_number(JsonParseCtx* jctx) {
+    uint start = jctx.pos;
+
+    // Optional minus
+    if (jctx.pos < jctx.len && jctx.src[jctx.pos] == '-') {
+        jctx.pos++;
+    }
+
+    // Integer part
+    if (jctx.pos >= jctx.len) {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+    if (jctx.src[jctx.pos] == '0') {
+        jctx.pos++;
+    } else if (jctx.src[jctx.pos] >= '1' && jctx.src[jctx.pos] <= '9') {
+        jctx.pos++;
+        while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
+            jctx.pos++;
+        }
+    } else {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+
+    // Fractional part
+    if (jctx.pos < jctx.len && jctx.src[jctx.pos] == '.') {
+        jctx.pos++;
+        if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
+            TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        }
+        while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
+            jctx.pos++;
+        }
+    }
+
+    // Exponent part
+    if (jctx.pos < jctx.len && (jctx.src[jctx.pos] == 'e' || jctx.src[jctx.pos] == 'E')) {
+        jctx.pos++;
+        if (jctx.pos < jctx.len && (jctx.src[jctx.pos] == '+' || jctx.src[jctx.pos] == '-')) {
+            jctx.pos++;
+        }
+        if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
+            TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        }
+        while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
+            jctx.pos++;
+        }
+    }
+
+    // Convert to double
+    uint end = jctx.pos;
+    char saved = jctx.src[end];
+    jctx.src[end] = 0;
+    char* endptr;
+    double d = libc::strtod(jctx.src + start, &endptr);
+    jctx.src[end] = saved;
+
+    // Try fastint preservation
+    long fi = (long)d;
+    if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
+        TVal r; r.tag = FASTINT; r.fastint = fi; return r;
+    }
+    TVal r; r.tag = NUMBER; r.number = d; return r;
+}
+
+/// Parse a JSON array: [value, ...]
+fn TVal json_parse_array(JsonParseCtx* jctx) {
+    jctx.pos++; // skip '['
+    json_skip_ws(jctx);
+
+    HObject*? arr_raw = hobject::hobject_alloc(jctx.heap, hobject::ObjClass.ARRAY);
+    HObject* arr;
+    if (try a = arr_raw) {
+        arr = a;
+        arr.prototype = null; // will be set by caller
+    } else {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+
+    HString* len_key = builtin_intern_string(jctx.heap, "length");
+    uint idx = 0;
+
+    if (jctx.pos < jctx.len && jctx.src[jctx.pos] != ']') {
+        while (true) {
+            json_skip_ws(jctx);
+            TVal elem = json_parse_value(jctx);
+            if (elem.tag == UNDEFINED && elem.pointer == null && jctx.pos < jctx.len) {
+                TVal r; r.tag = UNDEFINED; r.pointer = null; return r; // parse error
+            }
+            json_skip_ws(jctx);
+
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%d", idx);
+            HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
+            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+            idx++;
+
+            if (jctx.pos >= jctx.len) {
+                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            }
+            if (jctx.src[jctx.pos] == ',') {
+                jctx.pos++;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ']') {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+    jctx.pos++; // skip ']'
+
+    TVal len_val;
+    len_val.tag = FASTINT;
+    len_val.fastint = (long)idx;
+    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+    TVal result;
+    result.tag = OBJECT;
+    result.pointer = arr;
+    return result;
+}
+
+/// Parse a JSON object: {key: value, ...}
+fn TVal json_parse_object(JsonParseCtx* jctx) {
+    jctx.pos++; // skip '{'
+    json_skip_ws(jctx);
+
+    HObject*? obj_raw = hobject::hobject_alloc(jctx.heap, hobject::ObjClass.OBJECT);
+    HObject* obj;
+    if (try o = obj_raw) {
+        obj = o;
+    } else {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+
+    if (jctx.pos < jctx.len && jctx.src[jctx.pos] != '}') {
+        while (true) {
+            json_skip_ws(jctx);
+            if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '\"') {
+                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            }
+            HString*? key_str = json_parse_string(jctx);
+            if (try k = key_str) {
+                json_skip_ws(jctx);
+                if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ':') {
+                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                }
+                jctx.pos++; // skip ':'
+                json_skip_ws(jctx);
+                TVal val = json_parse_value(jctx);
+                if (val.tag == UNDEFINED && val.pointer == null && jctx.pos < jctx.len) {
+                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                }
+                obj.put_prop(k, val, hobject::PROP_FLAGS_WEC);
+                json_skip_ws(jctx);
+                if (jctx.pos >= jctx.len) {
+                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                }
+                if (jctx.src[jctx.pos] == ',') {
+                    jctx.pos++;
+                } else {
+                    break;
+                }
+            } else {
+                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            }
+        }
+    }
+
+    if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '}') {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+    jctx.pos++; // skip '}'
+
+    TVal result;
+    result.tag = OBJECT;
+    result.pointer = obj;
+    return result;
+}
+
+/// Parse a JSON value.
+fn TVal json_parse_value(JsonParseCtx* jctx) {
+    json_skip_ws(jctx);
+    if (jctx.pos >= jctx.len) {
+        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+    }
+
+    char c = jctx.src[jctx.pos];
+    switch (c) {
+        case '\"':
+            // String
+            {
+                HString*? s = json_parse_string(jctx);
+                if (try str = s) {
+                    TVal r; r.tag = STRING; r.pointer = str; return r;
+                }
+                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            }
+        case '{':
+            return json_parse_object(jctx);
+        case '[':
+            return json_parse_array(jctx);
+        case 't':
+            // true
+            if (jctx.pos + 4 <= jctx.len &&
+                jctx.src[jctx.pos + 1] == 'r' &&
+                jctx.src[jctx.pos + 2] == 'u' &&
+                jctx.src[jctx.pos + 3] == 'e') {
+                jctx.pos += 4;
+                TVal r; r.tag = BOOLEAN; r.boolean = true; return r;
+            }
+            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+        case 'f':
+            // false
+            if (jctx.pos + 5 <= jctx.len &&
+                jctx.src[jctx.pos + 1] == 'a' &&
+                jctx.src[jctx.pos + 2] == 'l' &&
+                jctx.src[jctx.pos + 3] == 's' &&
+                jctx.src[jctx.pos + 4] == 'e') {
+                jctx.pos += 5;
+                TVal r; r.tag = BOOLEAN; r.boolean = false; return r;
+            }
+            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+        case 'n':
+            // null
+            if (jctx.pos + 4 <= jctx.len &&
+                jctx.src[jctx.pos + 1] == 'u' &&
+                jctx.src[jctx.pos + 2] == 'l' &&
+                jctx.src[jctx.pos + 3] == 'l') {
+                jctx.pos += 4;
+                TVal r; r.tag = NULL_VAL; r.pointer = null; return r;
+            }
+            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+        case '-':
+        case '0'..'9':
+            return json_parse_number(jctx);
+        default:
+            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+    }
+}
+
+/// Walk helper for reviver (ES5 §15.12.2, step 4 — internalize properties).
+fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
+    TVal val;
+    if (holder.tag == OBJECT && holder.pointer != null) {
+        HObject* obj = (HObject*)holder.pointer;
+        TVal? prop = obj.get_prop_proto(name);
+        if (try p = prop) {
+            val = p;
+        } else {
+            val.tag = UNDEFINED;
+            val.pointer = null;
+        }
+    } else {
+        val.tag = UNDEFINED;
+        val.pointer = null;
+    }
+
+    if (val.tag == OBJECT && val.pointer != null) {
+        HObject* obj = (HObject*)val.pointer;
+        if (obj.get_class() == ObjClass.ARRAY) {
+            HString* len_key = builtin_intern_string(heap, "length");
+            TVal? len_prop = obj.get_prop_proto(len_key);
+            uint len = 0;
+            if (try l = len_prop) {
+                if (l.tag == FASTINT) len = (uint)l.fastint;
+            }
+            for (uint i = 0; i < len; i++) {
+                char[16] idx_buf;
+                int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+                HString* idx_key = builtin_intern_string(heap, idx_buf[:idx_len]);
+                TVal new_elem = json_walk(heap, reviver, val, idx_key);
+                if (new_elem.tag == UNDEFINED) {
+                    obj.delete_prop(idx_key);
+                } else {
+                    obj.put_prop(idx_key, new_elem, hobject::PROP_FLAGS_WEC);
+                }
+            }
+        } else if (obj.get_class() == ObjClass.OBJECT) {
+            // Walk own properties
+            for (uint i = 0; i < obj.prop_count; i++) {
+                HString* key_str = obj.props[i].key;
+                if (key_str != null) {
+                    TVal new_val = json_walk(heap, reviver, val, key_str);
+                    if (new_val.tag == UNDEFINED) {
+                        obj.delete_prop(key_str);
+                    } else {
+                        obj.put_prop(key_str, new_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+            }
+        }
+    }
+
+    // Call reviver(this=holder, name, val)
+    TVal name_str;
+    name_str.tag = STRING;
+    name_str.pointer = name;
+
+    // For the reviver call, we need to invoke it via the calling convention
+    // Since we're in a builtin context, we need to set up the stack
+    // and re-dispatch. However, since JSON.parse is called as a LIGHTFUNC,
+    // we don't have a VM activation. We need to signal re-dispatch.
+    // For now, skip reviver and just return val
+    return val;
+}
+
+/// Helper: throw a SyntaxError from a JSON builtin.
+fn void json_throw_syntax_error(BuiltinContext* ctx, char[] msg) {
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.syntax_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+    } else {
+        ctx.throw_value.set_undefined();
+    }
+    ctx.should_throw = true;
+}
+
+/// JSON.parse(text [, reviver]) — ES5 §15.12.2
+fn void builtin_json_parse(BuiltinContext* ctx) {
+    // Step 1: Coerce first argument to string
+    if (ctx.argc < 1) {
+        json_throw_syntax_error(ctx, "JSON.parse requires at least 1 argument");
+        return;
+    }
+
+    TVal* text_arg = &ctx.regs[ctx.base_reg];
+    HString* text_str;
+
+    if (text_arg.tag == STRING) {
+        text_str = (HString*)text_arg.pointer;
+    } else {
+        text_str = builtin_to_string(ctx.heap, text_arg);
+        if (text_str == null) {
+            json_throw_syntax_error(ctx, "Invalid JSON");
+            return;
+        }
+    }
+
+    char* src = text_str.get_cstr();
+    uint len = text_str.blen;
+
+    JsonParseCtx jctx;
+    jctx.src = src;
+    jctx.pos = 0;
+    jctx.len = len;
+    jctx.heap = ctx.heap;
+
+    TVal result = json_parse_value(&jctx);
+
+    // Check parse error (undefined == error)
+    if (result.tag == UNDEFINED && result.pointer == null) {
+        json_throw_syntax_error(ctx, "Unexpected token in JSON");
+        return;
+    }
+
+    // Skip trailing whitespace
+    json_skip_ws(&jctx);
+    if (jctx.pos != jctx.len) {
+        // Trailing non-whitespace characters → SyntaxError
+        json_throw_syntax_error(ctx, "Unexpected token in JSON");
+        return;
+    }
+
+    // Set prototype on the result object if it's an object
+    if (result.tag == OBJECT && result.pointer != null) {
+        HObject* obj = (HObject*)result.pointer;
+        if (obj.prototype == null) {
+            obj.prototype = ctx.heap.object_proto;
+        }
+    }
+
+    // Reviver support (ES5 §15.12.2 step 4)
+    if (ctx.argc > 1) {
+        TVal* reviver_arg = &ctx.regs[ctx.base_reg + 1];
+        if (reviver_arg.tag == LIGHTFUNC || (reviver_arg.tag == OBJECT &&
+            ((HObject*)reviver_arg.pointer) != null &&
+            ((HObject*)reviver_arg.pointer).is_callable())) {
+            // Create holder object { "": result }
+            HObject*? holder_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+            if (try holder = holder_raw) {
+                HString* empty_key = builtin_intern_string(ctx.heap, "");
+                holder.put_prop(empty_key, result, hobject::PROP_FLAGS_WEC);
+
+                TVal holder_tv;
+                holder_tv.tag = OBJECT;
+                holder_tv.pointer = holder;
+
+                // For now, skip the full walk and just return result without reviver
+                // Full reviver support requires VM re-dispatch which is complex
+                *ctx.result = result;
+            } else {
+                *ctx.result = result;
+            }
+        } else {
+            *ctx.result = result;
+        }
+    } else {
+        *ctx.result = result;
+    }
+}
+
+// ============================================================================
+// JSON.stringify (ES5 §15.12.3)
+// ============================================================================
+
+/// Helper: append a JSON-escaped string to a buffer.
+fn usz json_escape_string(char* src, uint len, char* buf, usz buf_size) {
+    usz pos = 0;
+    if (pos < buf_size) buf[pos++] = '\"';
+    for (uint i = 0; i < len && pos < buf_size; i++) {
+        char c = src[i];
+        switch (c) {
+            case '\"': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = '\"'; break;
+            case '\\': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = '\\'; break;
+            case '\b': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'b'; break;
+            case '\f': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'f'; break;
+            case '\n': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'n'; break;
+            case '\r': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'r'; break;
+            case '\t': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 't'; break;
+            default:
+                if ((c & 0x80) != 0) {
+                    // Non-ASCII: pass through as-is (valid UTF-8)
+                    if (pos >= buf_size) break;
+                    buf[pos++] = c;
+                } else if (c < 0x20) {
+                    // Control char: \uXXXX
+                    if (pos + 6 > buf_size) break;
+                    buf[pos++] = '\\';
+                    buf[pos++] = 'u';
+                    buf[pos++] = '0';
+                    buf[pos++] = '0';
+                    char[16] hex_digits = { '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
+                    buf[pos++] = hex_digits[(c >> 4) & 0xF];
+                    buf[pos++] = hex_digits[c & 0xF];
+                } else {
+                    // Regular ASCII
+                    if (pos >= buf_size) break;
+                    buf[pos++] = c;
+                }
+                break;
+        }
+    }
+    if (pos < buf_size) buf[pos++] = '\"';
+    return pos;
+}
+
+/// Serialize a JSON value (internal recursive helper).
+/// Returns 0 on success, non-zero on error.
+/// Writes to buf starting at offset, updates offset.
+struct JsonSerializeCtx {
+    Heap* heap;
+    char* buf;
+    usz buf_size;
+    usz offset;
+    usz indent_level;
+    char* gap;
+    usz gap_len;
+    /// Current stack depth for cycle detection
+    uint depth;
+}
+
+const uint JSON_MAX_DEPTH = 128;
+
+/// Serialize an object's properties
+fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
+    if (jctx.offset >= jctx.buf_size) return -1;
+    jctx.buf[jctx.offset++] = '{';
+
+    // Check if object has properties
+    bool has_props = false;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].key != null &&
+            !obj.props[i].flags.is_accessor) {
+            has_props = true;
+            break;
+        }
+    }
+
+    if (!has_props) {
+        if (jctx.offset >= jctx.buf_size) return -1;
+        jctx.buf[jctx.offset++] = '}';
+        return 0;
+    }
+
+    // Need to get property keys in order
+    // For simplicity, iterate the entry table (will work for most cases)
+    bool first = true;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].key != null &&
+            !obj.props[i].flags.is_accessor) {
+            HString* key_hstr = (HString*)obj.props[i].key;
+            TVal val = obj.props[i].value;
+
+            // Skip undefined and function values
+            if (val.tag == UNDEFINED) continue;
+            if (val.tag == LIGHTFUNC) continue;
+            if (val.tag == OBJECT && val.pointer != null) {
+                HObject* vobj = (HObject*)val.pointer;
+                if (vobj.get_class() == ObjClass.FUNCTION) continue;
+            }
+
+            if (!first) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = ',';
+            }
+            first = false;
+
+            // Indentation
+            if (jctx.gap_len > 0) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = '\n';
+                for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                    jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+                }
+            }
+
+            // Key
+            char* key_data = key_hstr.get_cstr();
+            uint key_len = key_hstr.blen;
+            usz needed = (usz)(key_len * 6 + 4); // worst case escape
+            char[1024] key_buf;
+            usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
+            usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
+            for (usz k = 0; k < copy; k++) {
+                jctx.buf[jctx.offset++] = key_buf[k];
+            }
+
+            if (jctx.offset + 2 > jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = ':';
+            if (jctx.gap_len > 0) {
+                jctx.buf[jctx.offset++] = ' ';
+            }
+
+            // Value
+            jctx.depth++;
+            if (jctx.depth > JSON_MAX_DEPTH) {
+                jctx.depth--;
+                return -1;
+            }
+            int r = json_serialize_val(jctx, &val);
+            jctx.depth--;
+            if (r != 0) return r;
+        }
+    }
+
+    if (jctx.gap_len > 0) {
+        if (jctx.offset >= jctx.buf_size) return -1;
+        jctx.buf[jctx.offset++] = '\n';
+        for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+            jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+        }
+    }
+
+    if (jctx.offset >= jctx.buf_size) return -1;
+    jctx.buf[jctx.offset++] = '}';
+    return 0;
+}
+
+/// Serialize an array
+fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
+    if (jctx.offset >= jctx.buf_size) return -1;
+    jctx.buf[jctx.offset++] = '[';
+
+    HString* len_key = builtin_intern_string(jctx.heap, "length");
+    TVal? len_prop = arr.get_prop_proto(len_key);
+    uint len = 0;
+    if (try l = len_prop) {
+        if (l.tag == FASTINT) len = (uint)l.fastint;
+    }
+
+    if (len == 0) {
+        if (jctx.offset >= jctx.buf_size) return -1;
+        jctx.buf[jctx.offset++] = ']';
+        return 0;
+    }
+
+    bool first = true;
+    for (uint i = 0; i < len; i++) {
+        char[16] idx_buf;
+        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+        HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
+        TVal? elem_prop = arr.get_prop_proto(idx_key);
+        TVal elem;
+        if (try e = elem_prop) {
+            elem = e;
+        } else {
+            elem.tag = UNDEFINED;
+            elem.pointer = null;
+        }
+
+        if (!first) {
+            if (jctx.offset >= jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = ',';
+        }
+        first = false;
+
+        // Indentation
+        if (jctx.gap_len > 0) {
+            if (jctx.offset >= jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = '\n';
+            for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+            }
+        }
+
+        // null for undefined elements
+        if (elem.tag == UNDEFINED) {
+            if (jctx.offset + 5 > jctx.buf_size) return -1;
+            libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+            jctx.offset += 4;
+        } else if (elem.tag == LIGHTFUNC) {
+            if (jctx.offset + 5 > jctx.buf_size) return -1;
+            libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+            jctx.offset += 4;
+        } else if (elem.tag == OBJECT && elem.pointer != null) {
+            HObject* vobj = (HObject*)elem.pointer;
+            if (vobj.get_class() == ObjClass.FUNCTION) {
+                if (jctx.offset + 5 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+                jctx.offset += 4;
+            } else {
+                jctx.depth++;
+                if (jctx.depth > JSON_MAX_DEPTH) {
+                    jctx.depth--;
+                    return -1;
+                }
+                int r = json_serialize_val(jctx, &elem);
+                jctx.depth--;
+                if (r != 0) return r;
+            }
+        } else {
+            jctx.depth++;
+            if (jctx.depth > JSON_MAX_DEPTH) {
+                jctx.depth--;
+                return -1;
+            }
+            int r = json_serialize_val(jctx, &elem);
+            jctx.depth--;
+            if (r != 0) return r;
+        }
+    }
+
+    if (jctx.gap_len > 0) {
+        if (jctx.offset >= jctx.buf_size) return -1;
+        jctx.buf[jctx.offset++] = '\n';
+        for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+            jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+        }
+    }
+
+    if (jctx.offset >= jctx.buf_size) return -1;
+    jctx.buf[jctx.offset++] = ']';
+    return 0;
+}
+
+/// Serialize a value to JSON
+fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
+    switch (val.tag) {
+        case NULL_VAL: {
+            if (jctx.offset + 5 > jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = 'n';
+            jctx.buf[jctx.offset++] = 'u';
+            jctx.buf[jctx.offset++] = 'l';
+            jctx.buf[jctx.offset++] = 'l';
+            return 0;
+        }
+        case BOOLEAN: {
+            if (val.boolean) {
+                if (jctx.offset + 5 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "true", 4);
+                jctx.offset += 4;
+            } else {
+                if (jctx.offset + 6 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "false", 5);
+                jctx.offset += 5;
+            }
+            return 0;
+        }
+        case NUMBER: {
+            double d = val.number;
+            if (math::is_nan(d) || math::is_inf(d)) {
+                if (jctx.offset + 5 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+                jctx.offset += 4;
+                return 0;
+            }
+            char[64] buf;
+            int len = libc::snprintf(&buf, 64, "%.17g", d);
+            if (len < 0 || len >= 64) return -1;
+            if (jctx.offset + (usz)len > jctx.buf_size) return -1;
+            for (int i = 0; i < len; i++) {
+                jctx.buf[jctx.offset++] = buf[i];
+            }
+            return 0;
+        }
+        case FASTINT: {
+            char[64] buf;
+            int len = libc::snprintf(&buf, 64, "%ld", val.fastint);
+            if (len < 0 || len >= 64) return -1;
+            if (jctx.offset + (usz)len > jctx.buf_size) return -1;
+            for (int i = 0; i < len; i++) {
+                jctx.buf[jctx.offset++] = buf[i];
+            }
+            return 0;
+        }
+        case STRING: {
+            HString* s = (HString*)val.pointer;
+            char* data = s.get_cstr();
+            uint slen = s.blen;
+            usz max_out = (usz)(slen * 6 + 3);
+            char[4096] str_buf;
+            usz out_len = json_escape_string(data, slen, &str_buf, 4096);
+            if (out_len == 0) return -1;
+            usz copy = out_len < (jctx.buf_size - jctx.offset) ? out_len : (jctx.buf_size - jctx.offset);
+            for (usz i = 0; i < copy; i++) {
+                jctx.buf[jctx.offset++] = str_buf[i];
+            }
+            return 0;
+        }
+        case OBJECT: {
+            if (val.pointer == null) {
+                if (jctx.offset + 5 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+                jctx.offset += 4;
+                return 0;
+            }
+            HObject* obj = (HObject*)val.pointer;
+            if (obj.get_class() == ObjClass.ARRAY) {
+                return json_serialize_array(jctx, obj);
+            } else if (obj.get_class() == ObjClass.FUNCTION) {
+                // Functions serialize as null in JSON
+                if (jctx.offset + 5 > jctx.buf_size) return -1;
+                libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+                jctx.offset += 4;
+                return 0;
+            } else {
+                return json_serialize_object(jctx, obj);
+            }
+        }
+        case LIGHTFUNC: {
+            // Functions serialize as null
+            if (jctx.offset + 5 > jctx.buf_size) return -1;
+            libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+            jctx.offset += 4;
+            return 0;
+        }
+        case UNDEFINED:
+        case BUFFER:
+        case POINTER:
+        default:
+            // Undefined, Buffer, Pointer -> serialize as null
+            if (jctx.offset + 5 > jctx.buf_size) return -1;
+            libc::memcpy(jctx.buf + jctx.offset, "null", 4);
+            jctx.offset += 4;
+            return 0;
+    }
+}
+
+/// JSON.stringify(value [, replacer [, space]]) — ES5 §15.12.3
+fn void builtin_json_stringify(BuiltinContext* ctx) {
+    // Get the value
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal* value = &ctx.regs[ctx.base_reg];
+
+    // Check replacer (for now, only pass it through — we handle function/array later)
+    // Check space parameter
+    uint space_num = 0;
+    char[16] gap_buf;
+    usz gap_len = 0;
+
+    if (ctx.argc > 2) {
+        TVal* space_arg = &ctx.regs[ctx.base_reg + 2];
+        if (space_arg.tag == FASTINT) {
+            space_num = (uint)space_arg.fastint;
+            if (space_num > 10) space_num = 10;
+        } else if (space_arg.tag == NUMBER) {
+            space_num = (uint)(long)space_arg.number;
+            if (space_num > 10) space_num = 10;
+        } else if (space_arg.tag == STRING) {
+            HString* s = (HString*)space_arg.pointer;
+            char* data = s.get_cstr();
+            uint slen = s.blen;
+            if (slen > 10) slen = 10;
+            for (uint i = 0; i < slen; i++) {
+                gap_buf[i] = data[i];
+            }
+            gap_len = slen;
+        }
+    }
+
+    // Build gap string
+    char[16] gap_str;
+    if (space_num > 0) {
+        gap_len = space_num;
+        for (uint i = 0; i < gap_len && i < 16; i++) {
+            gap_str[i] = ' ';
+        }
+    } else if (gap_len == 0) {
+        // Keep gap empty
+    }
+
+    // Serialize
+    char[16384] buf;
+    JsonSerializeCtx jctx;
+    jctx.heap = ctx.heap;
+    jctx.buf = &buf;
+    jctx.buf_size = 16384;
+    jctx.offset = 0;
+    jctx.indent_level = 0;
+    jctx.gap = &gap_str;
+    jctx.gap_len = gap_len;
+    jctx.depth = 0;
+
+    int result = json_serialize_val(&jctx, value);
+    if (result != 0) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HString* result_str = builtin_intern_string(ctx.heap, buf[:jctx.offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result_str;
 }
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3885,6 +4845,10 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_bound_call(ctx);
         case BUILTIN_EVAL:
             builtin_eval(ctx);
+        case BUILTIN_JSON_PARSE:
+            builtin_json_parse(ctx);
+        case BUILTIN_JSON_STRINGIFY:
+            builtin_json_stringify(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -3964,6 +4928,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Math object
     if (!register_math_object(global_env, heap)) return false;
+
+    // Register JSON object (parse, stringify)
+    if (!register_json_object(global_env, heap)) return false;
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
     if (!register_error_builtins(global_env, heap)) return false;
@@ -4095,6 +5062,28 @@ fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
     tv.number = val;
     obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
+}
+
+// ============================================================================
+// JSON object registration
+// ============================================================================
+
+/// Create JSON global object with .parse and .stringify methods.
+fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
+    HObject*? json_raw = hobject::hobject_alloc(heap, hobject::ObjClass.JSON);
+    if (catch err = json_raw) return false;
+    HObject* json = json_raw;
+
+    // Register JSON.parse
+    if (!register_math_method(json, heap, "parse", BUILTIN_JSON_PARSE)) return false;
+    // Register JSON.stringify
+    if (!register_math_method(json, heap, "stringify", BUILTIN_JSON_STRINGIFY)) return false;
+
+    TVal json_tv;
+    json_tv.tag = OBJECT;
+    json_tv.fastint = 0;
+    json_tv.pointer = json;
+    return register_named_value(global_env, heap, "JSON", json_tv);
 }
 
 // ============================================================================

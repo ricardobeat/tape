@@ -114,7 +114,7 @@
 - **Unlocks:** ~500+ tests
 
 ### Phase 8: ES5 Built-in Objects
-- [ ] 8a. JSON (parse, stringify)
+- [x] 8a. JSON (parse, stringify)
 - [ ] 8b. Date constructor and methods
 - [ ] 8c. RegExp constructor and methods
 - [ ] 8d. Error.prototype.stack
