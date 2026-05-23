@@ -1406,8 +1406,52 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
-            if (hobj == null || !hobj.is_callable() || hobj.comp_func == null) {
+            if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not callable (e.g., a non-function object)
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err2 = err_raw2) {
+                    err2.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a function",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val2;
+                    err_val2.tag = OBJECT;
+                    err_val2.pointer = err2;
+                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
+
+            // Handle builtin function objects (Number, etc. as OBJECT tag)
+            if (hobj.comp_func == null) {
+                if (hobj.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.builtin_fn_index;
+                    builtins::BuiltinContext ctx;
+                    ctx.vm = vm;
+                    ctx.regs = vm.valstack;
+                    ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                    ctx.argc = (ushort)nargs;
+                    ctx.result = regs_base + result_reg;
+                    ctx.heap = vm.heap;
+                    ctx.this_val = regs_base[callee_reg + 1];
+                    ctx.is_constructor = false;
+                    builtins::dispatch_builtin(fn_idx, &ctx);
+                    break;
+                }
+                // Callable object with no compiled function and no builtin index: not callable
                 HString* type_str = typeof_string(vm, &func_val);
                 HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
@@ -1556,8 +1600,53 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             HObject* hobj = (HObject*)func_val.pointer;
-            if (hobj == null || !hobj.is_callable() || hobj.comp_func == null) {
+            if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not a constructor
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err2 = err_raw2) {
+                    err2.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val2;
+                    err_val2.tag = OBJECT;
+                    err_val2.pointer = err2;
+                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
+
+            // Handle builtin function objects (e.g., Number as OBJECT tag)
+            if (hobj.comp_func == null) {
+                if (hobj.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.builtin_fn_index;
+                    builtins::BuiltinContext ctx;
+                    ctx.vm = vm;
+                    ctx.regs = vm.valstack;
+                    ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                    ctx.argc = (ushort)nargs;
+                    ctx.result = regs_base + result_reg;
+                    ctx.heap = vm.heap;
+                    ctx.this_val = regs_base[callee_reg + 1];
+                    ctx.is_constructor = true;
+                    builtins::dispatch_builtin(fn_idx, &ctx);
+                    break;
+                }
+                // Object claims to be callable but has no compiled function
+                // and no builtin index — treat as non-constructor
                 HString* type_str = typeof_string(vm, &func_val);
                 HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {

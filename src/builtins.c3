@@ -1363,9 +1363,78 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.fastint = (long)BUILTIN_NUMBER_PROTO_VALUEOF;
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
-    // Register Number as a global constructor
-    if (!register_simple_builtin(global_env, heap, "Number", BUILTIN_NUMBER)) return false;
+    // Create Number constructor as a proper function object (not LIGHTFUNC)
+    // so it can carry static properties like Number.MAX_VALUE, Number.NaN, etc.
+    HObject*? num_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = num_raw) return false;
+    HObject* num = num_raw;
+    num.builtin_fn_index = (int)BUILTIN_NUMBER;
 
+    // Set Number.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    num.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Add Number.MAX_VALUE (ES5 §15.7.3.2) — non-writable, non-enumerable, non-configurable
+    if (!set_num_static_prop(num, heap, "MAX_VALUE", 1.7976931348623157e+308)) return false;
+    // Add Number.MIN_VALUE (ES5 §15.7.3.3)
+    if (!set_num_static_prop(num, heap, "MIN_VALUE", 5e-324)) return false;
+    // Add Number.NaN (ES5 §15.7.3.4)
+    if (!set_num_static_prop(num, heap, "NaN", double::nan)) return false;
+    // Add Number.NEGATIVE_INFINITY (ES5 §15.7.3.5)
+    if (!set_num_static_prop(num, heap, "NEGATIVE_INFINITY", -double::inf)) return false;
+    // Add Number.POSITIVE_INFINITY (ES5 §15.7.3.6)
+    if (!set_num_static_prop(num, heap, "POSITIVE_INFINITY", double::inf)) return false;
+
+    // Register Number constructor globally as an OBJECT (not LIGHTFUNC)
+    uint hash = heap.hash_string("Number");
+    HString* existing = heap.str_table_lookup("Number", hash);
+    HString* num_key;
+    if (existing != null) {
+        num_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Number", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        num_key = new_key;
+    }
+    TVal num_val;
+    num_val.tag = OBJECT;
+    num_val.pointer = num;
+    env::env_declare(global_env, num_key, num_val);
+
+    return true;
+}
+
+/// Helper: set a non-writable, non-enumerable, non-configurable number property.
+fn bool set_num_static_prop(HObject* obj, Heap* heap, char[] name, double val) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = NUMBER;
+    tv.number = val;
+    PropFlags pflags;
+    pflags.writable = false;
+    pflags.enumerable = false;
+    pflags.configurable = false;
+    pflags.is_accessor = false;
+    obj.put_prop(key, tv, pflags);
     return true;
 }
 

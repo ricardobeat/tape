@@ -268,6 +268,10 @@ struct HObject {
     EnvRecord*    var_env;
     /// Captured lexical environment (for closures).
     EnvRecord*    lex_env;
+
+    /// Builtin function index for native built-in functions (e.g., Number, Object).
+    /// -1 when this object is not a native builtin function.
+    int           builtin_fn_index;
 }
 
 // ============================================================================
@@ -786,6 +790,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         obj.flags.exotic_proxyobj = true;
     }
 
+    obj.builtin_fn_index = -1;
     return obj;
 }
 
