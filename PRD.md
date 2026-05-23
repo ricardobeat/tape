@@ -97,7 +97,7 @@
 - [x] 6a. Math methods: abs, floor, ceil, round, max, min, pow, sqrt, exp, log, sin, cos, tan, random
 - [x] 6b. String.prototype: charAt, charCodeAt, indexOf, slice, substring, substr, toUpperCase, toLowerCase, trim, split, concat, replace
 - [x] 6c. Array.prototype: push, pop, shift, unshift, join, indexOf, lastIndexOf, slice, concat, sort, reverse, splice, toString (non-callback methods)
-- [ ] 6d. Number.prototype: toFixed, toExponential, toPrecision, toString
+- [x] 6d. Number.prototype: toFixed, toExponential, toPrecision, toString (with radix 2-36)
 - [ ] 6e. Boolean.prototype: toString
 - [ ] 6f. Function.prototype: call, apply, bind
 - **Unlocks:** ~2,000+ tests

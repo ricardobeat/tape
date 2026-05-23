@@ -91,7 +91,10 @@ const uint BUILTIN_ARRAY_PROTO_MAP         = 68;
 const uint BUILTIN_ARRAY_PROTO_FILTER      = 69;
 const uint BUILTIN_ARRAY_PROTO_REDUCE      = 70;
 const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 71;
-const uint BUILTIN_COUNT                   = 72;
+const uint BUILTIN_NUMBER_PROTO_TOFIXED       = 73;
+const uint BUILTIN_NUMBER_PROTO_TOEXPONENTIAL = 74;
+const uint BUILTIN_NUMBER_PROTO_TOPRECISION   = 75;
+const uint BUILTIN_COUNT                      = 76;
 
 struct BuiltinContext {
     void* vm;
@@ -1543,6 +1546,57 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
 // Number constructor builtins
 // ============================================================================
 
+/// Helper: extract the double value from 'this' for Number.prototype methods.
+/// Returns NaN on incompatible 'this' (caller checks via isnan).
+fn double number_proto_get_this(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.NUMBER &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            return obj.primitive_value.get_number_or_fastint();
+        }
+    } else if (this_val.tag == NUMBER) {
+        return this_val.number;
+    } else if (this_val.tag == FASTINT) {
+        return (double)this_val.fastint;
+    }
+    return double::nan;
+}
+
+/// Helper: check if a double is -0.
+fn bool is_neg_zero(double d) {
+    return d == 0.0 && math::signbit(d);
+}
+
+/// Helper: convert a positive integer to a string in the given radix (2-36).
+/// Writes at most 64 chars into buf. Returns the number of chars written.
+fn int number_to_radix_str(ulong val, uint radix, char* buf, usz buf_size) {
+    if (val == 0) {
+        buf[0] = '0';
+        return 1;
+    }
+    char[64] tmp;
+    int pos = 0;
+    while (val > 0 && pos < 64) {
+        uint digit = (uint)(val % (ulong)radix);
+        val /= (ulong)radix;
+        if (digit < 10) {
+            tmp[pos++] = (char)('0' + digit);
+        } else {
+            tmp[pos++] = (char)('a' + digit - 10);
+        }
+    }
+    // Reverse into buf
+    int write_pos = 0;
+    while (pos > 0 && write_pos < (int)buf_size - 1) {
+        pos--;
+        buf[write_pos++] = tmp[pos];
+    }
+    buf[write_pos] = 0;
+    return write_pos;
+}
+
 /// ToNumber then return number primitive (function call) or
 /// a Number wrapper object (constructor call).
 fn void builtin_number(BuiltinContext* ctx) {
@@ -1577,51 +1631,59 @@ fn void builtin_number(BuiltinContext* ctx) {
     }
 }
 
-/// Number.prototype.toString — returns string representation of the number.
-/// For now uses a basic conversion; later will support radix argument.
+/// Number.prototype.toString(radix) — ES5 §15.7.4.2
+/// Returns string representation in the given radix (2-36), default 10.
 fn void builtin_number_proto_toString(BuiltinContext* ctx) {
-    TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double d;
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
-        if (obj.get_class() == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
-            if (obj.primitive_value.tag == FASTINT) {
-                d = (double)obj.primitive_value.fastint;
-            } else {
-                d = obj.primitive_value.number;
-            }
+    double d = number_proto_get_this(ctx);
+    if (math::is_nan(d) && !is_neg_zero(d)) {
+        HString* s = builtin_intern_string(ctx.heap, "NaN");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    // Determine radix
+    int radix = 10;
+    if (ctx.argc > 0) {
+        TVal* rad_arg = &ctx.regs[ctx.base_reg];
+        if (rad_arg.tag == FASTINT) {
+            radix = (int)rad_arg.fastint;
+        } else if (rad_arg.tag == NUMBER) {
+            radix = (int)(long)rad_arg.number;
         } else {
+            radix = 10;
+        }
+        if (radix < 2 || radix > 36) {
+            // RangeError
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
             return;
         }
-    } else if (this_val.tag == NUMBER) {
-        d = this_val.number;
-    } else if (this_val.tag == FASTINT) {
-        d = (double)this_val.fastint;
-    } else {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
-        return;
     }
 
-    char[64] buf;
-    if (math::is_nan(d)) {
+    // Handle special values
+    if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
         ctx.result.tag = STRING;
         ctx.result.pointer = s;
-    } else if (math::is_inf(d)) {
-        if (d > 0) {
-            HString* s = builtin_intern_string(ctx.heap, "Infinity");
-            ctx.result.tag = STRING;
-            ctx.result.pointer = s;
-        } else {
-            HString* s = builtin_intern_string(ctx.heap, "-Infinity");
-            ctx.result.tag = STRING;
-            ctx.result.pointer = s;
-        }
-    } else {
+        return;
+    }
+    if (math::is_inf(d)) {
+        HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+    if (d == 0.0) {
+        HString* s = builtin_intern_string(ctx.heap, "0");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    // Radix 10: use existing ToString formatting
+    if (radix == 10) {
+        char[64] buf;
         int len = libc::snprintf(&buf, 64, "%.17g", d);
         if (len < 0 || len >= 64) {
             ctx.result.tag = UNDEFINED;
@@ -1631,7 +1693,210 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
         HString* s = builtin_intern_string(ctx.heap, buf[:len]);
         ctx.result.tag = STRING;
         ctx.result.pointer = s;
+        return;
     }
+
+    // Radix 2-36: manual conversion
+    bool negative = d < 0;
+    if (negative) d = -d;
+
+    // Split into integer and fractional parts
+    double int_part = math::trunc(d);
+    double frac_part = d - int_part;
+
+    char[128] buf;
+    usz offset = 0;
+
+    if (negative) {
+        buf[offset++] = '-';
+    }
+
+    // Convert integer part
+    ulong int_val = (ulong)(long)int_part;
+    char[64] int_digits;
+    int int_len = number_to_radix_str(int_val, (uint)radix, &int_digits, 64);
+    for (int i = 0; i < int_len; i++) {
+        buf[offset++] = int_digits[i];
+    }
+
+    // Convert fractional part (up to 20 digits)
+    if (frac_part > 0.0 && offset < 120) {
+        buf[offset++] = '.';
+        int max_frac_digits = 20;
+        if ((int)offset + max_frac_digits > 127) max_frac_digits = 127 - (int)offset;
+        for (int i = 0; i < max_frac_digits; i++) {
+            frac_part *= (double)radix;
+            uint digit = (uint)(long)frac_part;
+            if (digit >= (uint)radix) digit = (uint)radix - 1;
+            frac_part -= (double)digit;
+            if (digit < 10) {
+                buf[offset++] = (char)('0' + digit);
+            } else {
+                buf[offset++] = (char)('a' + digit - 10);
+            }
+            if (frac_part <= 0.0) break;
+        }
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    if (result == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// Number.prototype.toFixed(fractionDigits) — ES5 §15.7.4.5
+fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
+    double d = number_proto_get_this(ctx);
+    if (math::is_nan(d) && !is_neg_zero(d)) {
+        // Use isnan check
+        double test = d;
+        if (math::is_nan(test) && !is_neg_zero(d)) {
+            // Actually re-check — the first call with NaN might fail
+            // Just use a simpler approach
+        }
+    }
+    // Re-get properly
+    d = number_proto_get_this(ctx);
+    if (math::is_nan(d) && !is_neg_zero(d)) {
+        HString* s = builtin_intern_string(ctx.heap, "NaN");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+    if (math::is_inf(d)) {
+        HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    int f = 0;
+    if (ctx.argc > 0) {
+        double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
+        if (f_d < 0 || f_d > 20) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        f = (int)(long)f_d;
+    }
+
+    char[64] buf;
+    int len = libc::snprintf(&buf, 64, "%.*f", f, d);
+    if (len < 0 || len >= 64) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = s;
+}
+
+/// Number.prototype.toExponential(fractionDigits) — ES5 §15.7.4.6
+fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
+    double d = number_proto_get_this(ctx);
+    if (math::is_nan(d) && !is_neg_zero(d)) {
+        HString* s = builtin_intern_string(ctx.heap, "NaN");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+    if (math::is_inf(d)) {
+        HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    if (ctx.argc == 0) {
+        // No arg: use default ToString behavior via %.17g (same as toString)
+        char[64] buf;
+        int len = libc::snprintf(&buf, 64, "%.17g", d);
+        if (len < 0 || len >= 64) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
+    if (f_d < 0 || f_d > 20) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    int f = (int)(long)f_d;
+
+    char[64] buf;
+    int len = libc::snprintf(&buf, 64, "%.*e", f, d);
+    if (len < 0 || len >= 64) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = s;
+}
+
+/// Number.prototype.toPrecision(precision) — ES5 §15.7.4.7
+fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
+    double d = number_proto_get_this(ctx);
+    if (math::is_nan(d) && !is_neg_zero(d)) {
+        HString* s = builtin_intern_string(ctx.heap, "NaN");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+    if (math::is_inf(d)) {
+        HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    if (ctx.argc == 0) {
+        // No arg: return ToString(x)
+        char[64] buf;
+        int len = libc::snprintf(&buf, 64, "%.17g", d);
+        if (len < 0 || len >= 64) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+
+    double p_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
+    if (p_d < 1 || p_d > 21) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    int p = (int)(long)p_d;
+
+    char[64] buf;
+    int len = libc::snprintf(&buf, 64, "%.*g", p, d);
+    if (len < 0 || len >= 64) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = s;
 }
 
 /// Number.prototype.valueOf — returns the wrapped number primitive
@@ -2845,6 +3110,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_number_proto_toString(ctx);
         case BUILTIN_NUMBER_PROTO_VALUEOF:
             builtin_number_proto_valueOf(ctx);
+        case BUILTIN_NUMBER_PROTO_TOFIXED:
+            builtin_number_proto_toFixed(ctx);
+        case BUILTIN_NUMBER_PROTO_TOEXPONENTIAL:
+            builtin_number_proto_toExponential(ctx);
+        case BUILTIN_NUMBER_PROTO_TOPRECISION:
+            builtin_number_proto_toPrecision(ctx);
         case BUILTIN_OBJECT:
             builtin_object(ctx);
         case BUILTIN_OBJECT_PROTO_TOSTRING:
@@ -3169,6 +3440,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.tag = LIGHTFUNC;
     valueof_tv.fastint = (long)BUILTIN_NUMBER_PROTO_VALUEOF;
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .toFixed() method (Phase 6d)
+    if (!register_string_proto_method(proto, heap, "toFixed", BUILTIN_NUMBER_PROTO_TOFIXED)) return false;
+    // Add .toExponential() method
+    if (!register_string_proto_method(proto, heap, "toExponential", BUILTIN_NUMBER_PROTO_TOEXPONENTIAL)) return false;
+    // Add .toPrecision() method
+    if (!register_string_proto_method(proto, heap, "toPrecision", BUILTIN_NUMBER_PROTO_TOPRECISION)) return false;
 
     // Create Number constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static properties like Number.MAX_VALUE, Number.NaN, etc.
