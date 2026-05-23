@@ -282,17 +282,61 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Object constructor (simple)
     if (!register_object_constructor(global_env, heap)) return false;
 
+    // Register Math object
+    if (!register_math_object(global_env, heap)) return false;
+
     return true;
 }
 
 fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
     if (catch err = obj_raw) return false;
+    HObject* obj = obj_raw;
+    // Set Object.prototype (itself for root)
+    // Add a minimal prototype property so new Object() proto chain works
+    obj.prototype = null;
+
     TVal obj_tv;
     obj_tv.tag = OBJECT;
     obj_tv.fastint = 0;
-    obj_tv.pointer = obj_raw;
+    obj_tv.pointer = obj;
     return register_named_value(global_env, heap, "Object", obj_tv);
+}
+
+fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
+    HObject*? math_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = math_raw) return false;
+    HObject* math = math_raw;
+    if (!set_num_prop_lookup(math, heap, "E", 2.718281828459045)) return false;
+    if (!set_num_prop_lookup(math, heap, "PI", 3.141592653589793)) return false;
+    if (!set_num_prop_lookup(math, heap, "LN2", 0.6931471805599453)) return false;
+    if (!set_num_prop_lookup(math, heap, "LN10", 2.302585092994046)) return false;
+    if (!set_num_prop_lookup(math, heap, "LOG2E", 1.4426950408889634)) return false;
+    if (!set_num_prop_lookup(math, heap, "LOG10E", 0.4342944819032518)) return false;
+    if (!set_num_prop_lookup(math, heap, "SQRT1_2", 0.7071067811865476)) return false;
+    if (!set_num_prop_lookup(math, heap, "SQRT2", 1.4142135623730951)) return false;
+    TVal math_tv;
+    math_tv.tag = OBJECT;
+    math_tv.fastint = 0;
+    math_tv.pointer = math;
+    return register_named_value(global_env, heap, "Math", math_tv);
+}
+
+fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key = existing;
+    if (key == null) {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = NUMBER;
+    tv.number = val;
+    obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    return true;
 }
 
 fn bool register_number_object(EnvRecord* global_env, Heap* heap) {
