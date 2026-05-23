@@ -98,8 +98,8 @@
 - [x] 6b. String.prototype: charAt, charCodeAt, indexOf, slice, substring, substr, toUpperCase, toLowerCase, trim, split, concat, replace
 - [x] 6c. Array.prototype: push, pop, shift, unshift, join, indexOf, lastIndexOf, slice, concat, sort, reverse, splice, toString (non-callback methods)
 - [x] 6d. Number.prototype: toFixed, toExponential, toPrecision, toString (with radix 2-36)
-- [ ] 6e. Boolean.prototype: toString
-- [ ] 6f. Function.prototype: call, apply, bind
+- [x] 6e. Boolean.prototype: toString
+- [x] 6f. Function.prototype: call, apply, bind
 - **Unlocks:** ~2,000+ tests
 
 ### Phase 7: Remaining ES5 Features

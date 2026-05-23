@@ -94,7 +94,11 @@ const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 71;
 const uint BUILTIN_NUMBER_PROTO_TOFIXED       = 73;
 const uint BUILTIN_NUMBER_PROTO_TOEXPONENTIAL = 74;
 const uint BUILTIN_NUMBER_PROTO_TOPRECISION   = 75;
-const uint BUILTIN_COUNT                      = 76;
+const uint BUILTIN_FUNCTION_PROTO_CALL  = 77;
+const uint BUILTIN_FUNCTION_PROTO_APPLY = 78;
+const uint BUILTIN_FUNCTION_PROTO_BIND  = 79;
+const uint BUILTIN_BOUND_CALL           = 80;
+const uint BUILTIN_COUNT               = 81;
 
 struct BuiltinContext {
     void* vm;
@@ -105,6 +109,12 @@ struct BuiltinContext {
     Heap* heap;
     TVal  this_val;
     bool  is_constructor;
+    /// Re-dispatch signal: when true, the CALL handler should re-read the
+    /// function from the callee slot and re-dispatch with modified args.
+    /// Used by Function.prototype.call/apply.
+    bool  needs_re_dispatch;
+    /// New argument count for re-dispatch (only valid when needs_re_dispatch).
+    ushort re_nargs;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -3064,6 +3074,573 @@ fn void builtin_math_random(BuiltinContext* ctx) {
     ctx.result.number = (double)state / 4294967296.0;
 }
 
+// ============================================================================
+// Function.prototype methods
+// ============================================================================
+
+/// Helper: get argument from the value stack by index (0-based within the call).
+fn TVal builtin_arg(BuiltinContext* ctx, uint idx) {
+    if (idx < ctx.argc) {
+        return ctx.regs[ctx.base_reg + idx];
+    }
+    TVal undef;
+    undef.tag = UNDEFINED;
+    undef.pointer = null;
+    return undef;
+}
+
+/// Function.prototype.call(thisArg, ...args)
+///
+/// Calls `this` (the target function) with `thisArg` as `this` and the
+/// remaining arguments passed individually.
+///
+/// ES5 §15.3.4.4
+fn void builtin_function_proto_call(BuiltinContext* ctx) {
+    TVal target = ctx.this_val;
+
+    // Validate target is callable
+    bool callable = false;
+    if (target.tag == LIGHTFUNC) {
+        callable = true;
+    } else if (target.tag == OBJECT) {
+        HObject* hobj = (HObject*)target.pointer;
+        if (hobj != null) {
+            callable = hobj.is_callable();
+        }
+    }
+
+    if (!callable) {
+        // Throw TypeError
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            // Cannot easily throw from here — set needs_throw or similar
+        }
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Determine new this value
+    TVal new_this;
+    if (ctx.argc > 0) {
+        new_this = builtin_arg(ctx, 0);
+    } else {
+        new_this.tag = UNDEFINED;
+        new_this.pointer = null;
+    }
+
+    // Number of remaining args after thisArg
+    ushort remaining = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
+
+    // For LIGHTFUNC targets, dispatch directly after shifting args
+    if (target.tag == LIGHTFUNC) {
+        uint fn_idx = (uint)target.fastint;
+        builtins::BuiltinContext inner_ctx;
+        inner_ctx.vm = ctx.vm;
+        inner_ctx.regs = ctx.regs;
+        inner_ctx.base_reg = ctx.base_reg;
+        inner_ctx.argc = remaining;
+        inner_ctx.result = ctx.result;
+        inner_ctx.heap = ctx.heap;
+        inner_ctx.this_val = new_this;
+        inner_ctx.is_constructor = false;
+        inner_ctx.needs_re_dispatch = false;
+        inner_ctx.re_nargs = 0;
+        // Shift remaining args to start at base_reg
+        for (ushort i = 0; i < remaining; i++) {
+            ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
+        }
+        builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        return;
+    }
+
+    // For OBJECT targets, use re-dispatch mechanism
+    if (target.tag == OBJECT) {
+        // Replace the function slot with target
+        ctx.regs[ctx.base_reg - 2] = target;
+        // Replace the this slot with new_this
+        ctx.regs[ctx.base_reg - 1] = new_this;
+        // Shift remaining args to start at base_reg
+        for (ushort i = 0; i < remaining; i++) {
+            ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
+        }
+        // Signal re-dispatch
+        ctx.needs_re_dispatch = true;
+        ctx.re_nargs = remaining;
+    } else {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+    }
+}
+
+/// Function.prototype.apply(thisArg, argArray)
+///
+/// Calls `this` (the target function) with `thisArg` as `this` and the
+/// elements of `argArray` passed as individual arguments.
+///
+/// ES5 §15.3.4.3
+fn void builtin_function_proto_apply(BuiltinContext* ctx) {
+    TVal target = ctx.this_val;
+
+    // Validate target is callable
+    bool callable = false;
+    if (target.tag == LIGHTFUNC) {
+        callable = true;
+    } else if (target.tag == OBJECT) {
+        HObject* hobj = (HObject*)target.pointer;
+        if (hobj != null) {
+            callable = hobj.is_callable();
+        }
+    }
+
+    if (!callable) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Get new this value
+    TVal new_this;
+    if (ctx.argc > 0) {
+        new_this = builtin_arg(ctx, 0);
+    } else {
+        new_this.tag = UNDEFINED;
+        new_this.pointer = null;
+    }
+
+    // If argArray is undefined or null, call with no args
+    TVal arg_array;
+    bool has_array = ctx.argc > 1;
+    if (has_array) {
+        arg_array = builtin_arg(ctx, 1);
+        if (arg_array.tag == UNDEFINED || arg_array.tag == NULL_VAL) {
+            has_array = false;
+        }
+    }
+
+    if (!has_array) {
+        // Call with no args
+        if (target.tag == LIGHTFUNC) {
+            uint fn_idx = (uint)target.fastint;
+            builtins::BuiltinContext inner_ctx;
+            inner_ctx.vm = ctx.vm;
+            inner_ctx.regs = ctx.regs;
+            inner_ctx.base_reg = ctx.base_reg;
+            inner_ctx.argc = 0;
+            inner_ctx.result = ctx.result;
+            inner_ctx.heap = ctx.heap;
+            inner_ctx.this_val = new_this;
+            inner_ctx.is_constructor = false;
+            inner_ctx.needs_re_dispatch = false;
+            inner_ctx.re_nargs = 0;
+            builtins::dispatch_builtin(fn_idx, &inner_ctx);
+            return;
+        }
+        if (target.tag == OBJECT) {
+            ctx.regs[ctx.base_reg - 2] = target;
+            ctx.regs[ctx.base_reg - 1] = new_this;
+            ctx.needs_re_dispatch = true;
+            ctx.re_nargs = 0;
+        } else {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+        }
+        return;
+    }
+
+    // argArray must be an object (array-like)
+    if (arg_array.tag != OBJECT || arg_array.pointer == null) {
+        // TypeError
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    HObject* arr_obj = (HObject*)arg_array.pointer;
+
+    // Get length via property lookup (arrays store length as a named property)
+    uint len = 0;
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    TVal? len_val = arr_obj.get_prop_proto(length_key);
+    if (try lv = len_val) {
+        if (lv.tag == NUMBER || lv.tag == FASTINT) {
+            double d = lv.tag == FASTINT ? (double)lv.fastint : lv.number;
+            if (d < 0) d = 0;
+            if (math::is_nan(d)) d = 0;
+            if (d > 4294967295.0) d = 4294967295.0;
+            len = (uint)d;
+        }
+    }
+
+    // Extract elements from argArray — use heap allocation
+    uint max_extract = len < 1024 ? len : 1024;
+    uint actual_count = 0;
+    TVal* extracted_args = null;
+    if (max_extract > 0) {
+        extracted_args = (TVal*)libc::malloc(TVal::size * max_extract);
+    }
+    bool is_dense_array = (arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part != null);
+    for (uint i = 0; i < max_extract; i++) {
+        TVal elem;
+        if (is_dense_array && i < arr_obj.array_size) {
+            elem = arr_obj.array_part[i];
+            if (elem.tag == UNDEFINED) {
+                char[20] buf;
+                int n = libc::snprintf(&buf, 20, "%d", i);
+                if (n <= 0 || n >= 20) break;
+                HString* key_hstr = builtin_intern_string(ctx.heap, buf[:n]);
+                TVal? prop = arr_obj.get_prop_proto(key_hstr);
+                if (try p = prop) {
+                    elem = p;
+                }
+            }
+        } else {
+            char[20] buf;
+            int n = libc::snprintf(&buf, 20, "%d", i);
+            if (n <= 0 || n >= 20) break;
+            HString* key_hstr = builtin_intern_string(ctx.heap, buf[:n]);
+            if (key_hstr == null) { break; }
+            TVal? prop = arr_obj.get_prop_proto(key_hstr);
+            if (try p = prop) {
+                elem = p;
+            } else {
+                elem.tag = UNDEFINED;
+                elem.pointer = null;
+            }
+        }
+        if (actual_count < max_extract) extracted_args[actual_count++] = elem;
+    }
+
+    if (target.tag == LIGHTFUNC) {
+        uint fn_idx = (uint)target.fastint;
+        builtins::BuiltinContext inner_ctx;
+        inner_ctx.vm = ctx.vm;
+        inner_ctx.regs = ctx.regs;
+        inner_ctx.base_reg = ctx.base_reg;
+        inner_ctx.argc = (ushort)actual_count;
+        inner_ctx.result = ctx.result;
+        inner_ctx.heap = ctx.heap;
+        inner_ctx.this_val = new_this;
+        inner_ctx.is_constructor = false;
+        inner_ctx.needs_re_dispatch = false;
+        inner_ctx.re_nargs = 0;
+
+        // Write extracted args onto stack
+        for (uint i = 0; i < actual_count; i++) {
+            ctx.regs[ctx.base_reg + i] = extracted_args[i];
+        }
+
+        if (extracted_args != null) libc::free(extracted_args);
+        builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        return;
+    }
+
+    if (target.tag == OBJECT) {
+        ctx.regs[ctx.base_reg - 2] = target;
+        ctx.regs[ctx.base_reg - 1] = new_this;
+        for (uint i = 0; i < actual_count; i++) {
+            ctx.regs[ctx.base_reg + i] = extracted_args[i];
+        }
+        if (extracted_args != null) libc::free(extracted_args);
+        ctx.needs_re_dispatch = true;
+        ctx.re_nargs = (ushort)actual_count;
+    } else {
+        if (extracted_args != null) libc::free(extracted_args);
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+    }
+}
+
+/// Helper for extracting bound function data from internal properties.
+fn void bound_get_data(HObject* bound_obj, TVal* target, TVal* bound_this,
+                       TVal* bound_args, uint* bound_argc) {
+    HString* target_key = null;
+    HString* this_key = null;
+    {
+        char[50] buf1 = "\\x00bound_target";
+        // Use a simple approach — keyed by pointer stored as internal property
+    }
+    // For simplicity, we store bound data in special internal properties.
+    // These are non-enumerable, non-writable, non-configurable properties.
+    HString* key_target = null;
+    // We'll use the property table directly via known interned strings
+}
+
+/// Function.prototype.bind(thisArg, ...args)
+///
+/// Creates a new function that, when called, has its `this` bound to `thisArg`
+/// and prepends any additional arguments.
+///
+/// ES5 §15.3.4.5
+fn void builtin_function_proto_bind(BuiltinContext* ctx) {
+    TVal target = ctx.this_val;
+
+    // Validate target is callable
+    bool callable = false;
+    if (target.tag == LIGHTFUNC) {
+        callable = true;
+    } else if (target.tag == OBJECT) {
+        HObject* hobj = (HObject*)target.pointer;
+        if (hobj != null) {
+            callable = hobj.is_callable();
+        }
+    }
+
+    if (!callable) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Get bound this
+    TVal bound_this;
+    if (ctx.argc > 0) {
+        bound_this = builtin_arg(ctx, 0);
+    } else {
+        bound_this.tag = UNDEFINED;
+        bound_this.pointer = null;
+    }
+
+    // Collect bound args
+    ushort bound_argc = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
+    TVal* bound_args_arr = null;
+
+    if (bound_argc > 0) {
+        bound_args_arr = (TVal*)libc::malloc(TVal::size * bound_argc);
+        if (bound_args_arr == null) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        for (ushort i = 0; i < bound_argc; i++) {
+            bound_args_arr[i] = builtin_arg(ctx, i + 1);
+        }
+    }
+
+    // Create bound function object
+    HObject*? bound_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = bound_raw) {
+        if (bound_args_arr != null) libc::free(bound_args_arr);
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* bound_obj = bound_raw;
+
+    // Set up bound function properties
+    bound_obj.flags.callable = true;
+    bound_obj.flags.is_bound = true;
+    bound_obj.prototype = ctx.heap.function_proto;
+    bound_obj.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
+
+    // Also maintain constructable flag if target is constructable
+    bool target_constructable = false;
+    if (target.tag == OBJECT) {
+        HObject* tobj = (HObject*)target.pointer;
+        if (tobj != null) target_constructable = tobj.flags.constructable;
+    }
+    bound_obj.flags.constructable = target_constructable;
+
+    // Store bound data as internal properties (non-enumerable, non-writable, non-configurable)
+    // Key: use special strings "\x00bound_target", "\x00bound_this", "\x00bound_args"
+    HString* key_target = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+    HString* key_this   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'h', 'i', 's' });
+    HString* key_args   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 'a', 'r', 'g', 's' });
+
+    PropFlags internal_flags;
+    internal_flags.writable = false;
+    internal_flags.enumerable = false;
+    internal_flags.configurable = false;
+    internal_flags.is_accessor = false;
+
+    bound_obj.put_prop(key_target, target, internal_flags);
+    bound_obj.put_prop(key_this, bound_this, internal_flags);
+
+    // Store bound args as a JS array
+    HObject*? args_arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject* args_arr = null;
+    if (try a = args_arr_raw) {
+        args_arr = a;
+        args_arr.prototype = ctx.heap.array_proto;
+        // Set length
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        TVal len_tv;
+        len_tv.tag = FASTINT;
+        len_tv.fastint = bound_argc;
+        args_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+        // Set elements
+        for (ushort i = 0; i < bound_argc; i++) {
+            char[20] buf;
+            int n = libc::snprintf(&buf, 20, "%d", i);
+            if (n > 0 && n < 20) {
+                HString* elem_key = builtin_intern_string(ctx.heap, buf[:n]);
+                args_arr.put_prop(elem_key, bound_args_arr[i], hobject::PROP_FLAGS_WEC);
+            }
+        }
+    }
+
+    if (bound_args_arr != null) libc::free(bound_args_arr);
+
+    TVal args_tv;
+    if (args_arr != null) {
+        args_tv.tag = OBJECT;
+        args_tv.pointer = args_arr;
+    } else {
+        args_tv.tag = UNDEFINED;
+        args_tv.pointer = null;
+    }
+    bound_obj.put_prop(key_args, args_tv, internal_flags);
+
+    // Set .length on the bound function
+    // Length = max(0, target.length - bound_argc)
+    int target_len = 0;
+    if (target.tag == OBJECT) {
+        HObject* tobj = (HObject*)target.pointer;
+        if (tobj != null && tobj.comp_func != null) {
+            target_len = (int)tobj.comp_func.num_formals;
+        }
+    }
+
+    int bound_len = target_len - (int)bound_argc;
+    if (bound_len < 0) bound_len = 0;
+
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = (long)bound_len;
+    PropFlags wec = hobject::PROP_FLAGS_WEC;
+    bound_obj.put_prop(len_key, len_tv, wec);
+
+    // Result
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = bound_obj;
+}
+
+/// Bound function [[Call]] handler.
+/// When a bound function is called, this handler unwraps the bound data,
+/// prepends bound args to the call args, and re-dispatches.
+fn void builtin_bound_call(BuiltinContext* ctx) {
+    TVal func_val = ctx.regs[ctx.base_reg - 2];
+    if (func_val.tag != OBJECT) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* bound_obj = (HObject*)func_val.pointer;
+    if (bound_obj == null || !bound_obj.flags.is_bound) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Extract bound data from internal properties
+    HString* key_target = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+    HString* key_this   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'h', 'i', 's' });
+    HString* key_args   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 'a', 'r', 'g', 's' });
+
+    TVal? target_val = bound_obj.get_prop_proto(key_target);
+    TVal? this_val   = bound_obj.get_prop_proto(key_this);
+    TVal? args_val   = bound_obj.get_prop_proto(key_args);
+
+    TVal target;
+    TVal bound_this;
+    if (try tv = target_val) { target = tv; }
+    else { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (try tv = this_val) { bound_this = tv; }
+    else { bound_this.tag = UNDEFINED; bound_this.pointer = null; }
+
+    // Extract bound args array
+    uint bound_argc = 0;
+    if (try av = args_val) {
+        if (av.tag == OBJECT) {
+            HObject* arr = (HObject*)av.pointer;
+            if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
+                HString* len_key = builtin_intern_string(ctx.heap, "length");
+                TVal? lv = arr.get_prop_proto(len_key);
+                if (try l = lv) {
+                    if (l.tag == FASTINT) {
+                        bound_argc = (uint)l.fastint;
+                    } else if (l.tag == NUMBER) {
+                        bound_argc = (uint)l.number;
+                    }
+                }
+            }
+        }
+    }
+
+    TVal* all_args = null;
+    uint max_total = bound_argc + ctx.argc;
+    if (max_total > 0) {
+        all_args = (TVal*)libc::malloc(TVal::size * max_total);
+        if (all_args == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    }
+    uint actual_total = 0;
+
+    // Copy bound args from stored array
+    if (try av = args_val) {
+        if (av.tag == OBJECT) {
+            HObject* arr = (HObject*)av.pointer;
+            if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
+                for (uint i = 0; i < bound_argc && actual_total < max_total; i++) {
+                    char[20] buf;
+                    int n = libc::snprintf(&buf, 20, "%d", i);
+                    if (n > 0 && n < 20) {
+                        HString* ek = builtin_intern_string(ctx.heap, buf[:n]);
+                        TVal? e = arr.get_prop_proto(ek);
+                        if (try ev = e) all_args[actual_total++] = ev;
+                    }
+                }
+            }
+        }
+    }
+
+    // Append call args
+    uint total_argc = bound_argc + ctx.argc;
+    for (uint i = 0; i < (uint)ctx.argc && bound_argc + i < 65535; i++) {
+        all_args[bound_argc + i] = ctx.regs[ctx.base_reg + i];
+    }
+
+    // Determine if target is LIGHTFUNC or OBJECT
+    if (target.tag == LIGHTFUNC) {
+        uint fn_idx = (uint)target.fastint;
+        builtins::BuiltinContext inner_ctx;
+        inner_ctx.vm = ctx.vm;
+        inner_ctx.regs = ctx.regs;
+        inner_ctx.base_reg = ctx.base_reg;
+        inner_ctx.argc = (ushort)total_argc;
+        inner_ctx.result = ctx.result;
+        inner_ctx.heap = ctx.heap;
+        inner_ctx.this_val = bound_this;
+        inner_ctx.is_constructor = ctx.is_constructor;
+        inner_ctx.needs_re_dispatch = false;
+        inner_ctx.re_nargs = 0;
+
+        for (uint i = 0; i < total_argc && i < 65535; i++) {
+            ctx.regs[ctx.base_reg + i] = all_args[i];
+        }
+        builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        return;
+    }
+
+    if (target.tag == OBJECT) {
+        HObject* tobj = (HObject*)target.pointer;
+        if (tobj != null && tobj.is_callable()) {
+            ctx.regs[ctx.base_reg - 2] = target;
+            ctx.regs[ctx.base_reg - 1] = bound_this;
+            for (uint i = 0; i < total_argc && i < 65535; i++) {
+                ctx.regs[ctx.base_reg + i] = all_args[i];
+            }
+            ctx.needs_re_dispatch = true;
+            ctx.re_nargs = (ushort)total_argc;
+            return;
+        }
+    }
+
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -3202,6 +3779,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_array_proto_lastIndexOf(ctx);
         case BUILTIN_ARRAY_PROTO_CONCAT:
             builtin_array_proto_concat(ctx);
+        case BUILTIN_FUNCTION_PROTO_CALL:
+            builtin_function_proto_call(ctx);
+        case BUILTIN_FUNCTION_PROTO_APPLY:
+            builtin_function_proto_apply(ctx);
+        case BUILTIN_FUNCTION_PROTO_BIND:
+            builtin_function_proto_bind(ctx);
+        case BUILTIN_BOUND_CALL:
+            builtin_bound_call(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -3291,12 +3876,16 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Array constructor
     if (!register_array_constructor(global_env, heap)) return false;
 
+    // Register Function.prototype (call, apply, bind)
+    if (!register_function_prototype(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
     if (heap.string_proto != null) heap.string_proto.prototype = heap.object_proto;
     if (heap.err_proto != null)    heap.err_proto.prototype = heap.object_proto;
     if (heap.array_proto != null)  heap.array_proto.prototype = heap.object_proto;
+    if (heap.function_proto != null) heap.function_proto.prototype = heap.object_proto;
 
     return true;
 }
@@ -3853,6 +4442,50 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Register Array as a global constructor
     if (!register_simple_builtin(global_env, heap, "Array", BUILTIN_ARRAY)) return false;
+
+    return true;
+}
+
+// ============================================================================
+// Function.prototype registration (call, apply, bind)
+// ============================================================================
+
+/// Create Function.prototype and register call/apply/bind methods.
+fn bool register_function_prototype(EnvRecord* global_env, Heap* heap) {
+    // Create Function.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype
+    heap.function_proto = proto;
+
+    // Add .call method
+    HString* call_key = builtin_intern_string(heap, "call");
+    TVal call_tv;
+    call_tv.tag = LIGHTFUNC;
+    call_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_CALL;
+    proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .apply method
+    HString* apply_key = builtin_intern_string(heap, "apply");
+    TVal apply_tv;
+    apply_tv.tag = LIGHTFUNC;
+    apply_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_APPLY;
+    proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .bind method
+    HString* bind_key = builtin_intern_string(heap, "bind");
+    TVal bind_tv;
+    bind_tv.tag = LIGHTFUNC;
+    bind_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_BIND;
+    proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .constructor
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = UNDEFINED;
+    constructor_tv.pointer = null;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     return true;
 }

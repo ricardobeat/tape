@@ -1412,9 +1412,19 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.heap = vm.heap;
                 ctx.this_val = regs_base[callee_reg + 1];
                 ctx.is_constructor = false;
+                ctx.needs_re_dispatch = false;
+                ctx.re_nargs = 0;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
-                break;
+
+                if (ctx.needs_re_dispatch) {
+                    // Builtin (.call/.apply/bound) modified the stack — re-dispatch
+                    func_val = regs_base[callee_reg];
+                    nargs = ctx.re_nargs;
+                    // Fall through to OBJECT handling
+                } else {
+                    break;
+                }
             }
 
             if (func_val.tag != OBJECT) {
@@ -1446,6 +1456,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
+            // === OBJECT CALL HANDLING ===
             HObject* hobj = (HObject*)func_val.pointer;
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not callable (e.g., a non-function object)
@@ -1476,7 +1487,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            // Handle builtin function objects (Number, etc. as OBJECT tag)
+            // Handle builtin function objects (e.g., Number as OBJECT tag)
             if (hobj.comp_func == null) {
                 if (hobj.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.builtin_fn_index;
@@ -1489,35 +1500,53 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.heap = vm.heap;
                     ctx.this_val = regs_base[callee_reg + 1];
                     ctx.is_constructor = false;
+                    ctx.needs_re_dispatch = false;
+                    ctx.re_nargs = 0;
                     builtins::dispatch_builtin(fn_idx, &ctx);
-                    break;
-                }
-                // Callable object with no compiled function and no builtin index: not callable
-                HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
-                if (try err2 = err_raw2) {
-                    err2.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a function",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < 160) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
-                        HString* msg_key = intern_string(vm, "message");
-                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val2;
-                    err_val2.tag = OBJECT;
-                    err_val2.pointer = err2;
-                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+
+                    if (ctx.needs_re_dispatch) {
+                        // Re-dispatch from bound function: re-read target from stack
+                        func_val = regs_base[callee_reg];
+                        hobj = (HObject*)func_val.pointer;
+                        nargs = ctx.re_nargs;
+                        // Only support re-dispatch to compiled functions from here;
+                        // if the target is another builtin, just break
+                        if (hobj.comp_func != null) {
+                            // Continue to compiled function handling below (skip error)
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
                     }
                 } else {
-                    return VM_ERROR~;
+                    // Callable object with no compiled function and no builtin index: error
+                    HString* type_str = typeof_string(vm, &func_val);
+                    HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                    if (try err2 = err_raw2) {
+                        err2.prototype = vm.heap.type_err_proto;
+                        char[160] buf;
+                        int len = libc::snprintf(&buf, 160, "%s is not a function",
+                                                 type_str.get_cstr());
+                        if (len > 0 && len < 160) {
+                            HString* msg_str = intern_string(vm, buf[:len]);
+                            TVal msg_val;
+                            msg_val.tag = STRING;
+                            msg_val.pointer = msg_str;
+                            HString* msg_key = intern_string(vm, "message");
+                            err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                        TVal err_val2;
+                        err_val2.tag = OBJECT;
+                        err_val2.pointer = err2;
+                        if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                    break;
                 }
-                break;
             }
 
             CompiledFunction* target = hobj.comp_func;
@@ -1556,10 +1585,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
             new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
             new_act.flags = ACT_FLAG_STRICT;
-            TVal undef_this;
-            undef_this.tag = UNDEFINED;
-            undef_this.pointer = null;
-            new_act.this_binding = undef_this;
+            new_act.this_binding = regs_base[callee_reg + 1];
 
             TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
             uint new_nregs = target.num_regs;
@@ -1898,6 +1924,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                 HObject*? func_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.FUNCTION);
                 if (try func_obj = func_obj_raw) {
+                    func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
                     func_obj.comp_func = template;
                     func_obj.var_env = act.var_env;
