@@ -883,6 +883,22 @@ fn bool HObject.has_prop_proto(&self, void* key) {
     return false;
 }
 
+/// ES5 [[Delete]]: remove an own property.
+///
+/// Returns true if the property was successfully removed or not found.
+/// Returns false only if the property exists and is non-configurable.
+/// The caller is responsible for throwing in strict mode when false.
+fn bool HObject.es_delete_prop(&self, void* key) {
+    int idx = self.find_prop_idx(key);
+    if (idx < 0) {
+        return true;  // Not found → [[Delete]] returns true.
+    }
+    if (!self.props[idx].flags.configurable) {
+        return false;  // Non-configurable → [[Delete]] returns false.
+    }
+    return self.delete_prop(key);
+}
+
 // ============================================================================
 // Utility: next power of two
 // ============================================================================

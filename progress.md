@@ -112,18 +112,18 @@
 | Function.prototype | ✅ (call, apply, bind) | ~100 tests |
 | **Total Phase 6** | **✅ 100%** | **~960 tests** |
 
-### Phase 7: Remaining ES5 Features — ✅ PARTIAL (12%)
+### Phase 7: Remaining ES5 Features — ✅ PARTIAL (44%)
 | Component | Status | Unlocks |
 |---|---|---|
 | for-in | ✅ | 115 tests |
 | instanceof | ✅ | 43 tests |
-| delete | ❌ | 69 tests |
+| delete | ✅ | 69 tests |
 | in operator | ✅ | 36 tests |
 | switch/case | ❌ | 111 tests |
 | Labeled break/continue | ❌ | ~50 tests |
 | with statement | ❌ | 181 tests |
 | eval | ❌ | ~200 tests |
-| **Total Phase 7** | **~33%** | **~805 tests** |
+| **Total Phase 7** | **~44%** | **~805 tests** |
 
 ### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -179,6 +179,7 @@
 || 18 | 8 (all pass) | **Phase 7a: for-in enumeration** — INITFOR/NEXTFOR opcodes implemented with ForInState and collect_forin_keys helper (own + prototype chain, dedup). Added PUTVAR sync for for-in variable at global scope (compiler fix). 8 new JS assertions. 26/26 tests passing. |
 || 19 | 22 (all pass) | **Phase 7b: instanceof operator** — Full ES5 §11.8.6 implementation with LIGHTFUNC builtin mapping (Error constructors, Boolean, String, Object, Array). CLOSURE handler updated to set `.prototype` and `.prototype.constructor` per ES5 §13.2. 22 new JS assertions. |
 || 20 | 23 (all pass) | **Phase 7d: in operator** — Full ES5 §11.8.7 implementation: `IN` opcode handler checks property existence via `has_prop_proto()` (own + prototype chain), throws TypeError on non-object right-hand side (null, undefined, number, string, boolean, etc.). 23 new JS assertions in `test/in_operator.js`. |
+|| 21 | 23 (all pass) | **Phase 7c: delete operator** — Full ES5 §11.4.1 implementation: `DELPROP` opcode handler calls `es_delete_prop()` on the object (returns `true` if property deleted or not found, `false` if non-configurable). Compiler uses `del_mode` flag (separate from `lhs_mode` to avoid reset by `expression()` inside bracket notation) to detect member expressions and patch the last emitted `GETPROP` to `DELPROP`. Handles chained member expressions (`delete a.b.c`), bracket notation, array elements, and primitives (`delete null.foo` returns `true`). 23 new JS assertions in `test/delete.js`. |
 
 ## Running the Test Suite
 

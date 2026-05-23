@@ -1599,10 +1599,25 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
             break;
 
-        case Opcode.DELPROP:
+        case Opcode.DELPROP: {
+            // ES5 §11.4.1: delete operator
+            // A = delete B[C], where B = object, C = property key
+            // Returns boolean: true if deleted or not found,
+            // false if the property exists and is non-configurable.
             ra.tag = BOOLEAN;
             ra.boolean = true;
+
+            if (rb.tag == OBJECT) {
+                HObject* hobj = (HObject*)rb.pointer;
+                void* key = get_prop_key(vm, rc);
+                if (key != null) {
+                    ra.boolean = hobj.es_delete_prop(key);
+                }
+            }
+            // For null, undefined, and other primitives:
+            // [[Delete]] on a non-object base always returns true.
             break;
+        }
 
         // === OBJECT / ARRAY CREATION ===
 

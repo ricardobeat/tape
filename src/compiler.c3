@@ -151,6 +151,10 @@ struct CompilerContext {
     uint last_getvar_name_idx;
     /// LHS mode: when true, member_expr saves obj/key without emitting GETPROP
     bool lhs_mode;
+    /// Delete mode: when true, member_expr saves obj/key for delete.
+    /// Separate from lhs_mode because expression() inside [bracket] calls
+    /// assignment_expr which resets lhs_mode.
+    bool del_mode;
     bool last_was_member;
     ushort last_member_obj_reg;
     ushort last_member_prop_reg;
@@ -1721,13 +1725,42 @@ fn ushort? CompilerContext.unary_expr(&self) {
 
         case TokenType.DELETE:
             self.advance()!;
-            // Simplified: delete of a simple expression
+            // Parse operand with del_mode to track member expression (obj.prop).
+            // member_expr emits GETPROP as usual; we patch it to DELPROP below.
+            // We use del_mode (not lhs_mode) because expression() inside [bracket]
+            // calls assignment_expr which resets lhs_mode.
+            self.del_mode = true;
+            self.last_was_member = false;
             ushort op_del = self.unary_expr()!;
-            // For now, emit LDUNDEF as a placeholder
-            ushort res_del = self.alloc_reg();
-            self.emit_abc(Opcode.LDTRUE, (uint)res_del, 0, 0);
-            self.free_reg(op_del);
-            return res_del;
+            self.del_mode = false;
+
+            if (self.last_was_member) {
+                // Patch the last emitted instruction from GETPROP to DELPROP.
+                // Both have identical register layout: A = result, B = obj, C = key.
+                uint last_idx = self.code_count;
+                if (last_idx > 0) {
+                    last_idx--;
+                    Instruction last_insn = self.code[last_idx];
+                    if (last_insn.op == Opcode.GETPROP) {
+                        self.code[last_idx] = bytecode::make_abc(
+                            Opcode.DELPROP,
+                            last_insn.a, last_insn.b, last_insn.c);
+                    }
+                }
+                // Free saved registers (prop before obj).
+                self.free_reg(self.last_member_prop_reg);
+                self.free_reg(self.last_member_obj_reg);
+                self.last_was_member = false;
+                // op_del is the A register of the patched DELPROP (boolean).
+                return op_del;
+            } else {
+                // Delete of a non-reference (variable, literal, etc.).
+                // In non-strict mode, always returns true.
+                self.free_reg(op_del);
+                ushort res_del = self.alloc_reg();
+                self.emit_abc(Opcode.LDTRUE, (uint)res_del, 0, 0);
+                return res_del;
+            }
 
         case TokenType.INC:
             // Prefix ++
@@ -2023,8 +2056,8 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)prop_reg);
 
-            if (self.lhs_mode) {
-                // LHS mode: keep obj/prop alive for possible PUTPROP
+            if (self.del_mode || self.lhs_mode) {
+                // LHS / delete mode: keep obj/prop alive for possible PUTPROP/DELPROP
                 self.last_was_member = true;
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = prop_reg;
@@ -2051,7 +2084,7 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)idx_reg);
 
-            if (self.lhs_mode) {
+            if (self.del_mode || self.lhs_mode) {
                 self.last_was_member = true;
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = idx_reg;
