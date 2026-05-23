@@ -71,7 +71,27 @@ const uint BUILTIN_STRING_PROTO_TRIM       = 48;
 const uint BUILTIN_STRING_PROTO_SPLIT      = 49;
 const uint BUILTIN_STRING_PROTO_CONCAT     = 50;
 const uint BUILTIN_STRING_PROTO_REPLACE    = 51;
-const uint BUILTIN_COUNT                   = 52;
+const uint BUILTIN_ARRAY_PROTO_TOSTRING    = 52;
+const uint BUILTIN_ARRAY_PROTO_JOIN        = 53;
+const uint BUILTIN_ARRAY_PROTO_POP         = 54;
+const uint BUILTIN_ARRAY_PROTO_PUSH        = 55;
+const uint BUILTIN_ARRAY_PROTO_REVERSE     = 56;
+const uint BUILTIN_ARRAY_PROTO_SHIFT       = 57;
+const uint BUILTIN_ARRAY_PROTO_SLICE       = 58;
+const uint BUILTIN_ARRAY_PROTO_SORT        = 59;
+const uint BUILTIN_ARRAY_PROTO_SPLICE      = 60;
+const uint BUILTIN_ARRAY_PROTO_UNSHIFT     = 61;
+const uint BUILTIN_ARRAY_PROTO_INDEXOF     = 62;
+const uint BUILTIN_ARRAY_PROTO_LASTINDEXOF = 63;
+const uint BUILTIN_ARRAY_PROTO_CONCAT      = 64;
+const uint BUILTIN_ARRAY_PROTO_EVERY       = 65;
+const uint BUILTIN_ARRAY_PROTO_SOME        = 66;
+const uint BUILTIN_ARRAY_PROTO_FOREACH     = 67;
+const uint BUILTIN_ARRAY_PROTO_MAP         = 68;
+const uint BUILTIN_ARRAY_PROTO_FILTER      = 69;
+const uint BUILTIN_ARRAY_PROTO_REDUCE      = 70;
+const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 71;
+const uint BUILTIN_COUNT                   = 72;
 
 struct BuiltinContext {
     void* vm;
@@ -1893,6 +1913,741 @@ fn void builtin_array(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Array.prototype helpers
+// ============================================================================
+
+/// Helper: get the 'this' value as an object for Array.prototype methods.
+fn HObject* array_proto_get_this(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        return (HObject*)this_val.pointer;
+    }
+    // TypeError: Array.prototype method called on non-object
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "Array.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    return null;
+}
+
+/// Get the 'length' property of an array-like object as a uint.
+fn uint array_get_length(HObject* obj, Heap* heap) {
+    HString* len_key = builtin_intern_string(heap, "length");
+    if (len_key == null) return 0;
+    TVal? len_val = obj.get_prop_proto(len_key);
+    if (try v = len_val) {
+        if (v.tag == FASTINT) return (uint)(long)v.fastint;
+        if (v.tag == NUMBER) return (uint)(long)v.number;
+    }
+    return 0;
+}
+
+/// Set the 'length' property of an array-like object.
+fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
+    HString* len_key = builtin_intern_string(heap, "length");
+    if (len_key == null) return;
+    TVal tv;
+    tv.tag = FASTINT;
+    tv.fastint = (long)len_val;
+    obj.put_prop(len_key, tv, hobject::PROP_FLAGS_WEC);
+}
+
+/// Get array element at numeric index (returns undefined for holes).
+fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
+    char[16] buf;
+    int len = libc::snprintf(&buf, 16, "%d", idx);
+    if (len <= 0 || len >= 16) { TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef; }
+    HString* key = builtin_intern_string(heap, buf[:len]);
+    if (key == null) { TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef; }
+    TVal? result = obj.get_prop_proto(key);
+    if (try v = result) return v;
+    TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef;
+}
+
+/// Set array element at numeric index.
+fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
+    char[16] buf;
+    int len = libc::snprintf(&buf, 16, "%d", idx);
+    if (len <= 0 || len >= 16) return;
+    HString* key = builtin_intern_string(heap, buf[:len]);
+    if (key == null) return;
+    obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+}
+
+/// Delete array element at numeric index (remove the property entirely).
+fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
+    char[16] buf;
+    int len = libc::snprintf(&buf, 16, "%d", idx);
+    if (len <= 0 || len >= 16) return;
+    HString* key = builtin_intern_string(heap, buf[:len]);
+    if (key == null) return;
+    obj.delete_prop(key);
+}
+
+/// Strict equality comparison for Array.prototype.indexOf / lastIndexOf.
+fn bool array_strict_equals(TVal a, TVal b) {
+    if (a.tag == b.tag) {
+        switch (a.tag) {
+            case UNDEFINED: return true;
+            case NULL_VAL:  return true;
+            case BOOLEAN:   return a.boolean == b.boolean;
+            case NUMBER:
+                if (math::is_nan(a.number) || math::is_nan(b.number)) return false;
+                return a.number == b.number;
+            case FASTINT:   return a.fastint == b.fastint;
+            case STRING:    return a.pointer == b.pointer;
+            default: return false;
+        }
+    }
+    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
+        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
+        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+        return av == bv;
+    }
+    return false;
+}
+
+/// Helper: register a method on Array.prototype.
+fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uint fn_index) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = LIGHTFUNC;
+    tv.fastint = (long)fn_index;
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    return true;
+}
+
+// ============================================================================
+// Array.prototype.toString (ES5 §15.4.4.2)
+// ============================================================================
+//
+// Join all elements with comma separator.
+fn void builtin_array_proto_toString(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    char[4096] buf;
+    usz offset = 0;
+
+    for (uint i = 0; i < len; i++) {
+        if (i > 0) {
+            if (offset < 4095) buf[offset++] = ',';
+        }
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        if (elem.tag != UNDEFINED && elem.tag != NULL_VAL) {
+            HString* elem_str = builtin_to_string(ctx.heap, &elem);
+            if (elem_str != null) {
+                char* data = elem_str.get_cstr();
+                uint blen = elem_str.blen;
+                uint max_copy = blen;
+                if ((uint)offset + max_copy > 4090) max_copy = 4090 - (uint)offset;
+                for (uint j = 0; j < max_copy; j++) {
+                    buf[offset++] = data[j];
+                }
+            }
+        }
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.join (ES5 §15.4.4.5)
+// ============================================================================
+fn void builtin_array_proto_join(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    // Get separator (default ",")
+    char[] sep = ",";
+    if (ctx.argc > 0) {
+        TVal sep_val = ctx.regs[ctx.base_reg];
+        HString* sep_str = builtin_to_string(ctx.heap, &sep_val);
+        if (sep_str != null) {
+            sep = sep_str.get_data();
+        }
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Empty array returns ""
+    if (len == 0) {
+        HString* result = builtin_intern_string(ctx.heap, "");
+        if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+        ctx.result.tag = STRING;
+        ctx.result.pointer = result;
+        return;
+    }
+
+    char[4096] buf;
+    usz offset = 0;
+
+    for (uint i = 0; i < len; i++) {
+        if (i > 0) {
+            for (usz si = 0; si < sep.len && offset < 4090; si++) {
+                buf[offset++] = sep[si];
+            }
+        }
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        if (elem.tag != UNDEFINED && elem.tag != NULL_VAL) {
+            HString* elem_str = builtin_to_string(ctx.heap, &elem);
+            if (elem_str != null) {
+                char* data = elem_str.get_cstr();
+                uint blen = elem_str.blen;
+                uint max_copy = blen;
+                if (offset + max_copy > 4090) max_copy = 4090 - (uint)offset;
+                for (uint j = 0; j < max_copy; j++) {
+                    buf[offset++] = data[j];
+                }
+            }
+        }
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.pop (ES5 §15.4.4.6)
+// ============================================================================
+fn void builtin_array_proto_pop(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    if (len == 0) {
+        array_set_length(obj, 0, ctx.heap);
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    uint idx = len - 1;
+    TVal elem = array_get_elem(obj, idx, ctx.heap);
+    array_delete_elem(obj, idx, ctx.heap);
+    array_set_length(obj, idx, ctx.heap);
+
+    // Return the popped element
+    ctx.result.tag = elem.tag;
+    ctx.result.fastint = elem.fastint;
+    ctx.result.boolean = elem.boolean;
+    ctx.result.pointer = elem.pointer;
+    ctx.result.number = elem.number;
+}
+
+// ============================================================================
+// Array.prototype.push (ES5 §15.4.4.7)
+// ============================================================================
+fn void builtin_array_proto_push(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    for (ushort i = 0; i < ctx.argc; i++) {
+        TVal arg = ctx.regs[ctx.base_reg + i];
+        array_set_elem(obj, len + i, arg, ctx.heap);
+    }
+
+    uint new_len = len + (uint)ctx.argc;
+    array_set_length(obj, new_len, ctx.heap);
+
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)new_len;
+}
+
+// ============================================================================
+// Array.prototype.reverse (ES5 §15.4.4.8)
+// ============================================================================
+fn void builtin_array_proto_reverse(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    uint middle = len / 2;
+
+    for (uint lower = 0; lower < middle; lower++) {
+        uint upper = len - 1 - lower;
+        TVal lower_val = array_get_elem(obj, lower, ctx.heap);
+        TVal upper_val = array_get_elem(obj, upper, ctx.heap);
+        array_set_elem(obj, lower, upper_val, ctx.heap);
+        array_set_elem(obj, upper, lower_val, ctx.heap);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
+
+// ============================================================================
+// Array.prototype.shift (ES5 §15.4.4.9)
+// ============================================================================
+fn void builtin_array_proto_shift(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    if (len == 0) {
+        array_set_length(obj, 0, ctx.heap);
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    TVal first = array_get_elem(obj, 0, ctx.heap);
+
+    for (uint k = 1; k < len; k++) {
+        TVal elem = array_get_elem(obj, k, ctx.heap);
+        array_set_elem(obj, k - 1, elem, ctx.heap);
+    }
+
+    array_delete_elem(obj, len - 1, ctx.heap);
+    array_set_length(obj, len - 1, ctx.heap);
+
+    // Return the first element
+    ctx.result.tag = first.tag;
+    ctx.result.fastint = first.fastint;
+    ctx.result.boolean = first.boolean;
+    ctx.result.pointer = first.pointer;
+    ctx.result.number = first.number;
+}
+
+// ============================================================================
+// Array.prototype.slice (ES5 §15.4.4.10)
+// ============================================================================
+fn void builtin_array_proto_slice(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Determine start
+    double relative_start = 0.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        if (arg.tag == FASTINT) {
+            relative_start = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_start = arg.number;
+        }
+    }
+
+    uint k;
+    if (relative_start < 0) {
+        double tmp = (double)len + relative_start;
+        k = tmp < 0 ? 0 : (uint)(long)tmp;
+    } else {
+        k = relative_start > (double)len ? len : (uint)(long)relative_start;
+    }
+
+    // Determine end
+    double relative_end = (double)len;
+    if (ctx.argc > 1) {
+        TVal* arg = &ctx.regs[ctx.base_reg + 1];
+        if (arg.tag == FASTINT) {
+            relative_end = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_end = arg.number;
+        }
+    }
+
+    uint final_val;
+    if (relative_end < 0) {
+        double tmp = (double)len + relative_end;
+        final_val = tmp < 0 ? 0 : (uint)(long)tmp;
+    } else {
+        final_val = relative_end > (double)len ? len : (uint)(long)relative_end;
+    }
+
+    // Create result array
+    HObject*? new_arr = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* result_arr = new_arr;
+    result_arr.prototype = ctx.heap.array_proto;
+
+    uint n = 0;
+    for (uint i = k; i < final_val; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        array_set_elem(result_arr, n, elem, ctx.heap);
+        n++;
+    }
+    array_set_length(result_arr, n, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result_arr;
+}
+
+// ============================================================================
+// Array.prototype.sort (ES5 §15.4.4.11) — default compare (no comparefn)
+// ============================================================================
+fn void builtin_array_proto_sort(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    if (len <= 1) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    // Compact defined elements to the front
+    uint def_count = 0;
+    for (uint i = 0; i < len; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        if (elem.tag != UNDEFINED) {
+            array_set_elem(obj, def_count, elem, ctx.heap);
+            def_count++;
+        }
+    }
+
+    // Bubble-sort defined elements by string comparison
+    for (uint i = 0; i < def_count; i++) {
+        for (uint j = 0; j < def_count - 1 - i; j++) {
+            TVal a = array_get_elem(obj, j, ctx.heap);
+            TVal b = array_get_elem(obj, j + 1, ctx.heap);
+            HString* a_str = builtin_to_string(ctx.heap, &a);
+            HString* b_str = builtin_to_string(ctx.heap, &b);
+            int cmp = 0;
+            if (a_str != null && b_str != null) {
+                cmp = hstring::hstring_compare(a_str, b_str);
+            } else if (a_str == null && b_str == null) {
+                cmp = 0;
+            } else if (a_str == null) {
+                cmp = 1;
+            } else {
+                cmp = -1;
+            }
+            if (cmp > 0) {
+                array_set_elem(obj, j, b, ctx.heap);
+                array_set_elem(obj, j + 1, a, ctx.heap);
+            }
+        }
+    }
+
+    // Delete remaining elements (holes/undefined go to end)
+    for (uint i = def_count; i < len; i++) {
+        array_delete_elem(obj, i, ctx.heap);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
+
+// ============================================================================
+// Array.prototype.splice (ES5 §15.4.4.12)
+// ============================================================================
+fn void builtin_array_proto_splice(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Get relativeStart (argument 0)
+    double relative_start = 0.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        if (arg.tag == FASTINT) {
+            relative_start = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_start = arg.number;
+        }
+    }
+
+    uint actual_start;
+    if (relative_start < 0) {
+        double tmp = (double)len + relative_start;
+        actual_start = tmp < 0 ? 0 : (uint)(long)tmp;
+    } else {
+        actual_start = relative_start > (double)len ? len : (uint)(long)relative_start;
+    }
+
+    // Get actualDeleteCount
+    uint actual_delete_count;
+    if (ctx.argc <= 1) {
+        actual_delete_count = len - actual_start;
+    } else {
+        TVal* arg = &ctx.regs[ctx.base_reg + 1];
+        double delete_count;
+        if (arg.tag == FASTINT) {
+            delete_count = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            delete_count = arg.number;
+        } else {
+            delete_count = 0;
+        }
+
+        if (delete_count < 0) delete_count = 0;
+        uint dc = (uint)(long)delete_count;
+        actual_delete_count = dc > (len - actual_start) ? (len - actual_start) : dc;
+    }
+
+    // Create result array with deleted items
+    HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = result_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* result = result_raw;
+    result.prototype = ctx.heap.array_proto;
+
+    for (uint i = 0; i < actual_delete_count; i++) {
+        TVal elem = array_get_elem(obj, actual_start + i, ctx.heap);
+        array_set_elem(result, i, elem, ctx.heap);
+    }
+    array_set_length(result, actual_delete_count, ctx.heap);
+
+    // Get items to insert
+    ushort item_count = 0;
+    if (ctx.argc > 2) {
+        item_count = ctx.argc - 2;
+    }
+
+    // Shift elements left or right
+    if (item_count < actual_delete_count) {
+        uint shift_len = len - actual_start - actual_delete_count;
+        for (uint k = 0; k < shift_len; k++) {
+            TVal elem = array_get_elem(obj, actual_start + actual_delete_count + k, ctx.heap);
+            array_set_elem(obj, actual_start + item_count + k, elem, ctx.heap);
+        }
+        uint new_len = len - actual_delete_count + item_count;
+        for (uint k = new_len; k < len; k++) {
+            array_delete_elem(obj, k, ctx.heap);
+        }
+        array_set_length(obj, new_len, ctx.heap);
+    } else if (item_count > actual_delete_count) {
+        uint shift_len = len - actual_start - actual_delete_count;
+        for (uint k = shift_len; k > 0; k--) {
+            uint from = actual_start + actual_delete_count + k - 1;
+            uint to = actual_start + item_count + k - 1;
+            TVal elem = array_get_elem(obj, from, ctx.heap);
+            array_set_elem(obj, to, elem, ctx.heap);
+        }
+        array_set_length(obj, len - actual_delete_count + item_count, ctx.heap);
+    }
+
+    // Insert new items
+    for (ushort i = 0; i < item_count; i++) {
+        TVal item = ctx.regs[ctx.base_reg + 2 + i];
+        array_set_elem(obj, actual_start + i, item, ctx.heap);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.unshift (ES5 §15.4.4.13)
+// ============================================================================
+fn void builtin_array_proto_unshift(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    ushort arg_count = ctx.argc;
+
+    // Shift existing elements right by arg_count
+    for (uint k = len; k > 0; k--) {
+        uint from = k - 1;
+        uint to = k - 1 + arg_count;
+        TVal elem = array_get_elem(obj, from, ctx.heap);
+        array_set_elem(obj, to, elem, ctx.heap);
+    }
+
+    // Insert new items at the beginning
+    for (ushort i = 0; i < arg_count; i++) {
+        TVal arg = ctx.regs[ctx.base_reg + i];
+        array_set_elem(obj, i, arg, ctx.heap);
+    }
+
+    uint new_len = len + (uint)arg_count;
+    array_set_length(obj, new_len, ctx.heap);
+
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)new_len;
+}
+
+// ============================================================================
+// Array.prototype.indexOf (ES5 §15.4.4.14)
+// ============================================================================
+fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    if (ctx.argc == 0) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = -1;
+        return;
+    }
+
+    TVal search_elem = ctx.regs[ctx.base_reg];
+
+    // Get fromIndex (default 0)
+    double relative_start = 0.0;
+    if (ctx.argc > 1) {
+        TVal* arg = &ctx.regs[ctx.base_reg + 1];
+        if (arg.tag == FASTINT) {
+            relative_start = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_start = arg.number;
+        }
+    }
+
+    uint k;
+    if (relative_start < 0) {
+        double tmp = (double)len + relative_start;
+        k = tmp < 0 ? 0 : (uint)(long)tmp;
+    } else {
+        k = relative_start > (double)len ? len : (uint)(long)relative_start;
+    }
+
+    for (; k < len; k++) {
+        TVal elem = array_get_elem(obj, k, ctx.heap);
+        if (array_strict_equals(elem, search_elem)) {
+            ctx.result.tag = FASTINT;
+            ctx.result.fastint = (long)k;
+            return;
+        }
+    }
+
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = -1;
+}
+
+// ============================================================================
+// Array.prototype.lastIndexOf (ES5 §15.4.4.15)
+// ============================================================================
+fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    if (ctx.argc == 0) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = -1;
+        return;
+    }
+
+    TVal search_elem = ctx.regs[ctx.base_reg];
+
+    // Get fromIndex (default len - 1)
+    double relative_start = (double)(len - 1);
+    if (ctx.argc > 1) {
+        TVal* arg = &ctx.regs[ctx.base_reg + 1];
+        if (arg.tag == FASTINT) {
+            relative_start = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_start = arg.number;
+        }
+    }
+
+    int k;
+    if (relative_start < 0) {
+        double tmp = (double)len + relative_start;
+        k = tmp < 0 ? -1 : (int)(long)tmp;
+    } else {
+        k = relative_start > (double)len ? (int)len - 1 : (int)(long)relative_start;
+    }
+
+    for (; k >= 0; k--) {
+        TVal elem = array_get_elem(obj, (uint)k, ctx.heap);
+        if (array_strict_equals(elem, search_elem)) {
+            ctx.result.tag = FASTINT;
+            ctx.result.fastint = (long)k;
+            return;
+        }
+    }
+
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = -1;
+}
+
+// ============================================================================
+// Array.prototype.concat (ES5 §15.4.4.4)
+// ============================================================================
+fn void builtin_array_proto_concat(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    // Create result array
+    HObject*? new_arr = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    uint n = 0;
+
+    // First, copy 'this' elements
+    uint this_len = array_get_length(obj, ctx.heap);
+    for (uint i = 0; i < this_len; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        array_set_elem(result, n, elem, ctx.heap);
+        n++;
+    }
+
+    // Then process each argument
+    for (ushort arg_i = 0; arg_i < ctx.argc; arg_i++) {
+        TVal arg = ctx.regs[ctx.base_reg + arg_i];
+
+        if (arg.tag == OBJECT && ((HObject*)arg.pointer).get_class() == hobject::ObjClass.ARRAY) {
+            // If argument is an Array, copy its elements
+            HObject* arg_arr = (HObject*)arg.pointer;
+            uint arg_len = array_get_length(arg_arr, ctx.heap);
+            for (uint i = 0; i < arg_len; i++) {
+                TVal elem = array_get_elem(arg_arr, i, ctx.heap);
+                array_set_elem(result, n, elem, ctx.heap);
+                n++;
+            }
+        } else {
+            // Otherwise, add the argument itself
+            array_set_elem(result, n, arg, ctx.heap);
+            n++;
+        }
+    }
+
+    array_set_length(result, n, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
 // Math method builtins
 // ============================================================================
 
@@ -2150,6 +2905,32 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_concat(ctx);
         case BUILTIN_STRING_PROTO_REPLACE:
             builtin_string_proto_replace(ctx);
+        case BUILTIN_ARRAY_PROTO_TOSTRING:
+            builtin_array_proto_toString(ctx);
+        case BUILTIN_ARRAY_PROTO_JOIN:
+            builtin_array_proto_join(ctx);
+        case BUILTIN_ARRAY_PROTO_POP:
+            builtin_array_proto_pop(ctx);
+        case BUILTIN_ARRAY_PROTO_PUSH:
+            builtin_array_proto_push(ctx);
+        case BUILTIN_ARRAY_PROTO_REVERSE:
+            builtin_array_proto_reverse(ctx);
+        case BUILTIN_ARRAY_PROTO_SHIFT:
+            builtin_array_proto_shift(ctx);
+        case BUILTIN_ARRAY_PROTO_SLICE:
+            builtin_array_proto_slice(ctx);
+        case BUILTIN_ARRAY_PROTO_SORT:
+            builtin_array_proto_sort(ctx);
+        case BUILTIN_ARRAY_PROTO_SPLICE:
+            builtin_array_proto_splice(ctx);
+        case BUILTIN_ARRAY_PROTO_UNSHIFT:
+            builtin_array_proto_unshift(ctx);
+        case BUILTIN_ARRAY_PROTO_INDEXOF:
+            builtin_array_proto_indexOf(ctx);
+        case BUILTIN_ARRAY_PROTO_LASTINDEXOF:
+            builtin_array_proto_lastIndexOf(ctx);
+        case BUILTIN_ARRAY_PROTO_CONCAT:
+            builtin_array_proto_concat(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2776,6 +3557,21 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     constructor_tv.tag = LIGHTFUNC;
     constructor_tv.fastint = (long)BUILTIN_ARRAY;
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Array.prototype methods
+    if (!register_array_proto_method(proto, heap, "toString",  BUILTIN_ARRAY_PROTO_TOSTRING))  return false;
+    if (!register_array_proto_method(proto, heap, "join",      BUILTIN_ARRAY_PROTO_JOIN))      return false;
+    if (!register_array_proto_method(proto, heap, "pop",       BUILTIN_ARRAY_PROTO_POP))       return false;
+    if (!register_array_proto_method(proto, heap, "push",      BUILTIN_ARRAY_PROTO_PUSH))      return false;
+    if (!register_array_proto_method(proto, heap, "reverse",   BUILTIN_ARRAY_PROTO_REVERSE))   return false;
+    if (!register_array_proto_method(proto, heap, "shift",     BUILTIN_ARRAY_PROTO_SHIFT))     return false;
+    if (!register_array_proto_method(proto, heap, "slice",     BUILTIN_ARRAY_PROTO_SLICE))     return false;
+    if (!register_array_proto_method(proto, heap, "sort",      BUILTIN_ARRAY_PROTO_SORT))      return false;
+    if (!register_array_proto_method(proto, heap, "splice",    BUILTIN_ARRAY_PROTO_SPLICE))    return false;
+    if (!register_array_proto_method(proto, heap, "unshift",   BUILTIN_ARRAY_PROTO_UNSHIFT))   return false;
+    if (!register_array_proto_method(proto, heap, "indexOf",   BUILTIN_ARRAY_PROTO_INDEXOF))   return false;
+    if (!register_array_proto_method(proto, heap, "lastIndexOf", BUILTIN_ARRAY_PROTO_LASTINDEXOF)) return false;
+    if (!register_array_proto_method(proto, heap, "concat",    BUILTIN_ARRAY_PROTO_CONCAT))    return false;
 
     // Register Array as a global constructor
     if (!register_simple_builtin(global_env, heap, "Array", BUILTIN_ARRAY)) return false;

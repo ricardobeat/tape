@@ -1350,6 +1350,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.NEWOBJ: {
             HObject*? new_obj = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
             if (try o = new_obj) {
+                o.prototype = vm.heap.object_proto;
                 ra.tag = OBJECT;
                 ra.pointer = o;
             } else {
@@ -1362,6 +1363,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.NEWARR: {
             HObject*? new_arr = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
             if (try a = new_arr) {
+                a.prototype = vm.heap.array_proto;
                 ra.tag = OBJECT;
                 ra.pointer = a;
             } else {
