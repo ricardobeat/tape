@@ -34,6 +34,16 @@ function assert_notSameValue(actual, unexpected, message) {
   print("FAIL: " + msg + " — expected not «" + unexpected + "»");
 }
 
+function assert_isNaN(actual, message) {
+  if (typeof actual === "number" && isNaN(actual)) {
+    __pass = __pass + 1;
+    return;
+  }
+  __fail = __fail + 1;
+  var msg = message || "";
+  print("FAIL: " + msg + " — expected NaN, got «" + actual + "»");
+}
+
 function __test262_summary() {
   print("---");
   print("pass: " + __pass + "  fail: " + __fail);

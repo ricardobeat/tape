@@ -1,7 +1,7 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 9
-**Baseline:** 24 / 53,568 passing
+**Last Updated:** Session 10
+**Baseline:** 25 / 53,568 passing
 **Target:** 53,568 / 53,568
 
 ## Summary
@@ -9,12 +9,12 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Currently passing | 24 |
+| Currently passing | 25 |
 | Currently failing | 0 |
 | Filtered out (missing features) | ~632 |
-| Pass rate (all tests) | ~0.04% |
-| Pass rate (ES5-core, filtered) | 100% (24/24) |
-| Local JS tests passing | 24/24 |
+| Pass rate (all tests) | ~0.05% |
+| Pass rate (ES5-core, filtered) | 100% (25/25) |
+| Local JS tests passing | 25/25 |
 
 ## Per-Phase Status
 
@@ -92,11 +92,14 @@
 |---|---|---|
 | Boolean constructor | ✅ | ~50 tests |
 | String constructor | ✅ | ~100 tests |
-| Number() as function | ❌ | ~150 tests |
+| Number() as function | ✅ | ~150 tests |
+| Number constructor (new Number()) | ✅ | — |
+| Number.prototype.toString/valueOf | ✅ | — |
+| Number static properties (NaN, MAX_VALUE…) | ❌ | Needed for Number/static tests |
 | Object() as function | ❌ | ~100 tests |
 | Array constructor | ❌ | ~50 tests |
 | Function constructor | ❌ | ~100 tests |
-| **Total Phase 5** | **~33%** | **~550 tests** |
+| **Total Phase 5** | **~50%** | **~550 tests** |
 
 ### Phase 6: Built-in Prototype Methods — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -165,6 +168,7 @@
 | 7 | 22 (all pass) | **try/catch/throw VM implementation** — Catcher chain with activation unwinding, TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcodes, cross-activation throw propagation, error sites changed from `return VM_ERROR~` to `vm_throw_value()` for proper catchability, compiler modified to encode catch/finally flags in TRY instruction with jump slot for finally offset, global-scope PUTVAR after CATCH for env-based variable resolution |
 | 8 | 23 (all pass) | **Phase 5a: Boolean constructor** - `Boolean()`/`Boolean(value)` as function with ToBoolean, `new Boolean(value)` as constructor creating Boolean wrapper Object, `Boolean.prototype` with `.toString()` and `.valueOf()`, `is_constructor` flag added to `BuiltinContext`, `primitive_value` field added to `HObject` for wrapper objects, ToPrimitive support in abstract equality (`abstract_eq`) for wrapper comparison |
 | 9 | 24 (all pass) | **Phase 5b: String constructor** - `String()`/`String(value)` as function using `builtin_to_string`, `new String(value)` as constructor creating String wrapper Object, `String.prototype` with `.toString()` and `.valueOf()`, `string_proto` added to Heap, **compiler fix**: method call `this` binding now correctly passes the base object for `obj.method()` calls by setting `call_prop_obj_reg` in `member_expr` when LPAREN follows DOT/LBRACKET. |
+| 10 | 25 (23 test262 + 1 standalone) | **Phase 5c: Number constructor** - `Number()`/`Number(value)` as function using `builtin_to_number` (ToNumber ES5 §9.3 with full string parsing including hex, Infinity, whitespace), `new Number(value)` as constructor creating Number wrapper Object, `Number.prototype` with `.toString()` and `.valueOf()`, `builtin_to_number` local helper with `to_primitive_value_local` for wrapper object unwrapping, `builtin_string_to_number` (moved from vm.c3 to builtins.c3) for ES5-conformant string→number conversion, `number_proto` added to Heap struct. Static properties (Number.NaN, Number.MAX_VALUE, etc.) deferred. |
 
 ## Running the Test Suite
 

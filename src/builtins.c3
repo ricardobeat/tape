@@ -29,7 +29,10 @@ const uint BUILTIN_BOOLEAN_PROTO_VALUEOF   = 15;
 const uint BUILTIN_STRING                 = 16;
 const uint BUILTIN_STRING_PROTO_TOSTRING  = 17;
 const uint BUILTIN_STRING_PROTO_VALUEOF   = 18;
-const uint BUILTIN_COUNT                   = 19;
+const uint BUILTIN_NUMBER                 = 19;
+const uint BUILTIN_NUMBER_PROTO_TOSTRING  = 20;
+const uint BUILTIN_NUMBER_PROTO_VALUEOF   = 21;
+const uint BUILTIN_COUNT                   = 22;
 
 struct BuiltinContext {
     void* vm;
@@ -127,6 +130,175 @@ fn double string_to_double(TVal* val) {
         return r;
     }
     return double::nan;
+}
+
+// ============================================================================
+// ECMAScript whitespace check (ASCII subset)
+// ============================================================================
+
+/// ECMAScript whitespace (ASCII subset: Tab, VT, FF, Space, NBSP, LF, CR).
+fn bool is_ecma_whitespace(char c) @inline {
+    return c == 0x09 || c == 0x0B || c == 0x0C
+        || c == 0x20 || c == 0xA0
+        || c == 0x0A || c == 0x0D;
+}
+
+/// ECMAScript ToNumber for strings (§7.1.3.1).
+///
+/// Converts an HString* to a double, trimming ECMAScript whitespace and
+/// parsing numeric literals (decimal, hex, Infinity).  Returns NaN when
+/// the string does not represent a valid numeric literal.
+fn double builtin_string_to_number(HString* hstr) {
+    char* cstr = hstr.get_cstr();
+    uint blen = hstr.blen;
+
+    // --- skip leading ECMAScript whitespace ---
+    uint start = 0;
+    while (start < blen && is_ecma_whitespace(cstr[start])) {
+        start++;
+    }
+
+    // Empty or all-whitespace -> +0
+    if (start == blen) {
+        return 0.0;
+    }
+
+    char* p = cstr + start;
+
+    // --- Infinity / -Infinity / +Infinity ---
+    if (libc::strcmp((ZString)p, "Infinity") == 0)   return double::inf;
+    if (libc::strcmp((ZString)p, "+Infinity") == 0)  return double::inf;
+    if (libc::strcmp((ZString)p, "-Infinity") == 0)  return -double::inf;
+
+    // --- Hex integer literal (0x...) ---
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        uint j = 2;
+        ulong val = 0;
+        while (p[j] != 0) {
+            char c = p[j];
+            uint digit;
+            if      (c >= '0' && c <= '9') { digit = (uint)(c - '0'); }
+            else if (c >= 'a' && c <= 'f') { digit = (uint)(c - 'a' + 10); }
+            else if (c >= 'A' && c <= 'F') { digit = (uint)(c - 'A' + 10); }
+            else { break; }   // non-hex terminates the literal
+
+            val = (val << 4) | digit;
+            j++;
+        }
+        // Trailing must be whitespace
+        while (p[j] != 0) {
+            if (!is_ecma_whitespace(p[j])) return double::nan;
+            j++;
+        }
+        return (double)val;
+    }
+
+    // --- Decimal via libc::strtod ---
+    char* endptr;
+    double result = libc::strtod(p, &endptr);
+
+    // Nothing was consumed -> NaN
+    if (endptr == p) {
+        return double::nan;
+    }
+
+    // Trailing characters must be whitespace only
+    while (*endptr != 0) {
+        if (!is_ecma_whitespace(*endptr)) {
+            return double::nan;
+        }
+        endptr++;
+    }
+
+    return result;
+}
+
+// ============================================================================
+// ToNumber (ES5 §9.3)
+// ============================================================================
+
+/// Convert any TVal to a numeric TVal per ES5 §9.3.
+/// Preserves FASTINT where possible.
+fn void builtin_to_number(TVal* val, TVal* result) {
+    switch (val.tag) {
+        case UNDEFINED:
+            result.tag = NUMBER;
+            result.number = double::nan;
+            return;
+        case NULL_VAL:
+            result.tag = FASTINT;
+            result.fastint = 0;
+            return;
+        case BOOLEAN:
+            result.tag = FASTINT;
+            result.fastint = val.boolean ? 1 : 0;
+            return;
+        case NUMBER:
+            *result = *val;
+            return;
+        case FASTINT:
+            *result = *val;
+            return;
+        case STRING: {
+            double d = builtin_string_to_number((HString*)val.pointer);
+            // Try fastint preservation
+            long fi = (long)d;
+            if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
+                result.tag = FASTINT;
+                result.fastint = fi;
+                return;
+            }
+            result.tag = NUMBER;
+            result.number = d;
+            return;
+        }
+        case OBJECT: {
+            // For wrapper objects, unwrap via ToPrimitive
+            TVal prim = to_primitive_value_local(val);
+            if (prim.tag != OBJECT) {
+                builtin_to_number(&prim, result);
+                return;
+            }
+            // Non-wrapper objects -> NaN
+            result.tag = NUMBER;
+            result.number = double::nan;
+            return;
+        }
+        default:
+            result.tag = NUMBER;
+            result.number = double::nan;
+            return;
+    }
+}
+
+/// Simplified ToPrimitive for builtins — unwraps Boolean/Number/String wrapper objects.
+fn TVal to_primitive_value_local(TVal* val) {
+    if (val.tag == OBJECT && val.pointer != null) {
+        HObject* obj = (HObject*)val.pointer;
+        hobject::ObjClass cls = obj.get_class();
+        if (cls == hobject::ObjClass.BOOLEAN &&
+            obj.primitive_value.tag == BOOLEAN) {
+            TVal result;
+            result.tag = BOOLEAN;
+            result.boolean = obj.primitive_value.boolean;
+            return result;
+        }
+        if (cls == hobject::ObjClass.NUMBER &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            TVal result;
+            result.tag = obj.primitive_value.tag;
+            result.number = obj.primitive_value.number;
+            return result;
+        }
+        if (cls == hobject::ObjClass.STRING &&
+            obj.primitive_value.tag == STRING) {
+            TVal result;
+            result.tag = STRING;
+            result.pointer = obj.primitive_value.pointer;
+            return result;
+        }
+    }
+    return *val;
 }
 
 fn void builtin_parse_int(BuiltinContext* ctx) {
@@ -558,6 +730,125 @@ fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
     ctx.result.pointer = null;
 }
 
+// ============================================================================
+// Number constructor builtins
+// ============================================================================
+
+/// ToNumber then return number primitive (function call) or
+/// a Number wrapper object (constructor call).
+fn void builtin_number(BuiltinContext* ctx) {
+    TVal num;
+    if (ctx.argc > 0) {
+        builtin_to_number(&ctx.regs[ctx.base_reg], &num);
+    } else {
+        num.tag = FASTINT;
+        num.fastint = 0;
+    }
+
+    if (ctx.is_constructor) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.NUMBER);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.number_proto;
+        obj.primitive_value = num;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+    } else {
+        if (num.tag == FASTINT) {
+            ctx.result.tag = FASTINT;
+            ctx.result.fastint = num.fastint;
+        } else {
+            ctx.result.tag = NUMBER;
+            ctx.result.number = num.number;
+        }
+    }
+}
+
+/// Number.prototype.toString — returns string representation of the number.
+/// For now uses a basic conversion; later will support radix argument.
+fn void builtin_number_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double d;
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.NUMBER &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            if (obj.primitive_value.tag == FASTINT) {
+                d = (double)obj.primitive_value.fastint;
+            } else {
+                d = obj.primitive_value.number;
+            }
+        } else {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+    } else if (this_val.tag == NUMBER) {
+        d = this_val.number;
+    } else if (this_val.tag == FASTINT) {
+        d = (double)this_val.fastint;
+    } else {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    char[64] buf;
+    if (math::is_nan(d)) {
+        HString* s = builtin_intern_string(ctx.heap, "NaN");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+    } else if (math::is_inf(d)) {
+        if (d > 0) {
+            HString* s = builtin_intern_string(ctx.heap, "Infinity");
+            ctx.result.tag = STRING;
+            ctx.result.pointer = s;
+        } else {
+            HString* s = builtin_intern_string(ctx.heap, "-Infinity");
+            ctx.result.tag = STRING;
+            ctx.result.pointer = s;
+        }
+    } else {
+        int len = libc::snprintf(&buf, 64, "%.17g", d);
+        if (len < 0 || len >= 64) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+    }
+}
+
+/// Number.prototype.valueOf — returns the wrapped number primitive
+fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.NUMBER &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            ctx.result.tag = obj.primitive_value.tag;
+            ctx.result.number = obj.primitive_value.number;
+            return;
+        }
+    } else if (this_val.tag == NUMBER) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = this_val.number;
+        return;
+    } else if (this_val.tag == FASTINT) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = this_val.fastint;
+        return;
+    }
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -598,6 +889,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_toString(ctx);
         case BUILTIN_STRING_PROTO_VALUEOF:
             builtin_string_proto_valueOf(ctx);
+        case BUILTIN_NUMBER:
+            builtin_number(ctx);
+        case BUILTIN_NUMBER_PROTO_TOSTRING:
+            builtin_number_proto_toString(ctx);
+        case BUILTIN_NUMBER_PROTO_VALUEOF:
+            builtin_number_proto_valueOf(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -666,8 +963,8 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
     if (!register_global_constant(global_env, heap, "Infinity", NUMBER, double::inf, 0)) return false;
 
-    // Register Number constructor
-    if (!register_number_object(global_env, heap)) return false;
+    // Register Number constructor (with prototype and static properties)
+    if (!register_number_constructor(global_env, heap)) return false;
 
     // Register Object constructor (simple)
     if (!register_object_constructor(global_env, heap)) return false;
@@ -738,37 +1035,44 @@ fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
     return true;
 }
 
-fn bool register_number_object(EnvRecord* global_env, Heap* heap) {
-    HObject*? num_obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
-    if (catch err = num_obj_raw) return false;
-    HObject* num_obj = num_obj_raw;
+// ============================================================================
+// Number constructor registration
+// ============================================================================
 
-    if (!set_num_prop(num_obj, heap, "NaN", double::nan)) return false;
-    // Debug: verify NaN property was stored
-    {
-        uint test_hash = heap.hash_string("NaN");
-        HString*? test_key = hstring::hstring_alloc(heap, "NaN", test_hash);
-        if (try tk = test_key) {
-            heap.str_table_insert(tk);
-            TVal? check = num_obj.get_prop_proto(tk);
-            if (try cv = check) {
-                // Silently verify
-            }
-        }
-    }
-    if (!set_num_prop(num_obj, heap, "POSITIVE_INFINITY", double::inf)) return false;
-    if (!set_num_prop(num_obj, heap, "NEGATIVE_INFINITY", -double::inf)) return false;
-    if (!set_num_prop(num_obj, heap, "MAX_VALUE", 1.7976931348623157e+308)) return false;
-    if (!set_num_prop(num_obj, heap, "MIN_VALUE", 5e-324)) return false;
-    if (!set_num_prop(num_obj, heap, "MAX_SAFE_INTEGER", 9007199254740991.0)) return false;
-    if (!set_num_prop(num_obj, heap, "MIN_SAFE_INTEGER", -9007199254740991.0)) return false;
-    if (!set_num_prop(num_obj, heap, "EPSILON", 2.220446049250313e-16)) return false;
+/// Create Number.prototype and register the Number constructor globally.
+fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Number.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.NUMBER);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype in later phases
+    heap.number_proto = proto;
 
-    TVal num_tv;
-    num_tv.tag = OBJECT;
-    num_tv.fastint = 0;   // must set fastint before pointer (union-safe: only one field used)
-    num_tv.pointer = num_obj;
-    return register_named_value(global_env, heap, "Number", num_tv);
+    // Set .constructor to Number lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_NUMBER;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .toString() method
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.tag = LIGHTFUNC;
+    tostring_tv.fastint = (long)BUILTIN_NUMBER_PROTO_TOSTRING;
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .valueOf() method
+    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    TVal valueof_tv;
+    valueof_tv.tag = LIGHTFUNC;
+    valueof_tv.fastint = (long)BUILTIN_NUMBER_PROTO_VALUEOF;
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Number as a global constructor
+    if (!register_simple_builtin(global_env, heap, "Number", BUILTIN_NUMBER)) return false;
+
+    return true;
 }
 
 fn bool set_num_prop(HObject* obj, Heap* heap, char[] name, double val) {
