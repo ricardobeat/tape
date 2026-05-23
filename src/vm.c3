@@ -465,6 +465,37 @@ fn double hstring_to_number(HString* hstr) {
     return result;
 }
 
+/// Extract [[PrimitiveValue]] from Boolean/Number/String wrapper objects.
+/// For non-wrapper objects, returns the value unchanged.
+fn TVal to_primitive_value(TVal* val) {
+    if (val.tag == OBJECT && val.pointer != null) {
+        HObject* obj = (HObject*)val.pointer;
+        hobject::ObjClass cls = obj.get_class();
+        if (cls == hobject::ObjClass.BOOLEAN &&
+            obj.primitive_value.tag == BOOLEAN) {
+            TVal result;
+            result.tag = BOOLEAN;
+            result.boolean = obj.primitive_value.boolean;
+            return result;
+        }
+        if (cls == hobject::ObjClass.NUMBER &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            TVal result;
+            result.tag = obj.primitive_value.tag;
+            result.number = obj.primitive_value.number;
+            return result;
+        }
+        if (cls == hobject::ObjClass.STRING &&
+            obj.primitive_value.tag == STRING) {
+            TVal result;
+            result.tag = STRING;
+            result.pointer = obj.primitive_value.pointer;
+            return result;
+        }
+    }
+    return *val;
+}
+
 /// ECMAScript Abstract Equality Comparison (§7.2.14).
 fn bool abstract_eq(TVal* a, TVal* b) {
     // Same type -> strict equality
@@ -512,8 +543,22 @@ fn bool abstract_eq(TVal* a, TVal* b) {
         return a.number == num;
     }
 
-    // Object + String/Number -> ToPrimitive (TODO)
-    // For now fall through to false
+    // Object + Boolean/Number/String -> ToPrimitive
+    if (a.tag == OBJECT && (b.tag == BOOLEAN || b.tag == NUMBER || b.tag == FASTINT || b.tag == STRING)) {
+        TVal prim = to_primitive_value(a);
+        if (prim.tag != OBJECT) {
+            return abstract_eq(&prim, b);
+        }
+        return false;
+    }
+    if (b.tag == OBJECT && (a.tag == BOOLEAN || a.tag == NUMBER || a.tag == FASTINT || a.tag == STRING)) {
+        TVal prim = to_primitive_value(b);
+        if (prim.tag != OBJECT) {
+            return abstract_eq(a, &prim);
+        }
+        return false;
+    }
+
     return false;
 }
 
@@ -1324,6 +1369,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.argc = (ushort)nargs;
                 ctx.result = regs_base + result_reg;
                 ctx.heap = vm.heap;
+                ctx.this_val = regs_base[callee_reg + 1];
+                ctx.is_constructor = false;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
                 break;
@@ -1473,6 +1520,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.argc = (ushort)nargs;
                 ctx.result = regs_base + result_reg;
                 ctx.heap = vm.heap;
+                ctx.this_val = regs_base[callee_reg + 1];
+                ctx.is_constructor = true;
                 builtins::dispatch_builtin(fn_idx, &ctx);
                 break;
             }

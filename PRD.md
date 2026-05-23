@@ -85,7 +85,7 @@
 - **Unlocks:** ~500+ tests (try/throw + error semantics)
 
 ### Phase 5: Built-in Constructors
-- [ ] 5a. Boolean constructor (new Boolean(), Boolean())
+- [x] 5a. Boolean constructor (new Boolean(), Boolean())
 - [ ] 5b. String constructor (new String(), String())
 - [ ] 5c. Number constructor as function (Number())
 - [ ] 5d. Object constructor as function (Object() with primitive wrapping)

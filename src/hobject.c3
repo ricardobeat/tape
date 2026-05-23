@@ -254,6 +254,13 @@ struct HObject {
     /// Number of slots actually holding a defined value.
     uint          array_used;
 
+    // --- Primitive wrapper storage (for Boolean, Number, String objects) ---
+    /// Stores the [[PrimitiveValue]] for wrapper/exotic objects.
+    /// For BOOLEAN: tag=BOOLEAN, .boolean = value.
+    /// For NUMBER: tag=NUMBER/.FASTINT, .number/.fastint = value.
+    /// For STRING: tag=STRING, .pointer = HString*.
+    TVal          primitive_value;
+
     // --- Compiled function support (non-null for JS functions) -----------
     /// The compiled function template (null for non-function objects).
     CompiledFunction* comp_func;

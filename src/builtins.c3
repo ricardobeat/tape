@@ -23,7 +23,10 @@ const uint BUILTIN_REFERENCE_ERROR = 9;
 const uint BUILTIN_SYNTAX_ERROR    = 10;
 const uint BUILTIN_EVAL_ERROR      = 11;
 const uint BUILTIN_ERROR_PROTO_TOSTRING = 12;
-const uint BUILTIN_COUNT       = 13;
+const uint BUILTIN_BOOLEAN                 = 13;
+const uint BUILTIN_BOOLEAN_PROTO_TOSTRING  = 14;
+const uint BUILTIN_BOOLEAN_PROTO_VALUEOF   = 15;
+const uint BUILTIN_COUNT                   = 16;
 
 struct BuiltinContext {
     void* vm;
@@ -33,6 +36,7 @@ struct BuiltinContext {
     TVal* result;
     Heap* heap;
     TVal  this_val;
+    bool  is_constructor;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -200,6 +204,35 @@ fn void builtin_is_finite(BuiltinContext* ctx) {
     double d = string_to_double(&ctx.regs[ctx.base_reg]);
     ctx.result.tag = BOOLEAN;
     ctx.result.boolean = !math::is_nan(d) && !math::is_inf(d);
+}
+
+// ============================================================================
+// ToBoolean (ES5 §9.2)
+// ============================================================================
+
+fn bool builtin_to_boolean(TVal* val) {
+    switch (val.tag) {
+        case UNDEFINED:
+        case NULL_VAL:
+            return false;
+        case BOOLEAN:
+            return val.boolean;
+        case NUMBER:
+            return !math::is_nan(val.number) && val.number != 0.0;
+        case FASTINT:
+            return val.fastint != 0;
+        case STRING: {
+            HString* s = (HString*)val.pointer;
+            return s != null && s.blen > 0;
+        }
+        case OBJECT:
+        case LIGHTFUNC:
+        case BUFFER:
+        case POINTER:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // ============================================================================
@@ -377,6 +410,78 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
     }
 }
 
+// ============================================================================
+// Boolean constructor builtins
+// ============================================================================
+
+/// ToBoolean then return boolean primitive (function call) or
+/// a Boolean wrapper object (constructor call).
+fn void builtin_boolean(BuiltinContext* ctx) {
+    bool b;
+    if (ctx.argc > 0) {
+        b = builtin_to_boolean(&ctx.regs[ctx.base_reg]);
+    } else {
+        b = false;
+    }
+
+    if (ctx.is_constructor) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.BOOLEAN);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.bool_proto;
+        obj.primitive_value.tag = BOOLEAN;
+        obj.primitive_value.boolean = b;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = b;
+    }
+}
+
+/// Boolean.prototype.toString — returns "true" or "false"
+fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
+    // 'this' is at base_reg - 1
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    bool b = false;
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
+            obj.primitive_value.tag == BOOLEAN) {
+            b = obj.primitive_value.boolean;
+        }
+    } else if (this_val.tag == BOOLEAN) {
+        b = this_val.boolean;
+    }
+    HString* s = builtin_intern_string(ctx.heap, b ? "true" : "false");
+    ctx.result.tag = STRING;
+    ctx.result.pointer = s;
+}
+
+/// Boolean.prototype.valueOf — returns the wrapped boolean value
+fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
+            obj.primitive_value.tag == BOOLEAN) {
+            ctx.result.tag = BOOLEAN;
+            ctx.result.boolean = obj.primitive_value.boolean;
+            return;
+        }
+    } else if (this_val.tag == BOOLEAN) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = this_val.boolean;
+        return;
+    }
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -405,6 +510,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_eval_error(ctx);
         case BUILTIN_ERROR_PROTO_TOSTRING:
             builtin_error_prototype_to_string(ctx);
+        case BUILTIN_BOOLEAN:
+            builtin_boolean(ctx);
+        case BUILTIN_BOOLEAN_PROTO_TOSTRING:
+            builtin_boolean_proto_toString(ctx);
+        case BUILTIN_BOOLEAN_PROTO_VALUEOF:
+            builtin_boolean_proto_valueOf(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -484,6 +595,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
     if (!register_error_builtins(global_env, heap)) return false;
+
+    // Register Boolean constructor
+    if (!register_boolean_constructor(global_env, heap)) return false;
 
     return true;
 }
@@ -747,6 +861,46 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
 
     // --- Register EvalError ---
     if (!register_simple_builtin(global_env, heap, "EvalError", BUILTIN_EVAL_ERROR)) return false;
+
+    return true;
+}
+
+// ============================================================================
+// Boolean constructor registration
+// ============================================================================
+
+/// Create Boolean.prototype and register the Boolean constructor globally.
+fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Boolean.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.BOOLEAN);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype in later phases
+    heap.bool_proto = proto;
+
+    // Set .constructor to Boolean lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_BOOLEAN;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .toString() method
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.tag = LIGHTFUNC;
+    tostring_tv.fastint = (long)BUILTIN_BOOLEAN_PROTO_TOSTRING;
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .valueOf() method
+    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    TVal valueof_tv;
+    valueof_tv.tag = LIGHTFUNC;
+    valueof_tv.fastint = (long)BUILTIN_BOOLEAN_PROTO_VALUEOF;
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Boolean as a global constructor
+    if (!register_simple_builtin(global_env, heap, "Boolean", BUILTIN_BOOLEAN)) return false;
 
     return true;
 }
