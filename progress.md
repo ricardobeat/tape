@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 19
+**Last Updated:** Session 22
 **Baseline:** 30 / 53,568 passing
 **Target:** 53,568 / 53,568
 
@@ -14,7 +14,7 @@
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.05% |
 | Pass rate (ES5-core, filtered) | 100% (25/25) |
-| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions + 22 instanceof assertions |
+| Local JS tests passing | 38/38 + 75 array assertions + 55 number assertions + 22 instanceof assertions + 16 switch assertions |
 
 ## Per-Phase Status
 
@@ -119,11 +119,11 @@
 | instanceof | ✅ | 43 tests |
 | delete | ✅ | 69 tests |
 | in operator | ✅ | 36 tests |
-| switch/case | ❌ | 111 tests |
+| switch/case | ✅ | 111 tests |
 | Labeled break/continue | ❌ | ~50 tests |
 | with statement | ❌ | 181 tests |
 | eval | ❌ | ~200 tests |
-| **Total Phase 7** | **~44%** | **~805 tests** |
+| **Total Phase 7** | **~63%** | **~805 tests** |
 
 ### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -180,6 +180,7 @@
 || 19 | 22 (all pass) | **Phase 7b: instanceof operator** — Full ES5 §11.8.6 implementation with LIGHTFUNC builtin mapping (Error constructors, Boolean, String, Object, Array). CLOSURE handler updated to set `.prototype` and `.prototype.constructor` per ES5 §13.2. 22 new JS assertions. |
 || 20 | 23 (all pass) | **Phase 7d: in operator** — Full ES5 §11.8.7 implementation: `IN` opcode handler checks property existence via `has_prop_proto()` (own + prototype chain), throws TypeError on non-object right-hand side (null, undefined, number, string, boolean, etc.). 23 new JS assertions in `test/in_operator.js`. |
 || 21 | 23 (all pass) | **Phase 7c: delete operator** — Full ES5 §11.4.1 implementation: `DELPROP` opcode handler calls `es_delete_prop()` on the object (returns `true` if property deleted or not found, `false` if non-configurable). Compiler uses `del_mode` flag (separate from `lhs_mode` to avoid reset by `expression()` inside bracket notation) to detect member expressions and patch the last emitted `GETPROP` to `DELPROP`. Handles chained member expressions (`delete a.b.c`), bracket notation, array elements, and primitives (`delete null.foo` returns `true`). 23 new JS assertions in `test/delete.js`. |
+|| 22 | 16 (all pass) | **Phase 7e: switch/case** — Rewrote switch_statement() with fall-through redirect jumps for correct ES5 §12.11 fall-through. Handles break, fall-through, empty cases, string/boolean/expression cases, nested switch, and default anywhere (including middle of case list). Also fixed: OBJECT/LIGHTFUNC/POINTER/BUFFER pointer comparison in SEQ/SNEQ, and builtin_is_nan using ToNumber instead of string_to_double. 16 new JS assertions in test/switch.js. |
 
 ## Running the Test Suite
 

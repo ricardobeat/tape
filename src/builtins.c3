@@ -437,9 +437,10 @@ fn void builtin_is_nan(BuiltinContext* ctx) {
         ctx.result.boolean = false;
         return;
     }
-    double d = string_to_double(&ctx.regs[ctx.base_reg]);
+    TVal num;
+    builtin_to_number(&ctx.regs[ctx.base_reg], &num);
     ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = math::is_nan(d);
+    ctx.result.boolean = (num.tag == NUMBER) ? math::is_nan(num.number) : false;
 }
 
 fn void builtin_is_finite(BuiltinContext* ctx) {

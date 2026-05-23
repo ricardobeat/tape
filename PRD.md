@@ -107,7 +107,7 @@
 - [x] 7b. instanceof operator (prototype chain walk)
 - [x] 7c. delete operator (DELPROP)
 - [x] 7d. in operator (property existence check)
-- [ ] 7e. switch/case statement (runtime verification)
+- [x] 7e. switch/case statement (runtime verification)
 - [ ] 7f. break/continue with labels
 - [ ] 7g. with statement
 - [ ] 7h. eval (direct and indirect)

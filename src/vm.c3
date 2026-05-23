@@ -1203,6 +1203,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         break;
                     case FASTINT:   seq_r = (rb.fastint == rc.fastint); break;
                     case STRING:    seq_r = (rb.pointer == rc.pointer); break;
+                    case OBJECT:    seq_r = (rb.pointer == rc.pointer); break;
+                    case LIGHTFUNC: seq_r = (rb.pointer == rc.pointer); break;
+                    case POINTER:   seq_r = (rb.pointer == rc.pointer); break;
+                    case BUFFER:    seq_r = (rb.pointer == rc.pointer); break;
                     default: break;
                 }
             } else if ((rb.tag == NUMBER && rc.tag == FASTINT) ||
@@ -1232,6 +1236,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         break;
                     case FASTINT:   sneq_r = (rb.fastint != rc.fastint); break;
                     case STRING:    sneq_r = (rb.pointer != rc.pointer); break;
+                    case OBJECT:    sneq_r = (rb.pointer != rc.pointer); break;
+                    case LIGHTFUNC: sneq_r = (rb.pointer != rc.pointer); break;
+                    case POINTER:   sneq_r = (rb.pointer != rc.pointer); break;
+                    case BUFFER:    sneq_r = (rb.pointer != rc.pointer); break;
                     default: sneq_r = true; break;
                 }
             } else if ((rb.tag == NUMBER && rc.tag == FASTINT) ||

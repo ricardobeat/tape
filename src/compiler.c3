@@ -1134,7 +1134,14 @@ fn void? CompilerContext.try_statement(&self) {
     }
 }
 
-/// Parse switch statement.
+/// Parse switch statement with correct fall-through (ES5 §12.11).
+///
+/// Each case body ends with a fall-through redirect JUMP patched after all
+/// case clauses are parsed, so that when a matched case body completes (without
+/// break) execution continues to the next case body rather than re-checking
+/// the next case's comparison preamble. The `default` clause is handled with
+/// a preamble JUMP when it is not the last clause, allowing subsequent cases
+/// to be checked before falling through to default on no match.
 fn void? CompilerContext.switch_statement(&self) {
     self.expect(TokenType.SWITCH)!;
     self.expect(TokenType.LPAREN)!;
@@ -1147,14 +1154,13 @@ fn void? CompilerContext.switch_statement(&self) {
     // Push a "loop" for break handling (break in switch exits the switch)
     self.push_loop(self.code_count);
 
-    // Collect case jump patches
-    uint[64] case_jumps;
-    uint case_count = 0;
-    uint default_jump = NO_PATCH;
-
-    // First pass: emit comparisons and jumps for each case
-    // We need to scan ahead for cases, which is complex.
-    // Simplified approach: process cases sequentially.
+    // Track all body entries (cases and default) in source order
+    uint[64] body_addrs;
+    uint[64] ft_jump_addrs;
+    uint body_count = 0;
+    bool has_default = false;
+    uint default_body_idx = 0;
+    bool default_not_last = false;
 
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         if (self.match(TokenType.CASE)) {
@@ -1176,6 +1182,7 @@ fn void? CompilerContext.switch_statement(&self) {
 
             // Patch the match jump to here (the body)
             self.patch_jump(match_jump);
+            body_addrs[body_count] = self.code_count;
 
             // Compile case body statements
             while (!self.check(TokenType.CASE) && !self.check(TokenType.DEFAULT) &&
@@ -1183,21 +1190,51 @@ fn void? CompilerContext.switch_statement(&self) {
                 self.statement()!;
             }
 
-            // If we fall through, we need to continue to next case
-            // Patch the skip jump to after the body
-            // But we want fall-through for matched cases...
-            // Actually in a switch, once a case matches, we fall through.
-            // This simplified implementation doesn't perfectly model fall-through.
-            // Patch skip to here:
+            // Emit fall-through redirect jump (patched later to next body)
+            uint ft_jump = self.emit_jump(Opcode.JUMP);
+            ft_jump_addrs[body_count] = ft_jump;
+            body_count++;
+
+            // Patch skip jump to after the fall-through redirect
             self.patch_jump(skip_jump);
 
         } else if (self.match(TokenType.DEFAULT)) {
             self.expect(TokenType.COLON)!;
 
+            has_default = true;
+            default_body_idx = body_count;
+
+            // Emit preamble JUMP over default body (placeholder).
+            // If more clauses follow, this skips the default body for the
+            // case-checking path. If default is last, it becomes a no-op.
+            uint default_preamble = self.emit_jump(Opcode.JUMP);
+
+            body_addrs[body_count] = self.code_count;
+
             // Compile default body
             while (!self.check(TokenType.CASE) && !self.check(TokenType.DEFAULT) &&
                    !self.check(TokenType.RBRACE) && !self.is_at_end()) {
                 self.statement()!;
+            }
+
+            // Emit fall-through redirect for default
+            uint ft_jump = self.emit_jump(Opcode.JUMP);
+            ft_jump_addrs[body_count] = ft_jump;
+            body_count++;
+
+            // Check if anything follows this default clause
+            TokenType next = self.peek_type();
+            if (next == TokenType.CASE || next == TokenType.DEFAULT) {
+                // More clauses follow: preamble skips over default body
+                self.patch_jump(default_preamble);
+                default_not_last = true;
+            } else {
+                // Default is last: patch preamble to fall through to body
+                // (offset 0 = jump to next instruction = body start)
+                int ft_offset = (int)(body_addrs[default_body_idx]) -
+                                (int)(default_preamble) - 1;
+                self.code[default_preamble] =
+                    bytecode::make_sabc(Opcode.JUMP, ft_offset);
             }
         } else {
             // Unexpected token in switch
@@ -1207,8 +1244,44 @@ fn void? CompilerContext.switch_statement(&self) {
 
     self.expect(TokenType.RBRACE)!;
 
-    self.free_reg(disc_reg);
+    // If default is not last, emit a redirect for the 'no match' path at the
+    // end of all case checks. This is reached by the last case's skip_jump.
+    uint redirect_addr = 0;
+    if (has_default && default_not_last) {
+        redirect_addr = self.code_count;
+        uint jump = self.emit_jump(Opcode.JUMP);
+        // break jumps will be patched past this redirect by pop_loop
+    }
+
+    // Patch break jumps to end of switch (after redirect if any)
     self.pop_loop();
+
+    uint end_addr = self.code_count;
+
+    // Patch the 'no match' redirect to the default body
+    if (redirect_addr > 0) {
+        int offset = (int)(body_addrs[default_body_idx]) -
+                     (int)(redirect_addr) - 1;
+        self.code[redirect_addr] =
+            bytecode::make_sabc(Opcode.JUMP, offset);
+    }
+
+    // Patch all fall-through redirect jumps in source order
+    for (uint i = 0; i < body_count; i++) {
+        uint target;
+        if (i + 1 < body_count) {
+            // Fall through to next body in source order
+            target = body_addrs[i + 1];
+        } else {
+            // Last body: fall through to end of switch
+            target = end_addr;
+        }
+        int offset = (int)(target) - (int)(ft_jump_addrs[i]) - 1;
+        self.code[ft_jump_addrs[i]] =
+            bytecode::make_sabc(Opcode.JUMP, offset);
+    }
+
+    self.free_reg(disc_reg);
 }
 
 /// Parse break statement.
