@@ -118,12 +118,12 @@
 | for-in | ✅ | 115 tests |
 | instanceof | ✅ | 43 tests |
 | delete | ❌ | 69 tests |
-| in operator | ❌ | 36 tests |
+| in operator | ✅ | 36 tests |
 | switch/case | ❌ | 111 tests |
 | Labeled break/continue | ❌ | ~50 tests |
 | with statement | ❌ | 181 tests |
 | eval | ❌ | ~200 tests |
-| **Total Phase 7** | **~25%** | **~805 tests** |
+| **Total Phase 7** | **~33%** | **~805 tests** |
 
 ### Phase 8: ES5 Built-in Objects — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -178,6 +178,7 @@
 | 17 | 55 (all pass) | **Phase 6f: Function.prototype methods** — call, apply, bind implemented. Added re-dispatch mechanism in CALL handler for builtins to trigger new activations. Added Function.prototype with `.call`, `.apply`, `.bind` as LIGHTFUNCs. Bound functions supported with internal property storage. Fixed `this_binding` bug in CALL handler for compiled functions. Also fixed `.length` on bound functions. 10 new JS assertions. |
 || 18 | 8 (all pass) | **Phase 7a: for-in enumeration** — INITFOR/NEXTFOR opcodes implemented with ForInState and collect_forin_keys helper (own + prototype chain, dedup). Added PUTVAR sync for for-in variable at global scope (compiler fix). 8 new JS assertions. 26/26 tests passing. |
 || 19 | 22 (all pass) | **Phase 7b: instanceof operator** — Full ES5 §11.8.6 implementation with LIGHTFUNC builtin mapping (Error constructors, Boolean, String, Object, Array). CLOSURE handler updated to set `.prototype` and `.prototype.constructor` per ES5 §13.2. 22 new JS assertions. |
+|| 20 | 23 (all pass) | **Phase 7d: in operator** — Full ES5 §11.8.7 implementation: `IN` opcode handler checks property existence via `has_prop_proto()` (own + prototype chain), throws TypeError on non-object right-hand side (null, undefined, number, string, boolean, etc.). 23 new JS assertions in `test/in_operator.js`. |
 
 ## Running the Test Suite
 

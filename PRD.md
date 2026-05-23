@@ -106,7 +106,7 @@
 - [x] 7a. for-in property enumeration (INITFOR/NEXTFOR)
 - [x] 7b. instanceof operator (prototype chain walk)
 - [ ] 7c. delete operator (DELPROP)
-- [ ] 7d. in operator (property existence check)
+- [x] 7d. in operator (property existence check)
 - [ ] 7e. switch/case statement (runtime verification)
 - [ ] 7f. break/continue with labels
 - [ ] 7g. with statement

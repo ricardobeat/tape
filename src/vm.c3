@@ -1399,10 +1399,43 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
-        case Opcode.IN:
+        case Opcode.IN: {
+            // ES5 §11.8.7: RelationalExpression in ShiftExpression
+            // Right side must be an object; TypeError otherwise.
+            // Returns true if the object has a property with the given name
+            // (own or inherited — check via [[HasProperty]]).
             ra.tag = BOOLEAN;
             ra.boolean = false;
+
+            if (rc.tag != OBJECT) {
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_val = intern_string(vm, "in requires an object");
+                    TVal msg_tv;
+                    msg_tv.tag = STRING;
+                    msg_tv.pointer = msg_val;
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
+
+            HObject* obj = (HObject*)rc.pointer;
+            void* key = get_prop_key(vm, rb);
+            if (key != null) {
+                ra.boolean = obj.has_prop_proto(key);
+            }
             break;
+        }
 
         // === CONTROL FLOW ===
 
