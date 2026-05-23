@@ -103,7 +103,7 @@
 - **Unlocks:** ~2,000+ tests
 
 ### Phase 7: Remaining ES5 Features
-- [ ] 7a. for-in property enumeration (INITFOR/NEXTFOR)
+- [x] 7a. for-in property enumeration (INITFOR/NEXTFOR)
 - [ ] 7b. instanceof operator (prototype chain walk)
 - [ ] 7c. delete operator (DELPROP)
 - [ ] 7d. in operator (property existence check)

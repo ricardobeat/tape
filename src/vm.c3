@@ -98,6 +98,23 @@ struct Catcher {
 }
 
 // ============================================================================
+// For-in enumeration state
+// ============================================================================
+
+/// Runtime state for a for-in loop iteration.  Created by INITFOR and
+/// consumed/freed by NEXTFOR.
+///
+/// `keys` holds a flat array of interned HString* pointers collected from
+/// the object and its prototype chain (omitting duplicates).  The array
+/// and the struct itself are plain-malloc'd and freed when the loop
+/// finishes (NEXTFOR returning false) or on catcher unwind.
+struct ForInState {
+    HString** keys;    /// Array of interned property-name HString* pointers
+    uint count;        /// Number of keys in the array
+    uint index;        /// Current position (next key to return)
+}
+
+// ============================================================================
 // VM state (matches duk_hthread)
 // ============================================================================
 
@@ -494,6 +511,100 @@ fn TVal to_primitive_value(TVal* val) {
         }
     }
     return *val;
+}
+
+const uint FORIN_INITIAL_CAP = 64;
+
+/// Grow an HString** array if needed.
+fn bool forin_ensure_cap(HString*** arr, uint* cap, uint need) {
+    if (need >= *cap) {
+        uint new_cap = *cap * 2;
+        HString** new_arr = (HString**)libc::realloc(*arr, new_cap * HString*::size);
+        if (new_arr == null) return false;
+        *arr = new_arr;
+        *cap = new_cap;
+    }
+    return true;
+}
+
+/// Add a key if not already in the seen set (pointer compare for interned strings).
+fn bool forin_add_key(HString*** keys, uint* count,
+                      HString*** seen, uint* seen_cnt, uint* cap,
+                      HString* key) {
+    for (uint j = 0; j < *seen_cnt; j++) {
+        if ((*seen)[j] == key) return true;
+    }
+    if (!forin_ensure_cap(keys, cap, *count + 1)) return false;
+    if (!forin_ensure_cap(seen, cap, *seen_cnt + 1)) return false;
+    (*keys)[*count] = key;
+    (*count)++;
+    (*seen)[*seen_cnt] = key;
+    (*seen_cnt)++;
+    return true;
+}
+
+/// Collect all enumerable property keys from an object and its prototype
+/// chain, de-duplicated (own keys shadow prototype keys).
+///
+/// Returns a malloc'd ForInState, or null if allocation fails.
+/// The caller (NEXTFOR) is responsible for freeing via `libc::free`.
+fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
+    const uint MAX_PROTO_DEPTH = 256;
+
+    uint cap = FORIN_INITIAL_CAP;
+    HString** keys = (HString**)libc::malloc(cap * HString*::size);
+    if (keys == null) return null;
+    uint count = 0;
+
+    HString** seen = (HString**)libc::malloc(cap * HString*::size);
+    if (seen == null) { libc::free(keys); return null; }
+    uint seen_cnt = 0;
+
+    HObject* cur = obj;
+    uint depth = 0;
+    while (cur != null && depth < MAX_PROTO_DEPTH) {
+        // Own named properties
+        for (uint i = 0; i < cur.prop_count; i++) {
+            if (cur.props[i].flags.enumerable && cur.props[i].key != null) {
+                HString* k = (HString*)cur.props[i].key;
+                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    libc::free(keys);
+                    libc::free(seen);
+                    return null;
+                }
+            }
+        }
+
+        // Own dense array part indices
+        for (uint i = 0; i < cur.array_size; i++) {
+            if (!cur.array_part[i].is_undefined()) {
+                char[16] buf;
+                int len = libc::snprintf(&buf, 16, "%u", i);
+                if (len > 0 && len < 16) {
+                    char[] s = buf[:(uint)len];
+                    HString* k = intern_string(vm, s);
+                    if (k == null) continue;
+                    if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                        libc::free(keys);
+                        libc::free(seen);
+                        return null;
+                    }
+                }
+            }
+        }
+
+        cur = cur.prototype;
+        depth++;
+    }
+
+    libc::free(seen);
+
+    ForInState* state = (ForInState*)libc::malloc(ForInState::size);
+    if (state == null) { libc::free(keys); return null; }
+    state.keys = keys;
+    state.count = count;
+    state.index = 0;
+    return state;
 }
 
 /// ECMAScript Abstract Equality Comparison (§7.2.14).
@@ -1950,17 +2061,78 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         // === ITEraTOR ===
 
-        case Opcode.INITFOR:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
-            break;
+        case Opcode.INITFOR: {
+            // ra = object to enumerate, rb = iter_state (output)
+            // null/undefined → skip loop (rb = null marker)
+            if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
+                rb.set_null();
+                break;
+            }
 
-        case Opcode.NEXTFOR:
-            ra.tag = BOOLEAN;
-            ra.boolean = false;
-            rb.tag = BOOLEAN;
-            rb.boolean = false;
+            // Get the object (ToObject for primitives)
+            HObject* obj;
+            if (ra.tag == OBJECT) {
+                obj = (HObject*)ra.pointer;
+            } else if (ra.tag == BOOLEAN) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.BOOLEAN);
+                if (catch _err = wrapped) { rb.set_null(); break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.bool_proto;
+                obj.primitive_value.tag = BOOLEAN;
+                obj.primitive_value.boolean = ra.boolean;
+            } else if (ra.tag == STRING) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.STRING);
+                if (catch _err = wrapped) { rb.set_null(); break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.string_proto;
+                obj.primitive_value.tag = STRING;
+                obj.primitive_value.pointer = ra.pointer;
+            } else if (ra.tag == NUMBER || ra.tag == FASTINT) {
+                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.NUMBER);
+                if (catch _err = wrapped) { rb.set_null(); break; }
+                obj = wrapped;
+                obj.prototype = vm.heap.number_proto;
+                obj.primitive_value = *ra;
+            } else {
+                rb.set_null();
+                break;
+            }
+
+            // Collect enumerable keys
+            ForInState* state = collect_forin_keys(vm, obj);
+            if (state == null) {
+                rb.set_null();
+                break;
+            }
+            rb.tag = POINTER;
+            rb.pointer = state;
             break;
+        }
+
+        case Opcode.NEXTFOR: {
+            // ra = iter_var (output key), rb = has_next (output bool)
+            // rc = iter_state (input ForInState*)
+            ForInState* state = (ForInState*)rc.pointer;
+            if (state == null || state.index >= state.count) {
+                // No more keys — clean up and signal done
+                if (state != null) {
+                    libc::free(state.keys);
+                    libc::free(state);
+                }
+                rb.tag = BOOLEAN;
+                rb.boolean = false;
+                ra.set_undefined();
+                break;
+            }
+
+            // Return the next key
+            ra.tag = STRING;
+            ra.pointer = state.keys[state.index];
+            state.index++;
+            rb.tag = BOOLEAN;
+            rb.boolean = true;
+            break;
+        }
 
         // === EXCEPTION HANDLING ===
 

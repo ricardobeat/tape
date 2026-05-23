@@ -839,6 +839,10 @@ fn void? CompilerContext.for_statement(&self) {
             // Emit NEXTFOR: iter_var = next key, B = has_next
             ushort has_next = self.alloc_reg();
             self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
+            // Sync the for-in variable to the environment so GETVAR can find it
+            // (needed at global scope where resolve_var is not used)
+            uint forin_name_idx = self.add_string_constant(name_tok.str_value);
+            self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
 
             // If no more keys, exit
             uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
