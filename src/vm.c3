@@ -1253,6 +1253,45 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 } else {
                     return VM_ERROR~;
                 }
+            } else if (rb.tag == STRING) {
+                // Auto-box string primitive: walk String.prototype chain
+                HString* key = get_prop_key(vm, rc);
+                if (key != null && vm.heap.string_proto != null) {
+                    TVal found = get_prop_with_proto(vm.heap.string_proto, key);
+                    ra.tag = found.tag;
+                    ra.fastint = found.fastint;
+                    ra.number = found.number;
+                    ra.pointer = found.pointer;
+                } else {
+                    ra.tag = UNDEFINED;
+                    ra.pointer = null;
+                }
+            } else if (rb.tag == NUMBER || rb.tag == FASTINT) {
+                // Auto-box number primitive: walk Number.prototype chain
+                HString* key = get_prop_key(vm, rc);
+                if (key != null && vm.heap.number_proto != null) {
+                    TVal found = get_prop_with_proto(vm.heap.number_proto, key);
+                    ra.tag = found.tag;
+                    ra.fastint = found.fastint;
+                    ra.number = found.number;
+                    ra.pointer = found.pointer;
+                } else {
+                    ra.tag = UNDEFINED;
+                    ra.pointer = null;
+                }
+            } else if (rb.tag == BOOLEAN) {
+                // Auto-box boolean primitive: walk Boolean.prototype chain
+                HString* key = get_prop_key(vm, rc);
+                if (key != null && vm.heap.bool_proto != null) {
+                    TVal found = get_prop_with_proto(vm.heap.bool_proto, key);
+                    ra.tag = found.tag;
+                    ra.fastint = found.fastint;
+                    ra.number = found.number;
+                    ra.pointer = found.pointer;
+                } else {
+                    ra.tag = UNDEFINED;
+                    ra.pointer = null;
+                }
             } else {
                 ra.tag = UNDEFINED;
                 ra.pointer = null;

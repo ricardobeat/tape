@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 13
+**Last Updated:** Session 14
 **Baseline:** 25 / 53,568 passing
 **Target:** 53,568 / 53,568
 
@@ -9,7 +9,7 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Currently passing | 25 |
+| Currently passing | 29 |
 | Currently failing | 0 |
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.05% |
@@ -101,16 +101,16 @@
 | Function constructor | ❌ | ~100 tests |
 | **Total Phase 5** | **~89%** | **~570 tests** |
 
-### Phase 6: Built-in Prototype Methods — ✅ PARTIAL (15%)
+### Phase 6: Built-in Prototype Methods — ✅ PARTIAL (45%)
 | Component | Status | Unlocks |
 |---|---|---|
 | Math methods | ✅ | ~100 tests |
-| String.prototype | ❌ | ~300 tests |
+| String.prototype | ✅ | ~300 tests |
 | Array.prototype | ❌ | ~400 tests |
 | Number.prototype | ❌ | ~50 tests |
 | Boolean.prototype | ✅ (done in 5a) | ~10 tests |
 | Function.prototype | ❌ | ~100 tests |
-| **Total Phase 6** | **~15%** | **~960 tests** |
+| **Total Phase 6** | **~45%** | **~960 tests** |
 
 ### Phase 7: Remaining ES5 Features — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -172,6 +172,7 @@
 | 11 | 35 (all pass) | **Phase 5d: Object constructor** — `Object()`/`Object(value)` as function (ES5 §15.2.1.1) with primitive wrapping (Boolean/Number/String wrapper objects), `new Object(value)` as constructor (ES5 §15.2.2.1), `Object.prototype.toString()` returning `[object Class]`, `Object.prototype.valueOf()` returning `this`. **Phase 5e: Array constructor** — `Array()`/`Array(n)`/`Array(...items)` as function and `new Array(...)` as constructor (ES5 §15.4.1/15.4.2) with single-numeric-arg length handling and multiple-arg element population, `Array.prototype` with `.constructor`. |
 | 12 | 24 (all pass) | **Number static properties** — `builtin_fn_index` field added to `HObject` for native builtin function objects. Number constructor changed from `LIGHTFUNC` to proper `HObject` with `callable`/`constructable` flags and `builtin_fn_index = BUILTIN_NUMBER`. Static properties: `Number.MAX_VALUE`, `Number.MIN_VALUE`, `Number.NaN`, `Number.NEGATIVE_INFINITY`, `Number.POSITIVE_INFINITY` (non-writable, non-enumerable, non-configurable). CALL and NEW_OBJ handlers updated to dispatch to builtin handlers for function objects with `builtin_fn_index`. |
 || 13 | 25 (all pass) | **Phase 6a: Math methods** — Math.abs, floor, ceil, round, max, min, pow, sqrt, exp, log, sin, cos, tan, random registered as LIGHTFUNCs on the Math object. Hash seed bug fix: separated `hash_seed` from `rnd_state` so string interning works correctly even after `Math.random()` advances the PRNG state. |
+|| 14 | 29 (all pass) | **Phase 6b: String.prototype methods** — charAt, charCodeAt, indexOf, slice, substring, substr, toLowerCase, toUpperCase, trim, split, concat, replace implemented. GETPROP auto-boxing for primitive STRING/NUMBER/BOOLEAN types walking their respective prototype chains so methods can be called on literals. 107 new JS assertions covering all methods on both primitives and wrapper objects. |
 
 ## Running the Test Suite
 

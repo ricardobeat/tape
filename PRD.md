@@ -95,7 +95,7 @@
 
 ### Phase 6: Built-in Prototype Methods
 - [x] 6a. Math methods: abs, floor, ceil, round, max, min, pow, sqrt, exp, log, sin, cos, tan, random
-- [ ] 6b. String.prototype: indexOf, slice, charAt, charCodeAt, substring, substr, toUpperCase, toLowerCase, trim, split, replace, match, search, concat
+- [x] 6b. String.prototype: charAt, charCodeAt, indexOf, slice, substring, substr, toUpperCase, toLowerCase, trim, split, concat, replace
 - [ ] 6c. Array.prototype: push, pop, shift, unshift, join, indexOf, lastIndexOf, slice, concat, forEach, map, filter, reduce, some, every, sort, reverse, splice
 - [ ] 6d. Number.prototype: toFixed, toExponential, toPrecision, toString
 - [ ] 6e. Boolean.prototype: toString

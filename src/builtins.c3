@@ -59,7 +59,19 @@ const uint BUILTIN_MATH_SIN   = 36;
 const uint BUILTIN_MATH_COS   = 37;
 const uint BUILTIN_MATH_TAN   = 38;
 const uint BUILTIN_MATH_RANDOM = 39;
-const uint BUILTIN_COUNT                   = 40;
+const uint BUILTIN_STRING_PROTO_CHARAT     = 40;
+const uint BUILTIN_STRING_PROTO_CHARCODEAT = 41;
+const uint BUILTIN_STRING_PROTO_INDEXOF    = 42;
+const uint BUILTIN_STRING_PROTO_SLICE      = 43;
+const uint BUILTIN_STRING_PROTO_SUBSTRING  = 44;
+const uint BUILTIN_STRING_PROTO_SUBSTR     = 45;
+const uint BUILTIN_STRING_PROTO_TOUPPERCASE = 46;
+const uint BUILTIN_STRING_PROTO_TOLOWERCASE = 47;
+const uint BUILTIN_STRING_PROTO_TRIM       = 48;
+const uint BUILTIN_STRING_PROTO_SPLIT      = 49;
+const uint BUILTIN_STRING_PROTO_CONCAT     = 50;
+const uint BUILTIN_STRING_PROTO_REPLACE    = 51;
+const uint BUILTIN_COUNT                   = 52;
 
 struct BuiltinContext {
     void* vm;
@@ -758,6 +770,756 @@ fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// String.prototype methods (Phase 6b)
+// ============================================================================
+
+/// Helper: extract the string data and length from `this`, handling both
+/// primitive strings and String wrapper objects. Returns null on failure.
+fn HString* string_proto_get_this(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == STRING) {
+        return (HString*)this_val.pointer;
+    }
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.STRING &&
+            obj.primitive_value.tag == STRING) {
+            return (HString*)obj.primitive_value.pointer;
+        }
+    }
+    // TypeError: String.prototype method called on incompatible value
+    HString* type_str = builtin_intern_string(ctx.heap, "String");
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
+        TVal msg_val;
+        msg_val.tag = STRING;
+        msg_val.pointer = msg_str;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        // Store the error for bubbling — but for now just return null
+    }
+    return null;
+}
+
+/// Helper: convert TVal to integer (ES5 §9.4 ToInteger).
+fn double builtin_to_integer(TVal* val) {
+    switch (val.tag) {
+        case UNDEFINED:
+            return 0.0;
+        case NULL_VAL:
+            return 0.0;
+        case BOOLEAN:
+            return val.boolean ? 1.0 : 0.0;
+        case NUMBER:
+            double d = val.number;
+            if (math::is_nan(d)) return 0.0;
+            if (math::is_inf(d) || d == 0.0) return d;
+            return math::trunc(d);
+        case FASTINT:
+            return (double)val.fastint;
+        case STRING: {
+            double d = builtin_string_to_number((HString*)val.pointer);
+            if (math::is_nan(d)) return 0.0;
+            if (math::is_inf(d) || d == 0.0) return d;
+            return math::trunc(d);
+        }
+        case OBJECT: {
+            TVal prim = to_primitive_value_local(val);
+            if (prim.tag != OBJECT) {
+                return builtin_to_integer(&prim);
+            }
+            return 0.0;
+        }
+        default:
+            return 0.0;
+    }
+}
+
+/// Helper: clamp to int and coerce to range [0, len].
+fn uint clamp_index(double d, uint len) {
+    if (math::is_nan(d)) return 0;
+    if (d < 0) return 0;
+    if (d >= (double)len) return len;
+    return (uint)(long)d;
+}
+
+/// String.prototype.charAt(pos) — ES5 §15.5.4.4
+fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+    double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    if (pos < 0 || pos >= (double)len) {
+        // Return empty string
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    uint idx = (uint)(long)pos;
+    char[2] buf;
+    buf[0] = data[idx];
+    buf[1] = 0;
+    HString* result = builtin_intern_string(ctx.heap, buf[:1]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.charCodeAt(pos) — ES5 §15.5.4.5
+fn void builtin_string_proto_charCodeAt(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+    double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    if (pos < 0 || pos >= (double)len) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = double::nan;
+        return;
+    }
+    uint idx = (uint)(long)pos;
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)(data[idx] & 0xFF);
+}
+
+/// String.prototype.indexOf(searchString, position) — ES5 §15.5.4.7
+fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    // Get search string
+    HString* search_hstr;
+    if (ctx.argc > 0) {
+        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        search_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (search_hstr == null) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = -1;
+        return;
+    }
+
+    // Get position
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    uint pos;
+    if (math::is_nan(pos_d) || pos_d < 0) {
+        pos = 0;
+    } else if (pos_d >= (double)len) {
+        pos = len;
+    } else {
+        pos = (uint)(long)pos_d;
+    }
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    // Search for occurrence
+    if (search_len == 0) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = (long)pos;
+        return;
+    }
+
+    int result = -1;
+    for (uint i = pos; i + search_len <= len; i++) {
+        bool found = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (data[i + j] != search_data[j]) {
+                found = false;
+                break;
+            }
+        }
+        if (found) {
+            result = (int)i;
+            break;
+        }
+    }
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)result;
+}
+
+/// String.prototype.slice(start, end) — ES5 §15.5.4.13
+fn void builtin_string_proto_slice(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+
+    // Handle negative start
+    int start_i;
+    if (math::is_nan(start_d)) {
+        start_i = 0;
+    } else if (start_d < 0) {
+        start_i = (int)(long)start_d + (int)len;
+        if (start_i < 0) start_i = 0;
+    } else {
+        start_i = (int)(long)start_d;
+        if (start_i > (int)len) start_i = (int)len;
+    }
+
+    // Handle negative end
+    int end_i;
+    if (math::is_nan(end_d)) {
+        end_i = (int)len;
+    } else if (end_d < 0) {
+        end_i = (int)(long)end_d + (int)len;
+        if (end_i < 0) end_i = 0;
+    } else {
+        end_i = (int)(long)end_d;
+        if (end_i > (int)len) end_i = (int)len;
+    }
+
+    if (start_i >= end_i) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+
+    uint substr_len = (uint)(end_i - start_i);
+    char[256] buf;
+    usz copy_len = (usz)(substr_len < 256 ? substr_len : 256);
+    for (usz i = 0; i < copy_len; i++) {
+        buf[i] = data[(uint)start_i + i];
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.substring(start, end) — ES5 §15.5.4.15
+fn void builtin_string_proto_substring(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    uint len = s_hstr.blen;
+
+    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+
+    uint start = clamp_index(start_d, len);
+    uint end = clamp_index(end_d, len);
+
+    uint from = start < end ? start : end;
+    uint to = start < end ? end : start;
+
+    if (from >= to) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+
+    uint substr_len = to - from;
+    char* cstr = s_hstr.get_cstr();
+    char[256] buf;
+    usz copy_len = (usz)(substr_len < 256 ? substr_len : 256);
+    for (usz i = 0; i < copy_len; i++) {
+        buf[i] = cstr[from + i];
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.substr(start, length) — ES5 §B.2.3
+fn void builtin_string_proto_substr(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    uint len = s_hstr.blen;
+
+    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+
+    int start_i;
+    if (math::is_nan(start_d)) {
+        start_i = 0;
+    } else if (start_d < 0) {
+        start_i = (int)(long)start_d + (int)len;
+        if (start_i < 0) start_i = 0;
+    } else {
+        start_i = (int)(long)start_d;
+        if (start_i > (int)len) start_i = (int)len;
+    }
+
+    double length_d;
+    if (ctx.argc > 1) {
+        length_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+    } else {
+        length_d = (double)(len - (uint)start_i);
+    }
+
+    int length_i;
+    if (math::is_nan(length_d) || length_d <= 0) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    length_i = (int)(long)length_d;
+    if (length_i > (int)len - start_i) {
+        length_i = (int)len - start_i;
+    }
+    if (length_i <= 0) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+
+    char* cstr = s_hstr.get_cstr();
+    char[256] buf;
+    usz copy_len = (usz)((uint)length_i < 256 ? (uint)length_i : 256);
+    for (usz i = 0; i < copy_len; i++) {
+        buf[i] = cstr[(uint)start_i + i];
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.toLowerCase() — ES5 §15.5.4.17 (ASCII-only)
+fn void builtin_string_proto_toLowerCase(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    char[256] buf;
+    usz copy_len = len < 256 ? (usz)len : 256;
+    for (usz i = 0; i < copy_len; i++) {
+        char c = data[i];
+        if (c >= 'A' && c <= 'Z') {
+            buf[i] = (char)(c + 32);
+        } else {
+            buf[i] = c;
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.toUpperCase() — ES5 §15.5.4.18 (ASCII-only)
+fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    char[256] buf;
+    usz copy_len = len < 256 ? (usz)len : 256;
+    for (usz i = 0; i < copy_len; i++) {
+        char c = data[i];
+        if (c >= 'a' && c <= 'z') {
+            buf[i] = (char)(c - 32);
+        } else {
+            buf[i] = c;
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.trim() — ES5 §15.5.4.20
+fn void builtin_string_proto_trim(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    // Trim leading whitespace
+    uint start = 0;
+    while (start < len && is_ecma_whitespace(data[start])) {
+        start++;
+    }
+
+    // All whitespace
+    if (start == len) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+
+    // Trim trailing whitespace
+    uint end = len;
+    while (end > start && is_ecma_whitespace(data[end - 1])) {
+        end--;
+    }
+
+    uint substr_len = end - start;
+    char[256] buf;
+    usz copy_len = substr_len < 256 ? (usz)substr_len : 256;
+    for (usz i = 0; i < copy_len; i++) {
+        buf[i] = data[start + i];
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.split(separator, limit) — ES5 §15.5.4.14 (string-only separator)
+fn void builtin_string_proto_split(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    // Create result array
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    // If separator is undefined, return [string]
+    if (ctx.argc == 0 || ctx.regs[ctx.base_reg].tag == UNDEFINED) {
+        TVal elem;
+        elem.tag = STRING;
+        elem.pointer = s_hstr;
+        HString* zero_key = builtin_intern_string(ctx.heap, "0");
+        arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+        TVal len_val;
+        len_val.tag = FASTINT;
+        len_val.fastint = 1;
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = arr;
+        return;
+    }
+
+    // Get separator string
+    HString* sep_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    if (sep_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Get limit
+    uint limit = 0xFFFFFFFF;
+    if (ctx.argc > 1) {
+        double limit_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+        if (!math::is_nan(limit_d) && limit_d >= 0) {
+            limit = (uint)(long)limit_d;
+        }
+    }
+
+    char* sep_data = sep_hstr.get_cstr();
+    uint sep_len = sep_hstr.blen;
+
+    // Empty separator: split by character
+    if (sep_len == 0) {
+        uint count = len < limit ? len : limit;
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        TVal len_val;
+        len_val.tag = FASTINT;
+        len_val.fastint = (long)count;
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        for (uint i = 0; i < count; i++) {
+            char[2] buf;
+            buf[0] = data[i];
+            buf[1] = 0;
+            HString* ch_str = builtin_intern_string(ctx.heap, buf[:1]);
+            TVal elem;
+            elem.tag = STRING;
+            elem.pointer = ch_str;
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+            HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = arr;
+        return;
+    }
+
+    // Non-empty separator: split by separator
+    uint arr_idx = 0;
+    uint search_pos = 0;
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+
+    while (search_pos + sep_len <= len && arr_idx < limit) {
+        // Find separator
+        int found_pos = -1;
+        for (uint i = search_pos; i + sep_len <= len; i++) {
+            bool match = true;
+            for (uint j = 0; j < sep_len; j++) {
+                if (data[i + j] != sep_data[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                found_pos = (int)i;
+                break;
+            }
+        }
+
+        if (found_pos < 0) break;
+
+        // Extract substring from search_pos to found_pos
+        uint substr_len = (uint)found_pos - search_pos;
+        HString* substr;
+        if (substr_len == 0) {
+            substr = builtin_intern_string(ctx.heap, "");
+        } else {
+            char[256] buf;
+            usz copy_len = substr_len < 256 ? (usz)substr_len : 256;
+            for (usz i = 0; i < copy_len; i++) {
+                buf[i] = data[search_pos + i];
+            }
+            substr = builtin_intern_string(ctx.heap, buf[:copy_len]);
+        }
+
+        // Add to array
+        TVal elem;
+        elem.tag = STRING;
+        elem.pointer = substr;
+        char[16] idx_buf;
+        int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
+        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+        arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        arr_idx++;
+
+        search_pos = (uint)(found_pos + (int)sep_len);
+    }
+
+    // Add remaining part if not at limit
+    if (arr_idx < limit) {
+        uint substr_len = len - search_pos;
+        HString* substr;
+        if (substr_len == 0) {
+            substr = builtin_intern_string(ctx.heap, "");
+        } else {
+            char[256] buf;
+            usz copy_len = substr_len < 256 ? (usz)substr_len : 256;
+            for (usz i = 0; i < copy_len; i++) {
+                buf[i] = data[search_pos + i];
+            }
+            substr = builtin_intern_string(ctx.heap, buf[:copy_len]);
+        }
+        TVal elem;
+        elem.tag = STRING;
+        elem.pointer = substr;
+        char[16] idx_buf;
+        int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
+        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+        arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        arr_idx++;
+    }
+
+    TVal len_val;
+    len_val.tag = FASTINT;
+    len_val.fastint = (long)arr_idx;
+    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+/// String.prototype.concat(...args) — ES5 §15.5.4.6
+fn void builtin_string_proto_concat(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    // Concatenate all into a buffer
+    // First, compute total length
+    uint total_len = len;
+    usz max_args = ctx.argc < 256 ? (usz)ctx.argc : 256;
+    for (usz i = 0; i < max_args; i++) {
+        HString* arg_str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + i]);
+        if (arg_str == null) continue;
+        total_len += arg_str.blen;
+    }
+
+    if (total_len > 512) total_len = 512;  // cap buffer size
+
+    char[512] buf;
+    usz offset = 0;
+
+    // Copy original string
+    usz orig_copy = (usz)(len < 512 ? len : 512);
+    for (usz i = 0; i < orig_copy; i++) {
+        buf[offset++] = data[i];
+    }
+
+    // Copy each arg
+    for (usz i = 0; i < max_args && offset < 512; i++) {
+        HString* arg_str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + i]);
+        if (arg_str == null) continue;
+        char* arg_data = arg_str.get_cstr();
+        uint arg_len = arg_str.blen;
+        usz copy = (usz)(arg_len < (512 - offset) ? arg_len : (512 - offset));
+        for (usz j = 0; j < copy; j++) {
+            buf[offset++] = arg_data[j];
+        }
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.prototype.replace(searchValue, replaceValue) — ES5 §15.5.4.11 (string-only)
+fn void builtin_string_proto_replace(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // If not enough args or searchValue is RegExp-like (object), return string as-is
+    if (ctx.argc < 1) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s_hstr;
+        return;
+    }
+
+    TVal* search_val = &ctx.regs[ctx.base_reg];
+
+    // If searchValue is an object (RegExp), return original string for now
+    if (search_val.tag == OBJECT) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s_hstr;
+        return;
+    }
+
+    HString* search_hstr = builtin_to_string(ctx.heap, search_val);
+    if (search_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Get replaceValue
+    HString* replace_hstr;
+    if (ctx.argc > 1) {
+        replace_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+    } else {
+        replace_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (replace_hstr == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    // Find first occurrence
+    int found_pos = -1;
+    for (uint i = 0; i + search_len <= len; i++) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (data[i + j] != search_data[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            found_pos = (int)i;
+            break;
+        }
+    }
+
+    if (found_pos < 0) {
+        // Not found: return original string
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s_hstr;
+        return;
+    }
+
+    // Build result: prefix + replacement + suffix
+    char* replace_data = replace_hstr.get_cstr();
+    uint replace_len = replace_hstr.blen;
+
+    uint total = len - search_len + replace_len;
+    if (total > 512) total = 512;
+
+    char[512] buf;
+    usz offset = 0;
+
+    // Copy prefix (before match)
+    for (usz i = 0; i < (usz)found_pos && offset < 512; i++) {
+        buf[offset++] = data[i];
+    }
+
+    // Copy replacement
+    for (usz i = 0; i < (usz)replace_len && offset < 512; i++) {
+        buf[offset++] = replace_data[i];
+    }
+
+    // Copy suffix (after match)
+    uint suffix_start = (uint)(found_pos + (int)search_len);
+    for (usz i = (usz)suffix_start; i < (usz)len && offset < 512; i++) {
+        buf[offset++] = data[i];
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
 // Number constructor builtins
 // ============================================================================
 
@@ -1364,6 +2126,30 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_math_tan(ctx);
         case BUILTIN_MATH_RANDOM:
             builtin_math_random(ctx);
+        case BUILTIN_STRING_PROTO_CHARAT:
+            builtin_string_proto_charAt(ctx);
+        case BUILTIN_STRING_PROTO_CHARCODEAT:
+            builtin_string_proto_charCodeAt(ctx);
+        case BUILTIN_STRING_PROTO_INDEXOF:
+            builtin_string_proto_indexOf(ctx);
+        case BUILTIN_STRING_PROTO_SLICE:
+            builtin_string_proto_slice(ctx);
+        case BUILTIN_STRING_PROTO_SUBSTRING:
+            builtin_string_proto_substring(ctx);
+        case BUILTIN_STRING_PROTO_SUBSTR:
+            builtin_string_proto_substr(ctx);
+        case BUILTIN_STRING_PROTO_TOUPPERCASE:
+            builtin_string_proto_toUpperCase(ctx);
+        case BUILTIN_STRING_PROTO_TOLOWERCASE:
+            builtin_string_proto_toLowerCase(ctx);
+        case BUILTIN_STRING_PROTO_TRIM:
+            builtin_string_proto_trim(ctx);
+        case BUILTIN_STRING_PROTO_SPLIT:
+            builtin_string_proto_split(ctx);
+        case BUILTIN_STRING_PROTO_CONCAT:
+            builtin_string_proto_concat(ctx);
+        case BUILTIN_STRING_PROTO_REPLACE:
+            builtin_string_proto_replace(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -1931,9 +2717,43 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.fastint = (long)BUILTIN_STRING_PROTO_VALUEOF;
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
+    // Add String.prototype methods (Phase 6b)
+    if (!register_string_proto_method(proto, heap, "charAt",     BUILTIN_STRING_PROTO_CHARAT))     return false;
+    if (!register_string_proto_method(proto, heap, "charCodeAt", BUILTIN_STRING_PROTO_CHARCODEAT)) return false;
+    if (!register_string_proto_method(proto, heap, "indexOf",    BUILTIN_STRING_PROTO_INDEXOF))    return false;
+    if (!register_string_proto_method(proto, heap, "slice",      BUILTIN_STRING_PROTO_SLICE))      return false;
+    if (!register_string_proto_method(proto, heap, "substring",  BUILTIN_STRING_PROTO_SUBSTRING))  return false;
+    if (!register_string_proto_method(proto, heap, "substr",     BUILTIN_STRING_PROTO_SUBSTR))     return false;
+    if (!register_string_proto_method(proto, heap, "toLowerCase",BUILTIN_STRING_PROTO_TOLOWERCASE)) return false;
+    if (!register_string_proto_method(proto, heap, "toUpperCase",BUILTIN_STRING_PROTO_TOUPPERCASE)) return false;
+    if (!register_string_proto_method(proto, heap, "trim",       BUILTIN_STRING_PROTO_TRIM))       return false;
+    if (!register_string_proto_method(proto, heap, "split",      BUILTIN_STRING_PROTO_SPLIT))      return false;
+    if (!register_string_proto_method(proto, heap, "concat",     BUILTIN_STRING_PROTO_CONCAT))     return false;
+    if (!register_string_proto_method(proto, heap, "replace",    BUILTIN_STRING_PROTO_REPLACE))    return false;
+
     // Register String as a global constructor
     if (!register_simple_builtin(global_env, heap, "String", BUILTIN_STRING)) return false;
 
+    return true;
+}
+
+/// Helper: register a String.prototype method as a lightfunc property.
+fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, uint fn_index) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = LIGHTFUNC;
+    tv.fastint = (long)fn_index;
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
 
