@@ -24,6 +24,8 @@ module duktape::hobject;
 
 import duktape::types;
 import duktape::hstring;
+import duktape::bytecode;
+import duktape::env;
 import libc;
 
 // Faults for optional returns
@@ -251,6 +253,14 @@ struct HObject {
     uint          array_size;
     /// Number of slots actually holding a defined value.
     uint          array_used;
+
+    // --- Compiled function support (non-null for JS functions) -----------
+    /// The compiled function template (null for non-function objects).
+    CompiledFunction* comp_func;
+    /// Captured variable environment (for closures).
+    EnvRecord*    var_env;
+    /// Captured lexical environment (for closures).
+    EnvRecord*    lex_env;
 }
 
 // ============================================================================

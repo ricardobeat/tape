@@ -6,10 +6,9 @@
       "type": "static-lib",
       "sources": [ "src" ]
     },
-    "duk_cli": {
+    "test_vm": {
       "type": "executable",
-      "sources": [ "src", "cli" ],
-      "dependencies": []
+      "sources": [ "src", "test_vm_runner" ]
     }
   }
 }

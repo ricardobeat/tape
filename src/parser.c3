@@ -235,7 +235,8 @@ fn uint Parser.make_unary(&self, lexer::TokenType op, uint operand, uint line, u
 
 /// Parse a primary expression (literal, identifier, or parenthesized expression).
 fn uint? Parser.parse_primary(&self) {
-    lexer::Token tok = self.lexer.next_token()!;
+    lexer::Token tok = self.lexer.current;
+    self.lexer.next_token()!;  // Consume the token
     
     switch (tok.type) {
         case lexer::TokenType.NUMBER:

@@ -156,6 +156,19 @@ fn bool HString.equals_hstring(&self, HString* other) {
     return self == other;
 }
 
+/// Lexicographic comparison of two HStrings.
+///
+/// Returns -1 if a < b, 0 if a == b, 1 if a > b, comparing by
+/// UTF-8 byte value (which matches code-point ordering for well-formed
+/// UTF-8).
+fn int hstring_compare(HString* a, HString* b) {
+    int min_len = (int)(a.blen < b.blen ? a.blen : b.blen);
+    int cmp = libc::memcmp(a.get_cstr(), b.get_cstr(), (usz)min_len);
+    if (cmp != 0) return cmp > 0 ? 1 : -1;
+    if (a.blen == b.blen) return 0;
+    return a.blen > b.blen ? 1 : -1;
+}
+
 // ============================================================================
 // HString — flag accessors
 // ============================================================================
@@ -333,6 +346,48 @@ fn HString*? hstring_alloc(void* heap_ptr, char[] data, uint hash) {
         libc::memcpy(dest, data.ptr, data.len);
     }
     dest[data.len] = 0;  // NUL terminator
+
+    return s;
+}
+
+/// Concatenate two HStrings into a new HString.
+///
+/// Allocates a single block containing both strings' bytes.
+/// Does not insert into the string table — caller must intern.
+fn HString*? hstring_concat(void* heap_ptr, HString* a, HString* b) {
+    usz a_len = (usz)a.blen;
+    usz b_len = (usz)b.blen;
+    usz total = HSTRING_HDR_SIZE + a_len + b_len + 1;
+
+    void* raw = mem::malloc((sz)total);
+    if (raw == null) {
+        return duktape::types::ALLOC_ERROR~;
+    }
+
+    libc::memset(raw, 0, HSTRING_HDR_SIZE);
+
+    HString* s = (HString*)raw;
+    s.flags.htype = HType.STRING;
+
+    s.blen = (uint)(a_len + b_len);
+    s.clen = a.clen + b.clen;
+
+    bool ascii = a.flags.is_ascii && b.flags.is_ascii;
+    s.flags.is_ascii = ascii;
+
+    s.hash = 0;  // caller must compute hash before interning
+    s.arridx = ARRIDX_NONE;
+
+    char* dest = (char*)((usz)raw + HSTRING_HDR_SIZE);
+    if (a_len > 0) {
+        char* src_a = (char*)((usz)a + HSTRING_HDR_SIZE);
+        libc::memcpy(dest, src_a, a_len);
+    }
+    if (b_len > 0) {
+        char* src_b = (char*)((usz)b + HSTRING_HDR_SIZE);
+        libc::memcpy(dest + a_len, src_b, b_len);
+    }
+    dest[a_len + b_len] = 0;
 
     return s;
 }

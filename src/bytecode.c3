@@ -192,7 +192,9 @@ enum Opcode : char {
     // ---- Function calls --------------------------------------------------
 
     /// `A = B(C..C+N)`  — function call.  A = result register,
-    /// B = function register, C = first argument register.
+    /// B = callee register, C = argument count.
+    /// Value stack: valstack[B] = callee, valstack[B+1..B+C] = args.
+    /// After call: valstack[A] = return value.
     CALL,
     /// `A = B.C(...)`  — method call (receiver is B).
     CALL_PROP,
