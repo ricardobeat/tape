@@ -26,7 +26,10 @@ const uint BUILTIN_ERROR_PROTO_TOSTRING = 12;
 const uint BUILTIN_BOOLEAN                 = 13;
 const uint BUILTIN_BOOLEAN_PROTO_TOSTRING  = 14;
 const uint BUILTIN_BOOLEAN_PROTO_VALUEOF   = 15;
-const uint BUILTIN_COUNT                   = 16;
+const uint BUILTIN_STRING                 = 16;
+const uint BUILTIN_STRING_PROTO_TOSTRING  = 17;
+const uint BUILTIN_STRING_PROTO_VALUEOF   = 18;
+const uint BUILTIN_COUNT                   = 19;
 
 struct BuiltinContext {
     void* vm;
@@ -463,6 +466,79 @@ fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
 }
 
 /// Boolean.prototype.valueOf — returns the wrapped boolean value
+// ============================================================================
+// String constructor builtins
+// ============================================================================
+
+/// ToString then return string primitive (function call) or
+/// a String wrapper object (constructor call).
+fn void builtin_string(BuiltinContext* ctx) {
+    HString* s;
+    if (ctx.argc > 0) {
+        s = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        s = builtin_intern_string(ctx.heap, "");
+    }
+
+    if (ctx.is_constructor) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.STRING);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.string_proto;
+        obj.primitive_value.tag = STRING;
+        obj.primitive_value.pointer = s;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+    } else {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+    }
+}
+
+/// String.prototype.toString — returns the wrapped string value
+fn void builtin_string_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.STRING &&
+            obj.primitive_value.tag == STRING) {
+            ctx.result.tag = STRING;
+            ctx.result.pointer = obj.primitive_value.pointer;
+            return;
+        }
+    } else if (this_val.tag == STRING) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = this_val.pointer;
+        return;
+    }
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
+/// String.prototype.valueOf — returns the wrapped string primitive
+fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.get_class() == hobject::ObjClass.STRING &&
+            obj.primitive_value.tag == STRING) {
+            ctx.result.tag = STRING;
+            ctx.result.pointer = obj.primitive_value.pointer;
+            return;
+        }
+    } else if (this_val.tag == STRING) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = this_val.pointer;
+        return;
+    }
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
 fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.tag == OBJECT && this_val.pointer != null) {
@@ -516,6 +592,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_boolean_proto_toString(ctx);
         case BUILTIN_BOOLEAN_PROTO_VALUEOF:
             builtin_boolean_proto_valueOf(ctx);
+        case BUILTIN_STRING:
+            builtin_string(ctx);
+        case BUILTIN_STRING_PROTO_TOSTRING:
+            builtin_string_proto_toString(ctx);
+        case BUILTIN_STRING_PROTO_VALUEOF:
+            builtin_string_proto_valueOf(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -598,6 +680,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Boolean constructor
     if (!register_boolean_constructor(global_env, heap)) return false;
+
+    // Register String constructor
+    if (!register_string_constructor(global_env, heap)) return false;
 
     return true;
 }
@@ -904,3 +989,44 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
 
     return true;
 }
+
+// ============================================================================
+// String constructor registration
+// ============================================================================
+
+/// Create String.prototype and register the String constructor globally.
+fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create String.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.STRING);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype in later phases
+    heap.string_proto = proto;
+
+    // Set .constructor to String lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_STRING;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .toString() method
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.tag = LIGHTFUNC;
+    tostring_tv.fastint = (long)BUILTIN_STRING_PROTO_TOSTRING;
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .valueOf() method
+    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    TVal valueof_tv;
+    valueof_tv.tag = LIGHTFUNC;
+    valueof_tv.fastint = (long)BUILTIN_STRING_PROTO_VALUEOF;
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register String as a global constructor
+    if (!register_simple_builtin(global_env, heap, "String", BUILTIN_STRING)) return false;
+
+    return true;
+}
+

@@ -86,7 +86,7 @@
 
 ### Phase 5: Built-in Constructors
 - [x] 5a. Boolean constructor (new Boolean(), Boolean())
-- [ ] 5b. String constructor (new String(), String())
+- [x] 5b. String constructor (new String(), String())
 - [ ] 5c. Number constructor as function (Number())
 - [ ] 5d. Object constructor as function (Object() with primitive wrapping)
 - [ ] 5e. Array constructor

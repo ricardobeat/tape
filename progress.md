@@ -1,7 +1,7 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 8
-**Baseline:** 23 / 53,568 passing
+**Last Updated:** Session 9
+**Baseline:** 24 / 53,568 passing
 **Target:** 53,568 / 53,568
 
 ## Summary
@@ -9,12 +9,12 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Currently passing | 23 |
+| Currently passing | 24 |
 | Currently failing | 0 |
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.04% |
-| Pass rate (ES5-core, filtered) | 100% (23/23) |
-| Local JS tests passing | 23/23 |
+| Pass rate (ES5-core, filtered) | 100% (24/24) |
+| Local JS tests passing | 24/24 |
 
 ## Per-Phase Status
 
@@ -87,16 +87,16 @@
 | FINALLY block support | ✅ | - |
 | **Total Phase 4** | **~100%** | **~550 tests** |
 
-### Phase 5: Built-in Constructors — ✅ PARTIAL (17%)
+### Phase 5: Built-in Constructors — ✅ PARTIAL (33%)
 | Component | Status | Unlocks |
 |---|---|---|
 | Boolean constructor | ✅ | ~50 tests |
-| String constructor | ❌ | ~100 tests |
+| String constructor | ✅ | ~100 tests |
 | Number() as function | ❌ | ~150 tests |
 | Object() as function | ❌ | ~100 tests |
 | Array constructor | ❌ | ~50 tests |
 | Function constructor | ❌ | ~100 tests |
-| **Total Phase 5** | **~17%** | **~550 tests** |
+| **Total Phase 5** | **~33%** | **~550 tests** |
 
 ### Phase 6: Built-in Prototype Methods — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -164,6 +164,7 @@
 | 6 | 22 (all pass) | TypeError on primitive value access in GETPROP (null/undefined), PUTPROP (null/undefined), CALL (non-function), NEW_OBJ (non-constructor) |
 | 7 | 22 (all pass) | **try/catch/throw VM implementation** — Catcher chain with activation unwinding, TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcodes, cross-activation throw propagation, error sites changed from `return VM_ERROR~` to `vm_throw_value()` for proper catchability, compiler modified to encode catch/finally flags in TRY instruction with jump slot for finally offset, global-scope PUTVAR after CATCH for env-based variable resolution |
 | 8 | 23 (all pass) | **Phase 5a: Boolean constructor** - `Boolean()`/`Boolean(value)` as function with ToBoolean, `new Boolean(value)` as constructor creating Boolean wrapper Object, `Boolean.prototype` with `.toString()` and `.valueOf()`, `is_constructor` flag added to `BuiltinContext`, `primitive_value` field added to `HObject` for wrapper objects, ToPrimitive support in abstract equality (`abstract_eq`) for wrapper comparison |
+| 9 | 24 (all pass) | **Phase 5b: String constructor** - `String()`/`String(value)` as function using `builtin_to_string`, `new String(value)` as constructor creating String wrapper Object, `String.prototype` with `.toString()` and `.valueOf()`, `string_proto` added to Heap, **compiler fix**: method call `this` binding now correctly passes the base object for `obj.method()` calls by setting `call_prop_obj_reg` in `member_expr` when LPAREN follows DOT/LBRACKET. |
 
 ## Running the Test Suite
 

@@ -100,6 +100,7 @@ struct Heap {
 
     // Built-in constructor prototypes
     HObject* bool_proto;
+    HObject* string_proto;
 }
 
 // ============================================================================

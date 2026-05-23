@@ -155,6 +155,10 @@ struct CompilerContext {
     ushort last_member_obj_reg;
     ushort last_member_prop_reg;
 
+    /// Property call: the object register to use as 'this' in emit_call.
+    /// Set to MAX_REGISTERS when not in a property call.
+    ushort call_prop_obj_reg;
+
     // Global scope flag: when true, all var decls use environment only (no register cache)
     bool is_global;
 }
@@ -211,6 +215,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.try_depth = 0;
     self.label_count = 0;
     self.patch_count = 0;
+    self.call_prop_obj_reg = MAX_REGISTERS;
 }
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
@@ -1790,9 +1795,21 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 fn ushort? CompilerContext.call_expr(&self) {
     ushort callee = self.member_expr()!;
 
+    // If member_expr saved a property object but next token is not a call,
+    // free the object register now.
+    if (self.call_prop_obj_reg != MAX_REGISTERS && !self.check(TokenType.LPAREN)) {
+        self.free_reg(self.call_prop_obj_reg);
+        self.call_prop_obj_reg = MAX_REGISTERS;
+    }
+
     for (;;) {
         if (self.check(TokenType.LPAREN)) {
             callee = self.emit_call(callee)!;
+            // Free the property object used as 'this' (if any)
+            if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                self.free_reg(self.call_prop_obj_reg);
+                self.call_prop_obj_reg = MAX_REGISTERS;
+            }
         } else if (self.match(TokenType.DOT)) {
             // Property access: callee.name
             Token prop_name = self.expect(TokenType.IDENTIFIER)!;
@@ -1804,7 +1821,13 @@ fn ushort? CompilerContext.call_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)prop_reg);
             self.free_reg(prop_reg);
-            self.free_reg(callee);
+
+            // If next token is a call, keep the object alive for 'this'
+            if (self.check(TokenType.LPAREN)) {
+                self.call_prop_obj_reg = callee;
+            } else {
+                self.free_reg(callee);
+            }
             callee = result;
         } else if (self.match(TokenType.LBRACKET)) {
             // Computed property access: callee[expr]
@@ -1814,7 +1837,13 @@ fn ushort? CompilerContext.call_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
             self.free_reg(idx_reg);
-            self.free_reg(callee);
+
+            // If next token is a call, keep the object alive for 'this'
+            if (self.check(TokenType.LPAREN)) {
+                self.call_prop_obj_reg = callee;
+            } else {
+                self.free_reg(callee);
+            }
             callee = result;
         } else if (self.match(TokenType.OPT_CHAIN)) {
             // Optional chaining: callee?.prop or callee?.()
@@ -1872,8 +1901,16 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
             self.next_reg = callee_reg + 2;
         }
     }
-    // Place undefined 'this' slot
-    self.emit_abc(Opcode.LDUNDEF, (uint)(callee_reg + 1), 0, 0);
+    // Place undefined 'this' slot (or the property object for method calls)
+    // DEBUG: check call_prop_obj_reg
+    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+        // DEBUG: print the register number via stderr
+        self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)self.call_prop_obj_reg, 0);
+        self.free_reg(self.call_prop_obj_reg);
+        self.call_prop_obj_reg = MAX_REGISTERS;
+    } else {
+        self.emit_abc(Opcode.LDUNDEF, (uint)(callee_reg + 1), 0, 0);
+    }
     if (self.next_reg < first_arg) {
         self.next_reg = first_arg;
     }
@@ -1987,10 +2024,20 @@ fn ushort? CompilerContext.member_expr(&self) {
                 self.last_was_member = true;
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = prop_reg;
+                // Also set up for potential method call 'this'
+                if (self.peek_type() == TokenType.LPAREN) {
+                    self.call_prop_obj_reg = obj;
+                }
             } else {
                 // RHS mode: free obj/prop immediately
                 self.free_reg(prop_reg);
-                self.free_reg(obj);
+                // If next token is LPAREN, this is a method call.
+                // Track the object for 'this' setup in emit_call.
+                if (self.peek_type() == TokenType.LPAREN) {
+                    self.call_prop_obj_reg = obj;
+                } else {
+                    self.free_reg(obj);
+                }
             }
             obj = result;
         } else if (self.match(TokenType.LBRACKET)) {
@@ -2004,9 +2051,16 @@ fn ushort? CompilerContext.member_expr(&self) {
                 self.last_was_member = true;
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = idx_reg;
+                if (self.peek_type() == TokenType.LPAREN) {
+                    self.call_prop_obj_reg = obj;
+                }
             } else {
                 self.free_reg(idx_reg);
-                self.free_reg(obj);
+                if (self.peek_type() == TokenType.LPAREN) {
+                    self.call_prop_obj_reg = obj;
+                } else {
+                    self.free_reg(obj);
+                }
             }
             obj = result;
         } else {
