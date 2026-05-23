@@ -90,7 +90,8 @@ struct TryInfo {
 
 struct LabelInfo {
     char[] name;
-    uint loop_depth;
+    uint loop_index;   ///< index into loop_stack (NO_PATCH if not yet resolved)
+    bool is_loop;      ///< true if this label refers to a loop (supports continue)
 }
 
 /// Tracks a break/continue patch chain for forward-patching jumps.
@@ -692,6 +693,19 @@ fn void? CompilerContext.statement(&self) {
             self.emit_simple(Opcode.DEBUGGER);
             self.match(TokenType.SEMICOLON);
         default:
+            // Check for labels: identifier : statement
+            // We consume the identifier and check if the next token is ':'
+            if (tt == TokenType.IDENTIFIER) {
+                // Consume the identifier token to check what follows
+                Token id_tok = self.advance()!;
+                if (self.peek_type() == TokenType.COLON) {
+                    self.advance()!; // consume ':'
+                    self.labeled_statement(id_tok.str_value)!;
+                    break;
+                }
+                // Not a label — push the identifier back and fall through
+                self.lexer.pushback(id_tok);
+            }
             self.expression_statement()!;
     }
 }
@@ -1284,11 +1298,66 @@ fn void? CompilerContext.switch_statement(&self) {
     self.free_reg(disc_reg);
 }
 
+/// Parse a labeled statement: `identifier : statement`.
+/// Supports labeled break and continue (ES5 §12.12).
+fn void? CompilerContext.labeled_statement(&self, char[] name) {
+    // Check for duplicate labels
+    for (uint i = 0; i < self.label_count; i++) {
+        if (str_eq(self.labels[i].name, name)) {
+            return COMPILE_ERROR~;
+        }
+    }
+
+    // Register the label
+    uint label_idx = self.label_count;
+    if (label_idx >= MAX_LABELS) return COMPILE_ERROR~;
+    self.labels[label_idx].name = name;
+    self.label_count++;
+
+    // Look ahead to determine if the inner statement is a loop
+    TokenType next = self.peek_type();
+
+    if (next == TokenType.FOR || next == TokenType.WHILE || next == TokenType.DO) {
+        // The label refers to a loop. The loop will be pushed at index
+        // self.loop_depth (the current depth before the loop's push_loop).
+        self.labels[label_idx].loop_index = self.loop_depth;
+        self.labels[label_idx].is_loop = true;
+        self.statement()!;
+    } else {
+        // Non-loop label — push a virtual loop entry so break can target it.
+        self.push_loop(self.code_count);
+        self.labels[label_idx].loop_index = self.loop_depth - 1;
+        self.labels[label_idx].is_loop = false;
+        self.statement()!;
+        self.pop_loop(); // patches all breaks targeting this label
+    }
+}
+
 /// Parse break statement.
+/// If an identifier follows `break`, it's a labeled break (ES5 §12.12).
 fn void? CompilerContext.break_statement(&self) {
     self.expect(TokenType.BREAK)!;
 
-    // Optional label (not fully implemented — just handle unlabelled break)
+    if (self.peek_type() == TokenType.IDENTIFIER) {
+        // Labeled break — find the label and add jump to its loop's break chain
+        Token label_tok = self.advance()!;
+        char[] label_name = label_tok.str_value;
+
+        for (uint i = 0; i < self.label_count; i++) {
+            if (str_eq(self.labels[i].name, label_name)) {
+                uint loop_idx = self.labels[i].loop_index;
+                uint jump_addr = self.emit_jump(Opcode.JUMP);
+                self.loop_stack[loop_idx].break_patch_head =
+                    self.add_patch(self.loop_stack[loop_idx].break_patch_head, jump_addr);
+                self.match(TokenType.SEMICOLON);
+                return;
+            }
+        }
+        // Label not found
+        return COMPILE_ERROR~;
+    }
+
+    // Unlabeled break — break out of the innermost loop or switch
     uint jump_addr = self.emit_jump(Opcode.JUMP);
     self.add_break_patch(jump_addr);
 
@@ -1296,10 +1365,34 @@ fn void? CompilerContext.break_statement(&self) {
 }
 
 /// Parse continue statement.
+/// If an identifier follows `continue`, it's a labeled continue (ES5 §12.12).
 fn void? CompilerContext.continue_statement(&self) {
     self.expect(TokenType.CONTINUE)!;
 
-    // Jump back to the continue target of the innermost loop
+    if (self.peek_type() == TokenType.IDENTIFIER) {
+        // Labeled continue — find the label and jump to its loop's continue target
+        Token label_tok = self.advance()!;
+        char[] label_name = label_tok.str_value;
+
+        for (uint i = 0; i < self.label_count; i++) {
+            if (str_eq(self.labels[i].name, label_name)) {
+                if (!self.labels[i].is_loop) {
+                    // continue on a non-loop label is a syntax error
+                    return COMPILE_ERROR~;
+                }
+                uint loop_idx = self.labels[i].loop_index;
+                uint target = self.loop_stack[loop_idx].continue_target;
+                int offset = (int)target - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, offset));
+                self.match(TokenType.SEMICOLON);
+                return;
+            }
+        }
+        // Label not found
+        return COMPILE_ERROR~;
+    }
+
+    // Unlabeled continue — jump to continue target of the innermost loop
     if (self.loop_depth > 0) {
         uint target = self.loop_stack[self.loop_depth - 1].continue_target;
         int offset = (int)target - (int)self.code_count - 1;

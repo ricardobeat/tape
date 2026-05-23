@@ -288,6 +288,9 @@ struct Lexer {
     Token current;
     Token lookahead;
     bool has_lookahead;
+    /// Single-token pushback buffer for limited backtracking (e.g. label detection).
+    Token pushed_back;
+    bool has_pushed_back;
     bool strict_mode;
     void* heap;
 }
@@ -306,6 +309,7 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.current = make_token(TokenType.EOF_TOKEN, 1, 1);
     lex.lookahead = make_token(TokenType.EOF_TOKEN, 1, 1);
     lex.has_lookahead = false;
+    lex.has_pushed_back = false;
     lex.strict_mode = false;
     lex.heap = heap;
     return lex;
@@ -320,6 +324,7 @@ fn void Lexer.reset(&self, char[] source) {
     self.current = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.lookahead = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.has_lookahead = false;
+    self.has_pushed_back = false;
 }
 
 // ============================================================================
@@ -1164,6 +1169,13 @@ fn Token? Lexer.scan_template(&self) {
 
 /// Advance to the next token and return it.
 fn Token? Lexer.next_token(&self) {
+    // Check pushback buffer first
+    if (self.has_pushed_back) {
+        self.has_pushed_back = false;
+        self.current = self.pushed_back;
+        return self.current;
+    }
+
     // If we have a lookahead token, consume it.
     if (self.has_lookahead) {
         self.has_lookahead = false;
@@ -1218,6 +1230,11 @@ fn Token? Lexer.next_token(&self) {
 
 /// Peek at the next token without consuming it.
 fn Token? Lexer.peek(&self) {
+    // Check pushback buffer first
+    if (self.has_pushed_back) {
+        return self.pushed_back;
+    }
+
     if (self.has_lookahead) {
         return self.lookahead;
     }
@@ -1263,4 +1280,11 @@ fn bool Lexer.match_token(&self, TokenType tt) {
         }
     }
     return false;
+}
+
+/// Push a token back into the input stream for limited backtracking.
+/// The next call to next_token() will return this token.
+fn void Lexer.pushback(&self, Token tok) {
+    self.pushed_back = tok;
+    self.has_pushed_back = true;
 }

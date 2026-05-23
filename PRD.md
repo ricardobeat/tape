@@ -108,7 +108,7 @@
 - [x] 7c. delete operator (DELPROP)
 - [x] 7d. in operator (property existence check)
 - [x] 7e. switch/case statement (runtime verification)
-- [ ] 7f. break/continue with labels
+- [x] 7f. break/continue with labels
 - [ ] 7g. with statement
 - [ ] 7h. eval (direct and indirect)
 - **Unlocks:** ~500+ tests
