@@ -32,7 +32,11 @@ const uint BUILTIN_STRING_PROTO_VALUEOF   = 18;
 const uint BUILTIN_NUMBER                 = 19;
 const uint BUILTIN_NUMBER_PROTO_TOSTRING  = 20;
 const uint BUILTIN_NUMBER_PROTO_VALUEOF   = 21;
-const uint BUILTIN_COUNT                   = 22;
+const uint BUILTIN_OBJECT                  = 22;
+const uint BUILTIN_OBJECT_PROTO_TOSTRING   = 23;
+const uint BUILTIN_OBJECT_PROTO_VALUEOF    = 24;
+const uint BUILTIN_ARRAY                   = 25;
+const uint BUILTIN_COUNT                   = 26;
 
 struct BuiltinContext {
     void* vm;
@@ -849,6 +853,260 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     ctx.result.pointer = null;
 }
 
+// ============================================================================
+// Object constructor builtins
+// ============================================================================
+
+/// Object() as function (ES5 §15.2.1.1) or new Object() as constructor (§15.2.2.1).
+/// If value is null/undefined/absent, returns a new empty Object.
+/// If value is already an Object, returns it.
+/// Otherwise, wraps the primitive (boolean/number/string) in a wrapper object.
+fn void builtin_object(BuiltinContext* ctx) {
+    // Handle object prototype method calls (this-value dispatch)
+    if (!ctx.is_constructor && ctx.argc == 0) {
+        // Object() with no args — create and return new empty object
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.object_proto;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    // Get the first argument
+    TVal arg = ctx.regs[ctx.base_reg];
+
+    // null/undefined/not supplied → new empty object
+    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.object_proto;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    // Already an object → return as-is
+    if (arg.tag == OBJECT) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = arg.pointer;
+        return;
+    }
+
+    // Primitive → create wrapper object (ToObject per ES5 §9.9)
+    if (arg.tag == BOOLEAN) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.BOOLEAN);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.bool_proto;
+        obj.primitive_value.tag = BOOLEAN;
+        obj.primitive_value.boolean = arg.boolean;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    if (arg.tag == NUMBER || arg.tag == FASTINT) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.NUMBER);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.number_proto;
+        obj.primitive_value = arg;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    if (arg.tag == STRING) {
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.STRING);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.string_proto;
+        obj.primitive_value.tag = STRING;
+        obj.primitive_value.pointer = arg.pointer;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+        return;
+    }
+
+    // Fallback — new empty object
+    HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    if (catch err = obj_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* obj = obj_raw;
+    obj.prototype = ctx.heap.object_proto;
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
+
+/// Object.prototype.toString — returns "[object Class]"
+fn void builtin_object_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        char[64] buf;
+        char* class_name = "Object";
+        switch (obj.get_class()) {
+            case hobject::ObjClass.ARRAY:     class_name = "Array"; break;
+            case hobject::ObjClass.FUNCTION:  class_name = "Function"; break;
+            case hobject::ObjClass.BOOLEAN:   class_name = "Boolean"; break;
+            case hobject::ObjClass.NUMBER:    class_name = "Number"; break;
+            case hobject::ObjClass.STRING:    class_name = "String"; break;
+            case hobject::ObjClass.ERROR:     class_name = "Error"; break;
+            case hobject::ObjClass.JSON:      class_name = "JSON"; break;
+            case hobject::ObjClass.MATH:      class_name = "Math"; break;
+            case hobject::ObjClass.DATE:      class_name = "Date"; break;
+            case hobject::ObjClass.REGEXP:    class_name = "RegExp"; break;
+            default:                          class_name = "Object"; break;
+        }
+        int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
+        if (len > 0 && len < 64) {
+            HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+            ctx.result.tag = STRING;
+            ctx.result.pointer = s;
+            return;
+        }
+    } else if (this_val.tag == UNDEFINED) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Undefined]");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    } else if (this_val.tag == NULL_VAL) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Null]");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = s;
+        return;
+    }
+    HString* s = builtin_intern_string(ctx.heap, "[object Object]");
+    ctx.result.tag = STRING;
+    ctx.result.pointer = s;
+}
+
+/// Object.prototype.valueOf — returns 'this'
+fn void builtin_object_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    ctx.result.tag = this_val.tag;
+    ctx.result.fastint = this_val.fastint;
+    ctx.result.number = this_val.number;
+    ctx.result.pointer = this_val.pointer;
+}
+
+// ============================================================================
+// Array constructor builtins
+// ============================================================================
+
+/// Array() as function (ES5 §15.4.1) or new Array() as constructor (§15.4.2).
+/// Creates and returns a new Array object.
+fn void builtin_array(BuiltinContext* ctx) {
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+
+    if (ctx.argc == 0) {
+        // No args: empty array with length 0
+        TVal len_val;
+        len_val.tag = FASTINT;
+        len_val.fastint = 0;
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = arr;
+        return;
+    }
+
+    if (ctx.argc == 1) {
+        // Single arg: check if it's a number
+        TVal arg = ctx.regs[ctx.base_reg];
+        if (arg.tag == NUMBER || arg.tag == FASTINT) {
+            // Single numeric arg: set array length
+            double d;
+            if (arg.tag == FASTINT) {
+                d = (double)arg.fastint;
+            } else {
+                d = arg.number;
+            }
+            // ToUint32 check per ES5
+            uint n = (uint)(long)d;
+            if ((double)n != d) {
+                // Invalid array length — create empty array as fallback
+                TVal len_val;
+                len_val.tag = FASTINT;
+                len_val.fastint = 0;
+                arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+            } else {
+                TVal len_val;
+                len_val.tag = FASTINT;
+                len_val.fastint = (long)n;
+                arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+            }
+        } else {
+            // Single non-numeric arg: array with one element
+            TVal len_val;
+            len_val.tag = FASTINT;
+            len_val.fastint = 1;
+            arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+            // Set element at index 0
+            HString* zero_key = builtin_intern_string(ctx.heap, "0");
+            arr.put_prop(zero_key, arg, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = arr;
+        return;
+    }
+
+    // Multiple args: create array with given elements
+    TVal len_val;
+    len_val.tag = FASTINT;
+    len_val.fastint = (long)ctx.argc;
+    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+    // Set each element
+    for (ushort i = 0; i < ctx.argc; i++) {
+        TVal elem = ctx.regs[ctx.base_reg + (uint)i];
+        char[16] buf;
+        int len = libc::snprintf(&buf, 16, "%d", i);
+        if (len > 0 && len < 16) {
+            HString* idx_key = builtin_intern_string(ctx.heap, buf[:len]);
+            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -895,6 +1153,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_number_proto_toString(ctx);
         case BUILTIN_NUMBER_PROTO_VALUEOF:
             builtin_number_proto_valueOf(ctx);
+        case BUILTIN_OBJECT:
+            builtin_object(ctx);
+        case BUILTIN_OBJECT_PROTO_TOSTRING:
+            builtin_object_proto_toString(ctx);
+        case BUILTIN_OBJECT_PROTO_VALUEOF:
+            builtin_object_proto_valueOf(ctx);
+        case BUILTIN_ARRAY:
+            builtin_array(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -963,11 +1229,11 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
     if (!register_global_constant(global_env, heap, "Infinity", NUMBER, double::inf, 0)) return false;
 
+    // Register Object constructor FIRST — creates Object.prototype (root of all chains)
+    if (!register_object_constructor(global_env, heap)) return false;
+
     // Register Number constructor (with prototype and static properties)
     if (!register_number_constructor(global_env, heap)) return false;
-
-    // Register Object constructor (simple)
-    if (!register_object_constructor(global_env, heap)) return false;
 
     // Register Math object
     if (!register_math_object(global_env, heap)) return false;
@@ -981,22 +1247,50 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register String constructor
     if (!register_string_constructor(global_env, heap)) return false;
 
+    // Register Array constructor
+    if (!register_array_constructor(global_env, heap)) return false;
+
+    // Wire all prototype chains to Object.prototype
+    if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
+    if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
+    if (heap.string_proto != null) heap.string_proto.prototype = heap.object_proto;
+    if (heap.err_proto != null)    heap.err_proto.prototype = heap.object_proto;
+    if (heap.array_proto != null)  heap.array_proto.prototype = heap.object_proto;
+
     return true;
 }
 
 fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
-    HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
-    if (catch err = obj_raw) return false;
-    HObject* obj = obj_raw;
-    // Set Object.prototype (itself for root)
-    // Add a minimal prototype property so new Object() proto chain works
-    obj.prototype = null;
+    // Create Object.prototype — the root of all prototype chains
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Object.prototype is the root — its [[Prototype]] is null
+    heap.object_proto = proto;
 
-    TVal obj_tv;
-    obj_tv.tag = OBJECT;
-    obj_tv.fastint = 0;
-    obj_tv.pointer = obj;
-    return register_named_value(global_env, heap, "Object", obj_tv);
+    // Add .constructor to Object.prototype pointing to Object builtin
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_OBJECT;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .toString() method to Object.prototype
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.tag = LIGHTFUNC;
+    tostring_tv.fastint = (long)BUILTIN_OBJECT_PROTO_TOSTRING;
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .valueOf() method to Object.prototype (returns 'this')
+    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    TVal valueof_tv;
+    valueof_tv.tag = LIGHTFUNC;
+    valueof_tv.fastint = (long)BUILTIN_OBJECT_PROTO_VALUEOF;
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Object as a global constructor (lightfunc)
+    return register_simple_builtin(global_env, heap, "Object", BUILTIN_OBJECT);
 }
 
 fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
@@ -1330,6 +1624,32 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Register String as a global constructor
     if (!register_simple_builtin(global_env, heap, "String", BUILTIN_STRING)) return false;
+
+    return true;
+}
+
+// ============================================================================
+// Array constructor registration
+// ============================================================================
+
+/// Create Array.prototype and register the Array constructor globally.
+fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Array.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.ARRAY);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype in later phases
+    heap.array_proto = proto;
+
+    // Set .constructor to Array lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_ARRAY;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Array as a global constructor
+    if (!register_simple_builtin(global_env, heap, "Array", BUILTIN_ARRAY)) return false;
 
     return true;
 }

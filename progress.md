@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 10
+**Last Updated:** Session 11
 **Baseline:** 25 / 53,568 passing
 **Target:** 53,568 / 53,568
 
@@ -14,7 +14,7 @@
 | Filtered out (missing features) | ~632 |
 | Pass rate (all tests) | ~0.05% |
 | Pass rate (ES5-core, filtered) | 100% (25/25) |
-| Local JS tests passing | 25/25 |
+| Local JS tests passing | 35/35 |
 
 ## Per-Phase Status
 
@@ -87,7 +87,7 @@
 | FINALLY block support | ✅ | - |
 | **Total Phase 4** | **~100%** | **~550 tests** |
 
-### Phase 5: Built-in Constructors — ✅ PARTIAL (33%)
+### Phase 5: Built-in Constructors — ✅ PARTIAL (67%)
 | Component | Status | Unlocks |
 |---|---|---|
 | Boolean constructor | ✅ | ~50 tests |
@@ -96,10 +96,10 @@
 | Number constructor (new Number()) | ✅ | — |
 | Number.prototype.toString/valueOf | ✅ | — |
 | Number static properties (NaN, MAX_VALUE…) | ❌ | Needed for Number/static tests |
-| Object() as function | ❌ | ~100 tests |
-| Array constructor | ❌ | ~50 tests |
+| Object() as function | ✅ | ~100 tests |
+| Array constructor | ✅ | ~50 tests |
 | Function constructor | ❌ | ~100 tests |
-| **Total Phase 5** | **~50%** | **~550 tests** |
+| **Total Phase 5** | **~67%** | **~550 tests** |
 
 ### Phase 6: Built-in Prototype Methods — ❌ NOT STARTED
 | Component | Status | Unlocks |
@@ -169,6 +169,7 @@
 | 8 | 23 (all pass) | **Phase 5a: Boolean constructor** - `Boolean()`/`Boolean(value)` as function with ToBoolean, `new Boolean(value)` as constructor creating Boolean wrapper Object, `Boolean.prototype` with `.toString()` and `.valueOf()`, `is_constructor` flag added to `BuiltinContext`, `primitive_value` field added to `HObject` for wrapper objects, ToPrimitive support in abstract equality (`abstract_eq`) for wrapper comparison |
 | 9 | 24 (all pass) | **Phase 5b: String constructor** - `String()`/`String(value)` as function using `builtin_to_string`, `new String(value)` as constructor creating String wrapper Object, `String.prototype` with `.toString()` and `.valueOf()`, `string_proto` added to Heap, **compiler fix**: method call `this` binding now correctly passes the base object for `obj.method()` calls by setting `call_prop_obj_reg` in `member_expr` when LPAREN follows DOT/LBRACKET. |
 | 10 | 25 (23 test262 + 1 standalone) | **Phase 5c: Number constructor** - `Number()`/`Number(value)` as function using `builtin_to_number` (ToNumber ES5 §9.3 with full string parsing including hex, Infinity, whitespace), `new Number(value)` as constructor creating Number wrapper Object, `Number.prototype` with `.toString()` and `.valueOf()`, `builtin_to_number` local helper with `to_primitive_value_local` for wrapper object unwrapping, `builtin_string_to_number` (moved from vm.c3 to builtins.c3) for ES5-conformant string→number conversion, `number_proto` added to Heap struct. Static properties (Number.NaN, Number.MAX_VALUE, etc.) deferred. |
+| 11 | 35 (all pass) | **Phase 5d: Object constructor** — `Object()`/`Object(value)` as function (ES5 §15.2.1.1) with primitive wrapping (Boolean/Number/String wrapper objects), `new Object(value)` as constructor (ES5 §15.2.2.1), `Object.prototype.toString()` returning `[object Class]`, `Object.prototype.valueOf()` returning `this`. **Phase 5e: Array constructor** — `Array()`/`Array(n)`/`Array(...items)` as function and `new Array(...)` as constructor (ES5 §15.4.1/15.4.2) with single-numeric-arg length handling and multiple-arg element population, `Array.prototype` with `.constructor`. |
 
 ## Running the Test Suite
 

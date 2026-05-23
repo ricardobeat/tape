@@ -99,9 +99,11 @@ struct Heap {
     HObject* eval_err_proto;
 
     // Built-in constructor prototypes
+    HObject* object_proto;
     HObject* bool_proto;
     HObject* string_proto;
     HObject* number_proto;
+    HObject* array_proto;
 }
 
 // ============================================================================

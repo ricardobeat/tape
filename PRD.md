@@ -88,8 +88,8 @@
 - [x] 5a. Boolean constructor (new Boolean(), Boolean())
 - [x] 5b. String constructor (new String(), String())
 - [x] 5c. Number constructor as function (Number())
-- [ ] 5d. Object constructor as function (Object() with primitive wrapping)
-- [ ] 5e. Array constructor
+- [x] 5d. Object constructor as function (Object() with primitive wrapping)
+- [x] 5e. Array constructor
 - [ ] 5f. Function constructor (new Function('return 1'))
 - **Unlocks:** ~800+ tests
 
