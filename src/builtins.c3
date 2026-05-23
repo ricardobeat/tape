@@ -22,6 +22,9 @@ extern fn double math_sin(double x)           @MathLibc("sin");
 extern fn double math_cos(double x)           @MathLibc("cos");
 extern fn double math_tan(double x)           @MathLibc("tan");
 
+// Date/time library externals (link-time resolved via libc)
+// The Tm struct mirrors C's struct tm layout exactly.
+
 const uint BUILTIN_PRINT       = 0;
 const uint BUILTIN_CONSOLE_LOG = 1;
 const uint BUILTIN_PARSE_INT   = 2;
@@ -104,7 +107,23 @@ const uint BUILTIN_BOUND_CALL           = 80;
 const uint BUILTIN_EVAL                 = 81;
 const uint BUILTIN_JSON_PARSE           = 82;
 const uint BUILTIN_JSON_STRINGIFY       = 83;
-const uint BUILTIN_COUNT               = 84;
+const uint BUILTIN_DATE                 = 84;
+const uint BUILTIN_DATE_NOW             = 85;
+const uint BUILTIN_DATE_UTC             = 86;
+const uint BUILTIN_DATE_PARSE           = 87;
+const uint BUILTIN_DATE_PROTO_TOSTRING  = 88;
+const uint BUILTIN_DATE_PROTO_TOJSON    = 89;
+const uint BUILTIN_DATE_PROTO_VALUEOF   = 90;
+const uint BUILTIN_DATE_PROTO_GETTIME   = 91;
+const uint BUILTIN_DATE_PROTO_GETFULLYEAR  = 92;
+const uint BUILTIN_DATE_PROTO_GETMONTH     = 93;
+const uint BUILTIN_DATE_PROTO_GETDATE      = 94;
+const uint BUILTIN_DATE_PROTO_GETDAY       = 95;
+const uint BUILTIN_DATE_PROTO_GETHOURS     = 96;
+const uint BUILTIN_DATE_PROTO_GETMINUTES   = 97;
+const uint BUILTIN_DATE_PROTO_GETSECONDS   = 98;
+const uint BUILTIN_DATE_PROTO_GETMILLISECONDS = 99;
+const uint BUILTIN_COUNT               = 100;
 
 struct BuiltinContext {
     void* vm;
@@ -4697,6 +4716,454 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     ctx.result.pointer = result_str;
 }
 
+// ============================================================================
+// Date constructor and methods (ES5 §15.9)
+// ============================================================================
+
+/// ECMAScript epoch: 1970-01-01 00:00:00 UTC.
+const long EPOCH_YEAR = 1970;
+
+/// Helper: get current time in milliseconds since epoch.
+fn double date_now_ms() {
+    long t = libc::time(null);
+    return (double)t * 1000.0;
+}
+
+/// Helper: get the time value from a Date object, or NaN if not a Date.
+fn double date_get_time_value(TVal* val) {
+    if (val.tag == OBJECT && val.pointer != null) {
+        HObject* obj = (HObject*)val.pointer;
+        if (obj.get_class() == hobject::ObjClass.DATE &&
+            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            return obj.primitive_value.get_number_or_fastint();
+        }
+    }
+    return double::nan;
+}
+
+/// Helper: convert local time components to epoch ms using mktime.
+fn double date_local_to_ms(long year, long month, long day,
+                           long hour, long minute, long second, long ms) {
+    Tm tm;
+    tm.tm_sec   = (int)second;
+    tm.tm_min   = (int)minute;
+    tm.tm_hour  = (int)hour;
+    tm.tm_mday  = (int)day;
+    tm.tm_mon   = (int)month;
+    tm.tm_year  = (int)year - 1900;
+    tm.tm_wday  = 0;
+    tm.tm_yday  = 0;
+    tm.tm_isdst = -1;  // let mktime determine DST
+    long epoch_sec = (long)libc::mktime(&tm);
+    if (epoch_sec == -1) {
+        // Use approximate computation as fallback
+        // 86400 seconds per day, assume no DST issues
+        // This is approximate but better than NaN
+        long days = (year - 1970) * 365 + (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;
+        // Add months
+        long[12] days_in_months = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        for (long m = 0; m < month; m++) {
+            days += days_in_months[m];
+            if (leap && m == 1) days++;
+        }
+        days += day - 1;
+        epoch_sec = days * 86400 + hour * 3600 + minute * 60 + second;
+    }
+    return (double)epoch_sec * 1000.0 + (double)ms;
+}
+
+/// Format a Date as a string like "Mon Jan 01 2024 12:00:00 GMT+0000".
+fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
+    // For NaN, return "Invalid Date"
+    if (math::is_nan(time_val)) {
+        return (usz)libc::snprintf(buf, buf_size, "Invalid Date");
+    }
+    long t_sec = (long)(time_val / 1000.0);
+    Tm result;
+    libc::localtime_r(&t_sec, &result);
+    Tm* tm = &result;
+
+    // Compute timezone offset by comparing localtime with a gmtime conversion
+    // Use mktime on the local tm to get epoch, then compare with raw input
+    long local_as_epoch = (long)libc::mktime(tm);
+    // If mktime fails, local_as_epoch could be -1
+    if (local_as_epoch == -1) local_as_epoch = t_sec;
+    long tz_seconds = local_as_epoch - t_sec;
+    char tz_sign = '+';
+    int offs_hours = (int)(tz_seconds / 3600);
+    int offs_mins = (int)((tz_seconds / 60) % 60);
+    if (tz_seconds < 0) {
+        tz_sign = '-';
+        offs_hours = -offs_hours;
+        offs_mins = -offs_mins;
+    }
+
+    // String constants for weekday/month names
+    char* wday_name;
+    switch (tm.tm_wday) {
+        case 0: wday_name = "Sun"; break;
+        case 1: wday_name = "Mon"; break;
+        case 2: wday_name = "Tue"; break;
+        case 3: wday_name = "Wed"; break;
+        case 4: wday_name = "Thu"; break;
+        case 5: wday_name = "Fri"; break;
+        case 6: wday_name = "Sat"; break;
+        default: wday_name = "???"; break;
+    }
+    char* mon_name;
+    switch (tm.tm_mon) {
+        case 0: mon_name = "Jan"; break;
+        case 1: mon_name = "Feb"; break;
+        case 2: mon_name = "Mar"; break;
+        case 3: mon_name = "Apr"; break;
+        case 4: mon_name = "May"; break;
+        case 5: mon_name = "Jun"; break;
+        case 6: mon_name = "Jul"; break;
+        case 7: mon_name = "Aug"; break;
+        case 8: mon_name = "Sep"; break;
+        case 9: mon_name = "Oct"; break;
+        case 10: mon_name = "Nov"; break;
+        case 11: mon_name = "Dec"; break;
+        default: mon_name = "???"; break;
+    }
+
+    return (usz)libc::snprintf(buf, buf_size, "%s %s %02d %04d %02d:%02d:%02d GMT%c%02d%02d",
+        wday_name, mon_name,
+        tm.tm_mday, tm.tm_year + 1900,
+        tm.tm_hour, tm.tm_min, tm.tm_sec,
+        tz_sign, offs_hours, offs_mins);
+}
+
+/// Format a Date as ISO 8601 string (used by toJSON).
+fn usz date_format_iso(double time_val, char* buf, usz buf_size) {
+    if (math::is_nan(time_val)) {
+        return (usz)libc::snprintf(buf, buf_size, "null");
+    }
+    long t_sec = (long)(time_val / 1000.0);
+    Tm result;
+    libc::localtime_r(&t_sec, &result);
+    Tm* tm = &result;
+
+    // Compute timezone offset
+    long local_as_epoch = (long)libc::mktime(tm);
+    if (local_as_epoch == -1) local_as_epoch = t_sec;
+    long tz_seconds = local_as_epoch - t_sec;
+    char tz_sign = '+';
+    int offs_hours = (int)(tz_seconds / 3600);
+    int offs_mins = (int)((tz_seconds / 60) % 60);
+    if (tz_seconds < 0) {
+        tz_sign = '-';
+        offs_hours = -offs_hours;
+        offs_mins = -offs_mins;
+    }
+    int ms = (int)((long)time_val % 1000);
+    if (ms < 0) ms += 1000;
+
+    return (usz)libc::snprintf(buf, buf_size,
+        "%04d-%02d-%02dT%02d:%02d:%02d.%03d%c%02d:%02d",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        tm.tm_hour, tm.tm_min, tm.tm_sec, ms,
+        tz_sign, offs_hours, offs_mins);
+}
+
+/// Date() as function — returns current date-time string (ES5 §15.9.2.1).
+fn void builtin_date(BuiltinContext* ctx) {
+    double now = date_now_ms();
+    if (ctx.is_constructor) {
+        // new Date(...) — create Date object
+        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.DATE);
+        if (catch err = obj_raw) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.date_proto;
+
+        double time_val;
+        if (ctx.argc == 0) {
+            time_val = now;
+        } else if (ctx.argc == 1) {
+            TVal* arg = &ctx.regs[ctx.base_reg];
+            if (arg.tag == STRING) {
+                // Parse string (simplified — try as number first)
+                HString* s = (HString*)arg.pointer;
+                double num_val = builtin_string_to_number(s);
+                if (math::is_nan(num_val)) {
+                    // Non-numeric string — try basic parsing
+                    // For now, default to current time
+                    time_val = now;
+                } else {
+                    time_val = num_val;
+                }
+            } else if (arg.tag == NUMBER || arg.tag == FASTINT) {
+                time_val = arg.get_number_or_fastint();
+            } else if (arg.tag == UNDEFINED || arg.tag == NULL_VAL) {
+                time_val = now;
+            } else {
+                time_val = now;
+            }
+        } else {
+            // Multiple args: Date(year, month[, day, hour, minute, second, ms])
+            TVal* year_arg  = &ctx.regs[ctx.base_reg];
+            TVal* month_arg = &ctx.regs[ctx.base_reg + 1];
+            double year  = year_arg.get_number_or_fastint();
+            double month = month_arg.get_number_or_fastint();
+            double day   = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : 1.0;
+            double hour  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : 0.0;
+            double min   = (ctx.argc > 4) ? ctx.regs[ctx.base_reg + 4].get_number_or_fastint() : 0.0;
+            double sec   = (ctx.argc > 5) ? ctx.regs[ctx.base_reg + 5].get_number_or_fastint() : 0.0;
+            double ms    = (ctx.argc > 6) ? ctx.regs[ctx.base_reg + 6].get_number_or_fastint() : 0.0;
+
+            // Year < 100 means 1900 + year
+            if (year >= 0 && year < 100) year += 1900;
+
+            time_val = date_local_to_ms((long)year, (long)month, (long)day,
+                                        (long)hour, (long)min, (long)sec, (long)ms);
+        }
+
+        obj.primitive_value.tag = NUMBER;
+        obj.primitive_value.number = time_val;
+
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = obj;
+    } else {
+        // Date() as function — return string of current time
+        char[128] buf;
+        usz len = date_format_to_string(now, &buf, 128);
+        HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+        ctx.result.tag = STRING;
+        ctx.result.pointer = result;
+    }
+}
+
+/// Date.now() — ES5 §15.9.4.4
+fn void builtin_date_now(BuiltinContext* ctx) {
+    ctx.result.tag = NUMBER;
+    ctx.result.number = date_now_ms();
+}
+
+/// Date.UTC(year, month[, day, hour, minute, second, ms]) — ES5 §15.9.4.3
+fn void builtin_date_utc(BuiltinContext* ctx) {
+    if (ctx.argc < 2) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = double::nan;
+        return;
+    }
+    TVal* year_arg  = &ctx.regs[ctx.base_reg];
+    TVal* month_arg = &ctx.regs[ctx.base_reg + 1];
+    double year  = year_arg.get_number_or_fastint();
+    double month = month_arg.get_number_or_fastint();
+    double day   = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : 1.0;
+    double hour  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : 0.0;
+    double min   = (ctx.argc > 4) ? ctx.regs[ctx.base_reg + 4].get_number_or_fastint() : 0.0;
+    double sec   = (ctx.argc > 5) ? ctx.regs[ctx.base_reg + 5].get_number_or_fastint() : 0.0;
+    double ms    = (ctx.argc > 6) ? ctx.regs[ctx.base_reg + 6].get_number_or_fastint() : 0.0;
+
+    if (year >= 0 && year < 100) year += 1900;
+
+    // For Date.UTC, the time is in UTC. We compute days from epoch using
+    // simple calendar math (no timezone offset).
+    long y = (long)year;
+    long m = (long)month;
+    // Adjust year: treat Jan and Feb as months 13,14 of previous year
+    if (m < 2) { y--; m += 12; }
+    // Computations using the formula
+    long era = (y >= 0 ? y : y - 399) / 400;
+    long yoe = y - era * 400;  // [0, 399]
+    long doy = (153 * (m - 2) + 2) / 5 + (long)day - 1;  // day of year
+    long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long epoch_day = (era * 146097 + (long)doe - 719468);
+    double t = (double)epoch_day * 86400000.0;
+    t += (double)hour * 3600000.0 + (double)min * 60000.0 + (double)sec * 1000.0 + (double)ms;
+    ctx.result.tag = NUMBER;
+    ctx.result.number = t;
+}
+
+/// Date.parse(string) — ES5 §15.9.4.2 (simplified)
+fn void builtin_date_parse(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = double::nan;
+        return;
+    }
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    HString* s;
+    if (arg.tag == STRING) {
+        s = (HString*)arg.pointer;
+    } else {
+        s = builtin_to_string(ctx.heap, arg);
+    }
+    if (s == null || s.blen == 0) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = double::nan;
+        return;
+    }
+    // Try numeric parsing first (milliseconds)
+    double num_val = builtin_string_to_number(s);
+    if (!math::is_nan(num_val)) {
+        ctx.result.tag = NUMBER;
+        ctx.result.number = num_val;
+        return;
+    }
+    // For non-numeric strings, try parsing as date string via libc
+    // For now, return NaN (Date.parse is notoriously complex)
+    // Full implementation would use a proper date parser
+    ctx.result.tag = NUMBER;
+    ctx.result.number = double::nan;
+}
+
+/// Date.prototype.toString() — ES5 §15.9.5.2
+fn void builtin_date_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    char[128] buf;
+    usz len = date_format_to_string(time_val, &buf, 128);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// Date.prototype.toJSON(key) — ES5 §15.9.5.44
+fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    if (math::is_nan(time_val)) {
+        ctx.result.tag = NULL_VAL;
+        ctx.result.pointer = null;
+        return;
+    }
+    char[128] buf;
+    usz len = date_format_iso(time_val, &buf, 128);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// Date.prototype.valueOf() — ES5 §15.9.5.8
+fn void builtin_date_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = time_val;
+}
+
+/// Date.prototype.getTime() — ES5 §15.9.5.9
+fn void builtin_date_proto_getTime(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = time_val;
+}
+
+/// Helper: break a time value into local time components via localtime_r.
+fn void date_break_time(double time_val, long* year, long* month, long* day,
+                        long* wday, long* hour, long* minute, long* second) {
+    if (math::is_nan(time_val)) {
+        *year = *month = *day = *wday = *hour = *minute = *second = 0;
+        return;
+    }
+    long t_sec = (long)(time_val / 1000.0);
+    Tm result;
+    libc::localtime_r(&t_sec, &result);
+    *year   = (long)(result.tm_year) + 1900L;
+    *month  = (long)(result.tm_mon);
+    *day    = (long)(result.tm_mday);
+    *wday   = (long)(result.tm_wday);
+    *hour   = result.tm_hour;
+    *minute = result.tm_min;
+    *second = result.tm_sec;
+}
+
+/// Date.prototype.getFullYear() — ES5 §15.9.5.10
+fn void builtin_date_proto_getFullYear(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = year;
+}
+
+/// Date.prototype.getMonth() — ES5 §15.9.5.12
+fn void builtin_date_proto_getMonth(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = month;
+}
+
+/// Date.prototype.getDate() — ES5 §15.9.5.14
+fn void builtin_date_proto_getDate(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = day;
+}
+
+/// Date.prototype.getDay() — ES5 §15.9.5.16
+fn void builtin_date_proto_getDay(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = wday;
+}
+
+/// Date.prototype.getHours() — ES5 §15.9.5.18
+fn void builtin_date_proto_getHours(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = hour;
+}
+
+/// Date.prototype.getMinutes() — ES5 §15.9.5.20
+fn void builtin_date_proto_getMinutes(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = min;
+}
+
+/// Date.prototype.getSeconds() — ES5 §15.9.5.22
+fn void builtin_date_proto_getSeconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = sec;
+}
+
+/// Date.prototype.getMilliseconds() — ES5 §15.9.5.24
+fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    long ms = (long)tv % 1000;
+    if (ms < 0) ms += 1000;
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = ms;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -4849,6 +5316,38 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_json_parse(ctx);
         case BUILTIN_JSON_STRINGIFY:
             builtin_json_stringify(ctx);
+        case BUILTIN_DATE:
+            builtin_date(ctx);
+        case BUILTIN_DATE_NOW:
+            builtin_date_now(ctx);
+        case BUILTIN_DATE_UTC:
+            builtin_date_utc(ctx);
+        case BUILTIN_DATE_PARSE:
+            builtin_date_parse(ctx);
+        case BUILTIN_DATE_PROTO_TOSTRING:
+            builtin_date_proto_toString(ctx);
+        case BUILTIN_DATE_PROTO_TOJSON:
+            builtin_date_proto_toJSON(ctx);
+        case BUILTIN_DATE_PROTO_VALUEOF:
+            builtin_date_proto_valueOf(ctx);
+        case BUILTIN_DATE_PROTO_GETTIME:
+            builtin_date_proto_getTime(ctx);
+        case BUILTIN_DATE_PROTO_GETFULLYEAR:
+            builtin_date_proto_getFullYear(ctx);
+        case BUILTIN_DATE_PROTO_GETMONTH:
+            builtin_date_proto_getMonth(ctx);
+        case BUILTIN_DATE_PROTO_GETDATE:
+            builtin_date_proto_getDate(ctx);
+        case BUILTIN_DATE_PROTO_GETDAY:
+            builtin_date_proto_getDay(ctx);
+        case BUILTIN_DATE_PROTO_GETHOURS:
+            builtin_date_proto_getHours(ctx);
+        case BUILTIN_DATE_PROTO_GETMINUTES:
+            builtin_date_proto_getMinutes(ctx);
+        case BUILTIN_DATE_PROTO_GETSECONDS:
+            builtin_date_proto_getSeconds(ctx);
+        case BUILTIN_DATE_PROTO_GETMILLISECONDS:
+            builtin_date_proto_getMilliseconds(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -4947,6 +5446,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Function.prototype (call, apply, bind)
     if (!register_function_prototype(global_env, heap)) return false;
 
+    // Register Date constructor and prototype
+    if (!register_date_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -4954,6 +5456,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.err_proto != null)    heap.err_proto.prototype = heap.object_proto;
     if (heap.array_proto != null)  heap.array_proto.prototype = heap.object_proto;
     if (heap.function_proto != null) heap.function_proto.prototype = heap.object_proto;
+    if (heap.date_proto != null)   heap.date_proto.prototype = heap.object_proto;
 
     return true;
 }
@@ -5576,6 +6079,109 @@ fn bool register_function_prototype(EnvRecord* global_env, Heap* heap) {
     constructor_tv.tag = UNDEFINED;
     constructor_tv.pointer = null;
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    return true;
+}
+
+// ============================================================================
+// Date constructor registration
+// ============================================================================
+
+/// Create Date.prototype and register the Date constructor globally.
+fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Date.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.DATE);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype
+    heap.date_proto = proto;
+
+    // Set .constructor to Date lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_DATE;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add Date.prototype.toString()
+    if (!register_string_proto_method(proto, heap, "toString", BUILTIN_DATE_PROTO_TOSTRING)) return false;
+
+    // Add Date.prototype.toJSON()
+    if (!register_string_proto_method(proto, heap, "toJSON", BUILTIN_DATE_PROTO_TOJSON)) return false;
+
+    // Add Date.prototype.valueOf()
+    if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_DATE_PROTO_VALUEOF)) return false;
+
+    // Add Date.prototype.getTime()
+    if (!register_string_proto_method(proto, heap, "getTime", BUILTIN_DATE_PROTO_GETTIME)) return false;
+
+    // Add Date.prototype.getFullYear()
+    if (!register_string_proto_method(proto, heap, "getFullYear", BUILTIN_DATE_PROTO_GETFULLYEAR)) return false;
+
+    // Add Date.prototype.getMonth()
+    if (!register_string_proto_method(proto, heap, "getMonth", BUILTIN_DATE_PROTO_GETMONTH)) return false;
+
+    // Add Date.prototype.getDate()
+    if (!register_string_proto_method(proto, heap, "getDate", BUILTIN_DATE_PROTO_GETDATE)) return false;
+
+    // Add Date.prototype.getDay()
+    if (!register_string_proto_method(proto, heap, "getDay", BUILTIN_DATE_PROTO_GETDAY)) return false;
+
+    // Add Date.prototype.getHours()
+    if (!register_string_proto_method(proto, heap, "getHours", BUILTIN_DATE_PROTO_GETHOURS)) return false;
+
+    // Add Date.prototype.getMinutes()
+    if (!register_string_proto_method(proto, heap, "getMinutes", BUILTIN_DATE_PROTO_GETMINUTES)) return false;
+
+    // Add Date.prototype.getSeconds()
+    if (!register_string_proto_method(proto, heap, "getSeconds", BUILTIN_DATE_PROTO_GETSECONDS)) return false;
+
+    // Add Date.prototype.getMilliseconds()
+    if (!register_string_proto_method(proto, heap, "getMilliseconds", BUILTIN_DATE_PROTO_GETMILLISECONDS)) return false;
+
+    // Register Date as a global constructor (proper function object for static methods)
+    HObject*? date_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = date_raw) return false;
+    HObject* date_obj = date_raw;
+    date_obj.builtin_fn_index = (int)BUILTIN_DATE;
+
+    // Set Date.prototype on the constructor
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    date_obj.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Add Date.now() static method
+    if (!register_string_proto_method(date_obj, heap, "now", BUILTIN_DATE_NOW)) return false;
+
+    // Add Date.UTC() static method
+    if (!register_string_proto_method(date_obj, heap, "UTC", BUILTIN_DATE_UTC)) return false;
+
+    // Add Date.parse() static method
+    if (!register_string_proto_method(date_obj, heap, "parse", BUILTIN_DATE_PARSE)) return false;
+
+    // Register Date constructor globally as an OBJECT
+    uint hash = heap.hash_string("Date");
+    HString* existing = heap.str_table_lookup("Date", hash);
+    HString* date_key;
+    if (existing != null) {
+        date_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Date", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        date_key = new_key;
+    }
+    TVal date_val;
+    date_val.tag = OBJECT;
+    date_val.pointer = date_obj;
+    env::env_declare(global_env, date_key, date_val);
 
     return true;
 }

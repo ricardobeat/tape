@@ -108,6 +108,7 @@ struct Heap {
     HObject* number_proto;
     HObject* array_proto;
     HObject* function_proto;
+    HObject* date_proto;
 }
 
 // ============================================================================
