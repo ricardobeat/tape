@@ -38,6 +38,9 @@ enum TokenType : ushort {
     STRING,
     REGEXP,
     TEMPLATE,
+    TEMPLATE_HEAD,
+    TEMPLATE_MIDDLE,
+    TEMPLATE_TAIL,
 
     // Identifiers and keywords
     IDENTIFIER,
@@ -282,6 +285,12 @@ fn uint encode_utf8_to_buf(char[STRING_BUF_SIZE]* buf, uint offset, uint cp) {
 // Lexer state
 // ============================================================================
 
+/// Template literal parsing state.
+enum TemplateState : char {
+    NONE,       // Not inside a template literal
+    IN_EXPR,    // Inside ${...} expression of a template literal
+}
+
 struct Lexer {
     char[] source;
     uint pos;
@@ -297,6 +306,10 @@ struct Lexer {
     /// True if a line terminator was skipped between the previous and next token.
     bool seen_line_term;
     void* heap;
+
+    /// Template literal tracking
+    TemplateState template_state;
+    int template_brace_balance;
 }
 
 // ============================================================================
@@ -1115,81 +1128,261 @@ fn Token? Lexer.scan_regexp(&self) {
 // Lexer — scan template literal
 // ============================================================================
 
-/// Parse a template literal (backtick-delimited string).
-/// Returns a TEMPLATE token containing the raw source text including
-/// backticks.  Template expressions (${...}) are included in the raw text;
-/// full template parsing is handled at a higher level.
-fn Token? Lexer.scan_template(&self) {
+/// Scan the content of a template string part (between delimiters).
+/// Processes escape sequences and returns the decoded ("cooked") string.
+/// Reads until it encounters `, $, or the end of input.
+/// Returns the decoded text (may be empty) and sets `end_char` to the
+/// character that terminated the scan: '`' for backtick, '$' for "${",
+/// or 0 for end-of-input (error).
+fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes) {
+    uint start_pos = self.pos;
+
+    // Fast path: scan ahead to see if there are any escape sequences
+    // or special characters (`, $).
+    uint scan_pos = self.pos;
+    bool found_escapes = false;
+    while (scan_pos < (uint)self.source.len) {
+        char sc = self.source[scan_pos];
+        if (sc == '`') {
+            *end_char = '`';
+            break;
+        }
+        if (sc == '$' && scan_pos + 1 < (uint)self.source.len && self.source[scan_pos + 1] == '{') {
+            *end_char = '$';
+            break;
+        }
+        if (sc == '\\') {
+            found_escapes = true;
+            break;
+        }
+        if (sc == '\n' || sc == '\r') {
+            // Line terminator is allowed in templates
+            scan_pos++;
+            continue;
+        }
+        scan_pos++;
+    }
+
+    if (scan_pos == (uint)self.source.len) {
+        *end_char = 0;
+        *has_escapes = found_escapes;
+        return {};
+    }
+
+    if (!found_escapes) {
+        // No escapes — return slice into source
+        uint text_len = scan_pos - start_pos;
+        self.pos = scan_pos;
+        self.col += text_len;
+        // Count newlines in the text
+        for (uint i = start_pos; i < scan_pos; i++) {
+            if (self.source[i] == '\n') {
+                self.line++;
+                self.col = 1;
+            }
+        }
+        *has_escapes = false;
+        if (text_len > 0) {
+            return self.source[start_pos..scan_pos - 1];
+        }
+        return {};
+    }
+
+    // Slow path: build decoded string in stack buffer
+    char[STRING_BUF_SIZE] buf;
+    uint buf_len = 0;
+
+    while (!self.at_end()) {
+        char ch = self.peek_char();
+
+        if (ch == '`') {
+            *end_char = '`';
+            break;
+        }
+        if (ch == '$' && self.peek_char_at(1) == '{') {
+            *end_char = '$';
+            break;
+        }
+        if (ch == '\n' || ch == '\r') {
+            buf[buf_len] = self.advance_char();
+            buf_len++;
+            continue;
+        }
+
+        if (ch == '\\') {
+            self.advance_char(); // consume backslash
+            if (self.at_end()) {
+                *end_char = 0;
+                *has_escapes = true;
+                return {};
+            }
+
+            char esc = self.peek_char();
+
+            // Line continuation: \<LF> or \<CR><LF>
+            if (esc == '\n') {
+                self.advance_char();
+                continue;
+            }
+            if (esc == '\r') {
+                self.advance_char();
+                if (!self.at_end() && self.peek_char() == '\n') {
+                    self.advance_char();
+                }
+                continue;
+            }
+
+            self.advance_char(); // consume escape char
+            switch (esc) {
+                case 'n':  buf[buf_len] = '\n'; buf_len++;
+                case 'r':  buf[buf_len] = '\r'; buf_len++;
+                case 't':  buf[buf_len] = '\t'; buf_len++;
+                case 'b':  buf[buf_len] = 0x08; buf_len++;
+                case 'f':  buf[buf_len] = 0x0C; buf_len++;
+                case 'v':  buf[buf_len] = 0x0B; buf_len++;
+                case '0':  buf[buf_len] = 0; buf_len++;
+                case '\'': buf[buf_len] = '\''; buf_len++;
+                case '"':  buf[buf_len] = '"';  buf_len++;
+                case '\\': buf[buf_len] = '\\'; buf_len++;
+                case '`':  buf[buf_len] = '`';  buf_len++;
+                case '$':  buf[buf_len] = '$';  buf_len++;  // \$ escapes dollar
+
+                case 'x':
+                    if (self.remaining() < 2) { *end_char = 0; *has_escapes = true; return {}; }
+                    {
+                        char h1 = self.advance_char();
+                        char h2 = self.advance_char();
+                        if (!is_hex_digit(h1) || !is_hex_digit(h2)) { *end_char = 0; *has_escapes = true; return {}; }
+                        uint hval = hex_value(h1) * 16 + hex_value(h2);
+                        buf[buf_len] = (char)hval;
+                        buf_len++;
+                    }
+
+                case 'u':
+                    if (self.at_end()) { *end_char = 0; *has_escapes = true; return {}; }
+                    if (self.peek_char() == '{') {
+                        self.advance_char();
+                        uint ucp = 0;
+                        uint udigits = 0;
+                        while (!self.at_end() && self.peek_char() != '}') {
+                            if (!is_hex_digit(self.peek_char())) { *end_char = 0; *has_escapes = true; return {}; }
+                            ucp = ucp * 16 + hex_value(self.peek_char());
+                            self.advance_char();
+                            udigits++;
+                            if (ucp > 0x10FFFF) { *end_char = 0; *has_escapes = true; return {}; }
+                        }
+                        if (self.at_end() || udigits == 0) { *end_char = 0; *has_escapes = true; return {}; }
+                        self.advance_char();
+                        buf_len = encode_utf8_to_buf(&buf, buf_len, ucp);
+                    } else {
+                        if (self.remaining() < 4) { *end_char = 0; *has_escapes = true; return {}; }
+                        uint ucp4 = 0;
+                        for (int i = 0; i < 4; i++) {
+                            char hc = self.advance_char();
+                            if (!is_hex_digit(hc)) { *end_char = 0; *has_escapes = true; return {}; }
+                            ucp4 = ucp4 * 16 + hex_value(hc);
+                        }
+                        buf_len = encode_utf8_to_buf(&buf, buf_len, ucp4);
+                    }
+
+                default:
+                    // Unknown escape — just emit the character as-is (ES spec: TemplateEscapeSequence)
+                    buf[buf_len] = esc; buf_len++;
+            }
+            continue;
+        }
+
+        buf[buf_len] = self.advance_char();
+        buf_len++;
+    }
+
+    *has_escapes = true;
+    *end_char = (self.at_end()) ? 0 : self.peek_char();
+    if (buf_len > 0) {
+        return buf[0..buf_len - 1];
+    }
+    return {};
+}
+
+/// Parse a template literal heading (opening backtick to first "${" or closing backtick).
+/// Returns TEMPLATE_HEAD if we found "${", or STRING if no substitutions (simple template).
+fn Token? Lexer.scan_template_head(&self) {
     uint start_line = self.line;
     uint start_col = self.col;
-    uint start_pos = self.pos;
 
     // Consume the opening backtick
     self.advance_char();
 
-    uint brace_depth = 0;
+    char end_char = 0;
+    bool has_escapes = false;
+    char[]? content = self.scan_template_content(&end_char, &has_escapes);
 
-    while (!self.at_end()) {
-        char c = self.peek_char();
+    if (catch err = content) {
+        return LEX_ERROR~;
+    }
 
-        if (c == '\\') {
-            // Escape sequence — skip next character
-            self.advance_char();
-            if (!self.at_end()) {
-                self.advance_char();
-            }
-            continue;
-        }
+    if (end_char == '`') {
+        // No substitutions — this is a simple string template
+        self.advance_char(); // consume closing backtick
+        self.template_state = TemplateState.NONE;
+        self.template_brace_balance = 0;
+        Token tok = make_token(TokenType.STRING, start_line, start_col);
+        tok.str_value = content;
+        tok.str_owns_memory = false;
+        return tok;
+    }
 
-        if (c == '$' && self.peek_char_at(1) == '{') {
-            // Template expression start
-            self.advance_char(); // $
-            self.advance_char(); // {
-            brace_depth++;
-            // Scan until matching closing brace, handling nesting
-            while (!self.at_end() && brace_depth > 0) {
-                char tc = self.peek_char();
-                if (tc == '{') {
-                    brace_depth++;
-                    self.advance_char();
-                } else if (tc == '}') {
-                    brace_depth--;
-                    if (brace_depth > 0) {
-                        self.advance_char();
-                    }
-                } else if (tc == '\'' || tc == '"') {
-                    // Skip nested string literal inside expression
-                    char tq = self.advance_char();
-                    while (!self.at_end() && self.peek_char() != tq) {
-                        if (self.peek_char() == '\\') {
-                            self.advance_char();
-                        }
-                        if (!self.at_end()) self.advance_char();
-                    }
-                    if (!self.at_end()) self.advance_char(); // closing quote
-                } else if (tc == '`') {
-                    // Nested template literal — skip through it
-                    self.advance_char();
-                } else {
-                    self.advance_char();
-                }
-            }
-            // After the while loop, we're at the closing }
-            if (!self.at_end() && self.peek_char() == '}') {
-                self.advance_char();
-            }
-            continue;
-        }
+    if (end_char == '$') {
+        // Template expression start: "${"
+        self.advance_char(); // $
+        self.advance_char(); // {
+        self.template_state = TemplateState.IN_EXPR;
+        self.template_brace_balance = 1;
+        Token tok = make_token(TokenType.TEMPLATE_HEAD, start_line, start_col);
+        tok.str_value = content;
+        tok.str_owns_memory = false;
+        return tok;
+    }
 
-        if (c == '`') {
-            // End of template literal
-            self.advance_char();
-            Token tok = make_token(TokenType.TEMPLATE, start_line, start_col);
-            tok.str_value = self.source[start_pos..self.pos-1];
-            return tok;
-        }
+    // Unterminated template literal
+    return LEX_ERROR~;
+}
 
-        self.advance_char();
+/// Scan the part of a template literal after a closing "}" of an expression.
+/// Produces TEMPLATE_MIDDLE or TEMPLATE_TAIL.
+fn Token? Lexer.scan_template_after_expr(&self) {
+    uint start_line = self.line;
+    uint start_col = self.col;
+
+    char end_char = 0;
+    bool has_escapes = false;
+    char[]? content = self.scan_template_content(&end_char, &has_escapes);
+
+    if (catch err = content) {
+        return LEX_ERROR~;
+    }
+
+    if (end_char == '`') {
+        // End of template literal
+        self.advance_char(); // consume closing backtick
+        self.template_state = TemplateState.NONE;
+        self.template_brace_balance = 0;
+        Token tok = make_token(TokenType.TEMPLATE_TAIL, start_line, start_col);
+        tok.str_value = content;
+        tok.str_owns_memory = false;
+        return tok;
+    }
+
+    if (end_char == '$') {
+        // Another template expression: "${"
+        self.advance_char(); // $
+        self.advance_char(); // {
+        self.template_state = TemplateState.IN_EXPR;
+        self.template_brace_balance = 1;
+        Token tok = make_token(TokenType.TEMPLATE_MIDDLE, start_line, start_col);
+        tok.str_value = content;
+        tok.str_owns_memory = false;
+        return tok;
     }
 
     // Unterminated template literal
@@ -1211,6 +1404,9 @@ fn bool Lexer.prev_was_operand(&self) {
         case TokenType.STRING:
         case TokenType.REGEXP:
         case TokenType.TEMPLATE:
+        case TokenType.TEMPLATE_HEAD:
+        case TokenType.TEMPLATE_MIDDLE:
+        case TokenType.TEMPLATE_TAIL:
         case TokenType.THIS:
             return true;
         default:
@@ -1248,6 +1444,39 @@ fn Token? Lexer.next_token(&self) {
 
     char c = self.peek_char();
 
+    // In template expression mode, intercept '{' and '}' for brace tracking
+    if (self.template_state == TemplateState.IN_EXPR) {
+        if (c == '{') {
+            self.template_brace_balance++;
+            self.advance_char();
+            Token tok = make_token(TokenType.LBRACE, self.line, self.col);
+            self.current = tok;
+            return tok;
+        }
+        if (c == '}') {
+            if (self.template_brace_balance > 1) {
+                self.template_brace_balance--;
+                self.advance_char();
+                Token tok = make_token(TokenType.RBRACE, self.line, self.col);
+                self.current = tok;
+                return tok;
+            }
+            // Balance is 1 — this '}' closes the template expression
+            self.template_brace_balance = 0;
+            self.advance_char(); // consume '}'
+            // Now scan the next template part
+            Token tok = self.scan_template_after_expr()!;
+            self.current = tok;
+            return tok;
+        }
+        // Nested backtick inside expression — for now, error
+        if (c == '`') {
+            Token tok = make_token(TokenType.EOF_TOKEN, self.line, self.col);
+            self.current = tok;
+            return tok;
+        }
+    }
+
     // Number: starts with a digit, or . followed by a digit
     if (is_digit(c) || (c == '.' && self.remaining() >= 2 && is_digit(self.peek_char_at(1)))) {
         Token tok = self.scan_number()!;
@@ -1264,7 +1493,7 @@ fn Token? Lexer.next_token(&self) {
 
     // Template literal
     if (c == '`') {
-        Token tok = self.scan_template()!;
+        Token tok = self.scan_template_head()!;
         self.current = tok;
         return tok;
     }

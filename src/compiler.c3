@@ -2895,7 +2895,76 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.FUNCTION:
             return self.function_expr()!;
 
+        case TokenType.TEMPLATE_HEAD:
+        {
+            // Template literal with substitutions: `text${expr}text${expr}text`
+            Token head_tok = self.advance()!;
+            uint head_idx = self.add_string_constant(head_tok.str_value);
+            ushort result_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)result_reg, head_idx));
+
+            // Parse the expression inside ${...}
+            ushort expr_reg = self.expression()!;
+
+            // Concatenate: result = result + expr  (ADD handles string coercion)
+            {
+                ushort concat_reg = self.alloc_reg();
+                self.emit_abc(Opcode.ADD, (uint)concat_reg, (uint)result_reg, (uint)expr_reg);
+                self.free_reg(expr_reg);
+                self.free_reg(result_reg);
+                result_reg = concat_reg;
+            }
+
+            // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
+            for (;;) {
+                TokenType next_tt = self.peek_type();
+                if (next_tt == TokenType.TEMPLATE_MIDDLE) {
+                    Token mid_tok = self.advance()!;
+                    uint mid_idx = self.add_string_constant(mid_tok.str_value);
+                    ushort mid_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)mid_reg, mid_idx));
+
+                    // Concatenate the middle text
+                    ushort concat_reg2 = self.alloc_reg();
+                    self.emit_abc(Opcode.ADD, (uint)concat_reg2, (uint)result_reg, (uint)mid_reg);
+                    self.free_reg(result_reg);
+                    self.free_reg(mid_reg);
+                    result_reg = concat_reg2;
+
+                    // Parse the next expression
+                    ushort next_expr_reg = self.expression()!;
+
+                    // Concatenate expression
+                    ushort concat_reg3 = self.alloc_reg();
+                    self.emit_abc(Opcode.ADD, (uint)concat_reg3, (uint)result_reg, (uint)next_expr_reg);
+                    self.free_reg(next_expr_reg);
+                    self.free_reg(result_reg);
+                    result_reg = concat_reg3;
+                } else if (next_tt == TokenType.TEMPLATE_TAIL) {
+                    Token tail_tok = self.advance()!;
+                    uint tail_idx = self.add_string_constant(tail_tok.str_value);
+                    ushort tail_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)tail_reg, tail_idx));
+
+                    // Concatenate the tail text
+                    ushort concat_reg4 = self.alloc_reg();
+                    self.emit_abc(Opcode.ADD, (uint)concat_reg4, (uint)result_reg, (uint)tail_reg);
+                    self.free_reg(result_reg);
+                    self.free_reg(tail_reg);
+                    result_reg = concat_reg4;
+
+                    break;
+                } else {
+                    // Expected TEMPLATE_MIDDLE or TEMPLATE_TAIL
+                    return COMPILE_ERROR~;
+                }
+            }
+
+            return result_reg;
+        }
+
         case TokenType.TEMPLATE:
+            // Legacy fallback for old-style raw TEMPLATE token
             Token tmpl_tok = self.advance()!;
             uint tmpl_idx = self.add_string_constant(tmpl_tok.str_value);
             ushort tmpl_reg = self.alloc_reg();

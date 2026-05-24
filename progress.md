@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 44
+**Last Updated:** Session 45
 **Target:** Full test262 conformance
 
 ## Summary
@@ -184,8 +184,9 @@
 | is_captured shadowing detection (GETVAR across scope boundaries) | ✅ |
 | for-in/for-of with let/const | 🚫 Deferred |
 
-### Phase 11: ES6+ — 🚧 Arrow Functions ✅ (1st feature)
+### Phase 11: ES6+ — 🚧 Arrow Functions ✅, Template Literals ✅
 **test262: arrow-function tests — not yet quantified**
+**test262: template-literal tests — 6/11 passing (failures: tagged templates, nested templates, object toString)**
 || Component | Status |
 ||---|---|
 || Arrow functions (IDENTIFIER =>, () =>, (params) =>) | ✅ |
@@ -194,7 +195,13 @@
 || No .prototype property | ✅ |
 || Implicit return for expression bodies | ✅ |
 || Nested arrow functions | ✅ |
-|| Template literals | ❌ |
+|| Template literals (untagged, with substitutions) | ✅ |
+|| Template escape sequences (\n, \t, \uXXXX, \xHH, etc.) | ✅ |
+|| Multi-line templates | ✅ |
+|| Line continuations (`\<LF>`) | ✅ |
+|| Brace tracking inside `${}` (object literals, function bodies) | ✅ |
+|| Tagged templates | ❌ |
+|| Nested templates | ❌ |
 || Destructuring | ❌ |
 || Default parameters | ❌ |
 || Rest parameters | ❌ |
@@ -254,6 +261,7 @@
 | 42 | **Phase 10: Const runtime enforcement**: Added PUTLEX_C opcode for const declarations — stores bindings with non-writable property flags (PROP_FLAGS_EC). PUTVAR handler checks writability via `env_is_lex_writable()` and throws TypeError ("Assignment to constant variable '…'") on const reassignment. Added `HObject.is_prop_writable()` and `env_is_lex_writable()` for chain-aware writability checks. let variables continue to use writable PUTLEX. 13/13 custom const enforcement tests passing; no regressions on existing test suite. |
 | 43 | **Phase 10: TDZ enforcement at block entry**: Added INITTZ opcode (A-BC format) that stores the TDZ sentinel in the current lex_env. Implemented pre-scan in compiler::block() that collects let/const variable names by scanning tokens before emitting bytecode, then emits PUSH_LEX + INITTZ for each at block entry. Added `is_captured` check to `resolve_var()`: when a variable is shadowed by an inner let/const, the compiler now emits GETVAR instead of LDREG, forcing a walk of the lex_env chain where the TDZ sentinel is checked. Introduced NameSpan struct to work around C3 slice-of-slices type limitations. 10/10 custom TDZ tests passing; no regressions on existing test suite. Phase 10 now complete except for for-in/for-of with let/const (deferred). |
 | 44 | **Phase 11: Arrow functions** — First ES6+ feature. Added arrow function parsing to compiler: `x => expr`, `() => expr`, `(x) => expr`, `(x, y) => { body }`. `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags, already existed). Added pushback buffer (4-token stack) to CompilerContext for backtracking during arrow-vs-grouping-expression disambiguation. VM changes: CLOSURE handler skips `.prototype` creation for arrow functions; CALL handler uses parent activation's `this_binding` for lexical `this` (ignoring stack `this` slot); NEW_OBJ handler throws TypeError (`is not a constructor`) for arrow functions per ES6 §14.2.2. `compile_arrow_inner()` creates sub-CompiledFunction with `is_arrow=true`, handles expression bodies (implicit return) vs block bodies. 12/12 custom arrow tests passing: single/multi/no params, nested arrows, lexical this, no prototype, new rejection. No regressions on existing 60+ test suite. |
+| 45 | **Phase 11: Template literals** — Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` enum (NONE/IN_EXPR) and `template_brace_balance` for `${}` brace-depth tracking. New token types: TEMPLATE_HEAD, TEMPLATE_MIDDLE, TEMPLATE_TAIL (replacing monolithic TEMPLATE token). No-substitution templates return STRING token — zero-cost path. Compiler emits LDCONST for template parts + ADD for concatenation (ADD opcode handles ToString coercion). Escape sequences processed identically to string literals (\n, \t, \uXXXX, \xHH, \`, \$). Line continuations (\<LF>) supported. Brace tracking handles object literals and function bodies inside `${}`. 20/20 custom tests passing; 6/11 test262 template-literal tests passing (failures: tagged templates not yet implemented, nested templates deferred, object ToString calls pre-existing VM limitation). No regressions on existing test suite. |
 
 ## Refreshing Counts
 

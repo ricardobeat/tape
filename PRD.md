@@ -50,6 +50,16 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - No `.prototype` property — skipped in CLOSURE opcode handler
 - Implicit return for expression bodies; block bodies need explicit `return`
 
+### Template Literals (ES6)
+- Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` tracking
+- Tokens: TEMPLATE_HEAD (`text${`), TEMPLATE_MIDDLE (`}text${`), TEMPLATE_TAIL (`}text\``)
+- Brace-balance tracking in lexer (`template_brace_balance`) handles object/function bodies inside `${}`
+- No-substitution templates (`` `text` ``) return STRING token — zero cost
+- Compiler emits LDCONST for template parts + ADD for concatenation (ADD opcode handles ToString coercion)
+- Escape sequences processed identically to string literals (\n, \t, \uXXXX, \xHH, etc.)
+- Line continuations (`\<LF>`) supported
+- Tagged templates not yet implemented; nested templates deferred
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.
