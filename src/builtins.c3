@@ -5404,6 +5404,28 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             js_flags |= 4;
         } else if (f == 's') {
             flags |= re_bindings::RE_FLAG_DOTALL;
+        } else {
+            // Invalid flag per ES5 §15.10.4.1 — throw SyntaxError
+            HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.syntax_err_proto;
+                char[80] buf;
+                int len = libc::snprintf(&buf, 80, "Invalid flags supplied to RegExp constructor '%c'", f);
+                if (len > 0 && len < 80) {
+                    HString* msg_str = builtin_intern_string(ctx.heap, buf[:len]);
+                    TVal msg_tv;
+                    msg_tv.tag = STRING;
+                    msg_tv.pointer = msg_str;
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                }
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            } else {
+                ctx.throw_value.set_undefined();
+            }
+            ctx.should_throw = true;
+            return;
         }
     }
 
@@ -5413,6 +5435,26 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         (char*)pattern_str, (usz)pattern_len,
         flags, &error_buf, 128
     );
+
+    if (compiled == null) {
+        // Compilation failed — throw SyntaxError (ES5 §15.10.4.1)
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.syntax_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, error_buf[:128]);
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return;
+    }
 
     HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.REGEXP);
     if (catch err = obj_raw) {
@@ -6420,30 +6462,69 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     tostring_tv.fastint = (long)BUILTIN_ERROR_PROTO_TOSTRING;
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
+    // Add .constructor to Error.prototype pointing to Error builtin
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_ERROR;
+    err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
     // --- Create TypeError.prototype ---
     HObject* type_err_proto = register_error_prototype(heap, err_proto, "TypeError");
     if (type_err_proto == null) return false;
+    type_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.type_err_proto = type_err_proto;
 
     // --- Create RangeError.prototype ---
     HObject* range_err_proto = register_error_prototype(heap, err_proto, "RangeError");
     if (range_err_proto == null) return false;
+    range_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.range_err_proto = range_err_proto;
 
     // --- Create ReferenceError.prototype ---
     HObject* ref_err_proto = register_error_prototype(heap, err_proto, "ReferenceError");
     if (ref_err_proto == null) return false;
+    ref_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.ref_err_proto = ref_err_proto;
 
     // --- Create SyntaxError.prototype ---
     HObject* syntax_err_proto = register_error_prototype(heap, err_proto, "SyntaxError");
     if (syntax_err_proto == null) return false;
+    syntax_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.syntax_err_proto = syntax_err_proto;
 
     // --- Create EvalError.prototype ---
     HObject* eval_err_proto = register_error_prototype(heap, err_proto, "EvalError");
     if (eval_err_proto == null) return false;
+    eval_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.eval_err_proto = eval_err_proto;
+
+    // Set .constructor on each error sub-prototype to point to its own builtin
+    // (type_err_proto already done above — fix it now with correct index)
+    TVal type_err_constr;
+    type_err_constr.tag = LIGHTFUNC;
+    type_err_constr.fastint = (long)BUILTIN_TYPE_ERROR;
+    type_err_proto.put_prop(constructor_key, type_err_constr, hobject::PROP_FLAGS_WEC);
+
+    TVal range_err_constr;
+    range_err_constr.tag = LIGHTFUNC;
+    range_err_constr.fastint = (long)BUILTIN_RANGE_ERROR;
+    range_err_proto.put_prop(constructor_key, range_err_constr, hobject::PROP_FLAGS_WEC);
+
+    TVal ref_err_constr;
+    ref_err_constr.tag = LIGHTFUNC;
+    ref_err_constr.fastint = (long)BUILTIN_REFERENCE_ERROR;
+    ref_err_proto.put_prop(constructor_key, ref_err_constr, hobject::PROP_FLAGS_WEC);
+
+    TVal syntax_err_constr;
+    syntax_err_constr.tag = LIGHTFUNC;
+    syntax_err_constr.fastint = (long)BUILTIN_SYNTAX_ERROR;
+    syntax_err_proto.put_prop(constructor_key, syntax_err_constr, hobject::PROP_FLAGS_WEC);
+
+    TVal eval_err_constr;
+    eval_err_constr.tag = LIGHTFUNC;
+    eval_err_constr.fastint = (long)BUILTIN_EVAL_ERROR;
+    eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WEC);
 
     // --- Register Error global constructor ---
     if (!register_simple_builtin(global_env, heap, "Error", BUILTIN_ERROR)) return false;

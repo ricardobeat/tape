@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 32
+**Last Updated:** Session 33
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,10 +10,9 @@
 | Total test262 tests | 53,568 |
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
-| Currently passing (test262) | ~710 |
-| Currently passing (test262) | ~710 |
+| Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs |
-| **Fixed this session** | **RegExp prototype initialization + flag properties: `register_regexp_constructor`, `.global`/`.source`/`.ignoreCase`/`.multiline`/`.lastIndex` on instances, `g` flag parsing** |
+| **Fixed this session** | **RegExp SyntaxError on compilation failure + invalid flags: `builtin_regexp` now throws SyntaxError when `re_compile` returns null, validates flags per ES5 §15.10.4.1. Added `.constructor` on all error prototypes (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError) so `assert.throws` identity checks work. Top-level RegExp test262 tests: 1→144 passing.** |
 
 ## Per-Phase Status
 
@@ -143,12 +142,12 @@
 
 ### Phase 8: ES5 Built-in Objects — ✅ ~67%
 **test262: 759 files (JSON+Date) — 1 pass / 758 fail**
-**RegExp ~1,879 files — top-level tests hang VM**
+**RegExp ~1,879 files — 144 passing (top-level), many subdirs still failing/hanging**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
 | Date | ✅ |
-| RegExp | ✅ (engine integrated + prototype chain wired, 0 test262 passing — blocked on parser, harness, `.global`/flags properties) |
+| RegExp | ✅ (engine integrated + prototype chain wired, SyntaxError on invalid pattern/flags, .constructor on error prototypes — 144 test262 passing) |
 
 ### Phase 9: Strict Mode — ❌ NOT STARTED
 
@@ -190,6 +189,7 @@
 | 30 | **ASI bug fixes**: Added line terminator tracking (`seen_line_term`) to lexer. Fixed `break`/`continue`/`return` ASI — line terminators between keyword and identifier now suppress label/expression parsing per ES5 spec. Fixed test262 harness: includes `assert.js`, fixed `set -e` exit on skip. 3 test262 tests newly passing (break/line-terminators, continue/line-terminators, return/line-terminators). |
 | 31 | **Continue-in-switch infinite loop fix**: Fixed `continue` inside `switch` inside a loop generating a JUMP to itself (infinite loop). Root cause: `switch_statement()` used `push_loop()` for break handling, which incremented `loop_depth`, making `continue_statement()` find the switch's pseudo-loop entry instead of the enclosing real loop. Fix: added `is_loop` flag to `LoopInfo` and `continue_patch_head` for deferred patching. `continue` now skips switch pseudo-loops (`is_loop=false`) and finds the innermost real loop. `do-while` continue targets are resolved via deferred patch chain. Switch tests `cptn-a-fall-thru-abrupt-empty`, `cptn-b-fall-thru-abrupt-empty`, `cptn-dflt-b-fall-thru-abrupt-empty` no longer hang. |
 | 32 | **RegExp prototype initialization + flag properties**: Added `register_regexp_constructor` function that creates `RegExp.prototype`, registers `.test()/exec()/toString()` methods, and creates the `RegExp` global constructor with proper `.prototype` and `.length` properties. `heap.regexp_proto` now wired to `Object.prototype`. RegExp instances now store `.source`, `.global`, `.ignoreCase`, `.multiline`, `.lastIndex` properties and correctly parse the `g` flag. Previously every RegExp usage crashed because `regexp_proto` was null. First test262 RegExp test now passing (`15.10.4.1-1`). All 4 local regexp tests passing. |
+| 33 | **RegExp SyntaxError on invalid pattern/flags + error .constructor**: Added SyntaxError throwing in `builtin_regexp` when `re_compile` fails (invalid patterns like `\` per ES5 §15.10.4.1). Added flag validation — invalid flags (anything other than g/i/m/s) now throw SyntaxError. Added `.constructor` property on Error.prototype and all error sub-prototypes (TypeError, RangeError, ReferenceError, SyntaxError, EvalError) so `assert.throws` identity checks work. Test262 RegExp top-level tests: 1 → 144 passing. |
 
 ## Refreshing Counts
 
