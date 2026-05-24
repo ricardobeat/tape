@@ -214,6 +214,9 @@ enum Opcode : char {
     GETVAR,
     /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
     PUTVAR,
+    /// `A = typeof identifier`  — typeof on a variable name (A-BC format).
+    /// Returns "undefined" for unresolvable references per ES5 §11.4.3.
+    TYPEOFIDENT,
     /// `A = delete variable[constants[BC]]`  — delete a variable (A-BC).
     DELVAR,
 
@@ -318,6 +321,7 @@ fn OpFormat get_op_format(Opcode op) {
         case LDINTX:    return A_BC;
         case SETALEN:   return A_BC;
         case GETVAR:    return A_BC;
+        case TYPEOFIDENT: return A_BC;
         case PUTVAR:    return A_BC;
         case DELVAR:    return A_BC;
         case CLOSURE:   return A_BC;
@@ -848,6 +852,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.RET.ordinal]         = "RET",
     [Opcode.RETUNDEF.ordinal]    = "RETUNDEF",
     [Opcode.GETVAR.ordinal]      = "GETVAR",
+    [Opcode.TYPEOFIDENT.ordinal]  = "TYPEOFIDENT",
     [Opcode.PUTVAR.ordinal]      = "PUTVAR",
     [Opcode.DELVAR.ordinal]      = "DELVAR",
     [Opcode.CLOSURE.ordinal]     = "CLOSURE",

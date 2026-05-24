@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 35
+**Last Updated:** Session 37
 **Target:** Full test262 conformance
 
 ## Summary
@@ -12,7 +12,7 @@
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
-| **Fixed this session** | **Object.prototype undefined (primitive cause of many test failures): Object was registered as a LIGHTFUNC, which cannot carry a `.prototype` property. Changed `register_object_constructor` to create an HObject with ObjClass.FUNCTION and set `.prototype`/`.length` properties. RegExp exec/test now throw TypeError on incompatible receiver per ES5 §15.10.6.2/3 instead of silently returning null. Expanded test harness with assert.js-compatible functions. +4 exec TypeError tests passing.** |
+| **Fixed this session** | **typeof identifier: TYPEOFIDENT opcode returns "undefined" for undeclared variables instead of throwing ReferenceError (ES5 §11.4.3). Built-in .constructor fixed: Object.prototype.constructor and Number.prototype.constructor now point to actual OBJECT constructors (not LIGHTFUNC). Implemented Object.prototype.isPrototypeOf (ES5 §15.2.4.6) and Object.prototype.toLocaleString (ES5 §15.2.4.3). Constructor functions' [[Prototype]] wired to Function.prototype. Object tests: 12→24 pass (+12).** |
 
 ## Per-Phase Status
 
@@ -193,6 +193,7 @@
 | 34 | **Fix RegExp literal NEWREGEXP**: `NEWREGEXP` opcode handler now sets `obj.prototype = regexp_proto` so method lookup (`.test()`, `.exec()`, `.toString()`) works on regexp literals via prototype chain. Null-terminates pattern before passing to `lre_compile` (which requires null-terminated input). Sets instance properties (source, global, ignoreCase, multiline, lastIndex) on literal regexps per ES5 §15.10.7. Fixes `/pattern/.test()` crashes and VM errors. |
 | 35 | **RegExp global flag + lastIndex**: Fixed `builtin_regexp_proto_exec` to respect the `global` flag and `lastIndex` property per ES5 §15.10.6.2. On global regexps, exec now reads `lastIndex` as the starting match position, updates it to the end of each match, and resets to 0 on failure. Same fix applied to `builtin_regexp_proto_test` (ES5 §15.10.6.3). This was causing infinite loops in `do...while` patterns that loop over global matches. 6 previously-hanging exec tests (`S15.10.6.2_A3_T1`–`T6`) now pass. No more RegExp exec/test hangs. |
 | 36 | **Object constructor as HObject + RegExp TypeError**: Changed `Object` constructor from LIGHTFUNC to proper HObject with `.prototype` property, enabling `Object.prototype` access (was `undefined`). Added PROP_FLAGS_WC convenience constant. Added `exec_js` helper and expanded test262 harness with minified `assert.sameValue`/`assert.throws`/`compareArray` in batch runner. Fixed `builtin_regexp_proto_exec`/`builtin_regexp_proto_test` to throw TypeError per ES5 §15.10.6.2/3 when called on incompatible receiver (was silently returning null). RegExp exec TypeError tests (`S15.10.6.2_A2_*`) now passing: 7→11 exec tests passing in sample. |
+| 37 | **typeof identifier + builtin .constructor + isPrototypeOf/toLocaleString**: Added TYPEOFIDENT opcode for `typeof undeclaredVar` (ES5 §11.4.3 — returns "undefined" instead of throwing ReferenceError). Fixed `.constructor` on Object.prototype and Number.prototype to point to actual OBJECT constructors (not LIGHTFUNC), fixing `obj.constructor === Object` and `obj.constructor === Number`. Implemented `Object.prototype.isPrototypeOf` (ES5 §15.2.4.6) and `Object.prototype.toLocaleString` (ES5 §15.2.4.3). Wired constructor functions' internal [[Prototype]] to Function.prototype so `Function.prototype.isPrototypeOf(Object)` returns true. Object tests: 12→24 pass (+12). |
 
 ## Refreshing Counts
 

@@ -2389,6 +2389,36 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
+        case Opcode.TYPEOFIDENT: {
+            // ES5 §11.4.3: typeof on an unresolvable reference returns "undefined"
+            // instead of throwing ReferenceError.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.tag == STRING) {
+                    void* key = name_val.pointer;
+                    TVal? result = env::env_get(act.var_env, key);
+                    if (try v = result) {
+                        HString* ts = typeof_string(vm, &v);
+                        ra.tag = STRING;
+                        ra.pointer = ts;
+                    } else {
+                        // Unresolvable reference → "undefined" (no error)
+                        HString* ts = intern_string(vm, "undefined");
+                        ra.tag = STRING;
+                        ra.pointer = ts;
+                    }
+                } else {
+                    ra.tag = UNDEFINED;
+                    ra.pointer = null;
+                }
+            } else {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+            }
+            break;
+        }
+
         case Opcode.PUTVAR: {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {

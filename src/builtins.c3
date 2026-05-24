@@ -132,7 +132,9 @@ const uint BUILTIN_REGEXP_PROTO_EXEC         = 105;
 const uint BUILTIN_REGEXP_PROTO_TOSTRING         = 106;
 const uint BUILTIN_OBJECT_PROTO_HASOWNPROPERTY  = 108;
 const uint BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE = 109;
-const uint BUILTIN_COUNT                         = 110;
+const uint BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF  = 107;
+const uint BUILTIN_OBJECT_PROTO_TOLOCALESTRING = 110;
+const uint BUILTIN_COUNT                         = 111;
 
 struct BuiltinContext {
     void* vm;
@@ -2441,6 +2443,77 @@ fn void builtin_object_proto_valueOf(BuiltinContext* ctx) {
     ctx.result.fastint = this_val.fastint;
     ctx.result.number = this_val.number;
     ctx.result.pointer = this_val.pointer;
+}
+
+/// Object.prototype.isPrototypeOf(V) — ES5 §15.2.4.6
+/// Returns true if the object is in the prototype chain of V.
+fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = false;
+
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag != OBJECT || this_val.pointer == null) {
+        return;
+    }
+    HObject* proto = (HObject*)this_val.pointer;
+
+    // Get argument V — must be an object
+    if (ctx.argc == 0) {
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    if (arg.tag != OBJECT || arg.pointer == null) {
+        return;
+    }
+    HObject* obj = (HObject*)arg.pointer;
+
+    // Walk the prototype chain of obj looking for proto
+    HObject* cur = obj.prototype;
+    while (cur != null) {
+        if (cur == proto) {
+            ctx.result.boolean = true;
+            return;
+        }
+        cur = cur.prototype;
+    }
+}
+
+/// Object.prototype.toLocaleString() — ES5 §15.2.4.3
+/// Calls the toString method and returns the result.
+fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag != OBJECT || this_val.pointer == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* obj = (HObject*)this_val.pointer;
+
+    // Call toString() on the object
+    HString* ts_key = builtin_intern_string(ctx.heap, "toString");
+    PropEntry*? entry = obj.find_prop(ts_key);
+    if (try e = entry) {
+        TVal fn_val = e.value;
+        if (fn_val.tag == LIGHTFUNC) {
+            // Re-dispatch to toString
+            ctx.needs_re_dispatch = true;
+            ctx.regs[ctx.base_reg - 1] = fn_val;  // replace callee with toString
+            ctx.re_nargs = 0;
+            return;
+        }
+        if (fn_val.tag == OBJECT && fn_val.pointer != null) {
+            HObject* fn_obj = (HObject*)fn_val.pointer;
+            if (fn_obj.is_callable()) {
+                ctx.needs_re_dispatch = true;
+                ctx.regs[ctx.base_reg - 1] = fn_val;
+                ctx.re_nargs = 0;
+                return;
+            }
+        }
+    }
+
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
 }
 
 // ============================================================================
@@ -5959,6 +6032,10 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_proto_hasOwnProperty(ctx);
         case BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE:
             builtin_object_proto_propertyIsEnumerable(ctx);
+        case BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF:
+            builtin_object_proto_isPrototypeOf(ctx);
+        case BUILTIN_OBJECT_PROTO_TOLOCALESTRING:
+            builtin_object_proto_toLocaleString(ctx);
         case BUILTIN_OBJECT_PROTO_VALUEOF:
             builtin_object_proto_valueOf(ctx);
         case BUILTIN_ARRAY:
@@ -6279,6 +6356,24 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.date_proto != null)   heap.date_proto.prototype = heap.object_proto;
     if (heap.regexp_proto != null) heap.regexp_proto.prototype = heap.object_proto;
 
+    // Wire constructor functions' [[Prototype]] to Function.prototype.
+    // Constructor functions (Object, Number, Function, etc.) are HObjects
+    // with ObjClass.FUNCTION whose internal prototype must be Function.prototype
+    // so that Function.prototype.isPrototypeOf(Number) and similar work.
+    // We look them up in the global environment by name.
+    if (heap.function_proto != null) {
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError" };
+        for (int i = 0; i < ctor_names.len; i++) {
+            TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
+            if (try tv = optv) {
+                if (tv.tag == OBJECT && tv.pointer != null) {
+                    HObject* ctor = (HObject*)tv.pointer;
+                    ctor.prototype = heap.function_proto;
+                }
+            }
+        }
+    }
+
     return true;
 }
 
@@ -6289,13 +6384,6 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HObject* proto = proto_raw;
     proto.prototype = null;  // Object.prototype is the root — its [[Prototype]] is null
     heap.object_proto = proto;
-
-    // Add .constructor to Object.prototype pointing to Object builtin
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
-    TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_OBJECT;
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .toString() method to Object.prototype
     HString* tostring_key = builtin_intern_string(heap, "toString");
@@ -6325,12 +6413,33 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.fastint = (long)BUILTIN_OBJECT_PROTO_VALUEOF;
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
+    // Add .isPrototypeOf() method to Object.prototype
+    HString* isproto_key = builtin_intern_string(heap, "isPrototypeOf");
+    TVal isproto_tv;
+    isproto_tv.tag = LIGHTFUNC;
+    isproto_tv.fastint = (long)BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF;
+    proto.put_prop(isproto_key, isproto_tv, hobject::PROP_FLAGS_WC);
+
+    // Add .toLocaleString() method to Object.prototype (ES5 §15.2.4.3)
+    HString* tolocalestring_key = builtin_intern_string(heap, "toLocaleString");
+    TVal tolocalestring_tv;
+    tolocalestring_tv.tag = LIGHTFUNC;
+    tolocalestring_tv.fastint = (long)BUILTIN_OBJECT_PROTO_TOLOCALESTRING;
+    proto.put_prop(tolocalestring_key, tolocalestring_tv, hobject::PROP_FLAGS_WC);
+
     // Create Object constructor as a proper HObject (not LIGHTFUNC)
     // so it can carry .prototype, .length, etc.
     HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
     if (catch err = obj_raw) return false;
     HObject* obj = obj_raw;
     obj.builtin_fn_index = (int)BUILTIN_OBJECT;
+
+    // Set .constructor on Object.prototype to point to the actual Object constructor object
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = obj;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Object.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -6472,19 +6581,12 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
 
 /// Create Number.prototype and register the Number constructor globally.
 fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create Number.prototype
+    // Create Number prototype
     HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.NUMBER);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
     heap.number_proto = proto;
-
-    // Set .constructor to Number lightfunc
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
-    TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_NUMBER;
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
@@ -6513,6 +6615,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
     num.builtin_fn_index = (int)BUILTIN_NUMBER;
+
+    // Set .constructor on Number.prototype to point to the actual Number object
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = num;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Number.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");

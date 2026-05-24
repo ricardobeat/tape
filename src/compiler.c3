@@ -1966,6 +1966,26 @@ fn ushort? CompilerContext.unary_expr(&self) {
 
         case TokenType.TYPEOF:
             self.advance()!;
+            // ES5 §11.4.3: typeof on an unresolvable reference returns "undefined"
+            // (does NOT throw ReferenceError).  For bare identifiers we emit a
+            // dedicated TYPEOFIDENT opcode that handles the not-found case.
+            {
+                Token? peeked = self.lexer.peek();
+                if (try idTok = peeked) {
+                    if (idTok.type == TokenType.IDENTIFIER &&
+                        !str_eq(idTok.str_value, "true") &&
+                        !str_eq(idTok.str_value, "false") &&
+                        !str_eq(idTok.str_value, "null") &&
+                        !str_eq(idTok.str_value, "undefined")) {
+                        self.advance()!;  // consume the identifier
+                        uint name_idx = self.add_string_constant(idTok.str_value);
+                        ushort res_typeof = self.alloc_reg();
+                        self.emit(bytecode::make_a_bc(Opcode.TYPEOFIDENT, (uint)res_typeof, name_idx));
+                        return res_typeof;
+                    }
+                }
+            }
+            // Fallback: normal typeof expr
             ushort op_typeof = self.unary_expr()!;
             ushort res_typeof = self.alloc_reg();
             self.emit_abc(Opcode.TYPEOF, (uint)res_typeof, (uint)op_typeof, 0);
