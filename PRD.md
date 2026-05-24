@@ -108,6 +108,19 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 | ✅ (Phase 13)
 
+### for-of Loop (ES6) ✅ (Phase 14)
+
+- **for-in-style lowering** — Uses `GETPROP .length` + numeric index access (no dedicated FOROF opcode, no iterator protocol)
+- **Variable declaration** — `var` / `let` / `const` loop variable (PUTVAR / PUTLEX / PUTLEX_C)
+- **Bare variable** — `for (x of iterable)` without `var`/`let`/`const`, x looked up via GETVAR
+- **Empty iterables** — Loop body skipped when length is 0
+- **break / continue** — Correctly handled via standard push_loop/pop_loop with continue target patching (fixed infinite-loop bug — continue target was set to LT rather than index increment)
+- **Compiler** — `emit_forof_loop()` in `src/compiler.c3:4190-4264` emits LDINT, LT, IF_FALSE, GETPROP (numeric), LDREG, PUTVAR/PUTLEX/PUTLEX_C, body, ADD (index increment), JUMP back
+- Iterator protocol (`Symbol.iterator`, `next()`) deferred — uses array-style numeric index access
+- for-in/for-of with let/const as loop variable deferred (requires scoping per iteration)
+
+| ✅ (Phase 14)
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.

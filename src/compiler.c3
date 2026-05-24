@@ -1364,6 +1364,22 @@ fn void? CompilerContext.for_statement(&self) {
     // Check for for-in / for-of
     TokenType next_tt = self.peek_type();
 
+    // Check for bare for-of: for (x of expr)
+    if (next_tt == TokenType.IDENTIFIER) {
+        Token id_tok = self.advance()!;
+        if (try tok2 = self.lexer.peek()) {
+            if (tok2.type == TokenType.IDENTIFIER && str_eq(tok2.str_value, "of")) {
+                self.advance()!;  // consume "of"
+                ushort iter_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+                uint name_idx = self.add_string_constant(id_tok.str_value);
+                self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
+                return;
+            }
+        }
+        self.pushback(id_tok);
+    }
+
     // Parse init (may be var/let/const or expression or empty)
     if (next_tt == TokenType.VAR || next_tt == TokenType.LET || next_tt == TokenType.CONST) {
         // Check if it's for-in: "var x in ..."
@@ -1457,6 +1473,17 @@ fn void? CompilerContext.for_statement(&self) {
                 self.pop_scope_to(saved_scope);
                 self.free_regs_to(saved_reg);
                 return;
+            }
+            // Check for "of" (for-of) — contextual keyword, not a reserved word
+            if (try tok = self.lexer.peek()) {
+                if (tok.type == TokenType.IDENTIFIER && str_eq(tok.str_value, "of")) {
+                    self.advance()!;  // consume "of"
+                    ushort iter_reg = self.assignment_expr()!;
+                    self.expect(TokenType.RPAREN)!;
+                    uint name_idx = self.add_string_constant(name_tok.str_value);
+                    self.emit_forof_loop(name_tok.str_value, iter_reg, saved_scope, saved_reg, is_lexical, is_const, false)!;
+                    return;
+                }
             }
 
             // Standard for loop: we already consumed the decl keyword and identifier
@@ -4151,6 +4178,92 @@ fn Opcode token_to_binary_opcode(TokenType tt) {
 
 // ============================================================================
 // String comparison helper
+// ============================================================================
+
+// ============================================================================
+// for-of loop compilation
+// ============================================================================
+
+/// Emit bytecode for a for-of loop. The iterable expression has already been
+/// evaluated into `iter_reg` and the RParen was consumed.
+/// Uses .length + numeric index access (iterator protocol deferred).
+fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare) {
+    // Declare loop variable register
+    ushort loop_var;
+    if (is_bare) {
+        loop_var = self.alloc_reg();
+    } else {
+        ScopeKind kind = is_const ? CONST : (is_lexical ? LET : VAR);
+        loop_var = self.declare_var(var_name, kind);
+    }
+
+    uint name_idx = self.add_string_constant(var_name);
+
+    // Get .length of the iterable
+    uint length_str_idx = self.add_string_constant("length");
+    ushort len_str_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)len_str_reg, length_str_idx, 0);
+    ushort len_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)len_reg, (uint)iter_reg, (uint)len_str_reg);
+    self.free_reg(len_str_reg);
+
+    // Initialize index to 0
+    ushort idx_reg = self.alloc_reg();
+    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, 0));
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+
+    // Check: idx < len
+    ushort cmp_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LT, (uint)cmp_reg, (uint)idx_reg, (uint)len_reg);
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cmp_reg);
+    self.free_reg(cmp_reg);
+
+    // Get element: iterable[idx] (numeric index → string key via get_prop_key)
+    ushort val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)iter_reg, (uint)idx_reg);
+
+    // Assign to loop variable
+    self.emit_abc(Opcode.LDREG, (uint)loop_var, (uint)val_reg, 0);
+    self.free_reg(val_reg);
+
+    // Store in environment
+    if (is_bare) {
+        self.emit_a_bc(Opcode.PUTVAR, (uint)loop_var, name_idx);
+    } else {
+        self.emit_var_store(loop_var, name_idx, is_lexical, is_const);
+    }
+
+    // Body
+    self.statement()!;
+
+    // Fix continue target: continue should jump to the increment, not the LT.
+    // Without this, continue creates an infinite loop on the same index.
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+
+    // Increment index: idx = idx + 1
+    ushort one_reg = self.alloc_reg();
+    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_reg, 1));
+    self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one_reg);
+    self.free_reg(one_reg);
+
+    // Jump back to loop start
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    self.patch_jump(exit_jump);
+    self.pop_loop();
+
+    self.free_reg(idx_reg);
+    self.free_reg(len_reg);
+    self.free_reg(iter_reg);
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+// ============================================================================
+// Helpers
 // ============================================================================
 
 /// Compare two char slices for equality.
