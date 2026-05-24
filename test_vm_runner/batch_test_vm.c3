@@ -48,6 +48,18 @@ fn int read_manifest(char[] mpath, TestEntry* entries, uint max_entries) {
 }
 
 // ============================================================================
+// Helper: compile+execute JS source in a VM
+// ============================================================================
+
+fn int exec_js(Vm* vm, Heap* hp, char[] src) {
+    Lexer lx = lexer::lexer_init(src, hp);
+    CompiledFunction*? f = compiler::compile(&lx, hp);
+    if (catch err = f) { return 1; }
+    if (catch err = vm.execute(f)) { return 1; }
+    return 0;
+}
+
+// ============================================================================
 // Run one test with a fresh heap+VM (gold-standard isolation)
 // ============================================================================
 
@@ -66,19 +78,20 @@ fn int run_test_fresh(char[] test_path) {
     char[] src = source;
 
     // First, compile+execute the test262 harness setup
-    char[] harness = "var __test262_fail=0;function Test262Error(msg){__test262_fail++;}Test262Error.thrower=function(m){throw new Test262Error(m);}Test262Error.prototype.toString=function(){return'Test262Error';}function $DONOTEVALUATE(){}function $ERROR(msg){__test262_fail++;}function $FAIL(msg){__test262_fail++;}";
+    char[] min_harness = "var __test262_fail=0;function Test262Error(msg){this.message=msg||'';}Test262Error.prototype.toString=function(){return'Test262Error: '+this.message;};Test262Error.thrower=function(m){throw new Test262Error(m);};function $DONOTEVALUATE(){throw'Test262: This statement should not be evaluated.';}function $ERROR(msg){__test262_fail++;}function $FAIL(msg){__test262_fail++;}function isNegativeZero(v){return v===0&&1/v===-Infinity;}function isPrimitive(v){return!v||(typeof v!=='object'&&typeof v!=='function');}function formatIdentityFreeValue(v){switch(v===null?'null':typeof v){case'string':return typeof JSON!=='undefined'?JSON.stringify(v):'\"'+v+'\"';case'bigint':return String(v)+'n';case'number':if(isNegativeZero(v))return'-0';case'boolean':case'undefined':case'null':return String(v);}return'';}function formatSimpleValue(v){var b=formatIdentityFreeValue(v);if(b)return b;try{return String(v);}catch(e){if(e.name==='TypeError')return Object.prototype.toString.call(v);throw e;}}function assert(m,b){if(m===true)return;if(b===undefined)b='Expected true but got '+assert._toString(m);throw new Test262Error(b);}assert._isSameValue=function(a,b){if(a===b)return a!==0||1/a===1/b;return a!==a&&b!==b;};assert.sameValue=function(a,e,m){try{if(assert._isSameValue(a,e))return;}catch(e){throw new Test262Error(m+'(_isSameValue threw)'+e);}if(m===undefined)m='';else m+=' ';m+='Expected SameValue(«'+assert._toString(a)+'», «'+assert._toString(e)+'») to be true';throw new Test262Error(m);};assert.notSameValue=function(a,u,m){if(!assert._isSameValue(a,u))return;if(m===undefined)m='';else m+=' ';m+='Expected SameValue(«'+assert._toString(a)+'», «'+assert._toString(u)+'») to be false';throw new Test262Error(m);};assert.throws=function(e,f,m){if(typeof f!=='function')throw new Test262Error('assert.throws requires two arguments');if(m===undefined)m='';else m+=' ';try{f();}catch(t){if(typeof t!=='object'||t===null){m+='Thrown value was not an object!';throw new Test262Error(m);}else if(t.constructor!==e){var en=e.name,an=t.constructor.name;if(en===an)m+='Expected a '+en+' but got a different error constructor with the same name';else m+='Expected a '+en+' but got a '+an;throw new Test262Error(m);}return;}m+='Expected a '+e.name+' to be thrown but no exception was thrown at all';throw new Test262Error(m);};assert.compareArray=function(a,e,m){m=m===undefined?'':m;if(typeof m==='symbol')m=m.toString();if(isPrimitive(a))assert(false,'Actual argument should not be primitive. '+String(m));else if(isPrimitive(e))assert(false,'Expected argument should not be primitive. '+String(m));var r=compareArray(a,e);if(r)return;var f=compareArray.format;assert(false,'Actual '+f(a)+' and expected '+f(e)+' should have the same contents. '+String(m));};function compareArray(a,b){if(b.length!==a.length)return false;for(var i=0;i<a.length;i++){if(!assert._isSameValue(b[i],a[i]))return false;}return true;};compareArray.format=function(a){return'['+Array.prototype.map.call(a,String).join(', ')+']';};assert._formatIdentityFreeValue=formatIdentityFreeValue;assert._toString=formatSimpleValue;";
+    if (exec_js(v, hp, (char[])min_harness) != 0) return 1;
+
+    // Also try loading assert.js from test262 harness (non-fatal if missing)
     {
-        Lexer lx = lexer::lexer_init(harness, hp);
-        CompiledFunction*? f = compiler::compile(&lx, hp);
-        if (catch err = f) return 1;
-        if (catch err = v.execute(f)) return 1;
+        char[] assert_path = "test262/harness/assert.js";
+        char[]? assert_src = file::load_temp((String)assert_path);
+        if (try asrc = assert_src) {
+            exec_js(v, hp, asrc);
+        }
     }
 
     // Now compile+execute the test
-    Lexer lx2 = lexer::lexer_init(src, hp);
-    CompiledFunction*? f2 = compiler::compile(&lx2, hp);
-    if (catch err = f2) return 1;
-    if (catch err = v.execute(f2)) return 1;
+    if (exec_js(v, hp, src) != 0) return 1;
 
     // Check __test262_fail via the string table lookup
     char[] kn = "__test262_fail";

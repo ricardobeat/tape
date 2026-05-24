@@ -5585,8 +5585,22 @@ fn void builtin_regexp(BuiltinContext* ctx) {
 fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || obj.regexp_data == null) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        // ES5 §15.10.6.3 step 2: throw TypeError if this is not a RegExp
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.test called on incompatible receiver");
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
         return;
     }
 
@@ -5670,7 +5684,22 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
 fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || obj.regexp_data == null) {
-        ctx.result.set_null();
+        // ES5 §15.10.6.2 step 2: throw TypeError if this is not a RegExp
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.exec called on incompatible receiver");
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
         return;
     }
 
@@ -6296,8 +6325,50 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.fastint = (long)BUILTIN_OBJECT_PROTO_VALUEOF;
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
-    // Register Object as a global constructor (lightfunc)
-    return register_simple_builtin(global_env, heap, "Object", BUILTIN_OBJECT);
+    // Create Object constructor as a proper HObject (not LIGHTFUNC)
+    // so it can carry .prototype, .length, etc.
+    HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = obj_raw) return false;
+    HObject* obj = obj_raw;
+    obj.builtin_fn_index = (int)BUILTIN_OBJECT;
+
+    // Set Object.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    obj.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Set Object.length (ES5 §15.2.1)
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 1;
+    obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
+    uint hash = heap.hash_string("Object");
+    HString* existing = heap.str_table_lookup("Object", hash);
+    HString* obj_key;
+    if (existing != null) {
+        obj_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Object", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        obj_key = new_key;
+    }
+    TVal obj_val;
+    obj_val.tag = OBJECT;
+    obj_val.pointer = obj;
+    env::env_declare(global_env, obj_key, obj_val);
+
+    return true;
 }
 
 fn bool register_math_object(EnvRecord* global_env, Heap* heap) {

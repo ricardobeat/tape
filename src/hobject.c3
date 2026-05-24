@@ -185,6 +185,15 @@ const PropFlags PROP_FLAGS_WEC = {
     .is_accessor  = false
 };
 
+/// Convenience constant: non-enumerable data property (writable, configurable).
+/// Used for built-in prototype methods per ES5 spec.
+const PropFlags PROP_FLAGS_WC = {
+    .writable     = true,
+    .enumerable   = false,
+    .configurable = true,
+    .is_accessor  = false
+};
+
 // ============================================================================
 // PropEntry — a single named property
 // ============================================================================
