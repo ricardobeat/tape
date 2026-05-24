@@ -1723,32 +1723,69 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                         // Convert JS flags to libregexp flag bits
                         int flags = 0;
+                        int js_flags = 0;  // 1=g, 2=i, 4=m
                         for (usz i = 0; i < flag_data.len; i++) {
                             char f = flag_data[i];
-                            if (f == 'i') {
+                            if (f == 'g') {
+                                js_flags |= 1;
+                            } else if (f == 'i') {
                                 flags |= re_bindings::RE_FLAG_IGNORECASE;
+                                js_flags |= 2;
                             } else if (f == 'm') {
                                 flags |= re_bindings::RE_FLAG_MULTILINE;
+                                js_flags |= 4;
                             } else if (f == 's') {
                                 flags |= re_bindings::RE_FLAG_DOTALL;
                             }
                         }
 
                         // Compile the regexp
+                        // lre_compile requires a null-terminated pattern string
+                        char[256] pattern_buf;
+                        usz copy_len = pattern_data.len < 255 ? pattern_data.len : 255;
+                        libc::memcpy(&pattern_buf, pattern_data.ptr, copy_len);
+                        pattern_buf[copy_len] = 0;
                         char[128] error_buf;
                         void* compiled = re_bindings::re_compile(
-                            (char*)pattern_data.ptr, pattern_data.len,
+                            &pattern_buf, copy_len,
                             flags, &error_buf, 128
                         );
 
                         if (compiled != null) {
                             HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
+                                obj.prototype = vm.heap.regexp_proto;
                                 obj.regexp_data = compiled;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.primitive_value.tag = STRING;
                                 obj.primitive_value.pointer = pattern_hs;
+                                // Set instance properties (ES5 §15.10.7)
+                                HString* source_key = intern_string(vm, "source");
+                                TVal source_tv;
+                                source_tv.tag = STRING;
+                                source_tv.pointer = pattern_hs;
+                                obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
+                                HString* global_key = intern_string(vm, "global");
+                                TVal global_tv;
+                                global_tv.tag = BOOLEAN;
+                                global_tv.boolean = (js_flags & 1) != 0;
+                                obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
+                                HString* ignorecase_key = intern_string(vm, "ignoreCase");
+                                TVal ignorecase_tv;
+                                ignorecase_tv.tag = BOOLEAN;
+                                ignorecase_tv.boolean = (js_flags & 2) != 0;
+                                obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
+                                HString* multiline_key = intern_string(vm, "multiline");
+                                TVal multiline_tv;
+                                multiline_tv.tag = BOOLEAN;
+                                multiline_tv.boolean = (js_flags & 4) != 0;
+                                obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
+                                HString* lastindex_key = intern_string(vm, "lastIndex");
+                                TVal lastindex_tv;
+                                lastindex_tv.tag = FASTINT;
+                                lastindex_tv.fastint = 0;
+                                obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
                                 ra.tag = OBJECT;
                                 ra.pointer = obj;
                             } else {
@@ -1762,6 +1799,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             // so typeof works correctly
                             HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
+                                obj.prototype = vm.heap.regexp_proto;
                                 obj.regexp_data = null;
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.primitive_value.tag = STRING;
