@@ -52,12 +52,13 @@ for cat in "${CATS[@]}"; do
     if grep -q '\$DONOTEVALUATE' "$f" 2>/dev/null; then
       S=$((S+1)); continue
     fi
-    local r="$(run_one "$f")"
+    r="$(run_one "$f")"
     if echo "$r" | grep -q "PASS"; then
       P=$((P+1))
     else
       F=$((F+1))
-      echo "FAIL: $name"
+      base="$(basename "$f" .js)"
+      echo "FAIL: $base"
     fi
   done
 done

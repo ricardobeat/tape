@@ -13,6 +13,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
 import duktape::builtins;
+import duktape::re_bindings;
 import std::io;
 import std::math;
 import libc;
@@ -1078,47 +1079,68 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ra.number = (double)sum;
                 }
             } else {
+                double add_b = num_val(rb);
+                double add_c = num_val(rc);
                 ra.tag = NUMBER;
-                ra.number = num_val(rb) + num_val(rc);
+                ra.number = add_b + add_c;
             }
             break;
 
-        case Opcode.SUB:
+        case Opcode.SUB: {
+            double sub_b = num_val(rb);
+            double sub_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = num_val(rb) - num_val(rc);
+            ra.number = sub_b - sub_c;
             break;
+        }
 
-        case Opcode.MUL:
+        case Opcode.MUL: {
+            double mul_b = num_val(rb);
+            double mul_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = num_val(rb) * num_val(rc);
+            ra.number = mul_b * mul_c;
             break;
+        }
 
-        case Opcode.DIV:
+        case Opcode.DIV: {
+            double div_b = num_val(rb);
+            double div_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = num_val(rb) / num_val(rc);
+            ra.number = div_b / div_c;
             break;
+        }
 
-        case Opcode.MOD:
+        case Opcode.MOD: {
+            double mod_b = num_val(rb);
+            double mod_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (num_val(rb) % num_val(rc));
+            ra.number = (mod_b % mod_c);
             break;
+        }
 
-        case Opcode.EXP:
+        case Opcode.EXP: {
+            double exp_b = num_val(rb);
+            double exp_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = math::pow(num_val(rb), num_val(rc));
+            ra.number = math::pow(exp_b, exp_c);
             break;
+        }
 
         // === UNARY ===
 
-        case Opcode.UNP:
+        case Opcode.UNP: {
+            double unp_b = num_val(rb);
             ra.tag = NUMBER;
-            ra.number = num_val(rb);
+            ra.number = unp_b;
             break;
+        }
 
-        case Opcode.UNM:
+        case Opcode.UNM: {
+            double unm_b = num_val(rb);
             ra.tag = NUMBER;
-            ra.number = -num_val(rb);
+            ra.number = -unm_b;
             break;
+        }
 
         case Opcode.BNOT:
             ra.tag = NUMBER;
@@ -1144,35 +1166,53 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         // === BITWISE ===
 
-        case Opcode.BAND:
+        case Opcode.BAND: {
+            double band_b = num_val(rb);
+            double band_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((int)num_val(rb) & (int)num_val(rc));
+            ra.number = (double)((int)band_b & (int)band_c);
             break;
+        }
 
-        case Opcode.BOR:
+        case Opcode.BOR: {
+            double bor_b = num_val(rb);
+            double bor_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((int)num_val(rb) | (int)num_val(rc));
+            ra.number = (double)((int)bor_b | (int)bor_c);
             break;
+        }
 
-        case Opcode.BXOR:
+        case Opcode.BXOR: {
+            double bxor_b = num_val(rb);
+            double bxor_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((int)num_val(rb) ^ (int)num_val(rc));
+            ra.number = (double)((int)bxor_b ^ (int)bxor_c);
             break;
+        }
 
-        case Opcode.SHL:
+        case Opcode.SHL: {
+            double shl_b = num_val(rb);
+            double shl_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((int)num_val(rb) << ((int)num_val(rc) & 0x1F));
+            ra.number = (double)((int)shl_b << ((int)shl_c & 0x1F));
             break;
+        }
 
-        case Opcode.SHR:
+        case Opcode.SHR: {
+            double shr_b = num_val(rb);
+            double shr_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((int)num_val(rb) >> ((int)num_val(rc) & 0x1F));
+            ra.number = (double)((int)shr_b >> ((int)shr_c & 0x1F));
             break;
+        }
 
-        case Opcode.USHR:
+        case Opcode.USHR: {
+            double ushr_b = num_val(rb);
+            double ushr_c = num_val(rc);
             ra.tag = NUMBER;
-            ra.number = (double)((uint)num_val(rb) >> ((int)num_val(rc) & 0x1F));
+            ra.number = (double)((uint)ushr_b >> ((int)ushr_c & 0x1F));
             break;
+        }
 
         // === COMPARISON ===
 
@@ -1648,6 +1688,99 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 a.prototype = vm.heap.array_proto;
                 ra.tag = OBJECT;
                 ra.pointer = a;
+            } else {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+            }
+            break;
+        }
+
+        case Opcode.NEWREGEXP: {
+            // A = dest register, BC = constant pool index of "/pattern/flags" string
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal raw_tv = constants[bc];
+                if (raw_tv.tag == STRING) {
+                    HString* raw_hs = (HString*)raw_tv.pointer;
+                    char[] raw = raw_hs.get_data();
+                    usz len = raw.len;
+
+                    // Parse "/pattern/flags" by finding the closing '/'
+                    // Flags are only letters, so scan backwards past them
+                    usz end_slash = len - 1;
+                    while (end_slash > 0 &&
+                           ((raw[end_slash] >= 'a' && raw[end_slash] <= 'z') ||
+                            (raw[end_slash] >= 'A' && raw[end_slash] <= 'Z'))) {
+                        end_slash--;
+                    }
+
+                    if (end_slash > 0 && raw[0] == '/' && raw[end_slash] == '/') {
+                        char[] pattern_data = raw[1..end_slash - 1];
+                        char[] flag_data = {};
+                        if (end_slash + 1 < len) {
+                            flag_data = raw[end_slash + 1..len - 1];
+                        }
+
+                        // Convert JS flags to libregexp flag bits
+                        int flags = 0;
+                        for (usz i = 0; i < flag_data.len; i++) {
+                            char f = flag_data[i];
+                            if (f == 'i') {
+                                flags |= re_bindings::RE_FLAG_IGNORECASE;
+                            } else if (f == 'm') {
+                                flags |= re_bindings::RE_FLAG_MULTILINE;
+                            } else if (f == 's') {
+                                flags |= re_bindings::RE_FLAG_DOTALL;
+                            }
+                        }
+
+                        // Compile the regexp
+                        char[128] error_buf;
+                        void* compiled = re_bindings::re_compile(
+                            (char*)pattern_data.ptr, pattern_data.len,
+                            flags, &error_buf, 128
+                        );
+
+                        if (compiled != null) {
+                            HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
+                            if (try obj = obj_raw) {
+                                obj.regexp_data = compiled;
+                                // Store pattern string as primitive_value
+                                HString* pattern_hs = intern_string(vm, pattern_data);
+                                obj.primitive_value.tag = STRING;
+                                obj.primitive_value.pointer = pattern_hs;
+                                ra.tag = OBJECT;
+                                ra.pointer = obj;
+                            } else {
+                                // If alloc failed, free the compiled regexp
+                                re_bindings::re_free(compiled);
+                                ra.tag = UNDEFINED;
+                                ra.pointer = null;
+                            }
+                        } else {
+                            // re_compile failed — still create an empty regexp object
+                            // so typeof works correctly
+                            HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
+                            if (try obj = obj_raw) {
+                                obj.regexp_data = null;
+                                HString* pattern_hs = intern_string(vm, pattern_data);
+                                obj.primitive_value.tag = STRING;
+                                obj.primitive_value.pointer = pattern_hs;
+                                ra.tag = OBJECT;
+                                ra.pointer = obj;
+                            } else {
+                                ra.tag = UNDEFINED;
+                                ra.pointer = null;
+                            }
+                        }
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
+                } else {
+                    ra.tag = UNDEFINED;
+                    ra.pointer = null;
+                }
             } else {
                 ra.tag = UNDEFINED;
                 ra.pointer = null;

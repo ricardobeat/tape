@@ -11,7 +11,9 @@
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~710 |
+| Currently passing (test262) | ~710 |
 | VM bugs causing hangs | try/catch, switch, with, break, for-in, RegExp subdirs |
+| **Fixed this session** | **compound assignment (`x -= 1`), prefix/postfix `++`/`--` global write-back, for-loop `i++` increment infinite loop** |
 
 ## Per-Phase Status
 
@@ -184,6 +186,7 @@
 | 26 | Phase 8b: Date constructor and methods |
 | 27 | Phase 8c: RegExp — integrated QuickJS libregexp engine (libregexp.c, libunicode.c) as C library. `re_compile`/`re_exec`/`re_free` API, C3 bindings, compiled bytecode stored in HObject. 0 test262 passing — blocked on parser regexp literals and harness gaps. |
 | 28 | Phase 5f: Function constructor — `new Function(p1, ..., body)` / `Function(p1, ..., body)`, source compilation via compiler::compile_function, `.constructor` on `Function.prototype` wired to Function object, `Function.length`, `[[Prototype]]` chain for instanceof support. |
+| 29 | **Bug fixes**: Fixed VM arithmetic/bitwise opcode bug where `ra.tag = NUMBER` was set before reading `rb`, causing incorrect results when `ra == rb` (compound assignments `x -= 1`, prefix `++`/`--`). Fixed `postfix_expr`/`unary_expr` missing `PUTVAR` write-back for global-scope `i++`/`++i` patterns. |
 
 ## Refreshing Counts
 

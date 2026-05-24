@@ -1992,20 +1992,32 @@ fn ushort? CompilerContext.unary_expr(&self) {
             // Prefix ++
             self.advance()!;
             ushort op_inc = self.postfix_expr()!;
+            bool inc_was_getvar = self.last_was_getvar;
+            uint inc_getvar_name_idx = self.last_getvar_name_idx;
             ushort one_inc = self.alloc_reg();
             self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_inc, 1));
             self.emit_abc(Opcode.ADD, (uint)op_inc, (uint)op_inc, (uint)one_inc);
             self.free_reg(one_inc);
+            // Write back if the operand was a global variable
+            if (inc_was_getvar) {
+                self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
+            }
             return op_inc;
 
         case TokenType.DEC:
             // Prefix --
             self.advance()!;
             ushort op_dec = self.postfix_expr()!;
+            bool dec_was_getvar = self.last_was_getvar;
+            uint dec_getvar_name_idx = self.last_getvar_name_idx;
             ushort one_dec = self.alloc_reg();
             self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_dec, 1));
             self.emit_abc(Opcode.SUB, (uint)op_dec, (uint)op_dec, (uint)one_dec);
             self.free_reg(one_dec);
+            // Write back if the operand was a global variable
+            if (dec_was_getvar) {
+                self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
+            }
             return op_dec;
 
         case TokenType.NEW:
@@ -2020,6 +2032,10 @@ fn ushort? CompilerContext.unary_expr(&self) {
 fn ushort? CompilerContext.postfix_expr(&self) {
     ushort operand = self.call_expr()!;
 
+    // Save LHS info for write-back if the operand was a global variable
+    bool lhs_was_getvar = self.last_was_getvar;
+    uint lhs_getvar_name_idx = self.last_getvar_name_idx;
+
     TokenType tt = self.peek_type();
     if (tt == TokenType.INC) {
         self.advance()!;
@@ -2032,6 +2048,11 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
         self.emit_abc(Opcode.ADD, (uint)operand, (uint)operand, (uint)one);
         self.free_reg(one);
+
+        // Write back if the operand was a global variable
+        if (lhs_was_getvar) {
+            self.emit_a_bc(Opcode.PUTVAR, (uint)operand, lhs_getvar_name_idx);
+        }
 
         return saved;
     }
@@ -2047,6 +2068,11 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
         self.emit_abc(Opcode.SUB, (uint)operand, (uint)operand, (uint)one);
         self.free_reg(one);
+
+        // Write back if the operand was a global variable
+        if (lhs_was_getvar) {
+            self.emit_a_bc(Opcode.PUTVAR, (uint)operand, lhs_getvar_name_idx);
+        }
 
         return saved;
     }
@@ -2435,6 +2461,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
             ushort tmpl_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)tmpl_reg, tmpl_idx));
             return tmpl_reg;
+
+        case TokenType.REGEXP: {
+            Token re_tok = self.advance()!;
+            uint re_idx = self.add_string_constant(re_tok.str_value);
+            ushort re_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.NEWREGEXP, (uint)re_reg, re_idx));
+            return re_reg;
+        }
 
         default:
             // Check for literal keywords
