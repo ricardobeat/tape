@@ -1339,3 +1339,10 @@ fn void Lexer.pushback(&self, Token tok) {
     self.pushed_back = tok;
     self.has_pushed_back = true;
 }
+
+/// Enable or disable strict-mode keyword recognition.
+/// When enabled, FutureReservedWords (implements, interface, package,
+/// private, protected, public) are recognised as keywords.
+fn void Lexer.set_strict(&self, bool s) {
+    self.strict_mode = s;
+}

@@ -173,6 +173,9 @@ struct CompilerContext {
     // to eval_acc_reg for eval's implicit return value.
     bool   eval_mode;
     ushort eval_acc_reg;
+
+    // Strict mode: set by "use strict" directive prologue.
+    bool is_strict;
 }
 
 // ============================================================================
@@ -185,6 +188,9 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     CompilerContext ctx;
     ctx.init(lex, heap);
     ctx.is_global = true;
+
+    // Check for "use strict" directive prologue at program level
+    ctx.parse_directives()!;
 
     // Parse statements until EOF
     while (!ctx.is_at_end()) {
@@ -206,6 +212,9 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     ctx.is_global = true;
     ctx.eval_mode = true;
     ctx.eval_acc_reg = ctx.alloc_reg();
+
+    // Check for "use strict" directive prologue at eval level
+    ctx.parse_directives()!;
 
     // Parse statements until EOF
     while (!ctx.is_at_end()) {
@@ -306,6 +315,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     }
 
     func.num_regs = self.max_reg;
+    func.flags.is_strict = self.is_strict;
 
     return func;
 }
@@ -703,7 +713,7 @@ fn void? CompilerContext.statement(&self) {
 
     switch (tt) {
         case TokenType.LBRACE:
-            self.block()!;
+            self.block(false)!;
         case TokenType.VAR:
             self.var_declaration()!;
         case TokenType.LET:
@@ -759,11 +769,69 @@ fn void? CompilerContext.statement(&self) {
     }
 }
 
+/// Check if a name is restricted in strict mode (ES5 §11.6.2.2, §12.10.1).
+/// `eval` and `arguments` cannot be used as identifiers.
+fn bool is_restricted_name(char[] name) @inline {
+    if (name.len == 4 && name[0] == 'e' && name[1] == 'v' && name[2] == 'a' && name[3] == 'l') {
+        return true;
+    }
+    if (name.len == 9 && name[0] == 'a' && name[1] == 'r' && name[2] == 'g' &&
+        name[3] == 'u' && name[4] == 'm' && name[5] == 'e' &&
+        name[6] == 'n' && name[7] == 't' && name[8] == 's') {
+        return true;
+    }
+    return false;
+}
+
+/// Parse directive prologue statements at the start of a function body or program.
+/// Detects "use strict" and enables strict mode if found (ES5 §14.1).
+fn void? CompilerContext.parse_directives(&self) {
+    while (true) {
+        if (!self.check(TokenType.STRING)) {
+            break;
+        }
+
+        Token str_tok = self.advance()!;
+
+        bool has_semicolon = self.check(TokenType.SEMICOLON);
+        bool has_asi = self.lexer.seen_line_term;
+
+        if (has_semicolon || has_asi) {
+            if (has_semicolon) {
+                self.advance()!;
+            }
+
+            if (str_tok.str_value.len == 10) {
+                bool is_use_strict = true;
+                char[] expected = "use strict";
+                for (usz i = 0; i < 10; i++) {
+                    if (str_tok.str_value[i] != expected[i]) {
+                        is_use_strict = false;
+                        break;
+                    }
+                }
+                if (is_use_strict && !self.is_strict) {
+                    self.is_strict = true;
+                    self.lexer.set_strict(true);
+                }
+            }
+        } else {
+            self.lexer.pushback(str_tok);
+            break;
+        }
+    }
+}
+
 /// Parse a block: { statement* }
-fn void? CompilerContext.block(&self) {
+/// If `check_directives` is true, checks for "use strict" directive prologue at the start.
+fn void? CompilerContext.block(&self, bool check_directives) {
     self.expect(TokenType.LBRACE)!;
     uint saved_depth = self.scope_depth;
     ushort saved_reg = self.next_reg;
+
+    if (check_directives) {
+        self.parse_directives()!;
+    }
 
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         self.statement()!;
@@ -771,7 +839,6 @@ fn void? CompilerContext.block(&self) {
 
     self.expect(TokenType.RBRACE)!;
 
-    // Pop scope entries created inside the block
     self.pop_scope_to(saved_depth);
     self.free_regs_to(saved_reg);
 }
@@ -784,6 +851,9 @@ fn void? CompilerContext.var_declaration(&self) {
     // Parse one or more variable declarators
     for (;;) {
         Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+        if (self.is_strict && is_restricted_name(name_tok.str_value)) {
+            return COMPILE_ERROR~;
+        }
         ushort reg = self.declare_var(name_tok.str_value, is_const);
 
         // Optional initializer
@@ -1115,7 +1185,7 @@ fn void? CompilerContext.try_statement(&self) {
     }
 
     // Compile try block
-    self.block()!;
+    self.block(false)!;
 
     // Emit ENDTRY to pop the try handler (normal exit)
     self.emit_simple(Opcode.ENDTRY);
@@ -1138,6 +1208,9 @@ fn void? CompilerContext.try_statement(&self) {
 
         if (self.match(TokenType.LPAREN)) {
             Token catch_param = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(catch_param.str_value)) {
+                return COMPILE_ERROR~;
+            }
             self.expect(TokenType.RPAREN)!;
 
             ushort catch_var = self.declare_var(catch_param.str_value, false);
@@ -1156,7 +1229,7 @@ fn void? CompilerContext.try_statement(&self) {
         }
 
         // Compile catch block
-        self.block()!;
+        self.block(false)!;
 
         self.pop_scope_to(catch_scope);
         self.free_regs_to(catch_saved_reg);
@@ -1174,7 +1247,7 @@ fn void? CompilerContext.try_statement(&self) {
         self.emit_simple(Opcode.FINALLY);
 
         // Compile finally block
-        self.block()!;
+        self.block(false)!;
 
         // Emit ENDFINALLY
         self.emit_simple(Opcode.ENDFINALLY);
@@ -1206,6 +1279,9 @@ fn void? CompilerContext.try_statement(&self) {
 ///   <statement>
 ///   WITH_END                            — pop the with-env from the scope chain
 fn void? CompilerContext.with_statement(&self) {
+    if (self.is_strict) {
+        return COMPILE_ERROR~;
+    }
     self.expect(TokenType.WITH)!;
 
     // Parse `(expr)`
@@ -1537,6 +1613,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
             Token param = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(param.str_value)) {
+                return COMPILE_ERROR~;
+            }
             self.declare_var(param.str_value, false);
             arg_count++;
 
@@ -1549,7 +1628,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     self.expect(TokenType.RPAREN)!;
 
     // Compile function body block
-    self.block()!;
+    self.block(true)!;
 
     // Emit implicit return undefined if no explicit return
     // Check if last instruction is a return
@@ -1571,6 +1650,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
 
+    // Propagate strict mode: functions inside strict code are strict (ES5 §10.1.1)
+    inner_ctx.is_strict = self.is_strict;
+    if (self.is_strict) {
+        inner_ctx.lexer.set_strict(true);
+    }
+
     // Parse parameter list
     inner_ctx.expect(TokenType.LPAREN)!;
     ushort arg_count = 0;
@@ -1578,6 +1663,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     if (!inner_ctx.check(TokenType.RPAREN)) {
         for (;;) {
             Token param = inner_ctx.expect(TokenType.IDENTIFIER)!;
+            if (inner_ctx.is_strict && is_restricted_name(param.str_value)) {
+                return COMPILE_ERROR~;
+            }
             ushort param_reg = inner_ctx.declare_var(param.str_value, false);
             // Store parameter in environment so inner functions can capture it
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
@@ -1593,7 +1681,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     inner_ctx.expect(TokenType.RPAREN)!;
 
     // Compile function body
-    inner_ctx.block()!;
+    inner_ctx.block(true)!;
 
     // Add implicit return undefined
     bool has_return = false;
