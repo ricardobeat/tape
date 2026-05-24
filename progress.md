@@ -12,7 +12,7 @@
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
-| **Fixed this session** | **RegExp global flag + lastIndex: `builtin_regexp_proto_exec` and `builtin_regexp_proto_test` now read/update `lastIndex` on global regexps per ES5 §15.10.6.2/§15.10.6.3. 6 previously-hanging exec tests now pass. No more RegExp exec/test hangs.** |
+| **Fixed this session** | **WITH_END closure capture use-after-free: `WITH_END` was freeing the EnvRecord when exiting a `with` block. Closures created inside `with` that captured the scope chain via `func_obj.var_env = act.var_env` held a dangling pointer, causing a null-pointer dereference in `env_get`/`has_prop` on subsequent calls. Fix: skip the `libc::free` in `WITH_END` so captured env records remain valid. 18 new test262 with tests now passing (no more crashes).** |
 
 ## Per-Phase Status
 
@@ -124,11 +124,11 @@
 | delete | 69 | 12 | 57 |
 | continue | 24 | 9 | 15 |
 | eval | 347 | 25 | 322 |
-| for-in | 336 | ❌ hangs VM |
+| for-in | 336 | ✅ 4 pass / 78 fail (no hang) |
 | switch/case | 111 | ~~❌ hangs VM~~ ✅ "continue within switch" hang fixed (cptn-*-fall-thru-abrupt-empty pass); completion value tests still failing |
 | break | 20 | 17 pass / 3 fail |
 | labeled | 24 | 11 pass / 13 fail |
-| with | 181 | ❌ hangs VM |
+| with | 181 | ✅ 18 pass / 163 fail (crash fixed) |
 | Component | Status |
 |---|---|
 | for-in | ✅ |

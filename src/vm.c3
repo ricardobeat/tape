@@ -2748,16 +2748,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.WITH_END: {
             // Pop the current with-env from the scope chain.
+            // NOTE: we do NOT free the env record here because a closure
+            // created inside the `with` block may have captured it via
+            // func_obj.var_env = act.var_env (see CLOSURE opcode).
+            // Freeing it would leave a dangling pointer in the closure
+            // and crash on subsequent env_get calls.
             if (act.var_env != null && act.var_env.parent != null) {
-                EnvRecord* pop_env = act.var_env;
                 act.var_env = act.var_env.parent;
-                // Free the env record (not the bindings — the bindings
-                // is the user's object and remains alive via other refs).
-                if (pop_env != vm.global_env) {
-                    pop_env.parent = null;
-                    pop_env.bindings = null;
-                    libc::free(pop_env);
-                }
             }
             break;
         }
