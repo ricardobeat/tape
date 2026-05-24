@@ -1,6 +1,8 @@
 {
   "langrev": "1",
   "warnings": [ "all" ],
+  "c-sources": [ "libregexp/libregexp.c", "libregexp/libunicode.c", "libregexp/re_wrapper.c" ],
+  "c-include-dirs": [ "libregexp" ],
   "targets": {
     "duktape": {
       "type": "static-lib",
@@ -8,7 +10,11 @@
     },
     "test_vm": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner" ]
+      "sources": [ "src", "test_vm_runner/test_vm.c3" ]
+    },
+    "batch_test_vm": {
+      "type": "executable",
+      "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ]
     }
   }
 }

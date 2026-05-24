@@ -123,7 +123,8 @@ const uint BUILTIN_DATE_PROTO_GETHOURS     = 96;
 const uint BUILTIN_DATE_PROTO_GETMINUTES   = 97;
 const uint BUILTIN_DATE_PROTO_GETSECONDS   = 98;
 const uint BUILTIN_DATE_PROTO_GETMILLISECONDS = 99;
-const uint BUILTIN_COUNT               = 100;
+const uint BUILTIN_RESET_GLOBALS             = 100;
+const uint BUILTIN_COUNT                     = 101;
 
 struct BuiltinContext {
     void* vm;
@@ -5348,10 +5349,75 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_date_proto_getSeconds(ctx);
         case BUILTIN_DATE_PROTO_GETMILLISECONDS:
             builtin_date_proto_getMilliseconds(ctx);
+        case BUILTIN_RESET_GLOBALS:
+            builtin_reset_globals(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
     }
+}
+
+// ============================================================================
+// __resetGlobals — test262 checkpoint/restore
+// ============================================================================
+
+fn void builtin_reset_globals(BuiltinContext* ctx) {
+    HObject* globals = ctx.global_env.bindings;
+    Heap* heap = ctx.heap;
+
+    if (heap.checkpoint_count == 0) {
+        // === First call: save checkpoint ===
+        uint cap = globals.prop_count + 64;
+        usz key_bytes = (usz)cap * void*::size;
+        usz val_bytes = (usz)cap * TVal::size;
+        heap.checkpoint_keys = (void**)heap.alloc_func(heap.heap_udata, key_bytes);
+        heap.checkpoint_vals = (TVal*)heap.alloc_func(heap.heap_udata, val_bytes);
+        if (heap.checkpoint_keys == null || heap.checkpoint_vals == null) {
+            ctx.result.set_undefined();
+            return;
+        }
+        heap.checkpoint_cap = cap;
+
+        uint count = 0;
+        for (uint i = 0; i < globals.prop_count; i++) {
+            void* key = globals.props[i].key;
+            if (key == null) continue;
+            if (count >= heap.checkpoint_cap) {
+                uint new_cap = heap.checkpoint_cap * 2;
+                usz new_kb = (usz)new_cap * void*::size;
+                usz new_vb = (usz)new_cap * TVal::size;
+                void* new_keys = heap.realloc_func(heap.heap_udata, heap.checkpoint_keys, new_kb);
+                TVal* new_vals = (TVal*)heap.realloc_func(heap.heap_udata, heap.checkpoint_vals, new_vb);
+                if (new_keys == null || new_vals == null) break;
+                heap.checkpoint_keys = (void**)new_keys;
+                heap.checkpoint_vals = new_vals;
+                heap.checkpoint_cap = new_cap;
+            }
+            heap.checkpoint_keys[count] = key;
+            heap.checkpoint_vals[count] = globals.props[i].value;
+            count++;
+        }
+        heap.checkpoint_count = count;
+    } else {
+        // === Restore checkpoint ===
+        // Delete globals not in checkpoint
+        for (uint i = globals.prop_count; i > 0; i--) {
+            uint idx = i - 1;
+            void* key = globals.props[idx].key;
+            if (key == null) continue;
+            bool found = false;
+            for (uint j = 0; j < heap.checkpoint_count; j++) {
+                if (heap.checkpoint_keys[j] == key) { found = true; break; }
+            }
+            if (!found) { globals.delete_prop(key); }
+        }
+        // Restore checkpoint values
+        for (uint i = 0; i < heap.checkpoint_count; i++) {
+            globals.put_prop(heap.checkpoint_keys[i], heap.checkpoint_vals[i],
+                             hobject::PROP_FLAGS_WEC);
+        }
+    }
+    ctx.result.set_undefined();
 }
 
 fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
@@ -5414,6 +5480,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register eval (ES5 §15.1.2.1)
     if (!register_simple_builtin(global_env, heap, "eval", BUILTIN_EVAL)) return false;
+
+    // Register test262 batch runner helper
+    if (!register_simple_builtin(global_env, heap, "__resetGlobals", BUILTIN_RESET_GLOBALS)) return false;
 
     // Register global constants: NaN, Infinity, undefined
     if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;

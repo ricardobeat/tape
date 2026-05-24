@@ -26,6 +26,7 @@ import duktape::types;
 import duktape::hstring;
 import duktape::bytecode;
 import duktape::env;
+import duktape::re_bindings;
 import libc;
 
 // Faults for optional returns
@@ -272,6 +273,10 @@ struct HObject {
     /// Builtin function index for native built-in functions (e.g., Number, Object).
     /// -1 when this object is not a native builtin function.
     int           builtin_fn_index;
+
+    /// Compiled regexp bytecode pointer (only for REGEXP class objects).
+    /// Allocated by libregexp, freed via re_free().
+    void*         regexp_data;
 }
 
 // ============================================================================
@@ -791,6 +796,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     }
 
     obj.builtin_fn_index = -1;
+    obj.regexp_data = null;
     return obj;
 }
 
@@ -801,6 +807,12 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 /// and string table references.
 fn void hobject_free(HObject* obj) {
     if (obj == null) { return; }
+
+    // Free compiled regexp bytecode if present
+    if (obj.regexp_data != null) {
+        re_bindings::re_free(obj.regexp_data);
+        obj.regexp_data = null;
+    }
 
     if (obj.props != null) {
         libc::free(obj.props);

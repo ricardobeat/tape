@@ -109,6 +109,13 @@ struct Heap {
     HObject* array_proto;
     HObject* function_proto;
     HObject* date_proto;
+    HObject* regexp_proto;
+
+    // Global checkpoint for __resetGlobals() — saves initial global state
+    void**    checkpoint_keys;   /// Array of HString* pointers
+    TVal*     checkpoint_vals;   /// Parallel array of TVal values
+    uint      checkpoint_count;  /// Number of saved entries
+    uint      checkpoint_cap;    /// Allocated capacity
 }
 
 // ============================================================================
