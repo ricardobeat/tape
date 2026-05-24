@@ -198,6 +198,11 @@ struct CompilerContext {
     // Default parameter tracking
     ParamDefault[MAX_PARAMS] defaults;
     ushort default_count;
+
+    // Rest parameter tracking
+    bool has_rest;
+    ushort rest_formal_count;   // number of formals before rest parameter
+    ushort num_args;            // total parameter count (including rest)
 }
 
 // ============================================================================
@@ -343,6 +348,13 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
     func.num_regs = self.max_reg;
     func.flags.is_strict = self.is_strict;
+    func.flags.has_rest = self.has_rest;
+    func.num_args = self.num_args;
+    if (self.has_rest) {
+        func.num_formals = self.rest_formal_count;
+    } else {
+        func.num_formals = self.num_args;
+    }
 
     return func;
 }
@@ -1834,6 +1846,23 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
 
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
+            // Check for rest parameter
+            if (self.match(TokenType.ELLIPSIS)) {
+                Token rest_param = self.expect(TokenType.IDENTIFIER)!;
+                if (self.is_strict && is_restricted_name(rest_param.str_value)) {
+                    return COMPILE_ERROR~;
+                }
+                ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
+                uint rest_name_idx = self.add_string_constant(rest_param.str_value);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                arg_count++;
+                self.has_rest = true;
+                self.rest_formal_count = arg_count - 1;
+                self.num_args = arg_count;
+                // Rest parameter must be last
+                break;
+            }
+
             Token param = self.expect(TokenType.IDENTIFIER)!;
             if (self.is_strict && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
@@ -1868,6 +1897,11 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 break;
             }
         }
+    }
+
+    // Set num_args if not already set by rest parameter
+    if (!self.has_rest) {
+        self.num_args = arg_count;
     }
 
     self.expect(TokenType.RPAREN)!;
@@ -1969,8 +2003,6 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
     def_ctx.emit_simple(Opcode.POP_LEX);
 
     CompiledFunction* func = def_ctx.finish()!;
-    func.num_args = 0;
-    func.num_formals = 0;
 
     return func;
 }
@@ -1991,6 +2023,23 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
     if (!inner_ctx.check(TokenType.RPAREN)) {
         for (;;) {
+            // Check for rest parameter
+            if (inner_ctx.match(TokenType.ELLIPSIS)) {
+                Token rest_param = inner_ctx.expect(TokenType.IDENTIFIER)!;
+                if (inner_ctx.is_strict && is_restricted_name(rest_param.str_value)) {
+                    return COMPILE_ERROR~;
+                }
+                ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
+                uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
+                inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                arg_count++;
+                inner_ctx.has_rest = true;
+                inner_ctx.rest_formal_count = arg_count - 1;
+                inner_ctx.num_args = arg_count;
+                // Rest parameter must be last
+                break;
+            }
+
             Token param = inner_ctx.expect(TokenType.IDENTIFIER)!;
             if (inner_ctx.is_strict && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
@@ -2025,6 +2074,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 break;
             }
         }
+    }
+
+    // Set num_args if not already set by rest parameter
+    if (!inner_ctx.has_rest) {
+        inner_ctx.num_args = arg_count;
     }
 
     inner_ctx.expect(TokenType.RPAREN)!;
@@ -2098,8 +2152,6 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     }
 
     CompiledFunction* func = inner_ctx.finish()!;
-    func.num_args = arg_count;
-    func.num_formals = arg_count;
 
     // Set function name
     if (name.len > 0) {
@@ -3158,7 +3210,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (self.check(TokenType.ARROW)) {
                     char[][1] params_arr;
                     params_arr[0] = id_tok.str_value;
-                    return self.parse_arrow_function(&params_arr[0], 1)!;
+                    return self.parse_arrow_function(&params_arr[0], 1, false)!;
                 }
 
                 // Try to resolve as a local variable first (skip at global scope — use environment)
@@ -3197,7 +3249,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (self.check(TokenType.ARROW)) {
                     // No-param arrow: () => ...
                     char[]* no_params = null;
-                    return self.parse_arrow_function(no_params, 0)!;
+                    return self.parse_arrow_function(no_params, 0, false)!;
                 }
                 // Not an arrow: pushback and fall through to grouping
                 self.pushback(rparen);
@@ -3205,14 +3257,37 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 try_grouping = true;
             }
             // Check for arrow with params: (id) => or (id, id, ...) => ...
-            else if (self.check(TokenType.IDENTIFIER) && !try_grouping) {
+            else if ((self.check(TokenType.IDENTIFIER) || self.check(TokenType.ELLIPSIS)) && !try_grouping) {
                 char[][8] param_names;
                 ushort pc = 0;
                 Token[16] saved;  // save tokens for backtracking
                 ushort sc = 0;
+                bool has_rest = false;
 
                 bool is_arrow = false;
                 for (;;) {
+                    // Check for rest parameter
+                    if (self.check(TokenType.ELLIPSIS)) {
+                        Token ellipsis = self.advance()!;
+                        saved[sc++] = ellipsis;
+                        Token t = self.advance()!;
+                        saved[sc++] = t;
+                        if (t.type != TokenType.IDENTIFIER) {
+                            break;  // not a valid rest param, can't be arrow
+                        }
+                        param_names[pc++] = t.str_value;
+                        has_rest = true;
+
+                        if (self.check(TokenType.RPAREN)) {
+                            Token rp = self.advance()!;
+                            saved[sc++] = rp;
+                            if (self.check(TokenType.ARROW)) {
+                                is_arrow = true;
+                            }
+                        }
+                        break;
+                    }
+
                     Token t = self.advance()!;
                     saved[sc++] = t;
                     if (t.type != TokenType.IDENTIFIER) {
@@ -3237,7 +3312,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 }
 
                 if (is_arrow) {
-                    return self.parse_arrow_function(&param_names[0], pc)!;
+                    return self.parse_arrow_function(&param_names[0], pc, has_rest)!;
                 }
 
                 // Not an arrow: pushback saved tokens + lparen
@@ -3607,12 +3682,12 @@ fn ushort? CompilerContext.function_expr_body(&self) {
 ///
 /// `params`: pre-parsed parameter name slices (pointer to first element).
 /// `param_count`: number of parameters.
-fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort param_count) {
+fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort param_count, bool has_rest) {
     // Consume the ARROW token
     self.expect(TokenType.ARROW)!;
 
     // Create inner CompiledFunction for the arrow
-    CompiledFunction* inner = self.compile_arrow_inner(params, param_count)!;
+    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest)!;
 
     // Add to inner functions table
     uint inner_idx = 0;
@@ -3629,7 +3704,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
 
 /// Compile an inner arrow function given its parameter names.
 /// Arrow functions have `is_arrow = true`, lexical `this`, and no `.prototype`.
-fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count) {
+fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count, bool has_rest) {
     // Create a new CompilerContext for the arrow function
     CompilerContext arrow_ctx;
     arrow_ctx.init(self.lexer, self.heap);
@@ -3639,6 +3714,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.lexer.set_strict(true);
 
     // Register parameters
+    ushort formal_count = param_count;
+    if (has_rest && param_count > 0) {
+        formal_count = param_count - 1;
+    }
     for (ushort i = 0; i < param_count; i++) {
         char[] name = params[i];
         if (arrow_ctx.is_strict && is_restricted_name(name)) {
@@ -3661,14 +3740,14 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
         }
         arrow_ctx.expect(TokenType.RBRACE)!;
         // No implicit return for block body
-        bool has_return = false;
+        bool has_explicit_return = false;
         if (arrow_ctx.code_count > 0) {
             Opcode last_op = arrow_ctx.code[arrow_ctx.code_count - 1].op;
             if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
-                has_return = true;
+                has_explicit_return = true;
             }
         }
-        if (!has_return) {
+        if (!has_explicit_return) {
             arrow_ctx.emit_simple(Opcode.RETUNDEF);
         }
     } else {
@@ -3680,9 +3759,12 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Pop the function-level lexical scope
     arrow_ctx.emit_simple(Opcode.POP_LEX);
 
+    // Set rest and formal counts before finish()
+    arrow_ctx.has_rest = has_rest;
+    arrow_ctx.rest_formal_count = formal_count;
+    arrow_ctx.num_args = param_count;
+
     CompiledFunction* func = arrow_ctx.finish()!;
-    func.num_args = param_count;
-    func.num_formals = param_count;
     func.flags.is_arrow = true;
 
     return func;

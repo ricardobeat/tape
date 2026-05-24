@@ -71,6 +71,16 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 | ✅ (Phase 11)
 
+### Rest Parameters (ES6)
+- `...rest` syntax in function parameter lists
+- Rest parameter collects overflow arguments into a real Array
+- Does NOT count toward `Function.length`
+- Works with function declarations, expressions, and arrow functions
+- Compatible with default parameters (defaults before rest)
+- Array built in VM call handler (no separate opcode needed)
+
+| ✅ (Phase 11)
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.

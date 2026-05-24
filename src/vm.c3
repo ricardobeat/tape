@@ -2065,14 +2065,61 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
             uint new_nregs = target.num_regs;
 
-            // Copy args: from callee_reg+2..callee_reg+1+nargs to new frame reg 0..nargs-1
+            // Copy args
             TVal* old_args = regs_base + callee_reg + 2;
-            for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
-                new_regs[i] = old_args[i];
-            }
-            for (uint i = nargs; i < new_nregs; i++) {
-                new_regs[i].tag = UNDEFINED;
-                new_regs[i].pointer = null;
+            if (target.has_rest()) {
+                // Only copy the formal parameters (not the rest parameter)
+                uint copy_count = (uint)target.num_formals;
+                for (uint i = 0; i < nargs && i < copy_count; i++) {
+                    new_regs[i] = old_args[i];
+                }
+
+                // Build rest array from overflow args
+                uint rest_idx = copy_count;
+                uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
+
+                HObject*? arr_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                if (try a = arr_raw) {
+                    a.prototype = vm.heap.array_proto;
+                    // Copy overflow args into the array
+                    for (uint i = 0; i < overflow; i++) {
+                        char[16] ibuf;
+                        int ilen = libc::snprintf(&ibuf, 16, "%u", i);
+                        if (ilen > 0 && ilen < 16) {
+                            HString* key = intern_string(vm, ibuf[:ilen]);
+                            if (key != null) {
+                                TVal elem = old_args[copy_count + i];
+                                a.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                    }
+                    // Set .length
+                    HString* len_str = intern_string(vm, "length");
+                    TVal len_val;
+                    len_val.tag = FASTINT;
+                    len_val.fastint = (long)overflow;
+                    a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
+
+                    new_regs[rest_idx].tag = OBJECT;
+                    new_regs[rest_idx].pointer = a;
+                } else {
+                    new_regs[rest_idx].tag = UNDEFINED;
+                    new_regs[rest_idx].pointer = null;
+                }
+
+                // Fill remaining registers with UNDEFINED (after the rest param)
+                for (uint i = rest_idx + 1; i < new_nregs; i++) {
+                    new_regs[i].tag = UNDEFINED;
+                    new_regs[i].pointer = null;
+                }
+            } else {
+                for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
+                    new_regs[i] = old_args[i];
+                }
+                for (uint i = nargs; i < new_nregs; i++) {
+                    new_regs[i].tag = UNDEFINED;
+                    new_regs[i].pointer = null;
+                }
             }
 
             vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
@@ -2325,20 +2372,62 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.this_binding = this_tval;
             new_act.new_target = new_obj;
 
-            TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
-            uint new_nregs = target.num_regs;
+            TVal* new_regs2 = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            uint new_nregs2 = target.num_regs;
 
             // Copy args
-            TVal* old_args = regs_base + callee_reg + 2;
-            for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
-                new_regs[i] = old_args[i];
-            }
-            for (uint i = nargs; i < new_nregs; i++) {
-                new_regs[i].tag = UNDEFINED;
-                new_regs[i].pointer = null;
+            TVal* old_args2 = regs_base + callee_reg + 2;
+            if (target.has_rest()) {
+                uint copy_count = (uint)target.num_formals;
+                for (uint i = 0; i < nargs && i < copy_count; i++) {
+                    new_regs2[i] = old_args2[i];
+                }
+
+                uint rest_idx = copy_count;
+                uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
+
+                HObject*? arr2_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                if (try a2 = arr2_raw) {
+                    a2.prototype = vm.heap.array_proto;
+                    for (uint i = 0; i < overflow; i++) {
+                        char[16] ibuf2;
+                        int ilen2 = libc::snprintf(&ibuf2, 16, "%u", i);
+                        if (ilen2 > 0 && ilen2 < 16) {
+                            HString* key2 = intern_string(vm, ibuf2[:ilen2]);
+                            if (key2 != null) {
+                                TVal elem2 = old_args2[copy_count + i];
+                                a2.put_prop(key2, elem2, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                    }
+                    HString* len_str2 = intern_string(vm, "length");
+                    TVal len_val2;
+                    len_val2.tag = FASTINT;
+                    len_val2.fastint = (long)overflow;
+                    a2.put_prop(len_str2, len_val2, hobject::PROP_FLAGS_WEC);
+
+                    new_regs2[rest_idx].tag = OBJECT;
+                    new_regs2[rest_idx].pointer = a2;
+                } else {
+                    new_regs2[rest_idx].tag = UNDEFINED;
+                    new_regs2[rest_idx].pointer = null;
+                }
+
+                for (uint i = rest_idx + 1; i < new_nregs2; i++) {
+                    new_regs2[i].tag = UNDEFINED;
+                    new_regs2[i].pointer = null;
+                }
+            } else {
+                for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
+                    new_regs2[i] = old_args2[i];
+                }
+                for (uint i = nargs; i < new_nregs2; i++) {
+                    new_regs2[i].tag = UNDEFINED;
+                    new_regs2[i].pointer = null;
+                }
             }
 
-            vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
+            vm.valstack_top = (TVal*)((usz)new_regs2 + (usz)new_nregs2 * (usz)TVal::size);
             vm.valstack_bottom = new_act.bottom_byteoff;
 
             needs_restart = true;
@@ -2638,6 +2727,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     func_obj.comp_func = template;
                     func_obj.var_env = act.var_env;
                     func_obj.lex_env = act.lex_env;
+
+                    // Set .length property (ES5 §15.3.5.1)
+                    HString* len_key = intern_string(vm, "length");
+                    TVal len_val;
+                    len_val.tag = FASTINT;
+                    len_val.fastint = (long)template.num_formals;
+                    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
                     // Arrow functions don't get a .prototype property (ES6 §14.2.16)
                     if (!template.is_arrow()) {

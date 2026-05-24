@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 46
+**Last Updated:** Session 47
 **Target:** Full test262 conformance
 
 ## Summary
@@ -184,7 +184,7 @@
 | is_captured shadowing detection (GETVAR across scope boundaries) | ✅ |
 | for-in/for-of with let/const | 🚫 Deferred |
 
-### Phase 11: ES6+ — 🚧 Arrow Functions ✅, Template Literals ✅, Default Parameters ✅
+### Phase 11: ES6+ — 🚧 Arrow Functions ✅, Template Literals ✅, Default Parameters ✅, Rest Parameters ✅
 **test262: arrow-function tests — not yet quantified**
 **test262: template-literal tests — 6/11 passing (tagged templates now implemented; remaining failures due to object ToString VM limitation)**
 ||  | | _Tagged templates now implemented (Session 45); remaining test failures due to unrelated VM limitations._ |
@@ -205,7 +205,7 @@
 || Nested templates | ❌ |
 || Destructuring | ❌ |
 || Default parameters | ✅ |
-|| Rest parameters | ❌ |
+|| Rest parameters | ✅ |
 || Spread operator | ❌ |
 || for-of | ❌ |
 || Classes | ❌ |
@@ -264,6 +264,7 @@
 | 44 | **Phase 11: Arrow functions** — First ES6+ feature. Added arrow function parsing to compiler: `x => expr`, `() => expr`, `(x) => expr`, `(x, y) => { body }`. `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags, already existed). Added pushback buffer (4-token stack) to CompilerContext for backtracking during arrow-vs-grouping-expression disambiguation. VM changes: CLOSURE handler skips `.prototype` creation for arrow functions; CALL handler uses parent activation's `this_binding` for lexical `this` (ignoring stack `this` slot); NEW_OBJ handler throws TypeError (`is not a constructor`) for arrow functions per ES6 §14.2.2. `compile_arrow_inner()` creates sub-CompiledFunction with `is_arrow=true`, handles expression bodies (implicit return) vs block bodies. 12/12 custom arrow tests passing: single/multi/no params, nested arrows, lexical this, no prototype, new rejection. No regressions on existing 60+ test suite. |
 | 45 | **Phase 11: Template literals** — Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` enum (NONE/IN_EXPR) and `template_brace_balance` for ${} brace-depth tracking. New token types: TEMPLATE_HEAD, TEMPLATE_MIDDLE, TEMPLATE_TAIL. No-substitution templates return STRING token (zero-cost). Compiler emits LDCONST for template parts + ADD for concatenation. Escape sequences and line continuations supported. Brace tracking handles object literals and function bodies inside ${}. Tagged templates: `emit_tagged_template` builds template object array with `.raw` property, handles no-substitution (STRING), multi-part (HEAD/MIDDLE/TAIL), chained calls, and member expression tags with proper `this` binding. 38/38 tagged, 20/20 untagged tests passing. No regressions. |
 | 46 | **Phase 11: Default parameters** — Added `compile_default_expr()` helper that compiles each default as a zero-argument inner function; free variables resolve via GETVAR against the outer scope environment chain. Parameter parsing checks for `=` after each name: compiles default via sub-CompilerContext, stores in `inner_funcs`, records in `defaults[]`. After PUSH_LEX (before body), emits undef-check: `SNEQ param,undef; IF_TRUE skip; CLOSURE; LDTHIS; CALL 0; LDREG param,result; PUTVAR`. Both `compile_inner_function` and `parse_function_body` support defaults. Defaults can reference earlier params (e.g., `function f(a, b = a + 1)`). 30/30 custom tests passing; no regressions. |
+| 47 | **Phase 11: Rest parameters** — Added `has_rest`, `rest_formal_count`, and `num_args` fields to CompilerContext. `finish()` now sets `func.num_formals` from `rest_formal_count` when `has_rest=true`. Modified `parse_function_body()`, `compile_inner_function()`, and `compile_arrow_inner()` to detect `...rest` in parameter lists. Arrow function detection updated to handle ELLIPSIS in paren params. CLOSURE opcode handler now sets `.length` property from `num_formals` (fixing pre-existing gap). VM CALL and NEW_OBJ handlers build rest array: copy first `num_formals` args normally, create HObject ARRAY from overflow args with indexed properties and `.length`. 28/28 custom tests passing; no regressions on existing suite. |
 
 ## Refreshing Counts
 
