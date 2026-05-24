@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 28
+**Last Updated:** Session 30
 **Target:** Full test262 conformance
 
 ## Summary
@@ -12,7 +12,7 @@
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~710 |
 | Currently passing (test262) | ~710 |
-| VM bugs causing hangs | try/catch, switch, with, break, for-in, RegExp subdirs |
+| VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs |
 | **Fixed this session** | **compound assignment (`x -= 1`), prefix/postfix `++`/`--` global write-back, for-loop `i++` increment infinite loop** |
 
 ## Per-Phase Status
@@ -127,8 +127,8 @@
 | eval | 347 | 25 | 322 |
 | for-in | 336 | ❌ hangs VM |
 | switch/case | 111 | ❌ hangs VM |
-| break | 20 | ❌ hangs VM |
-| labeled | 24 | ❌ hangs VM |
+| break | 20 | 17 pass / 3 fail |
+| labeled | 24 | 11 pass / 13 fail |
 | with | 181 | ❌ hangs VM |
 | Component | Status |
 |---|---|
@@ -187,6 +187,7 @@
 | 27 | Phase 8c: RegExp — integrated QuickJS libregexp engine (libregexp.c, libunicode.c) as C library. `re_compile`/`re_exec`/`re_free` API, C3 bindings, compiled bytecode stored in HObject. 0 test262 passing — blocked on parser regexp literals and harness gaps. |
 | 28 | Phase 5f: Function constructor — `new Function(p1, ..., body)` / `Function(p1, ..., body)`, source compilation via compiler::compile_function, `.constructor` on `Function.prototype` wired to Function object, `Function.length`, `[[Prototype]]` chain for instanceof support. |
 | 29 | **Bug fixes**: Fixed VM arithmetic/bitwise opcode bug where `ra.tag = NUMBER` was set before reading `rb`, causing incorrect results when `ra == rb` (compound assignments `x -= 1`, prefix `++`/`--`). Fixed `postfix_expr`/`unary_expr` missing `PUTVAR` write-back for global-scope `i++`/`++i` patterns. |
+| 30 | **ASI bug fixes**: Added line terminator tracking (`seen_line_term`) to lexer. Fixed `break`/`continue`/`return` ASI — line terminators between keyword and identifier now suppress label/expression parsing per ES5 spec. Fixed test262 harness: includes `assert.js`, fixed `set -e` exit on skip. 3 test262 tests newly passing (break/line-terminators, continue/line-terminators, return/line-terminators). |
 
 ## Refreshing Counts
 

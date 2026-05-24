@@ -292,6 +292,8 @@ struct Lexer {
     Token pushed_back;
     bool has_pushed_back;
     bool strict_mode;
+    /// True if a line terminator was skipped between the previous and next token.
+    bool seen_line_term;
     void* heap;
 }
 
@@ -311,6 +313,7 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.has_lookahead = false;
     lex.has_pushed_back = false;
     lex.strict_mode = false;
+    lex.seen_line_term = false;
     lex.heap = heap;
     return lex;
 }
@@ -438,6 +441,7 @@ fn uint Lexer.remaining(&self) {
 /// Skip whitespace, line terminators, single-line comments (//),
 /// and multi-line comments (/* ... */).
 fn void Lexer.skip_whitespace_and_comments(&self) {
+    self.seen_line_term = false;
     while (!self.at_end()) {
         char c = self.peek_char();
 
@@ -448,10 +452,25 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
                 self.pos += 2;
                 self.line++;
                 self.col = 1;
+                self.seen_line_term = true;
             } else {
                 self.advance_char();
+                if (c == '\n' || c == '\r') self.seen_line_term = true;
             }
             continue;
+        }
+
+        // U+2028 (line separator) and U+2029 (paragraph separator) — UTF-8: E2 80 A8 / E2 80 A9
+        if (c == (char)0xE2 && self.remaining() >= 3) {
+            char n1 = self.source[self.pos + 1];
+            char n2 = self.source[self.pos + 2];
+            if ((n1 == (char)0x80 && (n2 == (char)0xA8 || n2 == (char)0xA9))) {
+                self.pos += 3;
+                self.line++;
+                self.col = 1;
+                self.seen_line_term = true;
+                continue;
+            }
         }
 
         // Single-line comment
@@ -1163,6 +1182,28 @@ fn Token? Lexer.scan_template(&self) {
     return LEX_ERROR~;
 }
 
+/// Check if the previous token was an operand, meaning `/` should be
+/// treated as division rather than the start of a regexp literal.
+/// Follows the ECMAScript lexical grammar: after identifiers, literals,
+/// closing brackets, `this`, `true`, `false`, `null`, the `/` is
+/// division; otherwise it starts a regexp.
+fn bool Lexer.prev_was_operand(&self) {
+    switch (self.current.type) {
+        case TokenType.RPAREN:
+        case TokenType.RBRACKET:
+        case TokenType.RBRACE:
+        case TokenType.IDENTIFIER:
+        case TokenType.NUMBER:
+        case TokenType.STRING:
+        case TokenType.REGEXP:
+        case TokenType.TEMPLATE:
+        case TokenType.THIS:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ============================================================================
 // Lexer — main tokenisation entry point
 // ============================================================================
@@ -1220,6 +1261,16 @@ fn Token? Lexer.next_token(&self) {
         Token tok = self.scan_identifier()!;
         self.current = tok;
         return tok;
+    }
+
+    // Check for regexp literal vs division operator
+    if (c == '/') {
+        // /= is always division-assign, handle normally via scan_punctuator
+        if (self.peek_char_at(1) != '=' && !self.prev_was_operand()) {
+            Token tok = self.scan_regexp()!;
+            self.current = tok;
+            return tok;
+        }
     }
 
     // Punctuator

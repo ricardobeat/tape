@@ -2,13 +2,14 @@
 # Helper: run a single test262 test file and print result.
 # Usage: run_single_test.sh <test_file_path>
 set -u
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 test_file="$1"
 test_name="$(basename "$(dirname "$test_file")")/$(basename "$test_file" .js)"
 vm="$SCRIPT_DIR/../out/test_vm"
 
 combined="${TMPDIR:-/tmp}/t262_$$_${RANDOM}.js"
-cat > "$combined" <<'WRAPPER'
+cat "$SCRIPT_DIR/../test262/harness/sta.js" > "$combined"
+cat "$SCRIPT_DIR/../test262/harness/assert.js" >> "$combined"
+cat >> "$combined" <<'WRAPPER'
 var __test262_fail = 0;
 function Test262Error(msg) { __test262_fail++; print("FAIL: " + (msg || "")); }
 function $DONOTEVALUATE() { print("SKIP: $DONOTEVALUATE"); }

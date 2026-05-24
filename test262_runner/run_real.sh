@@ -11,8 +11,11 @@ if [ ! -f "$VM" ]; then
   cd "$SCRIPT_DIR/.." && c3c build test_vm 2>&1
 fi
 
+HARNESS_ASSERT="$SCRIPT_DIR/../test262/harness/assert.js"
+
 make_harness() {
   cat "$HARNESS_STA"
+  cat "$HARNESS_ASSERT"
   cat <<'WRAPPER'
 var __test262_pass = 0, __test262_fail = 0;
 Test262Error = function(msg) { __test262_fail++; print("FAIL: " + msg); };
@@ -139,8 +142,9 @@ for path in "${TEST_PATHS[@]}"; do
   [ -d "$dir" ] || continue
   for f in "$dir"/*.js; do
     [ -f "$f" ] || continue
-    run_test "$f"
-    case $? in
+    rc=0
+    run_test "$f" || rc=$?
+    case $rc in
       0) PASS=$((PASS + 1)) ;;
       1) FAIL=$((FAIL + 1)) ;;
       2) SKIP=$((SKIP + 1)) ;;

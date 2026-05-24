@@ -1040,9 +1040,10 @@ fn void? CompilerContext.return_statement(&self) {
     self.expect(TokenType.RETURN)!;
 
     // Check if there's a return value (not a semicolon or end-of-statement)
+    // A line terminator between return and the expression causes ASI (ES5 §12.9)
     TokenType next = self.peek_type();
     if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
-        next == TokenType.EOF_TOKEN) {
+        next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
         self.emit_simple(Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
@@ -1391,10 +1392,11 @@ fn void? CompilerContext.labeled_statement(&self, char[] name) {
 
 /// Parse break statement.
 /// If an identifier follows `break`, it's a labeled break (ES5 §12.12).
+/// A line terminator between `break` and the identifier means unlabeled break.
 fn void? CompilerContext.break_statement(&self) {
     self.expect(TokenType.BREAK)!;
 
-    if (self.peek_type() == TokenType.IDENTIFIER) {
+    if (self.peek_type() == TokenType.IDENTIFIER && !self.lexer.seen_line_term) {
         // Labeled break — find the label and add jump to its loop's break chain
         Token label_tok = self.advance()!;
         char[] label_name = label_tok.str_value;
@@ -1422,10 +1424,11 @@ fn void? CompilerContext.break_statement(&self) {
 
 /// Parse continue statement.
 /// If an identifier follows `continue`, it's a labeled continue (ES5 §12.12).
+/// A line terminator between `continue` and the identifier means unlabeled continue.
 fn void? CompilerContext.continue_statement(&self) {
     self.expect(TokenType.CONTINUE)!;
 
-    if (self.peek_type() == TokenType.IDENTIFIER) {
+    if (self.peek_type() == TokenType.IDENTIFIER && !self.lexer.seen_line_term) {
         // Labeled continue — find the label and jump to its loop's continue target
         Token label_tok = self.advance()!;
         char[] label_name = label_tok.str_value;
