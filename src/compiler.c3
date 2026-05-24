@@ -610,6 +610,8 @@ fn ushort CompilerContext.declare_var(&self, char[] name, ScopeKind kind) {
 }
 
 /// Resolve a variable name to its register. Searches from innermost scope out.
+/// Returns SCOPE_ERROR if not found or if the variable is captured (must go
+/// through the environment chain instead of using a register).
 fn ushort? CompilerContext.resolve_var(&self, char[] name) {
     // Search from top of scope stack backwards
     if (self.scope_depth == 0) {
@@ -619,6 +621,11 @@ fn ushort? CompilerContext.resolve_var(&self, char[] name) {
     while (i > 0) {
         i--;
         if (str_eq(self.scope_stack[i].name, name)) {
+            // If captured (e.g. shadowed by a let/const in an inner scope),
+            // force environment lookup so the VM walks the lex_env chain.
+            if (self.scope_stack[i].is_captured) {
+                return SCOPE_ERROR~;
+            }
             return self.scope_stack[i].reg;
         }
     }
@@ -832,6 +839,111 @@ fn void? CompilerContext.parse_directives(&self) {
     }
 }
 
+/// Maximum number of lexical declarations in a single pre-scan pass.
+const uint MAX_PRESCAN_NAMES = 64;
+
+/// Stores the position and length of a variable name in the source text.
+struct NameSpan {
+    uint pos;   // byte offset into the source buffer
+    uint len;   // length in bytes
+}
+
+/// Pre-scan tokens in the current block to find all `let`/`const` variable
+/// declarations at the top level of the block (brace depth 0, excluding nested
+/// blocks).  Saves and restores the lexer state so normal parsing can proceed
+/// afterwards.
+///
+/// Returns the number of variable names found (0 to MAX_PRESCAN_NAMES).
+/// Each name's position in the source text is stored in `spans` so the
+/// caller can reconstruct the `char[]` slice from `lexer.source`.
+fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capacity) {
+    // --- Save lexer state ---
+    uint saved_pos    = self.lexer.pos;
+    uint saved_line   = self.lexer.line;
+    uint saved_col    = self.lexer.col;
+    Token saved_cur   = self.lexer.current;
+    Token saved_look  = self.lexer.lookahead;
+    bool  saved_haslk = self.lexer.has_lookahead;
+    Token saved_push  = self.lexer.pushed_back;
+    bool  saved_haspb = self.lexer.has_pushed_back;
+    bool  saved_slt   = self.lexer.seen_line_term;
+
+    char* source_base = &self.lexer.source[0];
+
+    uint     count       = 0;
+    uint     brace_depth = 0;
+
+    while (count < capacity) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) {
+            break;
+        }
+        Token tok = tok_opt;
+        TokenType tt = tok.type;
+
+        if (tt == TokenType.EOF_TOKEN) {
+            break;
+        }
+
+        if (tt == TokenType.LBRACE) {
+            brace_depth++;
+            continue;
+        }
+
+        if (tt == TokenType.RBRACE) {
+            if (brace_depth == 0) {
+                break;   // end of the block we are scanning
+            }
+            brace_depth--;
+            continue;
+        }
+
+        // Only collect let/const at the top level of this block (depth 0).
+        if (brace_depth == 0 && (tt == TokenType.LET || tt == TokenType.CONST)) {
+            // Collect one or more identifier names (comma-separated).
+            for (;;) {
+                Token? name_opt = self.lexer.next_token();
+                if (catch _err2 = name_opt) {
+                    break;
+                }
+                Token name_tok = name_opt;
+                if (name_tok.type != TokenType.IDENTIFIER) {
+                    break;
+                }
+                // Store the name's position in the source text.
+                if (count < capacity) {
+                    spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                    spans[count].len = (uint)name_tok.str_value.len;
+                    count++;
+                }
+                // Check for comma (multiple declarations).
+                Token? sep_opt = self.lexer.next_token();
+                if (catch _err3 = sep_opt) {
+                    break;
+                }
+                Token sep = sep_opt;
+                if (sep.type != TokenType.COMMA) {
+                    break;
+                }
+                // continue to the next declarator name
+            }
+        }
+    }
+
+    // --- Restore lexer state ---
+    self.lexer.pos             = saved_pos;
+    self.lexer.line            = saved_line;
+    self.lexer.col             = saved_col;
+    self.lexer.current         = saved_cur;
+    self.lexer.lookahead       = saved_look;
+    self.lexer.has_lookahead   = saved_haslk;
+    self.lexer.pushed_back     = saved_push;
+    self.lexer.has_pushed_back = saved_haspb;
+    self.lexer.seen_line_term  = saved_slt;
+
+    return count;
+}
+
 /// Parse a block: { statement* }
 /// If `check_directives` is true, checks for "use strict" directive prologue at the start.
 fn void? CompilerContext.block(&self, bool check_directives) {
@@ -839,8 +951,34 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     uint saved_depth = self.scope_depth;
     ushort saved_reg = self.next_reg;
 
+    // Pre-scan for let/const declarations at this block level so we can
+    // TDZ-initialize them at block entry (before any code in the block runs).
+    NameSpan[MAX_PRESCAN_NAMES] lex_spans;
+    uint num_lex = self.pre_scan_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
+
     // Push a new lexical scope for let/const declarations inside this block
     self.emit_simple(Opcode.PUSH_LEX);
+
+    // TDZ-initialize every let/const declaration found by the pre-scan.
+    // This ensures that accessing the variable before its declaration
+    // throws a ReferenceError (temporal dead zone) instead of finding
+    // an outer `var` binding or returning undefined.
+    for (uint i = 0; i < num_lex; i++) {
+        char[] name = self.lexer.source[lex_spans[i].pos..lex_spans[i].pos + lex_spans[i].len - 1];
+        uint name_idx = self.add_string_constant(name);
+        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+
+        // Mark the outer scope_stack entry as captured so that the compiler
+        // emits GETVAR instead of LDREG for this variable.  Without this,
+        // a register-cached value from an outer scope would bypass the TDZ
+        // sentinel in the new lex_env.
+        for (uint j = 0; j < saved_depth; j++) {
+            if (str_eq(self.scope_stack[j].name, name)) {
+                self.scope_stack[j].is_captured = true;
+                break;
+            }
+        }
+    }
 
     if (check_directives) {
         self.parse_directives()!;

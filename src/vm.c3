@@ -2568,6 +2568,23 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
+        case Opcode.INITTZ: {
+            // Store the TDZ sentinel for a variable name in the current
+            // lexical environment.  This marks the binding as uninitialized
+            // so that GETVAR throws a ReferenceError (temporal dead zone)
+            // if the variable is accessed before its PUTLEX/PUTLEX_C.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.tag == STRING) {
+                    void* key = name_val.pointer;
+                    TVal tdz = env::tdz_sentinel();
+                    act.lex_env.bindings.put_prop(key, tdz, hobject::PROP_FLAGS_WEC);
+                }
+            }
+            break;
+        }
+
         case Opcode.DELVAR:
             ra.tag = BOOLEAN;
             ra.boolean = true;

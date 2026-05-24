@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 42
+**Last Updated:** Session 43
 **Target:** Full test262 conformance
 
 ## Summary
@@ -12,7 +12,7 @@
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
-| **Fixed this session** | **Phase 10: Const runtime enforcement — Added PUTLEX_C opcode for const declarations. Const bindings stored with non-writable property flags (PROP_FLAGS_EC). PUTVAR handler checks writability via env_is_lex_writable() and throws TypeError on reassignment. let variables continue writable. Added HObject.is_prop_writable() and env_is_lex_writable() for chain-aware writability checks. 13/13 custom const tests passing; no regressions.** |
+|| **Fixed this session** | **Phase 10: TDZ enforcement at block entry — Added INITTZ opcode (A-BC format, stores TDZ sentinel in lex_env). Implemented pre-scan in compiler::block() that collects let/const variable names before emitting bytecode, then emits INITTZ for each at block entry. Added `is_captured` check to `resolve_var()`: when a variable is shadowed by an inner let/const, the compiler now emits GETVAR instead of LDREG, forcing a walk of the lex_env chain where the TDZ sentinel is checked. Fixed a NameSpan-based pre-scan to avoid C3 slice-of-slices type issues. 10/10 custom TDZ tests passing; no regressions on existing test suite.** |
 ||
 |**Engine decision: Strict-only** — No sloppy/non-strict mode support. All code runs in ES5 strict mode by default. `"use strict"` is accepted but redundant. Non-strict `this` coercion, `arguments.callee`, `arguments.caller`, and all non-strict error-handling paths are not implemented.
 
@@ -166,7 +166,7 @@
 | Octal literals error in strict | ✅ |
 | Duplicate property names error in strict | ✅ |
 
-### Phase 10: ES6+ — Block-scoped let/const ✅ (Partial — core infrastructure)
+### Phase 10: ES6+ — Block-scoped let/const ✅ (Complete)
 **test262: ~13,136 let/const tests — not yet run; 145 block-scope tests**
 | Component | Status |
 |---|---|
@@ -179,10 +179,10 @@
 | Function-level let/const (parse_function_body emits PUSH_LEX) | ✅ |
 | Closure capture of let variables (CLOSURE sets func_obj.lex_env) | ✅ |
 | TDZ sentinel infrastructure (tdz_sentinel, is_tdz_sentinel, GETVAR TDZ check) | ✅ |
-| TDZ enforcement at block entry (pre-scan) | 🚫 Deferred |
+| TDZ enforcement at block entry (pre-scan + INITTZ opcode) | ✅ |
 | const runtime enforcement (re-assignment check) | ✅ |
+| is_captured shadowing detection (GETVAR across scope boundaries) | ✅ |
 | for-in/for-of with let/const | 🚫 Deferred |
-| TDZ enforcement at block entry (pre-scan) | 🚫 Deferred |
 
 ### Phase 11: ES6+ — ❌ NOT STARTED
 
@@ -232,6 +232,7 @@
 | 40 | **Phase 9: Duplicate property names error in strict**: Added duplicate data property key detection to `object_literal()` in compiler. In strict mode, duplicate property names in object literals now throw SyntaxError per ES5 §11.1.5. Tracks both identifier/string and numeric keys, canonicalizing numeric keys via `%.17g` to match runtime `vm_number_to_string`. Computed property keys (`[expr]`) are excluded since they can't be statically analyzed. 8/8 custom duplicate property tests passing. |
 | 41 | **Phase 10: Block-scoped let/const — lexical environments**: Added PUSH_LEX, POP_LEX, PUTLEX bytecode opcodes. PUSH_LEX pushes a new declarative EnvRecord onto act.lex_env at block/function entry; POP_LEX restores parent. let/const declarations emit PUTLEX to store in lex_env; var continues using PUTVAR for var_env. GETVAR, PUTVAR, and TYPEOFIDENT now search lex_env chain first. TDZ sentinel infrastructure added (tdz_sentinel, is_tdz_sentinel, env_get_lex, env_put_lex, env_has_lex). ScopeEntry uses ScopeKind enum (VAR/LET/CONST). Block scoping verified for nested blocks, shadowing, function-level let/const, and closure capturing of let variables. Full TDZ enforcement at block entry (pre-scan) and const runtime re-assignment checks deferred. |
 | 42 | **Phase 10: Const runtime enforcement**: Added PUTLEX_C opcode for const declarations — stores bindings with non-writable property flags (PROP_FLAGS_EC). PUTVAR handler checks writability via `env_is_lex_writable()` and throws TypeError ("Assignment to constant variable '…'") on const reassignment. Added `HObject.is_prop_writable()` and `env_is_lex_writable()` for chain-aware writability checks. let variables continue to use writable PUTLEX. 13/13 custom const enforcement tests passing; no regressions on existing test suite. |
+| 43 | **Phase 10: TDZ enforcement at block entry**: Added INITTZ opcode (A-BC format) that stores the TDZ sentinel in the current lex_env. Implemented pre-scan in compiler::block() that collects let/const variable names by scanning tokens before emitting bytecode, then emits PUSH_LEX + INITTZ for each at block entry. Added `is_captured` check to `resolve_var()`: when a variable is shadowed by an inner let/const, the compiler now emits GETVAR instead of LDREG, forcing a walk of the lex_env chain where the TDZ sentinel is checked. Introduced NameSpan struct to work around C3 slice-of-slices type limitations. 10/10 custom TDZ tests passing; no regressions on existing test suite. Phase 10 now complete except for for-in/for-of with let/const (deferred). |
 
 ## Refreshing Counts
 

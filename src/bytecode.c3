@@ -299,6 +299,11 @@ enum Opcode : char {
     /// `lex_env[constants[BC]] = A`  — write a non-writable binding into
     /// the current lexical environment (for `const` declarations).  A-BC format.
     PUTLEX_C,
+    /// `lex_env[constants[BC]] = TDZ_SENTINEL` — store the temporal dead zone
+    /// sentinel for the variable named by constants[BC] into the current
+    /// lexical environment.  Used at block entry to mark `let`/`const`
+    /// bindings as uninitialized before their declaration is reached.
+    INITTZ,
 
     /// `A = create_regexp(constants[BC])` — compile a regexp literal
     /// from the raw `/pattern/flags` string stored at constant pool index BC.
@@ -348,6 +353,7 @@ fn OpFormat get_op_format(Opcode op) {
         case WITH_START: return A_BC;
         case PUTLEX:     return A_BC;
         case PUTLEX_C:   return A_BC;
+        case INITTZ:     return A_BC;
         case NEWREGEXP:  return A_BC;
 
         // A-sBx format (signed 16-bit second operand)
@@ -899,6 +905,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.POP_LEX.ordinal]     = "POP_LEX",
     [Opcode.PUTLEX.ordinal]      = "PUTLEX",
     [Opcode.PUTLEX_C.ordinal]    = "PUTLEX_C",
+    [Opcode.INITTZ.ordinal]      = "INITTZ",
     [Opcode.NEWREGEXP.ordinal]   = "NEWREGEXP",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
