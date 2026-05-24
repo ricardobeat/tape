@@ -3041,17 +3041,62 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
 
     // Compile arguments into consecutive registers starting at first_arg
     ushort arg_count = 0;
+    bool has_spread = false;
+    ushort spread_count_reg = MAX_REGISTERS;
+    ushort total_count_reg = MAX_REGISTERS;
 
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
-            ushort arg_reg = self.assignment_expr()!;
-            // Ensure the argument is in the expected consecutive register
-            ushort expected = first_arg + arg_count;
-            if (arg_reg != expected) {
-                self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
-                self.free_reg(arg_reg);
+            // Check for spread argument
+            if (self.match(TokenType.ELLIPSIS)) {
+                // Ensure the destination area doesn't overlap with the
+                // register that will hold the spread expression result.
+                ushort dest_start = first_arg + arg_count;
+                if (self.next_reg <= dest_start + 1) {
+                    self.next_reg = dest_start + 2;
+                }
+
+                ushort spread_reg = self.assignment_expr()!;
+
+                // Move spread source away from the dest area if it overlaps
+                if (spread_reg >= dest_start && spread_reg <= dest_start + 10) {
+                    ushort safe_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
+                    self.free_reg(spread_reg);
+                    spread_reg = safe_reg;
+                }
+
+                if (!has_spread) {
+                    has_spread = true;
+                    // Allocate count registers
+                    spread_count_reg = self.alloc_reg();
+                    total_count_reg = self.alloc_reg();
+                    // Initialize total count with non-spread args so far
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                }
+
+                // SPREAD_ARG: A=dest_start_reg, B=count_out_reg, C=source_reg
+                self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                self.free_reg(spread_reg);
+
+                // total_count += spread_count
+                self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
+
+                // Adjust next_reg past the worst-case spread area
+                // (conservatively reserve space; actual count is only known at runtime)
+                if (self.next_reg <= dest_start + 1) {
+                    self.next_reg = dest_start + 2;
+                }
+            } else {
+                ushort arg_reg = self.assignment_expr()!;
+                // Ensure the argument is in the expected consecutive register
+                ushort expected = first_arg + arg_count;
+                if (arg_reg != expected) {
+                    self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                    self.free_reg(arg_reg);
+                }
+                arg_count++;
             }
-            arg_count++;
 
             if (!self.match(TokenType.COMMA)) {
                 break;
@@ -3061,10 +3106,16 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
 
     self.expect(TokenType.RPAREN)!;
 
-    // Emit CALL: A = result reg, B = callee reg, C = arg count
-    // VM reads: callee = valstack[B], args = valstack[B+1 .. B+C]
+    // Emit CALL or CALL_S depending on whether spread was used
     ushort result_reg = self.alloc_reg();
-    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, (uint)arg_count);
+    if (has_spread) {
+        // CALL_S: A=result_reg, B=callee_reg, C=nargs_reg
+        self.emit_abc(Opcode.CALL_S, (uint)result_reg, (uint)callee_reg, (uint)total_count_reg);
+        self.free_reg(total_count_reg);
+        self.free_reg(spread_count_reg);
+    } else {
+        self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, (uint)arg_count);
+    }
 
     // Free argument registers (callee_reg itself stays allocated)
     self.free_regs_to(first_arg);
@@ -3815,7 +3866,12 @@ fn ushort? CompilerContext.array_literal(&self) {
     ushort arr_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWARR, (uint)arr_reg, 0, 0);
 
+    // Track index: compile-time uint for normal arrays,
+    // register-based when spread is used
     uint index = 0;
+    ushort idx_reg = MAX_REGISTERS;
+    bool has_spread = false;
+
     if (!self.check(TokenType.RBRACKET)) {
         for (;;) {
             if (self.check(TokenType.RBRACKET)) {
@@ -3824,7 +3880,14 @@ fn ushort? CompilerContext.array_literal(&self) {
 
             if (self.check(TokenType.COMMA)) {
                 // Elision (hole in array)
-                index++;
+                if (has_spread) {
+                    ushort one = self.alloc_reg();
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
+                    self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one);
+                    self.free_reg(one);
+                } else {
+                    index++;
+                }
                 self.advance()!;
                 continue;
             }
@@ -3832,23 +3895,36 @@ fn ushort? CompilerContext.array_literal(&self) {
             // Check for spread
             if (self.match(TokenType.ELLIPSIS)) {
                 ushort spread_reg = self.assignment_expr()!;
-                // Simplified: just store the spread value at the current index
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)index));
-                self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_reg, (uint)spread_reg);
-                self.free_reg(idx_reg);
+
+                if (!has_spread) {
+                    // First spread: switch to register-based index
+                    has_spread = true;
+                    idx_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)index));
+                }
+
+                // ARRSPRD: A=target_arr, B=idx_reg, C=source
+                self.emit_abc(Opcode.ARRSPRD, (uint)arr_reg, (uint)idx_reg, (uint)spread_reg);
                 self.free_reg(spread_reg);
-                index++;
             } else {
                 ushort elem_reg = self.assignment_expr()!;
 
-                // Store element at index
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)index));
-                self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_reg, (uint)elem_reg);
-                self.free_reg(idx_reg);
+                if (has_spread) {
+                    // Dynamic index: store at current idx_reg, then increment
+                    self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_reg, (uint)elem_reg);
+                    ushort one = self.alloc_reg();
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
+                    self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one);
+                    self.free_reg(one);
+                } else {
+                    // Compile-time index
+                    ushort idx_const = self.alloc_reg();
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_const, (int)index));
+                    self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_const, (uint)elem_reg);
+                    self.free_reg(idx_const);
+                    index++;
+                }
                 self.free_reg(elem_reg);
-                index++;
             }
 
             if (!self.match(TokenType.COMMA)) {
@@ -3858,7 +3934,16 @@ fn ushort? CompilerContext.array_literal(&self) {
     }
 
     // Set array length
-    self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)arr_reg, index));
+    if (has_spread) {
+        // Dynamic length: set arr["length"] = idx_reg
+        uint len_const_idx = self.add_string_constant("length");
+        ushort len_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)len_reg, len_const_idx));
+        self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)len_reg, (uint)idx_reg);
+        self.free_reg(len_reg);
+    } else {
+        self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)arr_reg, index));
+    }
 
     self.expect(TokenType.RBRACKET)!;
     return arr_reg;

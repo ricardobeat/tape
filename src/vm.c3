@@ -1839,15 +1839,135 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
-        // === FUNCTION CALLS ===
-        // Duktape CALL: A=nargs, BC=base
-        // Layout: valstack[base] = callee, valstack[base+1] = this, valstack[base+2..base+1+nargs] = args
+        case Opcode.ARRSPRD: {
+            // A = target array reg, B = index reg (in/out), C = source array reg
+            if (ra.tag == OBJECT && rc.tag == OBJECT) {
+                HObject* target = (HObject*)ra.pointer;
+                HObject* source = (HObject*)rc.pointer;
+                if (source != null) {
+                    // Get source .length
+                    HString* len_key = intern_string(vm, "length");
+                    TVal len_tv = get_prop_with_proto(source, len_key);
+                    long src_len = 0;
+                    if (len_tv.tag == FASTINT) {
+                        src_len = len_tv.fastint;
+                    } else if (len_tv.tag == NUMBER) {
+                        src_len = (long)len_tv.number;
+                    }
 
-        case Opcode.CALL: {
-            // Compiler convention: A=result_reg, B=callee_reg, C=nargs
+                    // Get current index
+                    long idx = 0;
+                    if (rb.tag == FASTINT) {
+                        idx = rb.fastint;
+                    } else if (rb.tag == NUMBER) {
+                        idx = (long)rb.number;
+                    }
+
+                    // Copy elements
+                    for (long i = 0; i < src_len; i++) {
+                        char[16] ibuf;
+                        int ilen = libc::snprintf(&ibuf, 16, "%ld", idx + i);
+                        if (ilen > 0 && ilen < 16) {
+                            HString* key = intern_string(vm, ibuf[:ilen]);
+                            if (key != null) {
+                                char[16] jbuf;
+                                int jlen = libc::snprintf(&jbuf, 16, "%ld", i);
+                                if (jlen > 0 && jlen < 16) {
+                                    HString* src_key = intern_string(vm, jbuf[:jlen]);
+                                    if (src_key != null) {
+                                        TVal elem = get_prop_with_proto(source, src_key);
+                                        target.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Update index register
+                    rb.tag = FASTINT;
+                    rb.fastint = idx + src_len;
+                }
+            }
+            break;
+        }
+
+        case Opcode.SPREAD_ARG: {
+            // A = dest start reg, B = count out reg, C = source array reg
+            if (rc.tag == OBJECT) {
+                HObject* source = (HObject*)rc.pointer;
+                if (source != null) {
+                    // Get source .length
+                    HString* len_key = intern_string(vm, "length");
+                    TVal len_tv = get_prop_with_proto(source, len_key);
+                    long src_len = 0;
+                    if (len_tv.tag == FASTINT) {
+                        src_len = len_tv.fastint;
+                    } else if (len_tv.tag == NUMBER) {
+                        src_len = (long)len_tv.number;
+                    }
+
+                    uint dest_start = insn.a;
+                    uint count_reg = insn.b;
+
+                    // Copy elements from source array into consecutive registers
+                    for (long i = 0; i < src_len; i++) {
+                        TVal* dest_slot = regs_base + dest_start + (uint)i;
+                        char[16] jbuf;
+                        int jlen = libc::snprintf(&jbuf, 16, "%ld", i);
+                        if (jlen > 0 && jlen < 16) {
+                            HString* src_key = intern_string(vm, jbuf[:jlen]);
+                            if (src_key != null) {
+                                TVal elem = get_prop_with_proto(source, src_key);
+                                dest_slot.tag = elem.tag;
+                                dest_slot.fastint = elem.fastint;
+                                dest_slot.number = elem.number;
+                                dest_slot.pointer = elem.pointer;
+                            } else {
+                                dest_slot.tag = UNDEFINED;
+                                dest_slot.pointer = null;
+                            }
+                        }
+                    }
+
+                    // Store count in output register
+                    TVal* count_slot = regs_base + count_reg;
+                    count_slot.tag = FASTINT;
+                    count_slot.fastint = src_len;
+                }
+            } else {
+                // Non-object: spread 0 elements, store 0
+                TVal* count_slot = regs_base + insn.b;
+                count_slot.tag = FASTINT;
+                count_slot.fastint = 0;
+            }
+            break;
+        }
+
+        // === FUNCTION CALLS ===
+        // Duktape CALL: A=result_reg, B=callee_reg, C=nargs
+        // Layout: valstack[base] = callee, valstack[base+1] = this, valstack[base+2..base+1+nargs] = args
+        //
+        // CALL_S: same layout but nargs is read from valstack[C] at runtime
+
+        case Opcode.CALL:
+        case Opcode.CALL_S: {
+            // Compiler convention: A=result_reg, B=callee_reg, C=nargs (or nargs_reg for CALL_S)
             uint result_reg = insn.a;
             uint callee_reg = insn.b;
-            uint nargs = insn.c;
+            uint nargs;
+            if (op == Opcode.CALL_S) {
+                // Read nargs from the register at index C
+                TVal* nargs_slot = regs_base + insn.c;
+                if (nargs_slot.tag == FASTINT) {
+                    nargs = (uint)nargs_slot.fastint;
+                } else if (nargs_slot.tag == NUMBER) {
+                    nargs = (uint)nargs_slot.number;
+                } else {
+                    nargs = 0;
+                }
+            } else {
+                nargs = insn.c;
+            }
 
             TVal* func_slot = regs_base + callee_reg;
             TVal func_val = *func_slot;

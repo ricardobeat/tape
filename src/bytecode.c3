@@ -310,6 +310,20 @@ enum Opcode : char {
     /// Creates a new HObject of class REGEXP with compiled regexp data.
     NEWREGEXP,
 
+    // ---- Spread operator (ES6) -------------------------------------------
+
+    /// `A[B] = spread(C)` — spread elements of array C into target array A
+    /// starting at index B.  B is incremented by the number of elements.
+    /// ABC format: A=target_arr_reg, B=idx_reg, C=source_reg.
+    ARRSPRD,
+    /// Spread elements of array C into registers starting at A.
+    /// Count written to register B.  ABC format.
+    SPREAD_ARG,
+    /// `A = call B with nargs from valstack[C]` — function call with
+    /// runtime argument count (for spread arguments).
+    /// ABC format: A=result_reg, B=callee_reg, C=nargs_reg.
+    CALL_S,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -355,6 +369,9 @@ fn OpFormat get_op_format(Opcode op) {
         case PUTLEX_C:   return A_BC;
         case INITTZ:     return A_BC;
         case NEWREGEXP:  return A_BC;
+        case ARRSPRD:    return ABC;
+        case SPREAD_ARG: return ABC;
+        case CALL_S:     return ABC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -907,6 +924,9 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.PUTLEX_C.ordinal]    = "PUTLEX_C",
     [Opcode.INITTZ.ordinal]      = "INITTZ",
     [Opcode.NEWREGEXP.ordinal]   = "NEWREGEXP",
+    [Opcode.ARRSPRD.ordinal]     = "ARRSPRD",
+    [Opcode.SPREAD_ARG.ordinal]  = "SPREAD_ARG",
+    [Opcode.CALL_S.ordinal]      = "CALL_S",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

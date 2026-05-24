@@ -95,6 +95,19 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 | ✅ (Phase 12)
 
+### Spread Operator (ES6) ✅ (Phase 13)
+
+- **Array spread** — `[...arr, x, y]` expands an array's elements into a new array literal
+- **Call spread** — `f(...args)` spreads array elements as individual function arguments
+- **Mixed arguments** — non-spread args before spread: `f(a, b, ...args)`
+- New opcodes: `ARRSPRD` (array spread with in-place index), `SPREAD_ARG` (register-level spread), `CALL_S` (dynamic arg count)
+- Uses `.length` + numeric property access (iterator protocol deferred)
+- Multiple spreads in array literals (`[...a, ...b]`) supported
+- Spread before non-spread args (`f(...a, b)`) deferred
+- Object spread (`{...obj}`) deferred (ES2018)
+
+| ✅ (Phase 13)
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.

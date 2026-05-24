@@ -206,7 +206,7 @@
 || Destructuring | ✅ |
 || Default parameters | ✅ |
 || Rest parameters | ✅ |
-|| Spread operator | ❌ |
+|| Spread operator | ✅ |
 || for-of | ❌ |
 || Classes | ❌ |
 || Map / Set / WeakMap / WeakSet | ❌ |
@@ -231,6 +231,21 @@
 || Default values in patterns | 🚫 Deferred |
 || Assignment destructuring (without declaration) | 🚫 Deferred |
 || Computed property keys in object patterns | 🚫 Deferred |
+
+### Phase 13: ES6+ — Spread Operator ✅
+**test262: not yet quantified**
+||| Component | Status |
+||---|---|
+||| Array literal spread (`[...arr, x]`) | ✅ |
+||| Call spread (`f(...args)`) | ✅ |
+||| Mixed args (non-spread before spread) | ✅ |
+||| Multiple spreads in array literals | ✅ |
+||| Call spread from array | ✅ |
+||| Register-level SPREAD_ARG opcode | ✅ |
+||| Dynamic arg count CALL_S opcode | ✅ |
+||| Iterator protocol | 🚫 Deferred (uses .length) |
+||| Spread before non-spread in calls | 🚫 Deferred |
+||| Object spread (`{...obj}`) | 🚫 Deferred |
 
 ## Session History
 
@@ -283,6 +298,7 @@
 | 45 | **Phase 11: Template literals** — Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` enum (NONE/IN_EXPR) and `template_brace_balance` for ${} brace-depth tracking. New token types: TEMPLATE_HEAD, TEMPLATE_MIDDLE, TEMPLATE_TAIL. No-substitution templates return STRING token (zero-cost). Compiler emits LDCONST for template parts + ADD for concatenation. Escape sequences and line continuations supported. Brace tracking handles object literals and function bodies inside ${}. Tagged templates: `emit_tagged_template` builds template object array with `.raw` property, handles no-substitution (STRING), multi-part (HEAD/MIDDLE/TAIL), chained calls, and member expression tags with proper `this` binding. 38/38 tagged, 20/20 untagged tests passing. No regressions. |
 | 46 | **Phase 11: Default parameters** — Added `compile_default_expr()` helper that compiles each default as a zero-argument inner function; free variables resolve via GETVAR against the outer scope environment chain. Parameter parsing checks for `=` after each name: compiles default via sub-CompilerContext, stores in `inner_funcs`, records in `defaults[]`. After PUSH_LEX (before body), emits undef-check: `SNEQ param,undef; IF_TRUE skip; CLOSURE; LDTHIS; CALL 0; LDREG param,result; PUTVAR`. Both `compile_inner_function` and `parse_function_body` support defaults. Defaults can reference earlier params (e.g., `function f(a, b = a + 1)`). 30/30 custom tests passing; no regressions. |
 | 47 | **Phase 11: Rest parameters** — Added `has_rest`, `rest_formal_count`, and `num_args` fields to CompilerContext. `finish()` now sets `func.num_formals` from `rest_formal_count` when `has_rest=true`. Modified `parse_function_body()`, `compile_inner_function()`, and `compile_arrow_inner()` to detect `...rest` in parameter lists. Arrow function detection updated to handle ELLIPSIS in paren params. CLOSURE opcode handler now sets `.length` property from `num_formals` (fixing pre-existing gap). VM CALL and NEW_OBJ handlers build rest array: copy first `num_formals` args normally, create HObject ARRAY from overflow args with indexed properties and `.length`. 28/28 custom tests passing; no regressions on existing suite. |
+| 48 | **Phase 13: Spread operator** — Array literal spread: `[...arr, x]` using new `ARRSPRD` opcode (ABC format, in-place index update). Call spread: `f(...args)` using `SPREAD_ARG` (register-level copy) + `CALL_S` (dynamic arg count). Compiler `emit_call()` detects `...` prefix, allocates count registers, emits SPREAD_ARG + ADD accumulation + CALL_S. Array literal handles mixed spread+non-spread with register-based index tracking (switches from compile-time index when first spread encountered). Multiple spreads per array supported. Non-spread-before-spread in calls supported; spread-before-non-spread deferred. 30/30 custom tests passing; no regressions. |
 
 ## Refreshing Counts
 
