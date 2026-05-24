@@ -13,6 +13,8 @@
 | Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
 | **Fixed this session** | **Phase 9: Strict Mode — "use strict" directive prologue detection in programs and function bodies; `is_strict` flag propagated to `CompiledFunction` and `Activation`; `with` statement rejected in strict mode (SyntaxError); `eval`/`arguments` rejected as parameter names, variable names, and catch variable names in strict mode; FutureReservedWords (`implements`, `interface`, `package`, `private`, `protected`, `public`) treated as keywords in strict mode via Lexer.strict_mode flag; inner functions inherit strict mode from parent context.** |
+||
+|**Engine decision: Strict-only** — No sloppy/non-strict mode support. All code runs in ES5 strict mode by default. `"use strict"` is accepted but redundant. Non-strict `this` coercion, `arguments.callee`, `arguments.caller`, and all non-strict error-handling paths are not implemented.
 
 ## Per-Phase Status
 
@@ -160,7 +162,7 @@
 | eval/arguments restricted names | ✅ |
 | FutureReservedWords as keywords | ✅ |
 | Strict mode propagation to inner functions | ✅ |
-| this coercion (non-strict → global) | ❌ NOT YET |
+| this coercion (non-strict → global) | 🚫 N/A (strict-only engine) |
 | Octal literals error in strict | ❌ NOT YET |
 | Duplicate property names error in strict | ❌ NOT YET |
 

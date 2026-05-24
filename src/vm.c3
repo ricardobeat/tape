@@ -782,7 +782,6 @@ fn TVal handle_return(Vm* vm, TVal val) {
 
     Activation* callee_act = curr_act(vm);
     uint callee_result_byteoff = callee_act.retval_byteoff;
-    bool is_strict = (callee_act.flags & ACT_FLAG_STRICT) != 0;
 
     // Pop activation
     vm.activation_count--;
@@ -907,7 +906,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.bottom_byteoff = 0;
     entry_act.retval_byteoff = 0;
     entry_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
-    entry_act.flags = func.is_strict() ? ACT_FLAG_STRICT : 0;
+    entry_act.flags = ACT_FLAG_STRICT;
 
     TVal this_val;
     this_val.tag = UNDEFINED;
@@ -2055,7 +2054,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
             new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
             new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
-            new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+            new_act.flags = ACT_FLAG_STRICT;
             new_act.this_binding = regs_base[callee_reg + 1];
 
             TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
@@ -2288,10 +2287,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
             new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
             new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
-            new_act.flags = ACT_FLAG_CONSTRUCT;
-            if (target.is_strict()) {
-                new_act.flags |= ACT_FLAG_STRICT;
-            }
+            new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
             new_act.this_binding = this_tval;
             new_act.new_target = new_obj;
 

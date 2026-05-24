@@ -17,6 +17,8 @@ should_skip() {
   local f="$1"
   if grep -qE "features:.*\[($UNSUPPORTED_FEATURES)" "$f" 2>/dev/null; then return 0; fi
   if grep -q '\$DONOTEVALUATE' "$f" 2>/dev/null; then return 0; fi
+  # Strict-only engine: skip tests that explicitly require non-strict (sloppy) mode
+  if grep -qE 'flags:.*\[.*noStrict' "$f" 2>/dev/null; then return 0; fi
   return 1
 }
 

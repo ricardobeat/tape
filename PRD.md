@@ -46,6 +46,8 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.
 
+- **Strict-only mode** — The engine operates exclusively in ES5 strict mode. There is no sloppy/non-strict code path. All code is treated as strict by default, eliminating `is_strict` runtime branching, non-strict `this` coercion, and non-strict error handling paths. The `"use strict"` directive is recognized but is semantically redundant.
+
 ## Technical notes
 
 - **FASTINT preservation** — Arithmetic ops keep FASTINT when both operands are FASTINT and result fits in 48-bit range. Fall back to NUMBER otherwise.

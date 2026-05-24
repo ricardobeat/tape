@@ -258,6 +258,10 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.label_count = 0;
     self.patch_count = 0;
     self.call_prop_obj_reg = MAX_REGISTERS;
+
+    // Strict-only engine: all code runs in strict mode by default
+    self.is_strict = true;
+    self.lexer.set_strict(true);
 }
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
@@ -1650,11 +1654,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
 
-    // Propagate strict mode: functions inside strict code are strict (ES5 §10.1.1)
-    inner_ctx.is_strict = self.is_strict;
-    if (self.is_strict) {
-        inner_ctx.lexer.set_strict(true);
-    }
+    // Strict-only engine: always strict, no propagation needed
+    inner_ctx.is_strict = true;
+    inner_ctx.lexer.set_strict(true);
 
     // Parse parameter list
     inner_ctx.expect(TokenType.LPAREN)!;
