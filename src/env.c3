@@ -247,6 +247,9 @@ fn bool env_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     EnvRecord* cur = lex_env;
     while (cur != null) {
         if (cur.bindings.has_prop(key)) {
+            if (!cur.bindings.is_prop_writable(key)) {
+                return false;
+            }
             return cur.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
         }
         cur = cur.parent;
@@ -265,4 +268,19 @@ fn bool env_has_lex(EnvRecord* lex_env, void* key) @inline {
         cur = cur.parent;
     }
     return false;
+}
+
+/// Check if a binding in the lexical environment chain is writable.
+/// Returns true if the binding does not exist anywhere in the chain
+/// (it can be created), or if it exists and is writable.
+/// Returns false only if the binding exists and is not writable (const).
+fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
+    EnvRecord* cur = lex_env;
+    while (cur != null) {
+        if (cur.bindings.has_prop(key)) {
+            return cur.bindings.is_prop_writable(key);
+        }
+        cur = cur.parent;
+    }
+    return true;
 }

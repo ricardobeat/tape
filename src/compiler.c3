@@ -890,7 +890,11 @@ fn void? CompilerContext.var_declaration(&self) {
         // var → var_env (function-scoped), let/const → lex_env (block-scoped)
         uint name_idx = self.add_string_constant(name_tok.str_value);
         if (is_lexical) {
-            self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+            if (is_const) {
+                self.emit_a_bc(Opcode.PUTLEX_C, (uint)reg, name_idx);
+            } else {
+                self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+            }
         } else {
             self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
         }

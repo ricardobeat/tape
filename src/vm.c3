@@ -2507,6 +2507,34 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // we need to update it in the lexical environment, not
                     // create a new var_env binding.
                     if (env::env_has_lex(act.lex_env, key)) {
+                        // Enforce const: check writability of existing binding
+                        if (!env::env_is_lex_writable(act.lex_env, key)) {
+                            HString* name_hstr = (HString*)key;
+                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                char[160] buf;
+                                int len = libc::snprintf(&buf, 160, "Assignment to constant variable '%s'",
+                                                         name_hstr.get_cstr());
+                                if (len > 0 && len < 160) {
+                                    HString* msg_str = intern_string(vm, buf[:len]);
+                                    TVal msg_val;
+                                    msg_val.tag = STRING;
+                                    msg_val.pointer = msg_str;
+                                    HString* msg_key = intern_string(vm, "message");
+                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val;
+                                err_val.tag = OBJECT;
+                                err_val.pointer = err;
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
                         env::env_put_lex(act.lex_env, key, *ra);
                     } else {
                         env::env_put(act.var_env, key, *ra);
@@ -2523,6 +2551,18 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
                     env::env_declare_lex(act.lex_env, key, *ra);
+                }
+            }
+            break;
+        }
+
+        case Opcode.PUTLEX_C: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.tag == STRING) {
+                    void* key = name_val.pointer;
+                    act.lex_env.bindings.put_prop(key, *ra, hobject::PROP_FLAGS_EC);
                 }
             }
             break;

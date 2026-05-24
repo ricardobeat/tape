@@ -194,6 +194,15 @@ const PropFlags PROP_FLAGS_WC = {
     .is_accessor  = false
 };
 
+/// Convenience constant: non-writable data property (enumerable, configurable).
+/// Used for `const` bindings to prevent reassignment.
+const PropFlags PROP_FLAGS_EC = {
+    .writable     = false,
+    .enumerable   = true,
+    .configurable = true,
+    .is_accessor  = false
+};
+
 // ============================================================================
 // PropEntry — a single named property
 // ============================================================================
@@ -450,6 +459,15 @@ fn TVal? HObject.get_prop(&self, void* key) {
 /// Check whether the object has an own property with the given key.
 fn bool HObject.has_prop(&self, void* key) {
     return self.find_prop_idx(key) >= 0;
+}
+
+/// Check whether a property is writable.
+/// Returns true if the property does not exist (can be created) or
+/// if it exists and its writable flag is set.
+fn bool HObject.is_prop_writable(&self, void* key) {
+    int idx = self.find_prop_idx(key);
+    if (idx < 0) return true;
+    return self.props[idx].flags.writable;
 }
 
 /// Set (create or update) a named property.

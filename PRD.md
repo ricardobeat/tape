@@ -37,7 +37,7 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 ### Scope Chain
 - EnvRecord with parent link, bindings via HObject property table
 - Global scope, function scope, catch scope
-- **Lexical environment (let/const)** — implemented: PUSH_LEX/POP_LEX opcodes, PUTLEX for declarations, GETVAR/PUTVAR searches lex_env first, block scoping via EnvRecord chain on act.lex_env. TDZ sentinel infrastructure in place; full TDZ enforcement pending pre-scan optimization.
+- **Lexical environment (let/const)** — implemented: PUSH_LEX/POP_LEX opcodes, PUTLEX (let) / PUTLEX_C (const) for declarations, GETVAR/PUTVAR searches lex_env first, block scoping via EnvRecord chain on act.lex_env. TDZ sentinel infrastructure in place; const runtime enforcement (TypeError on reassignment) via non-writable property flags. Full TDZ enforcement at block entry pending pre-scan optimization.
 
 ### RegExp
 - using libregexp (from QuickJS)
