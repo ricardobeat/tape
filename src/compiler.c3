@@ -81,6 +81,8 @@ struct ScopeEntry {
 struct LoopInfo {
     uint continue_target;
     uint break_patch_head;
+    uint continue_patch_head; ///< chain of pending continue jumps (deferred until target resolved)
+    bool is_loop;             ///< false for switch pseudo-loops (continue skips these)
 }
 
 struct TryInfo {
@@ -648,17 +650,36 @@ fn void CompilerContext.patch_chain(&self, uint chain_head) {
 // Loop stack management
 // ============================================================================
 
-fn void CompilerContext.push_loop(&self, uint continue_target) {
+fn void CompilerContext.push_loop(&self, uint continue_target, bool is_loop) {
     if (self.loop_depth < MAX_LOOP_DEPTH) {
         self.loop_stack[self.loop_depth].continue_target = continue_target;
         self.loop_stack[self.loop_depth].break_patch_head = NO_PATCH;
+        self.loop_stack[self.loop_depth].continue_patch_head = NO_PATCH;
+        self.loop_stack[self.loop_depth].is_loop = is_loop;
         self.loop_depth++;
+    }
+}
+
+/// Patch all pending continue jumps for a loop entry to the given target address.
+fn void CompilerContext.patch_continue_chain(&self, uint head, uint target) {
+    uint current = head;
+    while (current != NO_PATCH) {
+        uint next = self.patches[current].next;
+        int offset = (int)target - (int)self.patches[current].addr - 1;
+        self.code[self.patches[current].addr] = bytecode::make_sabc(Opcode.JUMP, offset);
+        current = next;
     }
 }
 
 fn void CompilerContext.pop_loop(&self) {
     if (self.loop_depth > 0) {
         self.loop_depth--;
+        // Patch all continue jumps to their target (if any pending)
+        if (self.loop_stack[self.loop_depth].continue_patch_head != NO_PATCH) {
+            self.patch_continue_chain(
+                self.loop_stack[self.loop_depth].continue_patch_head,
+                self.loop_stack[self.loop_depth].continue_target);
+        }
         // Patch all break jumps to current position
         self.patch_chain(self.loop_stack[self.loop_depth].break_patch_head);
     }
@@ -826,7 +847,7 @@ fn void? CompilerContext.while_statement(&self) {
     self.expect(TokenType.LPAREN)!;
 
     uint loop_start = self.code_count;
-    self.push_loop(loop_start);
+    self.push_loop(loop_start, true);
 
     // Compile condition
     ushort cond_reg = self.expression()!;
@@ -880,7 +901,7 @@ fn void? CompilerContext.for_statement(&self) {
             self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
 
             uint loop_start = self.code_count;
-            self.push_loop(loop_start);
+            self.push_loop(loop_start, true);
 
             // Emit NEXTFOR: iter_var = next key, B = has_next
             ushort has_next = self.alloc_reg();
@@ -984,7 +1005,7 @@ fn void? CompilerContext.for_statement(&self) {
     self.patch_jump(update_jump);
 
     // Push loop with continue_target pointing to the update expression
-    self.push_loop(update_start);
+    self.push_loop(update_start, true);
 
     // Compile body
     self.statement()!;
@@ -1009,7 +1030,7 @@ fn void? CompilerContext.do_while_statement(&self) {
 
     uint loop_start = self.code_count;
     // Continue target is the condition (we'll record the address after the body)
-    self.push_loop(loop_start);  // temporary; we'll fix continue_target
+    self.push_loop(loop_start, true);  // temporary; we'll fix continue_target
 
     // Compile body
     self.statement()!;
@@ -1223,7 +1244,8 @@ fn void? CompilerContext.switch_statement(&self) {
     self.expect(TokenType.LBRACE)!;
 
     // Push a "loop" for break handling (break in switch exits the switch)
-    self.push_loop(self.code_count);
+    // is_loop=false so continue skips this entry.
+    self.push_loop(self.code_count, false);
 
     // Track all body entries (cases and default) in source order
     uint[64] body_addrs;
@@ -1382,7 +1404,7 @@ fn void? CompilerContext.labeled_statement(&self, char[] name) {
         self.statement()!;
     } else {
         // Non-loop label — push a virtual loop entry so break can target it.
-        self.push_loop(self.code_count);
+        self.push_loop(self.code_count, false);
         self.labels[label_idx].loop_index = self.loop_depth - 1;
         self.labels[label_idx].is_loop = false;
         self.statement()!;
@@ -1451,11 +1473,17 @@ fn void? CompilerContext.continue_statement(&self) {
         return COMPILE_ERROR~;
     }
 
-    // Unlabeled continue — jump to continue target of the innermost loop
-    if (self.loop_depth > 0) {
-        uint target = self.loop_stack[self.loop_depth - 1].continue_target;
-        int offset = (int)target - (int)self.code_count - 1;
-        self.emit(bytecode::make_sabc(Opcode.JUMP, offset));
+    // Unlabeled continue — jump to continue target of the innermost *real* loop
+    // (skip switch pseudo-loops that only handle break)
+    int loop_idx = (int)self.loop_depth - 1;
+    while (loop_idx >= 0 && !self.loop_stack[loop_idx].is_loop) {
+        loop_idx--;
+    }
+    if (loop_idx >= 0) {
+        // Emit placeholder jump and add to continue_patch_head for deferred patching
+        uint jump_addr = self.emit_jump(Opcode.JUMP);
+        self.loop_stack[loop_idx].continue_patch_head =
+            self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
     } else {
         return COMPILE_ERROR~;
     }

@@ -281,6 +281,11 @@ enum Opcode : char {
     /// environment chain.
     WITH_END,
 
+    /// `A = create_regexp(constants[BC])` — compile a regexp literal
+    /// from the raw `/pattern/flags` string stored at constant pool index BC.
+    /// Creates a new HObject of class REGEXP with compiled regexp data.
+    NEWREGEXP,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -321,6 +326,7 @@ fn OpFormat get_op_format(Opcode op) {
         case BREAK:     return A_BC;
         case CONTINUE:  return A_BC;
         case WITH_START: return A_BC;
+        case NEWREGEXP:  return A_BC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -864,6 +870,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.CSVARI.ordinal]      = "CSVARI",
     [Opcode.WITH_START.ordinal]  = "WITH_START",
     [Opcode.WITH_END.ordinal]    = "WITH_END",
+    [Opcode.NEWREGEXP.ordinal]   = "NEWREGEXP",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

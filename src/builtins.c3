@@ -9,6 +9,7 @@ import duktape::heap;
 import duktape::env;
 import duktape::compiler;
 import duktape::lexer;
+import duktape::re_bindings;
 import std::io;
 import std::math;
 import libc;
@@ -125,7 +126,11 @@ const uint BUILTIN_DATE_PROTO_GETSECONDS   = 98;
 const uint BUILTIN_DATE_PROTO_GETMILLISECONDS = 99;
 const uint BUILTIN_FUNCTION              = 101;
 const uint BUILTIN_RESET_GLOBALS             = 102;
-const uint BUILTIN_COUNT                     = 103;
+const uint BUILTIN_REGEXP                    = 103;
+const uint BUILTIN_REGEXP_PROTO_TEST         = 104;
+const uint BUILTIN_REGEXP_PROTO_EXEC         = 105;
+const uint BUILTIN_REGEXP_PROTO_TOSTRING     = 106;
+const uint BUILTIN_COUNT                     = 107;
 
 struct BuiltinContext {
     void* vm;
@@ -5310,6 +5315,321 @@ fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
     ctx.result.fastint = ms;
 }
 
+// ============================================================================
+// RegExp constructor builtins
+// ============================================================================
+
+/// Helper: extract the compiled regexp data pointer from 'this'.
+/// Returns null if 'this' is not a REGEXP-class object.
+fn HObject* regexp_get_this(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag != OBJECT || this_val.pointer == null) return null;
+    HObject* obj = (HObject*)this_val.pointer;
+    if (obj.get_class() != hobject::ObjClass.REGEXP) return null;
+    return obj;
+}
+
+/// RegExp(pattern, flags) — ES5 §15.10.3 (called as function) / §15.10.4 (constructor).
+/// When called as a function (not constructor), behaviour is identical to construction.
+fn void builtin_regexp(BuiltinContext* ctx) {
+    // Get pattern
+    bool is_regexp = false;
+    char* pattern_str = "";
+    usz pattern_len = 0;
+    int flags = 0;
+    char* flags_str = "";
+    usz flags_len = 0;
+
+    if (ctx.argc > 0) {
+        TVal* pattern_arg = &ctx.regs[ctx.base_reg];
+        if (pattern_arg.tag == OBJECT && pattern_arg.pointer != null) {
+            HObject* obj = (HObject*)pattern_arg.pointer;
+            if (obj.get_class() == hobject::ObjClass.REGEXP && obj.regexp_data != null) {
+                // Pattern is a RegExp object — extract its pattern
+                is_regexp = true;
+                if (obj.primitive_value.tag == STRING) {
+                    HString* phs = (HString*)obj.primitive_value.pointer;
+                    pattern_str = phs.get_cstr();
+                    pattern_len = phs.blen;
+                }
+                // Extract flags from existing regexp if no new flags given
+                // For now, use empty flags as default
+            } else {
+                // Convert to string for pattern
+                HString* phs = builtin_to_string(ctx.heap, pattern_arg);
+                if (phs != null) {
+                    pattern_str = phs.get_cstr();
+                    pattern_len = phs.blen;
+                }
+            }
+        } else if (pattern_arg.tag == STRING && pattern_arg.pointer != null) {
+            HString* phs = (HString*)pattern_arg.pointer;
+            pattern_str = phs.get_cstr();
+            pattern_len = phs.blen;
+        } else {
+            // Convert to string
+            HString* phs = builtin_to_string(ctx.heap, pattern_arg);
+            if (phs != null) {
+                pattern_str = phs.get_cstr();
+                pattern_len = phs.blen;
+            }
+        }
+    }
+
+    // Get flags from second argument
+    if (ctx.argc > 1 && !is_regexp) {
+        TVal* flags_arg = &ctx.regs[ctx.base_reg + 1];
+        if (flags_arg.tag == STRING && flags_arg.pointer != null) {
+            HString* fhs = (HString*)flags_arg.pointer;
+            flags_str = fhs.get_cstr();
+            flags_len = fhs.blen;
+        } else if (flags_arg.tag != UNDEFINED) {
+            HString* fhs = builtin_to_string(ctx.heap, flags_arg);
+            if (fhs != null) {
+                flags_str = fhs.get_cstr();
+                flags_len = fhs.blen;
+            }
+        }
+    }
+
+    // Convert JS flags to libregexp flag bits
+    for (usz i = 0; i < flags_len; i++) {
+        char f = flags_str[i];
+        if (f == 'i') {
+            flags |= re_bindings::RE_FLAG_IGNORECASE;
+        } else if (f == 'm') {
+            flags |= re_bindings::RE_FLAG_MULTILINE;
+        } else if (f == 's') {
+            flags |= re_bindings::RE_FLAG_DOTALL;
+        }
+    }
+
+    // Compile the regexp
+    char[128] error_buf;
+    void* compiled = re_bindings::re_compile(
+        (char*)pattern_str, (usz)pattern_len,
+        flags, &error_buf, 128
+    );
+
+    HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.REGEXP);
+    if (catch err = obj_raw) {
+        if (compiled != null) re_bindings::re_free(compiled);
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* obj = obj_raw;
+    obj.prototype = ctx.heap.regexp_proto;
+    obj.regexp_data = compiled;
+
+    // Store pattern string as primitive_value
+    HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
+    obj.primitive_value.tag = STRING;
+    obj.primitive_value.pointer = pattern_hs;
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
+
+/// RegExp.prototype.test(string) — ES5 §15.10.6.3
+fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this(ctx);
+    if (obj == null || obj.regexp_data == null) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+
+    // Get input string
+    char* input = "";
+    int input_len = 0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        HString* hs;
+        if (arg.tag == STRING) {
+            hs = (HString*)arg.pointer;
+        } else {
+            hs = builtin_to_string(ctx.heap, arg);
+        }
+        if (hs != null) {
+            input = hs.get_cstr();
+            input_len = (int)hs.blen;
+        }
+    }
+
+    // Execute
+    int out_start = 0;
+    int out_end = 0;
+    int out_num_captures = 0;
+    int result = re_bindings::re_exec(
+        obj.regexp_data, input, input_len, 0,
+        &out_start, &out_end, &out_num_captures,
+        null, null, 0
+    );
+
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (result == re_bindings::RE_MATCH);
+}
+
+/// RegExp.prototype.exec(string) — ES5 §15.10.6.2
+fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this(ctx);
+    if (obj == null || obj.regexp_data == null) {
+        ctx.result.set_null();
+        return;
+    }
+
+    // Get input string
+    char* input = "";
+    int input_len = 0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        HString* hs;
+        if (arg.tag == STRING) {
+            hs = (HString*)arg.pointer;
+        } else {
+            hs = builtin_to_string(ctx.heap, arg);
+        }
+        if (hs != null) {
+            input = hs.get_cstr();
+            input_len = (int)hs.blen;
+        }
+    }
+
+    // Execute with capture arrays
+    int out_start = 0;
+    int out_end = 0;
+    int out_num_captures = 0;
+    int[re_bindings::RE_MAX_CAPTURES] caps_start;
+    int[re_bindings::RE_MAX_CAPTURES] caps_end;
+    libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+    libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+    int result = re_bindings::re_exec(
+        obj.regexp_data, input, input_len, 0,
+        &out_start, &out_end, &out_num_captures,
+        &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+    );
+
+    if (result != re_bindings::RE_MATCH) {
+        ctx.result.set_null();
+        return;
+    }
+
+    // Create result array
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.set_null();
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    // Element 0: full match string
+    usz match_len = (usz)(out_end - out_start);
+    char[1024] buf;
+    usz copy_len = match_len < 1024 ? match_len : 1024;
+    for (usz i = 0; i < copy_len; i++) {
+        buf[i] = input[(usz)out_start + i];
+    }
+    HString* match_str = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    TVal elem;
+    elem.tag = STRING;
+    elem.pointer = match_str;
+    HString* zero_key = builtin_intern_string(ctx.heap, "0");
+    arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+    // Elements 1..n: capture groups
+    int num_caps = out_num_captures;
+    if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+    for (int i = 0; i < num_caps; i++) {
+        if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+            usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+            usz cap_copy = cap_len < 1024 ? cap_len : 1024;
+            char[1024] cap_buf;
+            for (usz j = 0; j < cap_copy; j++) {
+                cap_buf[j] = input[(usz)caps_start[i] + j];
+            }
+            HString* cap_str = builtin_intern_string(ctx.heap, cap_buf[:cap_copy]);
+            TVal cap_elem;
+            cap_elem.tag = STRING;
+            cap_elem.pointer = cap_str;
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i + 1);
+            HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+            arr.put_prop(idx_key, cap_elem, hobject::PROP_FLAGS_WEC);
+        } else {
+            // Unmatched capture group -> undefined
+            HString* empty_key = builtin_intern_string(ctx.heap, "undefined");
+            TVal undef;
+            undef.tag = UNDEFINED;
+            undef.pointer = null;
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i + 1);
+            HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+            arr.put_prop(idx_key, undef, hobject::PROP_FLAGS_WEC);
+        }
+    }
+
+    // Set index property
+    HString* index_key = builtin_intern_string(ctx.heap, "index");
+    TVal index_val;
+    index_val.tag = FASTINT;
+    index_val.fastint = (long)out_start;
+    arr.put_prop(index_key, index_val, hobject::PROP_FLAGS_WEC);
+
+    // Set input property
+    HString* input_key = builtin_intern_string(ctx.heap, "input");
+    TVal input_val;
+    input_val.tag = STRING;
+    input_val.pointer = builtin_intern_string(ctx.heap, input[:input_len]);
+    arr.put_prop(input_key, input_val, hobject::PROP_FLAGS_WEC);
+
+    // Set length
+    uint total_elements = 1 + (uint)num_caps;
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    TVal len_val;
+    len_val.tag = FASTINT;
+    len_val.fastint = (long)total_elements;
+    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+/// RegExp.prototype.toString() — ES5 §15.10.6.4
+fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this(ctx);
+    if (obj == null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+
+    // Build "/pattern/flags" string
+    char* pattern = "";
+    usz plen = 0;
+    if (obj.primitive_value.tag == STRING && obj.primitive_value.pointer != null) {
+        HString* phs = (HString*)obj.primitive_value.pointer;
+        pattern = phs.get_cstr();
+        plen = phs.blen;
+    }
+
+    // No flag storage yet on regexp objects, use "" for flags
+    usz total = 1 + plen + 1;  // /pattern/
+    char[512] buf;
+    int pos = 0;
+    buf[pos++] = '/';
+    for (usz i = 0; i < plen && pos < 510; i++) {
+        buf[pos++] = pattern[i];
+    }
+    buf[pos++] = '/';
+    buf[pos] = 0;
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -5496,6 +5816,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_date_proto_getSeconds(ctx);
         case BUILTIN_DATE_PROTO_GETMILLISECONDS:
             builtin_date_proto_getMilliseconds(ctx);
+        case BUILTIN_REGEXP:
+            builtin_regexp(ctx);
+        case BUILTIN_REGEXP_PROTO_TEST:
+            builtin_regexp_proto_test(ctx);
+        case BUILTIN_REGEXP_PROTO_EXEC:
+            builtin_regexp_proto_exec(ctx);
+        case BUILTIN_REGEXP_PROTO_TOSTRING:
+            builtin_regexp_proto_toString(ctx);
         case BUILTIN_RESET_GLOBALS:
             builtin_reset_globals(ctx);
         default:

@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 30
+**Last Updated:** Session 31
 **Target:** Full test262 conformance
 
 ## Summary
@@ -126,7 +126,7 @@
 | continue | 24 | 9 | 15 |
 | eval | 347 | 25 | 322 |
 | for-in | 336 | ❌ hangs VM |
-| switch/case | 111 | ❌ hangs VM |
+| switch/case | 111 | ~~❌ hangs VM~~ ✅ "continue within switch" hang fixed (cptn-*-fall-thru-abrupt-empty pass); completion value tests still failing |
 | break | 20 | 17 pass / 3 fail |
 | labeled | 24 | 11 pass / 13 fail |
 | with | 181 | ❌ hangs VM |
@@ -188,6 +188,7 @@
 | 28 | Phase 5f: Function constructor — `new Function(p1, ..., body)` / `Function(p1, ..., body)`, source compilation via compiler::compile_function, `.constructor` on `Function.prototype` wired to Function object, `Function.length`, `[[Prototype]]` chain for instanceof support. |
 | 29 | **Bug fixes**: Fixed VM arithmetic/bitwise opcode bug where `ra.tag = NUMBER` was set before reading `rb`, causing incorrect results when `ra == rb` (compound assignments `x -= 1`, prefix `++`/`--`). Fixed `postfix_expr`/`unary_expr` missing `PUTVAR` write-back for global-scope `i++`/`++i` patterns. |
 | 30 | **ASI bug fixes**: Added line terminator tracking (`seen_line_term`) to lexer. Fixed `break`/`continue`/`return` ASI — line terminators between keyword and identifier now suppress label/expression parsing per ES5 spec. Fixed test262 harness: includes `assert.js`, fixed `set -e` exit on skip. 3 test262 tests newly passing (break/line-terminators, continue/line-terminators, return/line-terminators). |
+| 31 | **Continue-in-switch infinite loop fix**: Fixed `continue` inside `switch` inside a loop generating a JUMP to itself (infinite loop). Root cause: `switch_statement()` used `push_loop()` for break handling, which incremented `loop_depth`, making `continue_statement()` find the switch's pseudo-loop entry instead of the enclosing real loop. Fix: added `is_loop` flag to `LoopInfo` and `continue_patch_head` for deferred patching. `continue` now skips switch pseudo-loops (`is_loop=false`) and finds the innermost real loop. `do-while` continue targets are resolved via deferred patch chain. Switch tests `cptn-a-fall-thru-abrupt-empty`, `cptn-b-fall-thru-abrupt-empty`, `cptn-dflt-b-fall-thru-abrupt-empty` no longer hang. |
 
 ## Refreshing Counts
 
