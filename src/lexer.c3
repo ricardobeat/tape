@@ -85,6 +85,7 @@ struct Token {
     double num_value;
     char[] str_value;
     bool str_owns_memory;
+    bool has_octal_escape;
 }
 
 /// Create a simple token with no value payload.
@@ -96,6 +97,7 @@ fn Token make_token(TokenType tt, uint line, uint col) {
     t.num_value = 0.0;
     t.str_value = {};
     t.str_owns_memory = false;
+    t.has_octal_escape = false;
     return t;
 }
 
@@ -689,6 +691,7 @@ fn Token? Lexer.scan_string(&self) {
     // Slow path: build decoded string in stack buffer.
     char[STRING_BUF_SIZE] buf;
     uint buf_len = 0;
+    bool found_octal = false;
 
     while (!self.at_end()) {
         char ch = self.peek_char();
@@ -702,6 +705,7 @@ fn Token? Lexer.scan_string(&self) {
                 tok.str_value = {};
             }
             tok.str_owns_memory = false;
+            tok.has_octal_escape = found_octal;
             return tok;
         }
 
@@ -721,7 +725,12 @@ fn Token? Lexer.scan_string(&self) {
                 case 'b':  buf[buf_len] = 0x08; buf_len++;
                 case 'f':  buf[buf_len] = 0x0C; buf_len++;
                 case 'v':  buf[buf_len] = 0x0B; buf_len++;
-                case '0':  buf[buf_len] = 0;    buf_len++;
+                case '0':
+                    buf[buf_len] = 0;
+                    buf_len++;
+                    if (self.strict_mode && !self.at_end() && self.peek_char() >= '0' && self.peek_char() <= '9') {
+                        found_octal = true;
+                    }
                 case '\'': buf[buf_len] = '\''; buf_len++;
                 case '"':  buf[buf_len] = '"';  buf_len++;
                 case '\\': buf[buf_len] = '\\'; buf_len++;
@@ -775,7 +784,12 @@ fn Token? Lexer.scan_string(&self) {
                     }
 
                 default:
-                    // Non-escape: in non-strict mode, treat as literal
+                    // Non-escape: in non-strict mode, treat as literal.
+                    // In strict mode, digit escapes (\1-\9) are octal/identity escapes
+                    // that are SyntaxErrors per ES5 §7.8.4 + Annex B.1.2.
+                    if (self.strict_mode && esc >= '1' && esc <= '9') {
+                        found_octal = true;
+                    }
                     buf[buf_len] = esc;
                     buf_len++;
             }

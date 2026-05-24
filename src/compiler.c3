@@ -2509,6 +2509,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.NUMBER:
             self.last_was_getvar = false;
             Token num_tok = self.advance()!;
+
+            // Legacy octal integer literal (0 followed by octal digit 0-7)
+            // is a SyntaxError in strict mode per ES5 §7.8.3 + B.1.1.
+            char[] nsrc = num_tok.str_value;
+            if (self.is_strict && nsrc.len >= 2 && nsrc[0] == '0' && nsrc[1] >= '0' && nsrc[1] <= '7') {
+                return COMPILE_ERROR~;
+            }
+
             ushort num_reg = self.alloc_reg();
 
             // Check if it fits in a signed 16-bit immediate
@@ -2524,6 +2532,13 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
         case TokenType.STRING:
             Token str_tok = self.advance()!;
+
+            // Legacy octal escape sequences in strings are SyntaxErrors
+            // in strict mode per ES5 §7.8.4 + Annex B.1.2.
+            if (self.is_strict && str_tok.has_octal_escape) {
+                return COMPILE_ERROR~;
+            }
+
             uint str_idx = self.add_string_constant(str_tok.str_value);
             ushort str_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, str_idx));

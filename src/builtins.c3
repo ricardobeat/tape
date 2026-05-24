@@ -592,11 +592,12 @@ fn void builtin_function(BuiltinContext* ctx) {
             TVal err_tv;
             err_tv.tag = OBJECT;
             err_tv.pointer = err;
-            ctx.result.tag = err_tv.tag;
-            ctx.result.pointer = err_tv.pointer;
+            ctx.throw_value.tag = err_tv.tag;
+            ctx.throw_value.pointer = err_tv.pointer;
         } else {
-            ctx.result.set_undefined();
+            ctx.throw_value.set_undefined();
         }
+        ctx.should_throw = true;
         return;
     }
 
@@ -687,11 +688,12 @@ fn void builtin_eval(BuiltinContext* ctx) {
             TVal err_tv;
             err_tv.tag = OBJECT;
             err_tv.pointer = err;
-            ctx.result.tag = err_tv.tag;
-            ctx.result.pointer = err_tv.pointer;
+            ctx.throw_value.tag = err_tv.tag;
+            ctx.throw_value.pointer = err_tv.pointer;
         } else {
-            ctx.result.set_undefined();
+            ctx.throw_value.set_undefined();
         }
+        ctx.should_throw = true;
         return;
     }
 
