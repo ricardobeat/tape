@@ -284,6 +284,19 @@ enum Opcode : char {
     /// environment chain.
     WITH_END,
 
+    // ---- Lexical scoping (let/const) ----------------------------------
+
+    /// Push a new declarative environment record onto `act.lex_env`.
+    /// Used at block/function entry to create a lexical scope for
+    /// `let` and `const` declarations.
+    PUSH_LEX,
+    /// Pop the current lexical environment record from `act.lex_env`,
+    /// restoring the parent.  Used at block exit.
+    POP_LEX,
+    /// `lex_env[constants[BC]] = A`  — write a binding into the current
+    /// lexical environment (for `let`/`const` declarations).  A-BC format.
+    PUTLEX,
+
     /// `A = create_regexp(constants[BC])` — compile a regexp literal
     /// from the raw `/pattern/flags` string stored at constant pool index BC.
     /// Creates a new HObject of class REGEXP with compiled regexp data.
@@ -330,6 +343,7 @@ fn OpFormat get_op_format(Opcode op) {
         case BREAK:     return A_BC;
         case CONTINUE:  return A_BC;
         case WITH_START: return A_BC;
+        case PUTLEX:     return A_BC;
         case NEWREGEXP:  return A_BC;
 
         // A-sBx format (signed 16-bit second operand)
@@ -347,6 +361,8 @@ fn OpFormat get_op_format(Opcode op) {
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;
         case WITH_END:  return NONE;
+        case PUSH_LEX:   return NONE;
+        case POP_LEX:    return NONE;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -875,6 +891,9 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.CSVARI.ordinal]      = "CSVARI",
     [Opcode.WITH_START.ordinal]  = "WITH_START",
     [Opcode.WITH_END.ordinal]    = "WITH_END",
+    [Opcode.PUSH_LEX.ordinal]    = "PUSH_LEX",
+    [Opcode.POP_LEX.ordinal]     = "POP_LEX",
+    [Opcode.PUTLEX.ordinal]      = "PUTLEX",
     [Opcode.NEWREGEXP.ordinal]   = "NEWREGEXP",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };

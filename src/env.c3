@@ -192,3 +192,77 @@ fn bool env_put(EnvRecord* env, void* key, TVal val) {
 fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
 }
+
+// ============================================================================
+// TDZ sentinel for let/const declarations
+// ============================================================================
+
+/// Sentinel value used to mark uninitialized `let`/`const` bindings.
+/// When GETVAR encounters this in lex_env, it throws a ReferenceError
+/// for temporal dead zone access.
+fn TVal tdz_sentinel() {
+    TVal tv;
+    tv.tag     = UNDEFINED;
+    tv.pointer = (void*)(usz)1;  // Non-null pointer distinguishes from real undefined
+    return tv;
+}
+
+/// Returns true if the value is the TDZ sentinel.
+fn bool is_tdz_sentinel(TVal* tv) @inline {
+    return tv.tag == UNDEFINED && tv.pointer != null;
+}
+
+// ============================================================================
+// Lexical environment helpers (for let/const)
+// ============================================================================
+
+/// Look up a binding in the lexical environment chain only.
+/// Returns PROP_NOT_FOUND if not found.
+fn TVal? env_get_lex(EnvRecord* lex_env, void* key) {
+    EnvRecord* cur = lex_env;
+    while (cur != null) {
+        if (cur.bindings.has_prop(key)) {
+            TVal? result = cur.bindings.get_prop(key);
+            if (try v = result) {
+                return v;
+            }
+        }
+        cur = cur.parent;
+    }
+    return hobject::PROP_NOT_FOUND~;
+}
+
+/// Store a binding in the topmost lexical environment record only.
+/// Used for let/const declarations via PUTLEX — creates the binding
+/// in the current block's scope without walking the parent chain.
+fn bool env_declare_lex(EnvRecord* lex_env, void* key, TVal val) @inline {
+    return lex_env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+}
+
+/// Store a binding in the lexical environment chain, creating or updating
+/// in the first record that already has the binding, or in the topmost record
+/// if the binding doesn't exist yet.
+/// Used by PUTVAR for assignments to let/const variables.
+fn bool env_put_lex(EnvRecord* lex_env, void* key, TVal val) {
+    EnvRecord* cur = lex_env;
+    while (cur != null) {
+        if (cur.bindings.has_prop(key)) {
+            return cur.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+        }
+        cur = cur.parent;
+    }
+    // Not found in chain — create in the topmost record
+    return lex_env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+}
+
+/// Check if a binding exists in the lexical environment chain.
+fn bool env_has_lex(EnvRecord* lex_env, void* key) @inline {
+    EnvRecord* cur = lex_env;
+    while (cur != null) {
+        if (cur.bindings.has_prop(key)) {
+            return true;
+        }
+        cur = cur.parent;
+    }
+    return false;
+}

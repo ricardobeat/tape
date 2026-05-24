@@ -2344,37 +2344,76 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 TVal name_val = constants[bc];
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
-                    TVal? result = env::env_get(act.var_env, key);
+
+                    // Search lexical environment first (for let/const bindings)
+                    TVal? result = env::env_get_lex(act.lex_env, key);
                     if (try v = result) {
-                        ra.tag = v.tag;
-                        ra.fastint = v.fastint;
-                        ra.number = v.number;
-                        ra.pointer = v.pointer;
-                    } else {
-                        // ReferenceError: variable not declared
-                        HString* name_hstr = (HString*)key;
-                        HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.ref_err_proto;
-                            char[160] buf;
-                            int len = libc::snprintf(&buf, 160, "%s is not defined",
-                                                     name_hstr.get_cstr());
-                            if (len > 0 && len < 160) {
-                                HString* msg_str = intern_string(vm, buf[:len]);
-                                TVal msg_val;
-                                msg_val.tag = STRING;
-                                msg_val.pointer = msg_str;
-                                HString* msg_key = intern_string(vm, "message");
-                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val;
-                            err_val.tag = OBJECT;
-                            err_val.pointer = err;
-                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        // Check for TDZ sentinel
+                        if (env::is_tdz_sentinel(&v)) {
+                            HString* name_hstr = (HString*)key;
+                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.ref_err_proto;
+                                char[160] buf;
+                                int len = libc::snprintf(&buf, 160, "Cannot access '%s' before initialization",
+                                                         name_hstr.get_cstr());
+                                if (len > 0 && len < 160) {
+                                    HString* msg_str = intern_string(vm, buf[:len]);
+                                    TVal msg_val;
+                                    msg_val.tag = STRING;
+                                    msg_val.pointer = msg_str;
+                                    HString* msg_key = intern_string(vm, "message");
+                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val;
+                                err_val.tag = OBJECT;
+                                err_val.pointer = err;
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
                                 return VM_ERROR~;
                             }
                         } else {
-                            return VM_ERROR~;
+                            ra.tag = v.tag;
+                            ra.fastint = v.fastint;
+                            ra.number = v.number;
+                            ra.pointer = v.pointer;
+                        }
+                    } else {
+                        // Not in lex_env — search var_env
+                        result = env::env_get(act.var_env, key);
+                        if (try v2 = result) {
+                            ra.tag = v2.tag;
+                            ra.fastint = v2.fastint;
+                            ra.number = v2.number;
+                            ra.pointer = v2.pointer;
+                        } else {
+                            // ReferenceError: variable not declared
+                            HString* name_hstr = (HString*)key;
+                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.ref_err_proto;
+                                char[160] buf;
+                                int len = libc::snprintf(&buf, 160, "%s is not defined",
+                                                         name_hstr.get_cstr());
+                                if (len > 0 && len < 160) {
+                                    HString* msg_str = intern_string(vm, buf[:len]);
+                                    TVal msg_val;
+                                    msg_val.tag = STRING;
+                                    msg_val.pointer = msg_str;
+                                    HString* msg_key = intern_string(vm, "message");
+                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val;
+                                err_val.tag = OBJECT;
+                                err_val.pointer = err;
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
                         }
                     }
                 } else {
@@ -2391,21 +2430,61 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.TYPEOFIDENT: {
             // ES5 §11.4.3: typeof on an unresolvable reference returns "undefined"
             // instead of throwing ReferenceError.
+            // ES6: typeof on a TDZ variable THROWS ReferenceError.
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
-                    TVal? result = env::env_get(act.var_env, key);
+
+                    // Search lexical environment first (for let/const bindings)
+                    TVal? result = env::env_get_lex(act.lex_env, key);
                     if (try v = result) {
-                        HString* ts = typeof_string(vm, &v);
-                        ra.tag = STRING;
-                        ra.pointer = ts;
+                        // Check for TDZ sentinel
+                        if (env::is_tdz_sentinel(&v)) {
+                            // TDZ: throw ReferenceError (ES6 behavior)
+                            HString* name_hstr = (HString*)key;
+                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.ref_err_proto;
+                                char[160] buf;
+                                int len = libc::snprintf(&buf, 160, "Cannot access '%s' before initialization",
+                                                         name_hstr.get_cstr());
+                                if (len > 0 && len < 160) {
+                                    HString* msg_str = intern_string(vm, buf[:len]);
+                                    TVal msg_val;
+                                    msg_val.tag = STRING;
+                                    msg_val.pointer = msg_str;
+                                    HString* msg_key = intern_string(vm, "message");
+                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val;
+                                err_val.tag = OBJECT;
+                                err_val.pointer = err;
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            HString* ts = typeof_string(vm, &v);
+                            ra.tag = STRING;
+                            ra.pointer = ts;
+                        }
                     } else {
-                        // Unresolvable reference → "undefined" (no error)
-                        HString* ts = intern_string(vm, "undefined");
-                        ra.tag = STRING;
-                        ra.pointer = ts;
+                        // Not in lex_env — search var_env
+                        result = env::env_get(act.var_env, key);
+                        if (try v2 = result) {
+                            HString* ts = typeof_string(vm, &v2);
+                            ra.tag = STRING;
+                            ra.pointer = ts;
+                        } else {
+                            // Unresolvable reference → "undefined" (no error)
+                            HString* ts = intern_string(vm, "undefined");
+                            ra.tag = STRING;
+                            ra.pointer = ts;
+                        }
                     }
                 } else {
                     ra.tag = UNDEFINED;
@@ -2424,7 +2503,26 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 TVal name_val = constants[bc];
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
-                    env::env_put(act.var_env, key, *ra);
+                    // Check lex_env first — if the binding is a let/const,
+                    // we need to update it in the lexical environment, not
+                    // create a new var_env binding.
+                    if (env::env_has_lex(act.lex_env, key)) {
+                        env::env_put_lex(act.lex_env, key, *ra);
+                    } else {
+                        env::env_put(act.var_env, key, *ra);
+                    }
+                }
+            }
+            break;
+        }
+
+        case Opcode.PUTLEX: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.tag == STRING) {
+                    void* key = name_val.pointer;
+                    env::env_declare_lex(act.lex_env, key, *ra);
                 }
             }
             break;
@@ -2784,6 +2882,25 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // and crash on subsequent env_get calls.
             if (act.var_env != null && act.var_env.parent != null) {
                 act.var_env = act.var_env.parent;
+            }
+            break;
+        }
+
+        case Opcode.PUSH_LEX: {
+            // Push a new declarative environment record onto act.lex_env.
+            EnvRecord*? env_raw = env::env_create_declarative(vm.heap, act.lex_env);
+            if (try new_env = env_raw) {
+                act.lex_env = new_env;
+            } else {
+                return VM_ERROR~;
+            }
+            break;
+        }
+
+        case Opcode.POP_LEX: {
+            // Pop the current lexical environment from the scope chain.
+            if (act.lex_env != null && act.lex_env.parent != null) {
+                act.lex_env = act.lex_env.parent;
             }
             break;
         }

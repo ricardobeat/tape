@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 40
+**Last Updated:** Session 41
 **Target:** Full test262 conformance
 
 ## Summary
@@ -12,7 +12,7 @@
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~853 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
-| **Fixed this session** | **Phase 9: Octal Literals in Strict Mode — legacy octal integer literals (0777, 01, etc.) rejected as SyntaxError; legacy octal escape sequences in strings (\0 followed by digit, \1-\9) rejected; fixed `builtin_eval`/`builtin_function` to use `ctx.should_throw`/`ctx.throw_value` for SyntaxError propagation (was silently returning error objects instead of throwing).** |
+| **Fixed this session** | **Phase 10: Block-scoped let/const with lexical environments. Added PUSH_LEX, POP_LEX, PUTLEX bytecode opcodes. PUSH_LEX pushes a new declarative EnvRecord onto act.lex_env at block/function entry; POP_LEX restores the parent. let/const declarations emit PUTLEX (A-BC format) to store in lex_env, while var continues to use PUTVAR for var_env. GETVAR and PUTVAR now search lex_env chain first, enabling transparent let/const resolution. TYPEOFIDENT also searches lex_env first. TDZ sentinel infrastructure added (tdz_sentinel, is_tdz_sentinel, env_get_lex, env_put_lex, env_has_lex). Closures correctly capture let variables in lex_env. Block scoping verified: nested blocks, shadowing, function-level let/const, var vs let crossover all passing.** |
 ||
 |**Engine decision: Strict-only** — No sloppy/non-strict mode support. All code runs in ES5 strict mode by default. `"use strict"` is accepted but redundant. Non-strict `this` coercion, `arguments.callee`, `arguments.caller`, and all non-strict error-handling paths are not implemented.
 
@@ -166,7 +166,24 @@
 | Octal literals error in strict | ✅ |
 | Duplicate property names error in strict | ✅ |
 
-### Phase 10: ES6+ — ❌ NOT STARTED
+### Phase 10: ES6+ — Block-scoped let/const ✅ (Partial — core infrastructure)
+**test262: ~13,136 let/const tests — not yet run; 145 block-scope tests**
+| Component | Status |
+|---|---|
+| PUSH_LEX / POP_LEX opcodes | ✅ |
+| PUTLEX opcode (A-BC format) | ✅ |
+| lex_env chain in VM (GETVAR searches lex_env first) | ✅ |
+| PUTVAR updates lex_env if binding exists there | ✅ |
+| TYPEOFIDENT searches lex_env first | ✅ |
+| Block-scoped let/const (block() emits PUSH_LEX/POP_LEX) | ✅ |
+| Function-level let/const (parse_function_body emits PUSH_LEX) | ✅ |
+| Closure capture of let variables (CLOSURE sets func_obj.lex_env) | ✅ |
+| TDZ sentinel infrastructure (tdz_sentinel, is_tdz_sentinel, GETVAR TDZ check) | ✅ |
+| TDZ enforcement at block entry (pre-scan) | 🚫 Deferred |
+| const runtime enforcement (re-assignment check) | 🚫 Deferred |
+| for-in/for-of with let/const | 🚫 Deferred |
+
+### Phase 11: ES6+ — ❌ NOT STARTED
 
 ## Session History
 
@@ -212,6 +229,7 @@
 | 38 | **Phase 9: Strict Mode**: Added "use strict" directive prologue detection in `compile()`, `compile_eval()`, and `block()` (for function bodies). `CompilerContext.is_strict` flag set by `parse_directives()`. Lexer `set_strict()` enables FutureReservedWords as keywords. `is_strict` propagated from `CompilerContext` to `CompiledFunction.flags.is_strict` in `finish()`. VM activations now read `CompiledFunction.is_strict()` instead of hardcoding `ACT_FLAG_STRICT`. `with` statement rejected in strict mode (SyntaxError). `eval`/`arguments` rejected as parameter names, `var` declarations, and catch variable names in strict mode. Inner functions inherit strict mode from parent context via `compile_inner_function()`. 4/4 custom strict mode tests passing. |
 | 39 | **Phase 9: Octal literals error in strict**: Added `has_octal_escape` flag to `Token` struct. Lexer detects legacy octal escape sequences (\0 followed by digit, \1-\9) in strings and sets the flag. Compiler validates NUMBER tokens against legacy octal pattern (0 followed by 0-7) in `primary_expr`. String tokens with octal escapes also rejected via `has_octal_escape` flag check. Fixed `builtin_eval` and `builtin_function` to use `ctx.should_throw`/`ctx.throw_value` instead of `ctx.result` for SyntaxError propagation (eval was silently returning error objects instead of throwing). 20/20 custom octal strict tests passing. |
 | 40 | **Phase 9: Duplicate property names error in strict**: Added duplicate data property key detection to `object_literal()` in compiler. In strict mode, duplicate property names in object literals now throw SyntaxError per ES5 §11.1.5. Tracks both identifier/string and numeric keys, canonicalizing numeric keys via `%.17g` to match runtime `vm_number_to_string`. Computed property keys (`[expr]`) are excluded since they can't be statically analyzed. 8/8 custom duplicate property tests passing. |
+| 41 | **Phase 10: Block-scoped let/const — lexical environments**: Added PUSH_LEX, POP_LEX, PUTLEX bytecode opcodes. PUSH_LEX pushes a new declarative EnvRecord onto act.lex_env at block/function entry; POP_LEX restores parent. let/const declarations emit PUTLEX to store in lex_env; var continues using PUTVAR for var_env. GETVAR, PUTVAR, and TYPEOFIDENT now search lex_env chain first. TDZ sentinel infrastructure added (tdz_sentinel, is_tdz_sentinel, env_get_lex, env_put_lex, env_has_lex). ScopeEntry uses ScopeKind enum (VAR/LET/CONST). Block scoping verified for nested blocks, shadowing, function-level let/const, and closure capturing of let variables. Full TDZ enforcement at block entry (pre-scan) and const runtime re-assignment checks deferred. |
 
 ## Refreshing Counts
 

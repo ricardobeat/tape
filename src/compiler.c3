@@ -71,10 +71,16 @@ const int PREC_CALL           = 18;
 // Supporting structures
 // ============================================================================
 
+enum ScopeKind : char {
+    VAR,
+    LET,
+    CONST,
+}
+
 struct ScopeEntry {
     char[] name;
     ushort reg;
-    bool is_const;
+    ScopeKind kind;
     bool is_captured;
 }
 
@@ -590,13 +596,13 @@ fn void CompilerContext.pop_scope_to(&self, uint saved_depth) {
 }
 
 /// Declare a variable in the current scope.
-fn ushort CompilerContext.declare_var(&self, char[] name, bool is_const) {
+fn ushort CompilerContext.declare_var(&self, char[] name, ScopeKind kind) {
     ushort reg = self.alloc_reg();
     // At global scope, don't register-cache — use environment via PUTVAR/GETVAR
     if (!self.is_global && self.scope_depth < MAX_SCOPE_DEPTH) {
         self.scope_stack[self.scope_depth].name = name;
         self.scope_stack[self.scope_depth].reg = reg;
-        self.scope_stack[self.scope_depth].is_const = is_const;
+        self.scope_stack[self.scope_depth].kind = kind;
         self.scope_stack[self.scope_depth].is_captured = false;
         self.scope_depth++;
     }
@@ -628,7 +634,7 @@ fn bool CompilerContext.is_var_const(&self, char[] name) {
     while (i > 0) {
         i--;
         if (str_eq(self.scope_stack[i].name, name)) {
-            return self.scope_stack[i].is_const;
+            return self.scope_stack[i].kind == CONST;
         }
     }
     return false;
@@ -833,6 +839,9 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     uint saved_depth = self.scope_depth;
     ushort saved_reg = self.next_reg;
 
+    // Push a new lexical scope for let/const declarations inside this block
+    self.emit_simple(Opcode.PUSH_LEX);
+
     if (check_directives) {
         self.parse_directives()!;
     }
@@ -843,6 +852,9 @@ fn void? CompilerContext.block(&self, bool check_directives) {
 
     self.expect(TokenType.RBRACE)!;
 
+    // Pop the lexical scope, removing any let/const bindings from this block
+    self.emit_simple(Opcode.POP_LEX);
+
     self.pop_scope_to(saved_depth);
     self.free_regs_to(saved_reg);
 }
@@ -851,6 +863,7 @@ fn void? CompilerContext.block(&self, bool check_directives) {
 fn void? CompilerContext.var_declaration(&self) {
     Token decl_tok = self.advance()!;
     bool is_const = (decl_tok.type == TokenType.CONST);
+    bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
 
     // Parse one or more variable declarators
     for (;;) {
@@ -858,7 +871,8 @@ fn void? CompilerContext.var_declaration(&self) {
         if (self.is_strict && is_restricted_name(name_tok.str_value)) {
             return COMPILE_ERROR~;
         }
-        ushort reg = self.declare_var(name_tok.str_value, is_const);
+        ScopeKind kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
+        ushort reg = self.declare_var(name_tok.str_value, kind);
 
         // Optional initializer
         if (self.match(TokenType.ASSIGN)) {
@@ -872,9 +886,14 @@ fn void? CompilerContext.var_declaration(&self) {
             self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
         }
 
-        // Also store in the environment so inner functions can find it via GETVAR
+        // Store in the environment so inner functions can find it
+        // var → var_env (function-scoped), let/const → lex_env (block-scoped)
         uint name_idx = self.add_string_constant(name_tok.str_value);
-        self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+        if (is_lexical) {
+            self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+        } else {
+            self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+        }
 
         if (!self.match(TokenType.COMMA)) {
             break;
@@ -966,7 +985,7 @@ fn void? CompilerContext.for_statement(&self) {
         if (self.peek_type() == TokenType.IN) {
             // for (var x in obj) { ... }
             self.advance()!;  // consume 'in'
-            ushort iter_var = self.declare_var(name_tok.str_value, is_const);
+            ushort iter_var = self.declare_var(name_tok.str_value, is_const ? CONST : LET);
             ushort obj_reg = self.assignment_expr()!;
             self.expect(TokenType.RPAREN)!;
 
@@ -1008,7 +1027,8 @@ fn void? CompilerContext.for_statement(&self) {
 
         // Standard for loop: we already consumed the decl keyword and identifier
         // Declare the variable and optionally initialize
-        ushort var_reg = self.declare_var(name_tok.str_value, is_const);
+        ScopeKind decl_kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
+        ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
         if (self.match(TokenType.ASSIGN)) {
             ushort init_val = self.assignment_expr()!;
             if (init_val != var_reg) {
@@ -1025,7 +1045,7 @@ fn void? CompilerContext.for_statement(&self) {
         // More declarations?
         while (self.match(TokenType.COMMA)) {
             Token extra_name = self.expect(TokenType.IDENTIFIER)!;
-            ushort extra_reg = self.declare_var(extra_name.str_value, is_const);
+            ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
             if (self.match(TokenType.ASSIGN)) {
                 ushort extra_val = self.assignment_expr()!;
                 if (extra_val != extra_reg) {
@@ -1217,7 +1237,7 @@ fn void? CompilerContext.try_statement(&self) {
             }
             self.expect(TokenType.RPAREN)!;
 
-            ushort catch_var = self.declare_var(catch_param.str_value, false);
+            ushort catch_var = self.declare_var(catch_param.str_value, VAR);
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
             // For global scope, also PUTVAR the exception into the env so that
             // subsequent GETVAR for the catch variable finds it.
@@ -1587,7 +1607,7 @@ fn void? CompilerContext.function_declaration(&self) {
     self.expect(TokenType.FUNCTION)!;
 
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-    ushort func_reg = self.declare_var(name_tok.str_value, false);
+    ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
     // Compile the function into a nested CompiledFunction
     CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
@@ -1620,7 +1640,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             if (self.is_strict && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
             }
-            self.declare_var(param.str_value, false);
+            self.declare_var(param.str_value, VAR);
             arg_count++;
 
             if (!self.match(TokenType.COMMA)) {
@@ -1631,8 +1651,18 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
 
     self.expect(TokenType.RPAREN)!;
 
+    // Push a function-level lexical scope for let/const at function top level.
+    // This sits above the block-level PUSH_LEX emitted by block() so that
+    // function-level let/const go into a scope that outlives inner blocks.
+    self.emit_simple(Opcode.PUSH_LEX);
+
     // Compile function body block
     self.block(true)!;
+
+    // Pop the function-level lexical scope.
+    // NOTE: for functions with explicit return, this POP_LEX won't execute,
+    // but that's harmless — the activation is destroyed on return.
+    self.emit_simple(Opcode.POP_LEX);
 
     // Emit implicit return undefined if no explicit return
     // Check if last instruction is a return
@@ -1668,7 +1698,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
             if (inner_ctx.is_strict && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
             }
-            ushort param_reg = inner_ctx.declare_var(param.str_value, false);
+            ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
             // Store parameter in environment so inner functions can capture it
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
             inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
@@ -1682,8 +1712,14 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
     inner_ctx.expect(TokenType.RPAREN)!;
 
+    // Push a function-level lexical scope for let/const at function top level
+    inner_ctx.emit_simple(Opcode.PUSH_LEX);
+
     // Compile function body
     inner_ctx.block(true)!;
+
+    // Pop the function-level lexical scope
+    inner_ctx.emit_simple(Opcode.POP_LEX);
 
     // Add implicit return undefined
     bool has_return = false;
