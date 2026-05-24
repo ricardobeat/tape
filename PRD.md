@@ -81,6 +81,20 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 | ✅ (Phase 11)
 
+### Destructuring (ES6) ✅ (Phase 12)
+- Array destructuring: `var [a, b] = expr`, `let [x, ...rest] = arr`, `const [m, , n] = tuple`
+- Object destructuring: `var {a, b} = obj`, `let {x: y} = obj` (shorthand + keyed)
+- Works with `var`, `let`, and `const` declarations
+- Works in standard `for`-loop init: `for (var [i, j] = [0,0]; ...)`
+- Elision (holes) in array patterns: `var [a, , b] = [1,2,3]`
+- Rest element in array patterns: `var [first, ...rest] = arr` (position-0 rest assigns RHS directly)
+- Compile-time only: no new opcodes — uses GETPROP with LDINT (array) or LDCONST (object) + existing PUTVAR/PUTLEX/PUTLEX_C
+- for-in destructuring deferred (requires iterator protocol for patterns)
+- Nested patterns, computed properties, default values deferred
+- Assignment destructuring (without declaration) deferred
+
+| ✅ (Phase 12)
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.

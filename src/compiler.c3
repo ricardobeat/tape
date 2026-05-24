@@ -116,6 +116,21 @@ struct ParamDefault {
     uint    default_func_idx; // index into inner_funcs for the default expression
 }
 
+/// Tracks a binding in an array destructuring pattern.
+struct ArrayBind {
+    ushort reg;
+    uint   name_idx;
+    bool   is_rest;
+    bool   is_hole;
+}
+
+/// Tracks a binding in an object destructuring pattern.
+struct ObjBind {
+    ushort reg;
+    uint   name_idx;
+    uint   key_idx;
+}
+
 // ============================================================================
 // CompilerContext
 // ============================================================================
@@ -1065,44 +1080,59 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     self.free_regs_to(saved_reg);
 }
 
+/// Emit the environment store for a declared variable (PUTVAR or PUTLEX/PUTLEX_C).
+fn void CompilerContext.emit_var_store(&self, ushort reg, uint name_idx, bool is_lexical, bool is_const) {
+    if (is_lexical) {
+        if (is_const) {
+            self.emit_a_bc(Opcode.PUTLEX_C, (uint)reg, name_idx);
+        } else {
+            self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+        }
+    } else {
+        self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+    }
+}
+
 /// Parse var/let/const declaration.
 fn void? CompilerContext.var_declaration(&self) {
     Token decl_tok = self.advance()!;
     bool is_const = (decl_tok.type == TokenType.CONST);
     bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
+    ScopeKind kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
 
     // Parse one or more variable declarators
     for (;;) {
-        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-        if (self.is_strict && is_restricted_name(name_tok.str_value)) {
-            return COMPILE_ERROR~;
-        }
-        ScopeKind kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
-        ushort reg = self.declare_var(name_tok.str_value, kind);
+        TokenType next = self.peek_type();
 
-        // Optional initializer
-        if (self.match(TokenType.ASSIGN)) {
-            ushort val_reg = self.assignment_expr()!;
-            if (val_reg != reg) {
-                self.emit_abc(Opcode.LDREG, (uint)reg, (uint)val_reg, 0);
-            }
-            self.free_reg(val_reg);
+        if (next == TokenType.LBRACKET) {
+            self.advance()!; // consume '['
+            self.array_destructure(kind, is_lexical, is_const)!;
+        } else if (next == TokenType.LBRACE) {
+            self.advance()!; // consume '{'
+            self.object_destructure(kind, is_lexical, is_const)!;
         } else {
-            // Default initialize to undefined
-            self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
-        }
+            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(name_tok.str_value)) {
+                return COMPILE_ERROR~;
+            }
+            ushort reg = self.declare_var(name_tok.str_value, kind);
 
-        // Store in the environment so inner functions can find it
-        // var → var_env (function-scoped), let/const → lex_env (block-scoped)
-        uint name_idx = self.add_string_constant(name_tok.str_value);
-        if (is_lexical) {
-            if (is_const) {
-                self.emit_a_bc(Opcode.PUTLEX_C, (uint)reg, name_idx);
+            // Optional initializer
+            if (self.match(TokenType.ASSIGN)) {
+                ushort val_reg = self.assignment_expr()!;
+                if (val_reg != reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)reg, (uint)val_reg, 0);
+                }
+                self.free_reg(val_reg);
             } else {
-                self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+                // Default initialize to undefined
+                self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
             }
-        } else {
-            self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+
+            // Store in the environment so inner functions can find it
+            // var → var_env (function-scoped), let/const → lex_env (block-scoped)
+            uint name_idx = self.add_string_constant(name_tok.str_value);
+            self.emit_var_store(reg, name_idx, is_lexical, is_const);
         }
 
         if (!self.match(TokenType.COMMA)) {
@@ -1111,6 +1141,157 @@ fn void? CompilerContext.var_declaration(&self) {
     }
 
     self.match(TokenType.SEMICOLON);
+}
+
+// ============================================================================
+// Destructuring patterns (array and object)
+// ============================================================================
+
+/// Parse array destructuring pattern: [a, b, ...rest] = rhs
+/// The '[' has already been consumed.
+fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
+    ArrayBind[32] binds;
+    uint bind_count = 0;
+
+    // Parse pattern elements, declaring each binding as we go
+    for (;;) {
+        if (self.check(TokenType.RBRACKET)) break;
+
+        if (self.check(TokenType.COMMA)) {
+            self.advance()!;
+            if (bind_count < 32) {
+                binds[bind_count].is_hole = true;
+                bind_count++;
+            }
+            continue;
+        }
+
+        if (self.match(TokenType.ELLIPSIS)) {
+            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+            if (bind_count < 32) {
+                ushort reg = self.declare_var(rest_tok.str_value, kind);
+                binds[bind_count].reg = reg;
+                binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                binds[bind_count].is_rest = true;
+                binds[bind_count].is_hole = false;
+                bind_count++;
+            }
+            while (self.match(TokenType.COMMA)) {}
+            break;
+        }
+
+        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+        if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+        if (bind_count < 32) {
+            ushort reg = self.declare_var(name_tok.str_value, kind);
+            binds[bind_count].reg = reg;
+            binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
+            binds[bind_count].is_rest = false;
+            binds[bind_count].is_hole = false;
+            bind_count++;
+        }
+
+        if (!self.match(TokenType.COMMA)) break;
+    }
+
+    self.expect(TokenType.RBRACKET)!;
+
+    // Default to undefined if no initializer
+    if (!self.match(TokenType.ASSIGN)) {
+        for (uint i = 0; i < bind_count; i++) {
+            if (binds[i].is_hole) continue;
+            self.emit_abc(Opcode.LDUNDEF, (uint)binds[i].reg, 0, 0);
+            self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+        }
+        return;
+    }
+
+    // Evaluate RHS (after all bindings declared, so their regs are below RHS regs)
+    ushort rhs_reg = self.assignment_expr()!;
+
+    // Emit code for each binding: get property from RHS, store in binding reg
+    for (uint i = 0; i < bind_count; i++) {
+        if (binds[i].is_hole) continue;
+
+        if (binds[i].is_rest) {
+            // For rest at position 0, just assign RHS directly
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)rhs_reg, 0);
+        } else {
+            // Regular element: GETPROP rhs[i] → bind_reg
+            ushort idx_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)idx_reg);
+            self.free_reg(idx_reg);
+        }
+
+        self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+    }
+
+    self.free_reg(rhs_reg);
+}
+
+/// Parse object destructuring pattern: {a, b: c} = rhs
+/// The '{' has already been consumed.
+fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
+    ObjBind[32] binds;
+    uint bind_count = 0;
+
+    if (!self.check(TokenType.RBRACE)) {
+        for (;;) {
+            Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+
+            if (self.match(TokenType.COLON)) {
+                // Keyed: {key: binding_name}
+                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(bind_tok.str_value, kind);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                    bind_count++;
+                }
+            } else {
+                // Shorthand: {name}  →  key="name", binding=name
+                if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(prop_tok.str_value, kind);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                    bind_count++;
+                }
+            }
+
+            if (!self.match(TokenType.COMMA)) break;
+        }
+    }
+
+    self.expect(TokenType.RBRACE)!;
+
+    // Default to undefined if no initializer
+    if (!self.match(TokenType.ASSIGN)) {
+        for (uint i = 0; i < bind_count; i++) {
+            self.emit_abc(Opcode.LDUNDEF, (uint)binds[i].reg, 0, 0);
+            self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+        }
+        return;
+    }
+
+    // Evaluate RHS
+    ushort rhs_reg = self.assignment_expr()!;
+
+    // Emit GETPROP for each property: rhs[key] → bind_reg
+    for (uint i = 0; i < bind_count; i++) {
+        ushort key_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+        self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
+        self.free_reg(key_reg);
+        self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+    }
+
+    self.free_reg(rhs_reg);
 }
 
 /// Parse if/else statement.
@@ -1189,87 +1370,139 @@ fn void? CompilerContext.for_statement(&self) {
         // We parse the variable declaration keyword
         Token decl_tok = self.advance()!;
         bool is_const = (decl_tok.type == TokenType.CONST);
-        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-
-        // Check for "in" (for-in) or "of" (for-of)
-        if (self.peek_type() == TokenType.IN) {
-            // for (var x in obj) { ... }
-            self.advance()!;  // consume 'in'
-            ushort iter_var = self.declare_var(name_tok.str_value, is_const ? CONST : LET);
-            ushort obj_reg = self.assignment_expr()!;
-            self.expect(TokenType.RPAREN)!;
-
-            // Emit INITFOR to set up the iterator
-            ushort iter_state = self.alloc_reg();
-            self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
-
-            uint loop_start = self.code_count;
-            self.push_loop(loop_start, true);
-
-            // Emit NEXTFOR: iter_var = next key, B = has_next
-            ushort has_next = self.alloc_reg();
-            self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
-            // Sync the for-in variable to the environment so GETVAR can find it
-            // (needed at global scope where resolve_var is not used)
-            uint forin_name_idx = self.add_string_constant(name_tok.str_value);
-            self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
-
-            // If no more keys, exit
-            uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
-            self.free_reg(has_next);
-
-            // Compile body
-            self.statement()!;
-
-            // Jump back to loop start
-            int back_offset = (int)loop_start - (int)self.code_count - 1;
-            self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
-
-            self.patch_jump(exit_jump);
-            self.pop_loop();
-
-            self.free_reg(iter_state);
-            self.free_reg(obj_reg);
-            self.pop_scope_to(saved_scope);
-            self.free_regs_to(saved_reg);
-            return;
-        }
-
-        // Standard for loop: we already consumed the decl keyword and identifier
-        // Declare the variable and optionally initialize
+        bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
         ScopeKind decl_kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
-        ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
-        if (self.match(TokenType.ASSIGN)) {
-            ushort init_val = self.assignment_expr()!;
-            if (init_val != var_reg) {
-                self.emit_abc(Opcode.LDREG, (uint)var_reg, (uint)init_val, 0);
-            }
-            self.free_reg(init_val);
-        } else {
-            self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
-        }
-        // Also store in environment (needed at global scope for GETVAR)
-        uint name_idx = self.add_string_constant(name_tok.str_value);
-        self.emit_a_bc(Opcode.PUTVAR, (uint)var_reg, name_idx);
 
-        // More declarations?
-        while (self.match(TokenType.COMMA)) {
-            Token extra_name = self.expect(TokenType.IDENTIFIER)!;
-            ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
-            if (self.match(TokenType.ASSIGN)) {
-                ushort extra_val = self.assignment_expr()!;
-                if (extra_val != extra_reg) {
-                    self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
-                }
-                self.free_reg(extra_val);
+        // Check for destructuring: [pattern] or {pattern}
+        TokenType after_decl = self.peek_type();
+        if (after_decl == TokenType.LBRACKET || after_decl == TokenType.LBRACE) {
+            // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
+            if (after_decl == TokenType.LBRACKET) {
+                self.advance()!; // consume '['
+                self.array_destructure(decl_kind, is_lexical, is_const)!;
             } else {
-                self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                self.advance()!; // consume '{'
+                self.object_destructure(decl_kind, is_lexical, is_const)!;
             }
-            uint extra_name_idx = self.add_string_constant(extra_name.str_value);
-            self.emit_a_bc(Opcode.PUTVAR, (uint)extra_reg, extra_name_idx);
-        }
 
-        self.expect(TokenType.SEMICOLON)!;
+            // More declarations? (var [a]=x, b=y)
+            while (self.match(TokenType.COMMA)) {
+                TokenType nt = self.peek_type();
+                if (nt == TokenType.LBRACKET) {
+                    self.advance()!;
+                    self.array_destructure(decl_kind, is_lexical, is_const)!;
+                } else if (nt == TokenType.LBRACE) {
+                    self.advance()!;
+                    self.object_destructure(decl_kind, is_lexical, is_const)!;
+                } else {
+                    Token extra_name = self.expect(TokenType.IDENTIFIER)!;
+                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort extra_val = self.assignment_expr()!;
+                        if (extra_val != extra_reg) {
+                            self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
+                        }
+                        self.free_reg(extra_val);
+                    } else {
+                        self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                    }
+                    uint extra_name_idx = self.add_string_constant(extra_name.str_value);
+                    self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                }
+            }
+
+            self.expect(TokenType.SEMICOLON)!;
+        } else {
+            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+
+            // Check for "in" (for-in) or "of" (for-of)
+            if (self.peek_type() == TokenType.IN) {
+                // for (var x in obj) { ... }
+                self.advance()!;  // consume 'in'
+                ushort iter_var = self.declare_var(name_tok.str_value, is_const ? CONST : LET);
+                ushort obj_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+
+                // Emit INITFOR to set up the iterator
+                ushort iter_state = self.alloc_reg();
+                self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
+
+                uint loop_start = self.code_count;
+                self.push_loop(loop_start, true);
+
+                // Emit NEXTFOR: iter_var = next key, B = has_next
+                ushort has_next = self.alloc_reg();
+                self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
+                // Sync the for-in variable to the environment so GETVAR can find it
+                // (needed at global scope where resolve_var is not used)
+                uint forin_name_idx = self.add_string_constant(name_tok.str_value);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
+
+                // If no more keys, exit
+                uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
+                self.free_reg(has_next);
+
+                // Compile body
+                self.statement()!;
+
+                // Jump back to loop start
+                int back_offset = (int)loop_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+                self.patch_jump(exit_jump);
+                self.pop_loop();
+
+                self.free_reg(iter_state);
+                self.free_reg(obj_reg);
+                self.pop_scope_to(saved_scope);
+                self.free_regs_to(saved_reg);
+                return;
+            }
+
+            // Standard for loop: we already consumed the decl keyword and identifier
+            // Declare the variable and optionally initialize
+            ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
+            if (self.match(TokenType.ASSIGN)) {
+                ushort init_val = self.assignment_expr()!;
+                if (init_val != var_reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)var_reg, (uint)init_val, 0);
+                }
+                self.free_reg(init_val);
+            } else {
+                self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
+            }
+            // Also store in environment (needed at global scope for GETVAR)
+            uint name_idx = self.add_string_constant(name_tok.str_value);
+            self.emit_var_store(var_reg, name_idx, is_lexical, is_const);
+
+            // More declarations?
+            while (self.match(TokenType.COMMA)) {
+                TokenType nt2 = self.peek_type();
+                if (nt2 == TokenType.LBRACKET) {
+                    self.advance()!;
+                    self.array_destructure(decl_kind, is_lexical, is_const)!;
+                } else if (nt2 == TokenType.LBRACE) {
+                    self.advance()!;
+                    self.object_destructure(decl_kind, is_lexical, is_const)!;
+                } else {
+                    Token extra_name = self.expect(TokenType.IDENTIFIER)!;
+                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort extra_val = self.assignment_expr()!;
+                        if (extra_val != extra_reg) {
+                            self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
+                        }
+                        self.free_reg(extra_val);
+                    } else {
+                        self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                    }
+                    uint extra_name_idx = self.add_string_constant(extra_name.str_value);
+                    self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                }
+            }
+
+            self.expect(TokenType.SEMICOLON)!;
+        }
     } else if (next_tt != TokenType.SEMICOLON) {
         // Expression init
         ushort init_reg = self.expression()!;

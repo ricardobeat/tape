@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 47
+**Last Updated:** Session 48
 **Target:** Full test262 conformance
 
 ## Summary
@@ -203,7 +203,7 @@
 || Brace tracking inside `${}` (object literals, function bodies) | ✅ |
 || Tagged templates | ✅ |
 || Nested templates | ❌ |
-|| Destructuring | ❌ |
+|| Destructuring | ✅ |
 || Default parameters | ✅ |
 || Rest parameters | ✅ |
 || Spread operator | ❌ |
@@ -213,6 +213,24 @@
 || Symbol | ❌ |
 || Promise | ❌ |
 || Generators | ❌ |
+
+
+### Phase 12: ES6+ — Destructuring ✅
+**test262: not yet quantified**
+|| Component | Status |
+||---|---|
+|| Array destructuring (`var [a, b] = expr`) | ✅ |
+|| Object destructuring (`var {a, b} = obj`) | ✅ |
+|| Shorthand (`{x}`) and keyed (`{a: b}`) bindings | ✅ |
+|| Elision / holes (`[a, , b]`) | ✅ |
+|| Rest element (`[...rest]`) — position-0 only | ✅ |
+|| `let`/`const` + block-scoped destructuring | ✅ |
+|| For-loop init destructuring (`for (var [i] = ...; ...)`) | ✅ |
+|| for-in destructuring | 🚫 Deferred |
+|| Nested patterns | 🚫 Deferred |
+|| Default values in patterns | 🚫 Deferred |
+|| Assignment destructuring (without declaration) | 🚫 Deferred |
+|| Computed property keys in object patterns | 🚫 Deferred |
 
 ## Session History
 
