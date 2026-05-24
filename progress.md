@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 39
+**Last Updated:** Session 40
 **Target:** Full test262 conformance
 
 ## Summary
@@ -164,7 +164,7 @@
 | Strict mode propagation to inner functions | ✅ |
 | this coercion (non-strict → global) | 🚫 N/A (strict-only engine) |
 | Octal literals error in strict | ✅ |
-| Duplicate property names error in strict | ❌ NOT YET |
+| Duplicate property names error in strict | ✅ |
 
 ### Phase 10: ES6+ — ❌ NOT STARTED
 
@@ -211,6 +211,7 @@
 | 37 | **typeof identifier + builtin .constructor + isPrototypeOf/toLocaleString**: Added TYPEOFIDENT opcode for `typeof undeclaredVar` (ES5 §11.4.3 — returns "undefined" instead of throwing ReferenceError). Fixed `.constructor` on Object.prototype and Number.prototype to point to actual OBJECT constructors (not LIGHTFUNC), fixing `obj.constructor === Object` and `obj.constructor === Number`. Implemented `Object.prototype.isPrototypeOf` (ES5 §15.2.4.6) and `Object.prototype.toLocaleString` (ES5 §15.2.4.3). Wired constructor functions' internal [[Prototype]] to Function.prototype so `Function.prototype.isPrototypeOf(Object)` returns true. Object tests: 12→24 pass (+12). |
 | 38 | **Phase 9: Strict Mode**: Added "use strict" directive prologue detection in `compile()`, `compile_eval()`, and `block()` (for function bodies). `CompilerContext.is_strict` flag set by `parse_directives()`. Lexer `set_strict()` enables FutureReservedWords as keywords. `is_strict` propagated from `CompilerContext` to `CompiledFunction.flags.is_strict` in `finish()`. VM activations now read `CompiledFunction.is_strict()` instead of hardcoding `ACT_FLAG_STRICT`. `with` statement rejected in strict mode (SyntaxError). `eval`/`arguments` rejected as parameter names, `var` declarations, and catch variable names in strict mode. Inner functions inherit strict mode from parent context via `compile_inner_function()`. 4/4 custom strict mode tests passing. |
 | 39 | **Phase 9: Octal literals error in strict**: Added `has_octal_escape` flag to `Token` struct. Lexer detects legacy octal escape sequences (\0 followed by digit, \1-\9) in strings and sets the flag. Compiler validates NUMBER tokens against legacy octal pattern (0 followed by 0-7) in `primary_expr`. String tokens with octal escapes also rejected via `has_octal_escape` flag check. Fixed `builtin_eval` and `builtin_function` to use `ctx.should_throw`/`ctx.throw_value` instead of `ctx.result` for SyntaxError propagation (eval was silently returning error objects instead of throwing). 20/20 custom octal strict tests passing. |
+| 40 | **Phase 9: Duplicate property names error in strict**: Added duplicate data property key detection to `object_literal()` in compiler. In strict mode, duplicate property names in object literals now throw SyntaxError per ES5 §11.1.5. Tracks both identifier/string and numeric keys, canonicalizing numeric keys via `%.17g` to match runtime `vm_number_to_string`. Computed property keys (`[expr]`) are excluded since they can't be statically analyzed. 8/8 custom duplicate property tests passing. |
 
 ## Refreshing Counts
 

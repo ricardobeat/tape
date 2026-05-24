@@ -2675,6 +2675,13 @@ fn ushort? CompilerContext.object_literal(&self) {
     ushort obj_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWOBJ, (uint)obj_reg, 0, 0);
 
+    // Track data property keys for duplicate detection in strict mode.
+    // ES5 §11.1.5: duplicate PropertyName in PropertySetData is a
+    // SyntaxError when contained in strict code.
+    char[16][64] seen_key_buf;
+    usz[16] seen_key_len;
+    usz seen_count = 0;
+
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
             if (self.check(TokenType.RBRACE)) {
@@ -2687,11 +2694,44 @@ fn ushort? CompilerContext.object_literal(&self) {
             TokenType key_tt = self.peek_type();
             if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING) {
                 Token key_tok = self.advance()!;
+
+                // Duplicate data property check in strict mode
+                if (self.is_strict) {
+                    for (usz i = 0; i < seen_count; i++) {
+                        if (str_eq(seen_key_buf[i][:seen_key_len[i]], key_tok.str_value)) {
+                            return COMPILE_ERROR~;
+                        }
+                    }
+                    if (seen_count < 16 && key_tok.str_value.len < 64) {
+                        for (usz j = 0; j < key_tok.str_value.len; j++) {
+                            seen_key_buf[seen_count][j] = key_tok.str_value[j];
+                        }
+                        seen_key_len[seen_count] = key_tok.str_value.len;
+                        seen_count++;
+                    }
+                }
+
                 uint key_idx = self.add_string_constant(key_tok.str_value);
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
             } else if (key_tt == TokenType.NUMBER) {
                 Token key_tok = self.advance()!;
+
+                // Duplicate data property check in strict mode.
+                // Convert number to canonical string via %.17g to match
+                // vm_number_to_string runtime behavior.
+                if (self.is_strict && seen_count < 16) {
+                    int len = libc::snprintf(&seen_key_buf[seen_count], 64, "%.17g", key_tok.num_value);
+                    char[] num_str = seen_key_buf[seen_count][:len];
+                    for (usz i = 0; i < seen_count; i++) {
+                        if (str_eq(seen_key_buf[i][:seen_key_len[i]], num_str)) {
+                            return COMPILE_ERROR~;
+                        }
+                    }
+                    seen_key_len[seen_count] = (usz)len;
+                    seen_count++;
+                }
+
                 uint key_idx = self.add_number_constant(key_tok.num_value);
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
