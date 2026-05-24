@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 33
+**Last Updated:** Session 35
 **Target:** Full test262 conformance
 
 ## Summary
@@ -11,8 +11,8 @@
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
 | Currently passing (test262) | ~853 |
-| VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs |
-| **Fixed this session** | **RegExp SyntaxError on compilation failure + invalid flags: `builtin_regexp` now throws SyntaxError when `re_compile` returns null, validates flags per ES5 §15.10.4.1. Added `.constructor` on all error prototypes (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError) so `assert.throws` identity checks work. Top-level RegExp test262 tests: 1→144 passing.** |
+| VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
+| **Fixed this session** | **RegExp global flag + lastIndex: `builtin_regexp_proto_exec` and `builtin_regexp_proto_test` now read/update `lastIndex` on global regexps per ES5 §15.10.6.2/§15.10.6.3. 6 previously-hanging exec tests now pass. No more RegExp exec/test hangs.** |
 
 ## Per-Phase Status
 
@@ -191,6 +191,7 @@
 | 32 | **RegExp prototype initialization + flag properties**: Added `register_regexp_constructor` function that creates `RegExp.prototype`, registers `.test()/exec()/toString()` methods, and creates the `RegExp` global constructor with proper `.prototype` and `.length` properties. `heap.regexp_proto` now wired to `Object.prototype`. RegExp instances now store `.source`, `.global`, `.ignoreCase`, `.multiline`, `.lastIndex` properties and correctly parse the `g` flag. Previously every RegExp usage crashed because `regexp_proto` was null. First test262 RegExp test now passing (`15.10.4.1-1`). All 4 local regexp tests passing. |
 | 33 | **RegExp SyntaxError on invalid pattern/flags + error .constructor**: Added SyntaxError throwing in `builtin_regexp` when `re_compile` fails (invalid patterns like `\` per ES5 §15.10.4.1). Added flag validation — invalid flags (anything other than g/i/m/s) now throw SyntaxError. Added `.constructor` property on Error.prototype and all error sub-prototypes (TypeError, RangeError, ReferenceError, SyntaxError, EvalError) so `assert.throws` identity checks work. Test262 RegExp top-level tests: 1 → 144 passing. |
 | 34 | **Fix RegExp literal NEWREGEXP**: `NEWREGEXP` opcode handler now sets `obj.prototype = regexp_proto` so method lookup (`.test()`, `.exec()`, `.toString()`) works on regexp literals via prototype chain. Null-terminates pattern before passing to `lre_compile` (which requires null-terminated input). Sets instance properties (source, global, ignoreCase, multiline, lastIndex) on literal regexps per ES5 §15.10.7. Fixes `/pattern/.test()` crashes and VM errors. |
+| 35 | **RegExp global flag + lastIndex**: Fixed `builtin_regexp_proto_exec` to respect the `global` flag and `lastIndex` property per ES5 §15.10.6.2. On global regexps, exec now reads `lastIndex` as the starting match position, updates it to the end of each match, and resets to 0 on failure. Same fix applied to `builtin_regexp_proto_test` (ES5 §15.10.6.3). This was causing infinite loops in `do...while` patterns that loop over global matches. 6 previously-hanging exec tests (`S15.10.6.2_A3_T1`–`T6`) now pass. No more RegExp exec/test hangs. |
 
 ## Refreshing Counts
 

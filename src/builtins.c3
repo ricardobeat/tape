@@ -129,8 +129,10 @@ const uint BUILTIN_RESET_GLOBALS             = 102;
 const uint BUILTIN_REGEXP                    = 103;
 const uint BUILTIN_REGEXP_PROTO_TEST         = 104;
 const uint BUILTIN_REGEXP_PROTO_EXEC         = 105;
-const uint BUILTIN_REGEXP_PROTO_TOSTRING     = 106;
-const uint BUILTIN_COUNT                     = 107;
+const uint BUILTIN_REGEXP_PROTO_TOSTRING         = 106;
+const uint BUILTIN_OBJECT_PROTO_HASOWNPROPERTY  = 108;
+const uint BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE = 109;
+const uint BUILTIN_COUNT                         = 110;
 
 struct BuiltinContext {
     void* vm;
@@ -2357,6 +2359,79 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     HString* s = builtin_intern_string(ctx.heap, "[object Object]");
     ctx.result.tag = STRING;
     ctx.result.pointer = s;
+}
+
+/// Object.prototype.hasOwnProperty — ES5 §15.2.4.5
+fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
+    // V = first argument, converted to string key
+    TVal arg;
+    if (ctx.argc > 0) {
+        arg = ctx.regs[ctx.base_reg];
+    } else {
+        arg.set_undefined();
+    }
+    HString* key = builtin_to_string(ctx.heap, &arg);
+    if (key == null) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    // O = ToObject(this value)
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject* obj;
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        obj = (HObject*)this_val.pointer;
+    } else {
+        // Primitive this value — return false (no own properties)
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    // Check own property
+    PropEntry*? entry = obj.find_prop(key);
+    if (try e = entry) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
+/// Object.prototype.propertyIsEnumerable — ES5 §15.2.4.7
+fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
+    // V = first argument, converted to string key
+    TVal arg;
+    if (ctx.argc > 0) {
+        arg = ctx.regs[ctx.base_reg];
+    } else {
+        arg.set_undefined();
+    }
+    HString* key = builtin_to_string(ctx.heap, &arg);
+    if (key == null) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    // O = ToObject(this value)
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject* obj;
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        obj = (HObject*)this_val.pointer;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    // Find own property descriptor
+    PropEntry*? entry = obj.find_prop(key);
+    if (try e = entry) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = e.flags.enumerable;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
 }
 
 /// Object.prototype.valueOf — returns 'this'
@@ -5532,15 +5607,60 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
         }
     }
 
+    // Get the global flag
+    HString* global_key = builtin_intern_string(ctx.heap, "global");
+    bool global_flag = false;
+    if (try gv = obj.get_prop(global_key)) {
+        if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+    }
+
+    // Get lastIndex (if global)
+    HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+    int start_pos = 0;
+    if (global_flag) {
+        if (try liv = obj.get_prop(li_key)) {
+            if (liv.tag == FASTINT) {
+                start_pos = (int)liv.fastint;
+            } else if (liv.tag == NUMBER) {
+                start_pos = (int)liv.number;
+            }
+        }
+        // If lastIndex is out of bounds, reset to 0 and return false
+        if (start_pos < 0 || start_pos > input_len) {
+            TVal zero_tv;
+            zero_tv.tag = FASTINT;
+            zero_tv.fastint = 0;
+            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+            ctx.result.tag = BOOLEAN;
+            ctx.result.boolean = false;
+            return;
+        }
+    }
+
     // Execute
     int out_start = 0;
     int out_end = 0;
     int out_num_captures = 0;
     int result = re_bindings::re_exec(
-        obj.regexp_data, input, input_len, 0,
+        obj.regexp_data, input, input_len, start_pos,
         &out_start, &out_end, &out_num_captures,
         null, null, 0
     );
+
+    // Update lastIndex if global
+    if (global_flag) {
+        if (result == re_bindings::RE_MATCH) {
+            TVal end_tv;
+            end_tv.tag = FASTINT;
+            end_tv.fastint = (long)out_end;
+            obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
+        } else {
+            TVal zero_tv;
+            zero_tv.tag = FASTINT;
+            zero_tv.fastint = 0;
+            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+        }
+    }
 
     ctx.result.tag = BOOLEAN;
     ctx.result.boolean = (result == re_bindings::RE_MATCH);
@@ -5571,6 +5691,35 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         }
     }
 
+    // Get the global flag (ES5 §15.10.6.2 step 6)
+    HString* global_key = builtin_intern_string(ctx.heap, "global");
+    bool global_flag = false;
+    if (try gv = obj.get_prop(global_key)) {
+        if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+    }
+
+    // Get lastIndex (steps 4-5)
+    HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+    int start_pos = 0;
+    if (global_flag) {
+        if (try liv = obj.get_prop(li_key)) {
+            if (liv.tag == FASTINT) {
+                start_pos = (int)liv.fastint;
+            } else if (liv.tag == NUMBER) {
+                start_pos = (int)liv.number;
+            }
+        }
+        // Step 7: if i < 0 or i > length, set lastIndex to 0 and return null
+        if (start_pos < 0 || start_pos > input_len) {
+            TVal zero_tv;
+            zero_tv.tag = FASTINT;
+            zero_tv.fastint = 0;
+            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+            ctx.result.set_null();
+            return;
+        }
+    }
+
     // Execute with capture arrays
     int out_start = 0;
     int out_end = 0;
@@ -5581,14 +5730,29 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
     int result = re_bindings::re_exec(
-        obj.regexp_data, input, input_len, 0,
+        obj.regexp_data, input, input_len, start_pos,
         &out_start, &out_end, &out_num_captures,
         &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
     );
 
     if (result != re_bindings::RE_MATCH) {
+        // Step 9: no match — reset lastIndex to 0 if global
+        if (global_flag) {
+            TVal zero_tv;
+            zero_tv.tag = FASTINT;
+            zero_tv.fastint = 0;
+            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+        }
         ctx.result.set_null();
         return;
+    }
+
+    // Step 10: if global, update lastIndex to end of match
+    if (global_flag) {
+        TVal end_tv;
+        end_tv.tag = FASTINT;
+        end_tv.fastint = (long)out_end;
+        obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
     }
 
     // Create result array
@@ -5762,6 +5926,10 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object(ctx);
         case BUILTIN_OBJECT_PROTO_TOSTRING:
             builtin_object_proto_toString(ctx);
+        case BUILTIN_OBJECT_PROTO_HASOWNPROPERTY:
+            builtin_object_proto_hasOwnProperty(ctx);
+        case BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE:
+            builtin_object_proto_propertyIsEnumerable(ctx);
         case BUILTIN_OBJECT_PROTO_VALUEOF:
             builtin_object_proto_valueOf(ctx);
         case BUILTIN_ARRAY:
@@ -6106,6 +6274,20 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     tostring_tv.tag = LIGHTFUNC;
     tostring_tv.fastint = (long)BUILTIN_OBJECT_PROTO_TOSTRING;
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add .hasOwnProperty() method to Object.prototype
+    HString* hasown_key = builtin_intern_string(heap, "hasOwnProperty");
+    TVal hasown_tv;
+    hasown_tv.tag = LIGHTFUNC;
+    hasown_tv.fastint = (long)BUILTIN_OBJECT_PROTO_HASOWNPROPERTY;
+    proto.put_prop(hasown_key, hasown_tv, hobject::PROP_FLAGS_WC);
+
+    // Add .propertyIsEnumerable() method to Object.prototype (non-enumerable per ES5 §15.2.4.7)
+    HString* propisenum_key = builtin_intern_string(heap, "propertyIsEnumerable");
+    TVal propisenum_tv;
+    propisenum_tv.tag = LIGHTFUNC;
+    propisenum_tv.fastint = (long)BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE;
+    proto.put_prop(propisenum_key, propisenum_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method to Object.prototype (returns 'this')
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
