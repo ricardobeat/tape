@@ -89,6 +89,7 @@ struct Token {
     char[] str_value;
     bool str_owns_memory;
     bool has_octal_escape;
+    bool is_template;
 }
 
 /// Create a simple token with no value payload.
@@ -101,6 +102,7 @@ fn Token make_token(TokenType tt, uint line, uint col) {
     t.str_value = {};
     t.str_owns_memory = false;
     t.has_octal_escape = false;
+    t.is_template = false;
     return t;
 }
 
@@ -1329,6 +1331,7 @@ fn Token? Lexer.scan_template_head(&self) {
         Token tok = make_token(TokenType.STRING, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
+        tok.is_template = true;
         return tok;
     }
 
@@ -1341,6 +1344,7 @@ fn Token? Lexer.scan_template_head(&self) {
         Token tok = make_token(TokenType.TEMPLATE_HEAD, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
+        tok.is_template = true;
         return tok;
     }
 
@@ -1370,6 +1374,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         Token tok = make_token(TokenType.TEMPLATE_TAIL, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
+        tok.is_template = true;
         return tok;
     }
 
@@ -1382,6 +1387,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         Token tok = make_token(TokenType.TEMPLATE_MIDDLE, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
+        tok.is_template = true;
         return tok;
     }
 

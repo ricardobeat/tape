@@ -58,7 +58,18 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - Compiler emits LDCONST for template parts + ADD for concatenation (ADD opcode handles ToString coercion)
 - Escape sequences processed identically to string literals (\n, \t, \uXXXX, \xHH, etc.)
 - Line continuations (`\<LF>`) supported
-- Tagged templates not yet implemented; nested templates deferred
+- Tagged templates — implemented: `tag`...`` and `tag`text ${expr} text`` call syntax. Template object array with `.raw` property created as first argument. Chained tagged templates (`tag`a``b``c``) supported. Member expression tags (`obj.tag`...``) preserve `this` binding. | ✅ (Phase 11)
+- Nested templates deferred
+
+### Default Parameters (ES6)
+- Each default expression compiled as a zero-argument inner function (via `compile_default_expr`)
+- Default functions resolve free variables at runtime via GETVAR against the outer scope's environment chain
+- At function entry, after PUSH_LEX, each parameter with a default is checked: if `=== undefined`, the default function is called via CLOSURE + CALL and the result assigned to the parameter register and synced to the environment via PUTVAR
+- Default parameters can reference earlier parameters (e.g., `function f(a, b = a + 1)`)
+- `this` in default expressions refers to the function's `this` binding (via LDTHIS)
+- Both function declarations/expressions and standalone function compilation support defaults
+
+| ✅ (Phase 11)
 
 ## Deviations from Duktape
 

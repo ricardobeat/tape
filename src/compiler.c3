@@ -32,6 +32,7 @@ faultdef CONST_OVERFLOW;
 // ============================================================================
 
 const uint MAX_REGISTERS  = 256;
+const uint MAX_PARAMS     = 32;
 const uint MAX_CODE        = 4096;
 const uint MAX_CONSTANTS   = 1024;
 const uint MAX_INNER_FUNCS = 64;
@@ -106,6 +107,13 @@ struct LabelInfo {
 struct PatchEntry {
     uint addr;        // instruction index to patch
     uint next;        // index of next in chain, or NO_PATCH
+}
+
+/// Tracks a parameter with a default value expression.
+struct ParamDefault {
+    ushort param_reg;       // register holding the parameter
+    uint    param_name_idx; // constant index of the parameter name
+    uint    default_func_idx; // index into inner_funcs for the default expression
 }
 
 // ============================================================================
@@ -186,6 +194,10 @@ struct CompilerContext {
     // Token pushback buffer for limited backtracking (used by arrow function parsing).
     Token[4] pushback_stack;
     uint pushback_count;
+
+    // Default parameter tracking
+    ParamDefault[MAX_PARAMS] defaults;
+    ushort default_count;
 }
 
 // ============================================================================
@@ -389,6 +401,26 @@ fn TokenType CompilerContext.peek_type(&self) {
 /// Check if the next token is the given type without consuming.
 fn bool CompilerContext.check(&self, TokenType tt) {
     return self.peek_type() == tt;
+}
+
+/// Check if the next token is a template literal token (backtick-originated).
+/// Only returns true for tokens that START a template literal (TEMPLATE, TEMPLATE_HEAD,
+/// or STRING with is_template). Does NOT return true for TEMPLATE_MIDDLE or TEMPLATE_TAIL
+/// which appear only inside an already-in-progress template parse.
+fn bool CompilerContext.is_next_template(&self) {
+    // Check compiler pushback buffer first
+    if (self.pushback_count > 0) {
+        Token tok = self.pushback_stack[self.pushback_count - 1];
+        return (tok.type == TokenType.STRING && tok.is_template)
+            || tok.type == TokenType.TEMPLATE
+            || tok.type == TokenType.TEMPLATE_HEAD;
+    }
+    if (try tok = self.lexer.peek()) {
+        return (tok.type == TokenType.STRING && tok.is_template)
+            || tok.type == TokenType.TEMPLATE
+            || tok.type == TokenType.TEMPLATE_HEAD;
+    }
+    return false;
 }
 
 /// Returns true if we've reached the end of input.
@@ -1806,8 +1838,31 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             if (self.is_strict && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
             }
-            self.declare_var(param.str_value, VAR);
+            ushort param_reg = self.declare_var(param.str_value, VAR);
+            uint param_name_idx = self.add_string_constant(param.str_value);
+            // PUTVAR for env lookup (needed for default value writes and inner functions)
+            self.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
             arg_count++;
+
+            // Check for default value
+            if (self.check(TokenType.ASSIGN)) {
+                self.advance()!; // consume '='
+
+                // Compile the default expression as an inner function
+                CompiledFunction* default_func = self.compile_default_expr()!;
+
+                // Add to inner functions table
+                if (self.inner_func_count < MAX_INNER_FUNCS
+                    && self.default_count < MAX_PARAMS) {
+                    uint def_idx = self.inner_func_count;
+                    self.inner_funcs[def_idx] = default_func;
+                    self.defaults[self.default_count].param_reg = param_reg;
+                    self.defaults[self.default_count].param_name_idx = param_name_idx;
+                    self.defaults[self.default_count].default_func_idx = def_idx;
+                    self.default_count++;
+                    self.inner_func_count++;
+                }
+            }
 
             if (!self.match(TokenType.COMMA)) {
                 break;
@@ -1821,6 +1876,53 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // This sits above the block-level PUSH_LEX emitted by block() so that
     // function-level let/const go into a scope that outlives inner blocks.
     self.emit_simple(Opcode.PUSH_LEX);
+
+    // Emit default parameter checks (must run before body, after PUSH_LEX)
+    for (ushort di = 0; di < self.default_count; di++) {
+        ushort pr = self.defaults[di].param_reg;
+        uint name_idx = self.defaults[di].param_name_idx;
+        uint func_idx = self.defaults[di].default_func_idx;
+
+        // Check if param != undefined; if so, skip default evaluation
+        ushort undef_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+        ushort cmp_reg = self.alloc_reg();
+        self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)pr, (uint)undef_reg);
+        self.free_reg(undef_reg);
+
+        // IF_TRUE: skip past default evaluation (will be patched)
+        uint skip_addr = self.code_count;
+        self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+        self.free_reg(cmp_reg);
+
+        // CLOSURE for default function
+        ushort closure_reg = self.alloc_reg();
+        self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
+
+        // Set up call: consecutive registers for callee + this
+        ushort call_base = self.alloc_reg();
+        if (self.next_reg <= call_base + 1) {
+            self.next_reg = call_base + 2;
+        }
+        ushort this_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+        self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+
+        ushort result_reg = self.alloc_reg();
+        self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)call_base, 0);
+
+        // Assign result to parameter register and sync to environment
+        self.emit_abc(Opcode.LDREG, (uint)pr, (uint)result_reg, 0);
+        self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+
+        self.free_reg(result_reg);
+        self.free_reg(this_reg);
+        self.free_reg(closure_reg);
+
+        // Patch the skip jump to land after default evaluation
+        int skip_off = (int)self.code_count - (int)skip_addr - 1;
+        self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+    }
 
     // Compile function body block
     self.block(true)!;
@@ -1842,6 +1944,35 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     if (!has_return) {
         self.emit_simple(Opcode.RETUNDEF);
     }
+}
+
+/// Compile a default parameter expression as a zero-argument inner function.
+/// Free variables in the expression are resolved at runtime via GETVAR
+/// against the outer scope's environment chain.
+fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
+    // Create a new CompilerContext for the default expression
+    CompilerContext def_ctx;
+    def_ctx.init(self.lexer, self.heap);
+
+    // Strict-only engine: always strict
+    def_ctx.is_strict = true;
+    def_ctx.lexer.set_strict(true);
+
+    // Function-level lexical scope (empty — no parameters)
+    def_ctx.emit_simple(Opcode.PUSH_LEX);
+
+    // Compile expression with implicit return
+    ushort expr_reg = def_ctx.assignment_expr()!;
+    def_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+
+    // Pop the function-level lexical scope
+    def_ctx.emit_simple(Opcode.POP_LEX);
+
+    CompiledFunction* func = def_ctx.finish()!;
+    func.num_args = 0;
+    func.num_formals = 0;
+
+    return func;
 }
 
 /// Compile an inner function (parameters + body) into a sub-CompiledFunction.
@@ -1870,6 +2001,26 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
             inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
             arg_count++;
 
+            // Check for default value
+            if (inner_ctx.check(TokenType.ASSIGN)) {
+                inner_ctx.advance()!; // consume '='
+
+                // Compile the default expression as an inner function
+                CompiledFunction* default_func = inner_ctx.compile_default_expr()!;
+
+                // Add to inner functions table
+                if (inner_ctx.inner_func_count < MAX_INNER_FUNCS
+                    && inner_ctx.default_count < MAX_PARAMS) {
+                    uint def_idx = inner_ctx.inner_func_count;
+                    inner_ctx.inner_funcs[def_idx] = default_func;
+                    inner_ctx.defaults[inner_ctx.default_count].param_reg = param_reg;
+                    inner_ctx.defaults[inner_ctx.default_count].param_name_idx = param_name_idx;
+                    inner_ctx.defaults[inner_ctx.default_count].default_func_idx = def_idx;
+                    inner_ctx.default_count++;
+                    inner_ctx.inner_func_count++;
+                }
+            }
+
             if (!inner_ctx.match(TokenType.COMMA)) {
                 break;
             }
@@ -1880,6 +2031,53 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
     // Push a function-level lexical scope for let/const at function top level
     inner_ctx.emit_simple(Opcode.PUSH_LEX);
+
+    // Emit default parameter checks (must run before body, after PUSH_LEX)
+    for (ushort di = 0; di < inner_ctx.default_count; di++) {
+        ushort pr = inner_ctx.defaults[di].param_reg;
+        uint name_idx = inner_ctx.defaults[di].param_name_idx;
+        uint func_idx = inner_ctx.defaults[di].default_func_idx;
+
+        // Check if param != undefined; if so, skip default evaluation
+        ushort undef_reg = inner_ctx.alloc_reg();
+        inner_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+        ushort cmp_reg = inner_ctx.alloc_reg();
+        inner_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)pr, (uint)undef_reg);
+        inner_ctx.free_reg(undef_reg);
+
+        // IF_TRUE: skip past default evaluation (will be patched)
+        uint skip_addr = inner_ctx.code_count;
+        inner_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+        inner_ctx.free_reg(cmp_reg);
+
+        // CLOSURE for default function
+        ushort closure_reg = inner_ctx.alloc_reg();
+        inner_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
+
+        // Set up call: consecutive registers for callee + this
+        ushort call_base = inner_ctx.alloc_reg();
+        if (inner_ctx.next_reg <= call_base + 1) {
+            inner_ctx.next_reg = call_base + 2;
+        }
+        ushort this_reg = inner_ctx.alloc_reg();
+        inner_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+        inner_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+
+        ushort result_reg = inner_ctx.alloc_reg();
+        inner_ctx.emit_abc(Opcode.CALL, (uint)result_reg, (uint)call_base, 0);
+
+        // Assign result to parameter register and sync to environment
+        inner_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)result_reg, 0);
+        inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+
+        inner_ctx.free_reg(result_reg);
+        inner_ctx.free_reg(this_reg);
+        inner_ctx.free_reg(closure_reg);
+
+        // Patch the skip jump to land after default evaluation
+        int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
+        inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+    }
 
     // Compile function body
     inner_ctx.block(true)!;
@@ -2423,13 +2621,15 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     return operand;
 }
 
-/// Parse call expressions: f(), f(a,b), obj.method(), obj[expr]().
+/// Parse call expressions: f(), f(a,b), obj.method(), obj[expr](), tag`...`.
 fn ushort? CompilerContext.call_expr(&self) {
     ushort callee = self.member_expr()!;
 
     // If member_expr saved a property object but next token is not a call,
     // free the object register now.
-    if (self.call_prop_obj_reg != MAX_REGISTERS && !self.check(TokenType.LPAREN)) {
+    if (self.call_prop_obj_reg != MAX_REGISTERS
+        && !self.check(TokenType.LPAREN)
+        && !self.is_next_template()) {
         self.free_reg(self.call_prop_obj_reg);
         self.call_prop_obj_reg = MAX_REGISTERS;
     }
@@ -2437,6 +2637,13 @@ fn ushort? CompilerContext.call_expr(&self) {
     for (;;) {
         if (self.check(TokenType.LPAREN)) {
             callee = self.emit_call(callee)!;
+            // Free the property object used as 'this' (if any)
+            if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                self.free_reg(self.call_prop_obj_reg);
+                self.call_prop_obj_reg = MAX_REGISTERS;
+            }
+        } else if (self.is_next_template()) {
+            callee = self.emit_tagged_template(callee)!;
             // Free the property object used as 'this' (if any)
             if (self.call_prop_obj_reg != MAX_REGISTERS) {
                 self.free_reg(self.call_prop_obj_reg);
@@ -2455,7 +2662,7 @@ fn ushort? CompilerContext.call_expr(&self) {
             self.free_reg(prop_reg);
 
             // If next token is a call, keep the object alive for 'this'
-            if (self.check(TokenType.LPAREN)) {
+            if (self.check(TokenType.LPAREN) || self.is_next_template()) {
                 self.call_prop_obj_reg = callee;
             } else {
                 self.free_reg(callee);
@@ -2587,6 +2794,176 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
     return result_reg;
 }
 
+/// Emit a tagged template call: tag`...` or tag`text ${expr} text`.
+///
+/// The callee register is already set by member_expr.
+/// Template parts become the first argument (a template object array),
+/// and embedded expressions become subsequent arguments.
+///
+/// Calling convention:
+///   callee_reg + 0  = callee (tag function)
+///   callee_reg + 1  = this (undefined or object for member expressions)
+///   callee_reg + 2  = arg 1 (template object array)
+///   callee_reg + 3  = arg 2 (expr 1)
+///   ...
+fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
+    // Save the member expression object (if any) for 'this' binding
+    ushort obj_reg = MAX_REGISTERS;
+    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+        obj_reg = self.call_prop_obj_reg;
+        self.call_prop_obj_reg = MAX_REGISTERS;
+    }
+
+    // Maximum number of template parts (head + middle*s + tail)
+    const uint MAX_TEMPLATE_PARTS = 32;
+
+    // Collect string parts and expression registers
+    uint[MAX_TEMPLATE_PARTS] str_indices;
+    ushort[MAX_TEMPLATE_PARTS] expr_regs;
+    uint part_count = 0;
+    uint expr_count = 0;
+
+    TokenType tt = self.peek_type();
+
+    // No-substitution template: tag`hello` (lexer returns STRING with is_template)
+    if (tt == TokenType.STRING) {
+        Token str_tok = self.advance()!;
+        if (!str_tok.is_template) {
+            return COMPILE_ERROR~;
+        }
+        str_indices[0] = self.add_string_constant(str_tok.str_value);
+        part_count = 1;
+    } else if (tt == TokenType.TEMPLATE) {
+        // Legacy TEMPLATE token (should not normally appear, but handle gracefully)
+        Token tmpl_tok = self.advance()!;
+        str_indices[0] = self.add_string_constant(tmpl_tok.str_value);
+        part_count = 1;
+    } else if (tt == TokenType.TEMPLATE_HEAD) {
+        // Template with substitutions: `text${expr}text${expr}text`
+        Token head_tok = self.advance()!;
+        str_indices[0] = self.add_string_constant(head_tok.str_value);
+        part_count = 1;
+
+        // Compile first expression
+        expr_regs[0] = self.expression()!;
+        expr_count = 1;
+
+        // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
+        for (;;) {
+            TokenType next_tt = self.peek_type();
+            if (next_tt == TokenType.TEMPLATE_MIDDLE) {
+                Token mid_tok = self.advance()!;
+                str_indices[part_count] = self.add_string_constant(mid_tok.str_value);
+                part_count++;
+
+                expr_regs[expr_count] = self.expression()!;
+                expr_count++;
+            } else if (next_tt == TokenType.TEMPLATE_TAIL) {
+                Token tail_tok = self.advance()!;
+                str_indices[part_count] = self.add_string_constant(tail_tok.str_value);
+                part_count++;
+                break;
+            } else {
+                return COMPILE_ERROR~;
+            }
+        }
+    } else {
+        return COMPILE_ERROR~;
+    }
+
+    // === Build the template object array ===
+    // Create empty array
+    ushort tmpl_arr_reg = self.alloc_reg();
+    self.emit_abc(Opcode.NEWARR, (uint)tmpl_arr_reg, 0, 0);
+
+    // Fill with string parts
+    for (uint i = 0; i < part_count; i++) {
+        ushort str_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, str_indices[i]));
+        ushort idx_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
+        self.emit_abc(Opcode.PUTPROP, (uint)tmpl_arr_reg, (uint)idx_reg, (uint)str_reg);
+        self.free_reg(str_reg);
+        self.free_reg(idx_reg);
+    }
+    self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)tmpl_arr_reg, part_count));
+
+    // Create raw array (copy of template array for now — raw === cooked)
+    ushort raw_arr_reg = self.alloc_reg();
+    self.emit_abc(Opcode.NEWARR, (uint)raw_arr_reg, 0, 0);
+
+    for (uint i = 0; i < part_count; i++) {
+        ushort str_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, str_indices[i]));
+        ushort idx_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
+        self.emit_abc(Opcode.PUTPROP, (uint)raw_arr_reg, (uint)idx_reg, (uint)str_reg);
+        self.free_reg(str_reg);
+        self.free_reg(idx_reg);
+    }
+    self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)raw_arr_reg, part_count));
+
+    // Set .raw property on template array
+    {
+        uint raw_key_idx = self.add_string_constant("raw");
+        ushort raw_key_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)raw_key_reg, raw_key_idx));
+        self.emit_abc(Opcode.PUTPROP, (uint)tmpl_arr_reg, (uint)raw_key_reg, (uint)raw_arr_reg);
+        self.free_reg(raw_key_reg);
+        self.free_reg(raw_arr_reg);
+    }
+
+    // === Set up the call ===
+    // Ensure callee is positioned so args don't overlap with live registers
+    ushort first_arg = callee_reg + 2;
+    if (first_arg < self.next_reg) {
+        ushort new_callee = self.next_reg;
+        self.emit_abc(Opcode.LDREG, (uint)new_callee, (uint)callee_reg, 0);
+        callee_reg = new_callee;
+        first_arg = callee_reg + 2;
+        if (self.next_reg <= callee_reg + 1) {
+            self.next_reg = callee_reg + 2;
+        }
+    }
+
+    // Place 'this' slot
+    if (obj_reg != MAX_REGISTERS) {
+        self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)obj_reg, 0);
+        self.free_reg(obj_reg);
+    } else {
+        self.emit_abc(Opcode.LDUNDEF, (uint)(callee_reg + 1), 0, 0);
+    }
+    if (self.next_reg < first_arg) {
+        self.next_reg = first_arg;
+    }
+
+    // Place template array as first argument (callee_reg + 2)
+    self.emit_abc(Opcode.LDREG, (uint)first_arg, (uint)tmpl_arr_reg, 0);
+    self.free_reg(tmpl_arr_reg);
+
+    // Place expression arguments in consecutive registers after template array
+    for (uint i = 0; i < expr_count; i++) {
+        ushort expected = first_arg + 1 + (ushort)i;
+        if (expr_regs[i] != expected) {
+            self.emit_abc(Opcode.LDREG, (uint)expected, (uint)expr_regs[i], 0);
+            self.free_reg(expr_regs[i]);
+        }
+    }
+
+    // Update next_reg past all arguments
+    ushort total_args = 1 + (ushort)expr_count;  // template array + expressions
+    self.next_reg = first_arg + total_args;
+    if (self.next_reg > self.max_reg) {
+        self.max_reg = self.next_reg;
+    }
+
+    // Emit CALL: A=result, B=callee, C=arg count
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, (uint)total_args);
+
+    return result_reg;
+}
+
 /// Parse new expression: new Constructor(args).
 fn ushort? CompilerContext.new_expr(&self) {
     self.expect(TokenType.NEW)!;
@@ -2657,15 +3034,15 @@ fn ushort? CompilerContext.member_expr(&self) {
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = prop_reg;
                 // Also set up for potential method call 'this'
-                if (self.peek_type() == TokenType.LPAREN) {
+                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
                 // RHS mode: free obj/prop immediately
                 self.free_reg(prop_reg);
-                // If next token is LPAREN, this is a method call.
-                // Track the object for 'this' setup in emit_call.
-                if (self.peek_type() == TokenType.LPAREN) {
+                // If next token is LPAREN or a template, this is a method call.
+                // Track the object for 'this' setup in emit_call / emit_tagged_template.
+                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 } else {
                     self.free_reg(obj);
@@ -2683,12 +3060,12 @@ fn ushort? CompilerContext.member_expr(&self) {
                 self.last_was_member = true;
                 self.last_member_obj_reg = obj;
                 self.last_member_prop_reg = idx_reg;
-                if (self.peek_type() == TokenType.LPAREN) {
+                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
                 self.free_reg(idx_reg);
-                if (self.peek_type() == TokenType.LPAREN) {
+                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 } else {
                     self.free_reg(obj);
