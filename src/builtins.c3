@@ -123,8 +123,9 @@ const uint BUILTIN_DATE_PROTO_GETHOURS     = 96;
 const uint BUILTIN_DATE_PROTO_GETMINUTES   = 97;
 const uint BUILTIN_DATE_PROTO_GETSECONDS   = 98;
 const uint BUILTIN_DATE_PROTO_GETMILLISECONDS = 99;
-const uint BUILTIN_RESET_GLOBALS             = 100;
-const uint BUILTIN_COUNT                     = 101;
+const uint BUILTIN_FUNCTION              = 101;
+const uint BUILTIN_RESET_GLOBALS             = 102;
+const uint BUILTIN_COUNT                     = 103;
 
 struct BuiltinContext {
     void* vm;
@@ -484,6 +485,150 @@ fn void builtin_is_finite(BuiltinContext* ctx) {
     double d = string_to_double(&ctx.regs[ctx.base_reg]);
     ctx.result.tag = BOOLEAN;
     ctx.result.boolean = !math::is_nan(d) && !math::is_inf(d);
+}
+
+// ============================================================================
+// Function constructor (ES5 §15.3)
+// ============================================================================
+
+/// Function(p1, p2, ..., pn, body) — creates a new function dynamically.
+/// Called as function or constructor, behavior is identical per ES5 §15.3.1.
+fn void builtin_function(BuiltinContext* ctx) {
+    // Collect the body string (last arg) and param names (preceding args).
+    // Per ES5 §15.3.2.1:
+    //   - 0 args  → body = ""
+    //   - 1 arg   → body = ToString(arg[0])
+    //   > 1 args  → last arg = body, preceding = param names
+
+    char* body_str = "";
+    usz body_len = 0;
+    char[256] param_buf;  // accumulate param names joined by commas
+    int param_pos = 0;
+
+    if (ctx.argc == 0) {
+        // Empty body, no params
+        body_str = "";
+        body_len = 0;
+    } else {
+        // Get the body from the last argument
+        TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
+        if (body_arg.tag == STRING && body_arg.pointer != null) {
+            HString* s = (HString*)body_arg.pointer;
+            body_str = s.get_cstr();
+            body_len = s.blen;
+        } else {
+            // Convert to string via ToString
+            // For simplicity, return undefined if not a string
+            ctx.result.set_undefined();
+            return;
+        }
+
+        // Process parameter names from preceding args
+        for (ushort i = 0; i < ctx.argc - 1; i++) {
+            TVal* arg = &ctx.regs[ctx.base_reg + (uint)i];
+            char* pname = "";
+            usz plen = 0;
+            if (arg.tag == STRING && arg.pointer != null) {
+                HString* s = (HString*)arg.pointer;
+                pname = s.get_cstr();
+                plen = s.blen;
+            } else {
+                // Convert to string: for simplicity, skip non-string params
+                continue;
+            }
+
+            // Add comma separator
+            if (param_pos > 0 && param_pos < 255) {
+                param_buf[param_pos++] = ',';
+            }
+
+            // Copy param name (up to buffer limit)
+            for (usz j = 0; j < plen && param_pos < 255; j++) {
+                param_buf[param_pos++] = pname[j];
+            }
+        }
+    }
+
+    param_buf[param_pos] = 0;
+
+    // Build source string: "(p1,p2,...){ body }"
+    // Use a generously-sized stack buffer
+    char[16384] src_buf;
+    int src_pos = 0;
+
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "(%s){", param_buf);
+    // Copy body (up to remaining buffer space)
+    for (usz i = 0; i < body_len && src_pos < 16380; i++) {
+        src_buf[src_pos++] = body_str[i];
+    }
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "}");
+
+    // Lex and compile as a function expression
+    Lexer lex = lexer::lexer_init(src_buf[:src_pos], ctx.heap);
+    CompiledFunction*? cf = compiler::compile_function(&lex, ctx.heap, true);
+    CompiledFunction* func;
+    if (try f = cf) {
+        func = f;
+    } else {
+        // Compilation failed: throw SyntaxError
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.syntax_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in Function constructor");
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            TVal err_tv;
+            err_tv.tag = OBJECT;
+            err_tv.pointer = err;
+            ctx.result.tag = err_tv.tag;
+            ctx.result.pointer = err_tv.pointer;
+        } else {
+            ctx.result.set_undefined();
+        }
+        return;
+    }
+
+    // Create an HObject for the compiled function
+    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* func_obj = func_obj_raw;
+    func_obj.comp_func = func;
+    func_obj.builtin_fn_index = -1;
+
+    // Use the global environment (per ES5 §15.3.2.1 step 5)
+    func_obj.var_env = ctx.global_env;
+    func_obj.lex_env = ctx.global_env;
+
+    // Set the function's .prototype property (standard for JS functions)
+    // and its internal [[Prototype]] to Function.prototype
+    func_obj.prototype = ctx.heap.function_proto;
+    HObject*? proto_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    if (try proto = proto_raw) {
+        HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
+        TVal proto_tv;
+        proto_tv.tag = OBJECT;
+        proto_tv.pointer = proto;
+        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    // Set function length
+    uint num_params = 0;
+    if (ctx.argc > 0) num_params = (uint)(ctx.argc - 1);
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = (long)num_params;
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+    // Return the function object
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = func_obj;
 }
 
 // ============================================================================
@@ -5311,6 +5456,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_function_proto_bind(ctx);
         case BUILTIN_BOUND_CALL:
             builtin_bound_call(ctx);
+        case BUILTIN_FUNCTION:
+            builtin_function(ctx);
         case BUILTIN_EVAL:
             builtin_eval(ctx);
         case BUILTIN_JSON_PARSE:
@@ -5512,8 +5659,8 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Array constructor
     if (!register_array_constructor(global_env, heap)) return false;
 
-    // Register Function.prototype (call, apply, bind)
-    if (!register_function_prototype(global_env, heap)) return false;
+    // Register Function constructor and prototype (call, apply, bind)
+    if (!register_function_constructor(global_env, heap)) return false;
 
     // Register Date constructor and prototype
     if (!register_date_constructor(global_env, heap)) return false;
@@ -6109,11 +6256,18 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
 }
 
 // ============================================================================
-// Function.prototype registration (call, apply, bind)
+// Function constructor + Function.prototype registration
 // ============================================================================
 
-/// Create Function.prototype and register call/apply/bind methods.
-fn bool register_function_prototype(EnvRecord* global_env, Heap* heap) {
+/// Create Function.prototype, register call/apply/bind, and register
+/// the Function constructor globally.
+fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Function constructor as a proper function object FIRST
+    HObject*? func_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) return false;
+    HObject* func_obj = func_raw;
+    func_obj.builtin_fn_index = (int)BUILTIN_FUNCTION;
+
     // Create Function.prototype
     HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
     if (catch err = proto_raw) return false;
@@ -6142,12 +6296,48 @@ fn bool register_function_prototype(EnvRecord* global_env, Heap* heap) {
     bind_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_BIND;
     proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WEC);
 
-    // Add .constructor
+    // Set .constructor to the Function constructor object itself
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = UNDEFINED;
-    constructor_tv.pointer = null;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = func_obj;
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    func_obj.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Set Function.length (ES5 §15.3.3)
+    HString* len_key = builtin_intern_string(heap, "length");
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = 1;
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Function constructor globally as an OBJECT
+    uint hash = heap.hash_string("Function");
+    HString* existing = heap.str_table_lookup("Function", hash);
+    HString* func_key;
+    if (existing != null) {
+        func_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Function", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        func_key = new_key;
+    }
+    TVal func_val;
+    func_val.tag = OBJECT;
+    func_val.pointer = func_obj;
+    env::env_declare(global_env, func_key, func_val);
 
     return true;
 }

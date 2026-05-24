@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 27
+**Last Updated:** Session 28
 **Target:** Full test262 conformance
 
 ## Summary
@@ -89,7 +89,7 @@
 | Catcher chain with activation unwinding | ✅ |
 | FINALLY block support | ✅ |
 
-### Phase 5: Built-in Constructors — ✅ PARTIAL (~89%)
+### Phase 5: Built-in Constructors — ✅ COMPLETE
 **test262: ~3,981 total — not yet runnable (constructor tests hang VM)**
 | Component | Status |
 |---|---|
@@ -101,7 +101,7 @@
 | Number static properties (NaN, MAX_VALUE…) | ✅ |
 | Object() as function | ✅ |
 | Array constructor | ✅ |
-| Function constructor | ❌ |
+| Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods — ✅ (Impl.)
 **test262: ~4,713 total — not yet runnable (Array.prototype tests hang VM)**
@@ -183,6 +183,7 @@
 | 25 | Phase 8a: JSON (parse, stringify) |
 | 26 | Phase 8b: Date constructor and methods |
 | 27 | Phase 8c: RegExp — integrated QuickJS libregexp engine (libregexp.c, libunicode.c) as C library. `re_compile`/`re_exec`/`re_free` API, C3 bindings, compiled bytecode stored in HObject. 0 test262 passing — blocked on parser regexp literals and harness gaps. |
+| 28 | Phase 5f: Function constructor — `new Function(p1, ..., body)` / `Function(p1, ..., body)`, source compilation via compiler::compile_function, `.constructor` on `Function.prototype` wired to Function object, `Function.length`, `[[Prototype]]` chain for instanceof support. |
 
 ## Refreshing Counts
 
