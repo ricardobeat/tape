@@ -2055,7 +2055,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
             new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
             new_act.flags = ACT_FLAG_STRICT;
-            new_act.this_binding = regs_base[callee_reg + 1];
+            // Arrow functions use lexical this (inherited from enclosing scope)
+            if (target.is_arrow()) {
+                new_act.this_binding = act.this_binding;
+            } else {
+                new_act.this_binding = regs_base[callee_reg + 1];
+            }
 
             TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
             uint new_nregs = target.num_regs;
@@ -2232,6 +2237,35 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             CompiledFunction* target = hobj.comp_func;
+
+            // Arrow functions cannot be used as constructors (ES6 §14.2.2)
+            if (target.is_arrow()) {
+                HString* type_str = typeof_string(vm, &func_val);
+                HObject*? err_raw3 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err3 = err_raw3) {
+                    err3.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err3.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val3;
+                    err_val3.tag = OBJECT;
+                    err_val3.pointer = err3;
+                    if (!vm_throw_value(vm, err_val3, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                break;
+            }
 
             // Step 1: Create new object
             HObject*? new_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
@@ -2605,22 +2639,25 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     func_obj.var_env = act.var_env;
                     func_obj.lex_env = act.lex_env;
 
-                    // ES5 §13.2: create .prototype property (plain object with .constructor)
-                    HObject*? proto_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
-                    if (try proto_obj = proto_obj_raw) {
-                        proto_obj.prototype = vm.heap.object_proto;
-                        // Set .constructor on the prototype object
-                        HString* constr_key = intern_string(vm, "constructor");
-                        TVal constr_val;
-                        constr_val.tag = OBJECT;
-                        constr_val.pointer = func_obj;
-                        proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
-                        // Set .prototype on the function
-                        HString* proto_key = intern_string(vm, "prototype");
-                        TVal proto_tv;
-                        proto_tv.tag = OBJECT;
-                        proto_tv.pointer = proto_obj;
-                        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+                    // Arrow functions don't get a .prototype property (ES6 §14.2.16)
+                    if (!template.is_arrow()) {
+                        // ES5 §13.2: create .prototype property (plain object with .constructor)
+                        HObject*? proto_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                        if (try proto_obj = proto_obj_raw) {
+                            proto_obj.prototype = vm.heap.object_proto;
+                            // Set .constructor on the prototype object
+                            HString* constr_key = intern_string(vm, "constructor");
+                            TVal constr_val;
+                            constr_val.tag = OBJECT;
+                            constr_val.pointer = func_obj;
+                            proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
+                            // Set .prototype on the function
+                            HString* proto_key = intern_string(vm, "prototype");
+                            TVal proto_tv;
+                            proto_tv.tag = OBJECT;
+                            proto_tv.pointer = proto_obj;
+                            func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+                        }
                     }
 
                     ra.tag = OBJECT;

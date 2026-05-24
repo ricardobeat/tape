@@ -182,6 +182,10 @@ struct CompilerContext {
 
     // Strict mode: set by "use strict" directive prologue.
     bool is_strict;
+
+    // Token pushback buffer for limited backtracking (used by arrow function parsing).
+    Token[4] pushback_stack;
+    uint pushback_count;
 }
 
 // ============================================================================
@@ -264,6 +268,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.label_count = 0;
     self.patch_count = 0;
     self.call_prop_obj_reg = MAX_REGISTERS;
+    self.pushback_count = 0;
 
     // Strict-only engine: all code runs in strict mode by default
     self.is_strict = true;
@@ -336,6 +341,11 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
 /// Advance: consume the next token from the lexer and return it.
 fn Token? CompilerContext.advance(&self) {
+    // Check pushback buffer first
+    if (self.pushback_count > 0) {
+        self.pushback_count--;
+        return self.pushback_stack[self.pushback_count];
+    }
     Token tok = self.lexer.next_token()!;
     return tok;
 }
@@ -366,6 +376,10 @@ fn bool CompilerContext.match(&self, TokenType tt) {
 
 /// Peek at the next token type without consuming.
 fn TokenType CompilerContext.peek_type(&self) {
+    // Check pushback buffer first
+    if (self.pushback_count > 0) {
+        return self.pushback_stack[self.pushback_count - 1].type;
+    }
     if (try tok = self.lexer.peek()) {
         return tok.type;
     }
@@ -380,6 +394,16 @@ fn bool CompilerContext.check(&self, TokenType tt) {
 /// Returns true if we've reached the end of input.
 fn bool CompilerContext.is_at_end(&self) {
     return self.peek_type() == TokenType.EOF_TOKEN;
+}
+
+/// Push a token back into the input stream for backtracking.
+/// The next call to advance() will return this token.
+/// Supports up to 4 tokens of lookback.
+fn void CompilerContext.pushback(&self, Token tok) {
+    if (self.pushback_count < 4) {
+        self.pushback_stack[self.pushback_count] = tok;
+        self.pushback_count++;
+    }
 }
 
 // ============================================================================
@@ -2723,49 +2747,59 @@ fn ushort? CompilerContext.primary_expr(&self) {
             return str_reg;
 
         case TokenType.IDENTIFIER:
-            Token id_tok = self.advance()!;
+            // Check for arrow function: IDENTIFIER ARROW => single param
+            {
+                Token id_tok = self.advance()!;
 
-            // Check for literal keywords tokenized as identifiers
-            if (str_eq(id_tok.str_value, "true")) {
-                self.last_was_getvar = false;
-                ushort reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDTRUE, (uint)reg, 0, 0);
-                return reg;
-            }
-            if (str_eq(id_tok.str_value, "false")) {
-                self.last_was_getvar = false;
-                ushort reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDFALSE, (uint)reg, 0, 0);
-                return reg;
-            }
-            if (str_eq(id_tok.str_value, "null")) {
-                self.last_was_getvar = false;
-                ushort reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDNULL, (uint)reg, 0, 0);
-                return reg;
-            }
-            if (str_eq(id_tok.str_value, "undefined")) {
-                self.last_was_getvar = false;
-                ushort reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
-                return reg;
-            }
-
-            // Try to resolve as a local variable first (skip at global scope — use environment)
-            if (!self.is_global) {
-                if (try var_reg = self.resolve_var(id_tok.str_value)) {
+                // Check for literal keywords tokenized as identifiers
+                if (str_eq(id_tok.str_value, "true")) {
                     self.last_was_getvar = false;
-                    return var_reg;
+                    ushort reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDTRUE, (uint)reg, 0, 0);
+                    return reg;
                 }
-            }
+                if (str_eq(id_tok.str_value, "false")) {
+                    self.last_was_getvar = false;
+                    ushort reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDFALSE, (uint)reg, 0, 0);
+                    return reg;
+                }
+                if (str_eq(id_tok.str_value, "null")) {
+                    self.last_was_getvar = false;
+                    ushort reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDNULL, (uint)reg, 0, 0);
+                    return reg;
+                }
+                if (str_eq(id_tok.str_value, "undefined")) {
+                    self.last_was_getvar = false;
+                    ushort reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
+                    return reg;
+                }
 
-            // Not found locally: emit GETVAR to look up by name at runtime
-            uint name_idx = self.add_string_constant(id_tok.str_value);
-            ushort id_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
-            self.last_was_getvar = true;
-            self.last_getvar_name_idx = name_idx;
-            return id_reg;
+                // Arrow function: IDENTIFIER => ...
+                if (self.check(TokenType.ARROW)) {
+                    char[][1] params_arr;
+                    params_arr[0] = id_tok.str_value;
+                    return self.parse_arrow_function(&params_arr[0], 1)!;
+                }
+
+                // Try to resolve as a local variable first (skip at global scope — use environment)
+                if (!self.is_global) {
+                    if (try var_reg = self.resolve_var(id_tok.str_value)) {
+                        self.last_was_getvar = false;
+                        return var_reg;
+                    }
+                }
+
+                // Not found locally: emit GETVAR to look up by name at runtime
+                uint name_idx = self.add_string_constant(id_tok.str_value);
+                ushort id_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
+                self.last_was_getvar = true;
+                self.last_getvar_name_idx = name_idx;
+                return id_reg;
+            }
 
         case TokenType.THIS:
             self.advance()!;
@@ -2773,12 +2807,84 @@ fn ushort? CompilerContext.primary_expr(&self) {
             self.emit_abc(Opcode.LDTHIS, (uint)this_reg, 0, 0);
             return this_reg;
 
-        case TokenType.LPAREN:
+        case TokenType.LPAREN: {
+            // Try arrow function with parens: (params) => ...
+            // Strategy: parse paren content as potential params, check for => after ),
+            // pushback all tokens and re-parse as grouping if not arrow.
+            Token lparen = self.advance()!;
+            bool try_grouping = false;
+
+            // Check for empty parens: () => ...
+            if (self.check(TokenType.RPAREN)) {
+                Token rparen = self.advance()!;
+                if (self.check(TokenType.ARROW)) {
+                    // No-param arrow: () => ...
+                    char[]* no_params = null;
+                    return self.parse_arrow_function(no_params, 0)!;
+                }
+                // Not an arrow: pushback and fall through to grouping
+                self.pushback(rparen);
+                self.pushback(lparen);
+                try_grouping = true;
+            }
+            // Check for arrow with params: (id) => or (id, id, ...) => ...
+            else if (self.check(TokenType.IDENTIFIER) && !try_grouping) {
+                char[][8] param_names;
+                ushort pc = 0;
+                Token[16] saved;  // save tokens for backtracking
+                ushort sc = 0;
+
+                bool is_arrow = false;
+                for (;;) {
+                    Token t = self.advance()!;
+                    saved[sc++] = t;
+                    if (t.type != TokenType.IDENTIFIER) {
+                        break;  // not a param name, can't be arrow
+                    }
+                    param_names[pc++] = t.str_value;
+
+                    if (self.check(TokenType.RPAREN)) {
+                        Token rp = self.advance()!;
+                        saved[sc++] = rp;
+                        if (self.check(TokenType.ARROW)) {
+                            is_arrow = true;
+                        }
+                        break;
+                    }
+                    if (!self.check(TokenType.COMMA)) {
+                        break;  // unexpected token, not arrow
+                    }
+                    // Consume comma
+                    Token comma = self.advance()!;
+                    saved[sc++] = comma;
+                }
+
+                if (is_arrow) {
+                    return self.parse_arrow_function(&param_names[0], pc)!;
+                }
+
+                // Not an arrow: pushback saved tokens + lparen
+                for (ushort si = sc; si > 0; si--) {
+                    self.pushback(saved[si - 1]);
+                }
+                self.pushback(lparen);
+                try_grouping = true;
+            } else if (!try_grouping) {
+                // Not arrow: pushback lparen
+                self.pushback(lparen);
+                try_grouping = true;
+            }
+
             // Grouping expression
-            self.advance()!;
-            ushort inner = self.expression()!;
-            self.expect(TokenType.RPAREN)!;
-            return inner;
+            if (try_grouping) {
+                self.advance()!;  // (
+                ushort inner2 = self.expression()!;
+                self.expect(TokenType.RPAREN)!;
+                return inner2;
+            }
+            // unreachable
+            return COMPILE_ERROR~;
+        }
 
         case TokenType.LBRACE:
             return self.object_literal()!;
@@ -3049,9 +3155,92 @@ fn ushort? CompilerContext.function_expr_body(&self) {
     return result;
 }
 
-// ============================================================================
-// Precedence and opcode mapping helpers
-// ============================================================================
+/// Parse an arrow function: `(params) => expr` or `(params) => { body }`
+/// or `param => expr`.  The caller has already consumed the leading `(`
+/// or the single identifier.
+///
+/// `params`: pre-parsed parameter name slices (pointer to first element).
+/// `param_count`: number of parameters.
+fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort param_count) {
+    // Consume the ARROW token
+    self.expect(TokenType.ARROW)!;
+
+    // Create inner CompiledFunction for the arrow
+    CompiledFunction* inner = self.compile_arrow_inner(params, param_count)!;
+
+    // Add to inner functions table
+    uint inner_idx = 0;
+    if (self.inner_func_count < MAX_INNER_FUNCS) {
+        inner_idx = self.inner_func_count;
+        self.inner_funcs[inner_idx] = inner;
+        self.inner_func_count++;
+    }
+
+    ushort result = self.alloc_reg();
+    self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
+    return result;
+}
+
+/// Compile an inner arrow function given its parameter names.
+/// Arrow functions have `is_arrow = true`, lexical `this`, and no `.prototype`.
+fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count) {
+    // Create a new CompilerContext for the arrow function
+    CompilerContext arrow_ctx;
+    arrow_ctx.init(self.lexer, self.heap);
+
+    // Strict-only engine: always strict
+    arrow_ctx.is_strict = true;
+    arrow_ctx.lexer.set_strict(true);
+
+    // Register parameters
+    for (ushort i = 0; i < param_count; i++) {
+        char[] name = params[i];
+        if (arrow_ctx.is_strict && is_restricted_name(name)) {
+            return COMPILE_ERROR~;
+        }
+        ushort param_reg = arrow_ctx.declare_var(name, VAR);
+        uint param_name_idx = arrow_ctx.add_string_constant(name);
+        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+    }
+
+    // Push a function-level lexical scope
+    arrow_ctx.emit_simple(Opcode.PUSH_LEX);
+
+    // Determine if body is block or expression
+    if (arrow_ctx.check(TokenType.LBRACE)) {
+        // Block body: { ... }
+        arrow_ctx.advance()!;
+        while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {
+            arrow_ctx.statement()!;
+        }
+        arrow_ctx.expect(TokenType.RBRACE)!;
+        // No implicit return for block body
+        bool has_return = false;
+        if (arrow_ctx.code_count > 0) {
+            Opcode last_op = arrow_ctx.code[arrow_ctx.code_count - 1].op;
+            if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
+                has_return = true;
+            }
+        }
+        if (!has_return) {
+            arrow_ctx.emit_simple(Opcode.RETUNDEF);
+        }
+    } else {
+        // Expression body: implicitly return the expression value
+        ushort expr_reg = arrow_ctx.assignment_expr()!;
+        arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+    }
+
+    // Pop the function-level lexical scope
+    arrow_ctx.emit_simple(Opcode.POP_LEX);
+
+    CompiledFunction* func = arrow_ctx.finish()!;
+    func.num_args = param_count;
+    func.num_formals = param_count;
+    func.flags.is_arrow = true;
+
+    return func;
+}
 
 /// Return the precedence of a binary operator token, or PREC_NONE if not a binary op.
 fn int get_binary_precedence(TokenType tt) {

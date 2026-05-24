@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 43
+**Last Updated:** Session 44
 **Target:** Full test262 conformance
 
 ## Summary
@@ -184,7 +184,27 @@
 | is_captured shadowing detection (GETVAR across scope boundaries) | ✅ |
 | for-in/for-of with let/const | 🚫 Deferred |
 
-### Phase 11: ES6+ — ❌ NOT STARTED
+### Phase 11: ES6+ — 🚧 Arrow Functions ✅ (1st feature)
+**test262: arrow-function tests — not yet quantified**
+|| Component | Status |
+||---|---|
+|| Arrow functions (IDENTIFIER =>, () =>, (params) =>) | ✅ |
+|| Lexical `this` (ignores call-site this) | ✅ |
+|| Cannot be used as constructor (new throws TypeError) | ✅ |
+|| No .prototype property | ✅ |
+|| Implicit return for expression bodies | ✅ |
+|| Nested arrow functions | ✅ |
+|| Template literals | ❌ |
+|| Destructuring | ❌ |
+|| Default parameters | ❌ |
+|| Rest parameters | ❌ |
+|| Spread operator | ❌ |
+|| for-of | ❌ |
+|| Classes | ❌ |
+|| Map / Set / WeakMap / WeakSet | ❌ |
+|| Symbol | ❌ |
+|| Promise | ❌ |
+|| Generators | ❌ |
 
 ## Session History
 
@@ -233,6 +253,7 @@
 | 41 | **Phase 10: Block-scoped let/const — lexical environments**: Added PUSH_LEX, POP_LEX, PUTLEX bytecode opcodes. PUSH_LEX pushes a new declarative EnvRecord onto act.lex_env at block/function entry; POP_LEX restores parent. let/const declarations emit PUTLEX to store in lex_env; var continues using PUTVAR for var_env. GETVAR, PUTVAR, and TYPEOFIDENT now search lex_env chain first. TDZ sentinel infrastructure added (tdz_sentinel, is_tdz_sentinel, env_get_lex, env_put_lex, env_has_lex). ScopeEntry uses ScopeKind enum (VAR/LET/CONST). Block scoping verified for nested blocks, shadowing, function-level let/const, and closure capturing of let variables. Full TDZ enforcement at block entry (pre-scan) and const runtime re-assignment checks deferred. |
 | 42 | **Phase 10: Const runtime enforcement**: Added PUTLEX_C opcode for const declarations — stores bindings with non-writable property flags (PROP_FLAGS_EC). PUTVAR handler checks writability via `env_is_lex_writable()` and throws TypeError ("Assignment to constant variable '…'") on const reassignment. Added `HObject.is_prop_writable()` and `env_is_lex_writable()` for chain-aware writability checks. let variables continue to use writable PUTLEX. 13/13 custom const enforcement tests passing; no regressions on existing test suite. |
 | 43 | **Phase 10: TDZ enforcement at block entry**: Added INITTZ opcode (A-BC format) that stores the TDZ sentinel in the current lex_env. Implemented pre-scan in compiler::block() that collects let/const variable names by scanning tokens before emitting bytecode, then emits PUSH_LEX + INITTZ for each at block entry. Added `is_captured` check to `resolve_var()`: when a variable is shadowed by an inner let/const, the compiler now emits GETVAR instead of LDREG, forcing a walk of the lex_env chain where the TDZ sentinel is checked. Introduced NameSpan struct to work around C3 slice-of-slices type limitations. 10/10 custom TDZ tests passing; no regressions on existing test suite. Phase 10 now complete except for for-in/for-of with let/const (deferred). |
+| 44 | **Phase 11: Arrow functions** — First ES6+ feature. Added arrow function parsing to compiler: `x => expr`, `() => expr`, `(x) => expr`, `(x, y) => { body }`. `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags, already existed). Added pushback buffer (4-token stack) to CompilerContext for backtracking during arrow-vs-grouping-expression disambiguation. VM changes: CLOSURE handler skips `.prototype` creation for arrow functions; CALL handler uses parent activation's `this_binding` for lexical `this` (ignoring stack `this` slot); NEW_OBJ handler throws TypeError (`is not a constructor`) for arrow functions per ES6 §14.2.2. `compile_arrow_inner()` creates sub-CompiledFunction with `is_arrow=true`, handles expression bodies (implicit return) vs block bodies. 12/12 custom arrow tests passing: single/multi/no params, nested arrows, lexical this, no prototype, new rejection. No regressions on existing 60+ test suite. |
 
 ## Refreshing Counts
 

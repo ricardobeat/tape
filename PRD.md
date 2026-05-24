@@ -42,6 +42,14 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 ### RegExp
 - using libregexp (from QuickJS)
 
+### Arrow Functions (ES6)
+- `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags)
+- Parse `IDENTIFIER => expr`, `() => expr`, `(params) => expr`, `(params) => { body }`
+- Lexical `this` — inherited from enclosing scope at call time (VM ignores stack `this` slot)
+- Cannot be used as constructor — `new Arrow()` throws TypeError
+- No `.prototype` property — skipped in CLOSURE opcode handler
+- Implicit return for expression bodies; block bodies need explicit `return`
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.
