@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 31
+**Last Updated:** Session 32
 **Target:** Full test262 conformance
 
 ## Summary
@@ -13,7 +13,7 @@
 | Currently passing (test262) | ~710 |
 | Currently passing (test262) | ~710 |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs |
-| **Fixed this session** | **compound assignment (`x -= 1`), prefix/postfix `++`/`--` global write-back, for-loop `i++` increment infinite loop** |
+| **Fixed this session** | **RegExp prototype initialization + flag properties: `register_regexp_constructor`, `.global`/`.source`/`.ignoreCase`/`.multiline`/`.lastIndex` on instances, `g` flag parsing** |
 
 ## Per-Phase Status
 
@@ -148,7 +148,7 @@
 |---|---|
 | JSON (parse, stringify) | ✅ |
 | Date | ✅ |
-| RegExp | ✅ (engine integrated, 0 test262 passing — blocked on parser, harness) |
+| RegExp | ✅ (engine integrated + prototype chain wired, 0 test262 passing — blocked on parser, harness, `.global`/flags properties) |
 
 ### Phase 9: Strict Mode — ❌ NOT STARTED
 
@@ -189,6 +189,7 @@
 | 29 | **Bug fixes**: Fixed VM arithmetic/bitwise opcode bug where `ra.tag = NUMBER` was set before reading `rb`, causing incorrect results when `ra == rb` (compound assignments `x -= 1`, prefix `++`/`--`). Fixed `postfix_expr`/`unary_expr` missing `PUTVAR` write-back for global-scope `i++`/`++i` patterns. |
 | 30 | **ASI bug fixes**: Added line terminator tracking (`seen_line_term`) to lexer. Fixed `break`/`continue`/`return` ASI — line terminators between keyword and identifier now suppress label/expression parsing per ES5 spec. Fixed test262 harness: includes `assert.js`, fixed `set -e` exit on skip. 3 test262 tests newly passing (break/line-terminators, continue/line-terminators, return/line-terminators). |
 | 31 | **Continue-in-switch infinite loop fix**: Fixed `continue` inside `switch` inside a loop generating a JUMP to itself (infinite loop). Root cause: `switch_statement()` used `push_loop()` for break handling, which incremented `loop_depth`, making `continue_statement()` find the switch's pseudo-loop entry instead of the enclosing real loop. Fix: added `is_loop` flag to `LoopInfo` and `continue_patch_head` for deferred patching. `continue` now skips switch pseudo-loops (`is_loop=false`) and finds the innermost real loop. `do-while` continue targets are resolved via deferred patch chain. Switch tests `cptn-a-fall-thru-abrupt-empty`, `cptn-b-fall-thru-abrupt-empty`, `cptn-dflt-b-fall-thru-abrupt-empty` no longer hang. |
+| 32 | **RegExp prototype initialization + flag properties**: Added `register_regexp_constructor` function that creates `RegExp.prototype`, registers `.test()/exec()/toString()` methods, and creates the `RegExp` global constructor with proper `.prototype` and `.length` properties. `heap.regexp_proto` now wired to `Object.prototype`. RegExp instances now store `.source`, `.global`, `.ignoreCase`, `.multiline`, `.lastIndex` properties and correctly parse the `g` flag. Previously every RegExp usage crashed because `regexp_proto` was null. First test262 RegExp test now passing (`15.10.4.1-1`). All 4 local regexp tests passing. |
 
 ## Refreshing Counts
 

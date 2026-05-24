@@ -5337,6 +5337,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     char* pattern_str = "";
     usz pattern_len = 0;
     int flags = 0;
+    int js_flags = 0;  // JS flag bits: 1=g, 2=i, 4=m
     char* flags_str = "";
     usz flags_len = 0;
 
@@ -5352,8 +5353,6 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                     pattern_str = phs.get_cstr();
                     pattern_len = phs.blen;
                 }
-                // Extract flags from existing regexp if no new flags given
-                // For now, use empty flags as default
             } else {
                 // Convert to string for pattern
                 HString* phs = builtin_to_string(ctx.heap, pattern_arg);
@@ -5377,7 +5376,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     }
 
     // Get flags from second argument
-    if (ctx.argc > 1 && !is_regexp) {
+    if (ctx.argc > 1) {
         TVal* flags_arg = &ctx.regs[ctx.base_reg + 1];
         if (flags_arg.tag == STRING && flags_arg.pointer != null) {
             HString* fhs = (HString*)flags_arg.pointer;
@@ -5392,13 +5391,17 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         }
     }
 
-    // Convert JS flags to libregexp flag bits
+    // Convert JS flags to libregexp flag bits and store JS flags
     for (usz i = 0; i < flags_len; i++) {
         char f = flags_str[i];
-        if (f == 'i') {
+        if (f == 'g') {
+            js_flags |= 1;
+        } else if (f == 'i') {
             flags |= re_bindings::RE_FLAG_IGNORECASE;
+            js_flags |= 2;
         } else if (f == 'm') {
             flags |= re_bindings::RE_FLAG_MULTILINE;
+            js_flags |= 4;
         } else if (f == 's') {
             flags |= re_bindings::RE_FLAG_DOTALL;
         }
@@ -5425,6 +5428,37 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
     obj.primitive_value.tag = STRING;
     obj.primitive_value.pointer = pattern_hs;
+
+    // Set RegExp instance properties (ES5 §15.10.7)
+    HString* source_key = builtin_intern_string(ctx.heap, "source");
+    TVal source_tv;
+    source_tv.tag = STRING;
+    source_tv.pointer = pattern_hs;
+    obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* global_key = builtin_intern_string(ctx.heap, "global");
+    TVal global_tv;
+    global_tv.tag = BOOLEAN;
+    global_tv.boolean = (js_flags & 1) != 0;
+    obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* ignorecase_key = builtin_intern_string(ctx.heap, "ignoreCase");
+    TVal ignorecase_tv;
+    ignorecase_tv.tag = BOOLEAN;
+    ignorecase_tv.boolean = (js_flags & 2) != 0;
+    obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* multiline_key = builtin_intern_string(ctx.heap, "multiline");
+    TVal multiline_tv;
+    multiline_tv.tag = BOOLEAN;
+    multiline_tv.boolean = (js_flags & 4) != 0;
+    obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* lastindex_key = builtin_intern_string(ctx.heap, "lastIndex");
+    TVal lastindex_tv;
+    lastindex_tv.tag = FASTINT;
+    lastindex_tv.fastint = 0;
+    obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
 
     ctx.result.tag = OBJECT;
     ctx.result.pointer = obj;
@@ -5993,6 +6027,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Date constructor and prototype
     if (!register_date_constructor(global_env, heap)) return false;
 
+    // Register RegExp constructor and prototype
+    if (!register_regexp_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -6001,6 +6038,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.array_proto != null)  heap.array_proto.prototype = heap.object_proto;
     if (heap.function_proto != null) heap.function_proto.prototype = heap.object_proto;
     if (heap.date_proto != null)   heap.date_proto.prototype = heap.object_proto;
+    if (heap.regexp_proto != null) heap.regexp_proto.prototype = heap.object_proto;
 
     return true;
 }
@@ -6773,3 +6811,77 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     return true;
 }
 
+
+// ============================================================================
+// RegExp constructor registration
+// ============================================================================
+
+/// Create RegExp.prototype and register the RegExp constructor globally.
+fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create RegExp.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.REGEXP);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // Will be Object.prototype
+    heap.regexp_proto = proto;
+
+    // Set .constructor to RegExp lightfunc
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = LIGHTFUNC;
+    constructor_tv.fastint = (long)BUILTIN_REGEXP;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add RegExp.prototype.test()
+    if (!register_string_proto_method(proto, heap, "test", BUILTIN_REGEXP_PROTO_TEST)) return false;
+
+    // Add RegExp.prototype.exec()
+    if (!register_string_proto_method(proto, heap, "exec", BUILTIN_REGEXP_PROTO_EXEC)) return false;
+
+    // Add RegExp.prototype.toString()
+    if (!register_string_proto_method(proto, heap, "toString", BUILTIN_REGEXP_PROTO_TOSTRING)) return false;
+
+    // Register RegExp as a global constructor (proper function object)
+    HObject*? regexp_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = regexp_raw) return false;
+    HObject* regexp_obj = regexp_raw;
+    regexp_obj.builtin_fn_index = (int)BUILTIN_REGEXP;
+
+    // Set RegExp.prototype on the constructor
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    regexp_obj.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Set RegExp.length (ES5 15.10.5)
+    HString* len_key = builtin_intern_string(heap, "length");
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = 2;
+    regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register RegExp constructor globally as an OBJECT
+    uint hash = heap.hash_string("RegExp");
+    HString* existing = heap.str_table_lookup("RegExp", hash);
+    HString* regexp_key;
+    if (existing != null) {
+        regexp_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "RegExp", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        regexp_key = new_key;
+    }
+    TVal regexp_val;
+    regexp_val.tag = OBJECT;
+    regexp_val.pointer = regexp_obj;
+    env::env_declare(global_env, regexp_key, regexp_val);
+
+    return true;
+}
