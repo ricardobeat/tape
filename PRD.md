@@ -59,7 +59,7 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - Escape sequences processed identically to string literals (\n, \t, \uXXXX, \xHH, etc.)
 - Line continuations (`\<LF>`) supported
 - Tagged templates — implemented: `tag`...`` and `tag`text ${expr} text`` call syntax. Template object array with `.raw` property created as first argument. Chained tagged templates (`tag`a``b``c``) supported. Member expression tags (`obj.tag`...``) preserve `this` binding. | ✅ (Phase 11)
-- Nested templates deferred
+- Nested templates ✅ (Phase 16)
 
 ### Default Parameters (ES6)
 - Each default expression compiled as a zero-argument inner function (via `compile_default_expr`)

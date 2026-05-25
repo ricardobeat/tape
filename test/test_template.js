@@ -103,4 +103,34 @@ assert(t19 === 'zero: 0', 'template with zero value');
 var t20 = 'prefix' + ` middle ${1+2} ` + 'suffix';
 assert(t20 === 'prefix middle 3 suffix', 'template in larger expression');
 
+// Test 21: nested template — inner with expression
+var t21 = `outer ${ `inner ${1+2} tail` } end`;
+assert(t21 === 'outer inner 3 tail end', 'nested template — inner with expression');
+
+// Test 22: nested simple template (no substitutions)
+var t22 = `a${ `simple` }b`;
+assert(t22 === 'asimpleb', 'nested simple template');
+
+// Test 23: triple-nested template
+var t23 = `L1 ${ `L2 ${ `L3 ${42} end3` } end2` } end1`;
+assert(t23 === 'L1 L2 L3 42 end3 end2 end1', 'triple-nested template');
+
+// Test 24: nested template with object literal in expression
+var t24 = `a${ `b${ {x:1}.x }c` }d`;
+assert(t24 === 'ab1cd', 'nested template with object literal');
+
+// Test 25: nested template with arithmetic expression
+var t25 = `price: ${ `$${100 + 50} total` }`;
+assert(t25 === 'price: $150 total', 'nested template with arithmetic');
+
+// Test 26: nested template with function call
+function double(x) { return x * 2; }
+var t26 = `result: ${ `2*3=${double(3)}` } done`;
+assert(t26 === 'result: 2*3=6 done', 'nested template with function call');
+
+// Test 27: nested template with variable from outer scope
+var name27 = 'World';
+var t27 = `Hello ${ `dear ${name27}` }!`;
+assert(t27 === 'Hello dear World!', 'nested template accessing outer variable');
+
 print('pass: ' + pass + ' fail: ' + fail);

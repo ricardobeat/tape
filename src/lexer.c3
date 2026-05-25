@@ -27,6 +27,9 @@ faultdef NOT_A_KEYWORD;
 /// Maximum size for the string escape-processing buffer.
 const uint STRING_BUF_SIZE = 65536;
 
+/// Maximum nesting depth for template literals.
+const uint MAX_TEMPLATE_DEPTH = 16;
+
 // ============================================================================
 // Token types
 // ============================================================================
@@ -312,6 +315,12 @@ struct Lexer {
     /// Template literal tracking
     TemplateState template_state;
     int template_brace_balance;
+
+    /// Stack for nested template brace balances.
+    /// When a backtick is found inside a template expression,
+    /// the current brace_balance is pushed and restored on return.
+    uint[MAX_TEMPLATE_DEPTH] template_balance_stack;
+    uint template_balance_stack_depth;
 }
 
 // ============================================================================
@@ -332,6 +341,7 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.strict_mode = true;
     lex.seen_line_term = false;
     lex.heap = heap;
+    lex.template_balance_stack_depth = 0;
     return lex;
 }
 
@@ -1369,8 +1379,16 @@ fn Token? Lexer.scan_template_after_expr(&self) {
     if (end_char == '`') {
         // End of template literal
         self.advance_char(); // consume closing backtick
-        self.template_state = TemplateState.NONE;
-        self.template_brace_balance = 0;
+        if (self.template_balance_stack_depth > 0) {
+            // Return to outer template expression
+            self.template_balance_stack_depth--;
+            self.template_brace_balance = (int)self.template_balance_stack[self.template_balance_stack_depth];
+            self.template_state = TemplateState.IN_EXPR;
+        } else {
+            // Outermost template closed
+            self.template_state = TemplateState.NONE;
+            self.template_brace_balance = 0;
+        }
         Token tok = make_token(TokenType.TEMPLATE_TAIL, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
@@ -1475,9 +1493,20 @@ fn Token? Lexer.next_token(&self) {
             self.current = tok;
             return tok;
         }
-        // Nested backtick inside expression — for now, error
+        // Nested backtick — start a new template inside the expression
         if (c == '`') {
-            Token tok = make_token(TokenType.EOF_TOKEN, self.line, self.col);
+            if (self.template_balance_stack_depth < MAX_TEMPLATE_DEPTH) {
+                self.template_balance_stack[self.template_balance_stack_depth] = (uint)self.template_brace_balance;
+                self.template_balance_stack_depth++;
+            }
+            Token tok = self.scan_template_head()!;
+            // If the inner template was simple (no ${}), scan_template_head
+            // closed it and set state to NONE — restore outer expression state.
+            if (self.template_state == TemplateState.NONE && self.template_balance_stack_depth > 0) {
+                self.template_balance_stack_depth--;
+                self.template_brace_balance = (int)self.template_balance_stack[self.template_balance_stack_depth];
+                self.template_state = TemplateState.IN_EXPR;
+            }
             self.current = tok;
             return tok;
         }

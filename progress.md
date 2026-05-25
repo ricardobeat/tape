@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 49
+**Last Updated:** Session 51
 **Target:** Full test262 conformance
 
 ## Summary
@@ -13,7 +13,7 @@
 | Currently passing (test262) | 1,621 |
 | Pass rate | 3.0% (of 53,568) |
 | VM bugs causing hangs | try/catch, switch, with, for-in, RegExp subdirs (some) |
-|| **Fixed this session** | **Phase 14: for-of loop — Fixed for-of continue causing infinite loop. Continue target in `emit_forof_loop()` was set to the LT comparison, causing `continue` to re-execute the same index. Now patched to the index increment section before `pop_loop()`, so `continue` properly advances to the next element. All 7 for-of test cases pass (var/let/const/bare/empty/break/continue); no regressions on existing test suite.** |
+|| **Fixed this session** | **Phase 16: Nested templates — Lexer now supports nested template literals (backtick inside `${...}`). Added template balance stack (up to 16 levels deep) to track nesting. When a backtick is encountered in template expression mode, the current brace balance is saved, the inner template is scanned, and the outer state is restored when the inner template closes. No compiler changes needed — nested templates are transparently parsed as template expressions within template expressions. All 27 template tests pass (20 existing + 7 new nested). No regressions.** |
 ||
 |**Engine decision: Strict-only** — No sloppy/non-strict mode support. All code runs in ES5 strict mode by default. `"use strict"` is accepted but redundant. Non-strict `this` coercion, `arguments.callee`, `arguments.caller`, and all non-strict error-handling paths are not implemented.
 
@@ -203,7 +203,7 @@
 || Line continuations (`\<LF>`) | ✅ |
 || Brace tracking inside `${}` (object literals, function bodies) | ✅ |
 || Tagged templates | ✅ |
-|| Nested templates | ❌ |
+|| Nested templates | ✅ (Phase 16) |
 || Destructuring | ✅ |
 || Default parameters | ✅ |
 || Rest parameters | ✅ |
@@ -284,6 +284,17 @@
 | Private fields/methods | 🚫 Deferred |
 | `extends null` | 🚫 Deferred |
 
+
+### Phase 16: ES6+ — Nested Templates ✅
+**test262: not yet quantified**
+||| Component | Status |
+|---|---|
+||| Nested template literals (lexer stack) | ✅ |
+||| Nested simple templates (no ${}) | ✅ |
+||| Nested tagged templates | ✅ |
+||| Triple+ nesting levels | ✅ |
+||| Object literals in nested expressions | ✅ |
+
 ## Session History
 
 | Session | Key Features |
@@ -338,6 +349,7 @@
 | 48 | **Phase 13: Spread operator** — Array literal spread: `[...arr, x]` using new `ARRSPRD` opcode (ABC format, in-place index update). Call spread: `f(...args)` using `SPREAD_ARG` (register-level copy) + `CALL_S` (dynamic arg count). Compiler `emit_call()` detects `...` prefix, allocates count registers, emits SPREAD_ARG + ADD accumulation + CALL_S. Array literal handles mixed spread+non-spread with register-based index tracking (switches from compile-time index when first spread encountered). Multiple spreads per array supported. Non-spread-before-spread in calls supported; spread-before-non-spread deferred. No regressions. |
 | 49 | **Phase 14: for-of loop bugfix** — Fixed `continue` in for-of causing infinite loop. Root cause: `emit_forof_loop()` set `push_loop(loop_start, true)` which set `continue_target` to the LT comparison at loop_start. When `continue` executed, it jumped back to LT without advancing the index, re-entering the same iteration forever. Fix: added `self.loop_stack[self.loop_depth - 1].continue_target = self.code_count` after `self.statement()!` and before the index increment, so `continue` advances to the next element. All 7 for-of test cases (var/let/const/bare/empty/break/continue) now pass; no regressions on existing suite. **Test262: 1,621 pass.** |
 || 50 | **Phase 15: ES6 Classes** — Implemented class declarations/expressions with constructors, methods, static methods, `extends`, `super()`, `super.method()`, and `new.target`. Added 3 opcodes: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`. `FuncFlags.is_constructable` now propagated from compiler through `CLOSURE` to `HObject.flags.constructable`. Default base constructors built manually. Fixed `handle_return` to use `this_binding` for constructor instance return (freeing `new_target` for ES6 meta-property). 25/25 class tests pass; no regressions. |
+|| 51 | **Phase 16: Nested Templates** — Lexer now supports nested template literals (backtick inside ${...}). Added template_balance_stack (up to 16 levels deep) and template_balance_stack_depth to Lexer struct. When a backtick is encountered in IN_EXPR mode, the current brace balance is pushed, the inner template is scanned via scan_template_head(), and after the inner template closes (TEMPLATE_TAIL), the outer IN_EXPR state is restored. For simple inner templates (no ${}), state restoration happens in next_token() after scan_template_head() returns. No compiler changes required — nested templates are parsed transparently as expressions within expressions. 27/27 template tests pass (20 existing + 7 new nested). |
 
 ## Refreshing Counts
 
