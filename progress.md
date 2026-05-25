@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 55
+**Last Updated:** Session 57
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,8 +10,8 @@
 | Total test262 tests | 53,568 |
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
-| Currently passing (test262) | 1,621 |
-| Pass rate | 3.0% (of 53,568) |
+| Currently passing (test262) | 1,653 |
+| Pass rate | 3.1% (of 53,568) |
 
 ## Refreshing test pass rate
 
@@ -24,7 +24,7 @@ Update the counts and pass rate after every implemented feature
 ## Per-Phase Status
 
 ### Phase 0-1: Core VM — ✅ (Impl.)
-**test262: ~6,063 total — not yet runnable (ASI tests hang VM)**
+**test262: 1,686 files — 447 pass / 502 fail**
 | Component | Status |
 |---|---|
 | TVal tagged values | ✅ |
@@ -36,7 +36,7 @@ Update the counts and pass rate after every implemented feature
 | Built-in print/console.log | ✅ |
 
 ### Phase 1: Calling Convention & Closures — ✅ (Impl.)
-**test262: 426 files — 41 pass / 385 fail**
+**test262: 231 files — 25 pass / 152 fail (skip: 54)**
 | Component | Status |
 |---|---|
 | Register-based call convention | ✅ |
@@ -45,7 +45,7 @@ Update the counts and pass rate after every implemented feature
 | Nested calls | ✅ |
 
 ### Phase 2: Basic Operators — ✅ (Impl.)
-**test262: 1,969 files — 552 pass / 1,417 fail**
+**test262: 1,593 files — 391 pass / 863 fail (skip: 339)**
 | Component | Status |
 |---|---|
 | Addition (+) | ✅ |
@@ -71,7 +71,7 @@ Update the counts and pass rate after every implemented feature
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System — ✅ (Impl.)
-**test262: ~4,985 total — not yet runnable (Array/Object constructor tests hang VM)**
+**test262: 521 files — 99 pass / 366 fail (skip: 56)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -84,8 +84,7 @@ Update the counts and pass rate after every implemented feature
 | Member LHS assignment | ✅ |
 
 ### Phase 4: Error Handling & References — ✅ (Impl.)
-**test262: 187 files (Error+NativeErrors) — 1 pass / 186 fail**
-**try/throw tests (~122 files) hang VM — bug in catcher chain**
+**test262: 142 files — 45 pass / 67 fail (skip: 30)**
 | Component | Status |
 |---|---|
 | Error constructors | ✅ |
@@ -98,7 +97,7 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors — ✅ COMPLETE
-**test262: ~3,981 total — not yet runnable (constructor tests hang VM)**
+**test262: 527 files — 195 pass / 235 fail (skip: 97)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -112,7 +111,7 @@ Update the counts and pass rate after every implemented feature
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods — ✅ (Impl.)
-**test262: ~4,713 total — not yet runnable (Array.prototype tests hang VM)**
+**test262: 54 files — 9 pass / 45 fail**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -123,7 +122,7 @@ Update the counts and pass rate after every implemented feature
 | Function.prototype | ✅ |
 
 ### Phase 7: Remaining ES5 Features — ✅ (Impl.)
-**test262: runnable subset — 73 pass across instanceof, in, delete, continue, eval**
+**test262: runnable subset — 130 pass / 109 fail (skip: 305)**
 | Feature | Files | Pass | Fail |
 |---|---|---|---|
 | instanceof | 43 | 16 | 27 |
@@ -148,8 +147,7 @@ Update the counts and pass rate after every implemented feature
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects — ✅ ~67%
-**test262: 759 files (JSON+Date) — 1 pass / 758 fail**
-**RegExp ~1,879 files — 144 passing (top-level), many subdirs still failing/hanging**
+**test262: 572 files — 312 pass / 253 fail (skip: 7)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -217,8 +215,8 @@ Update the counts and pass rate after every implemented feature
 || Map / Set | ✅ (Phase 17) |
 ||| WeakMap / WeakSet | ✅ (Phase 18) |
 || Symbol | ✅ (Phase 19) |
-|| Promise | ❌ |
-|| Generators | ❌ |
+|| Promise | ✅ (Phase 20) |
+|| Generators | ✅ (Phase 21) |
 
 
 ### Phase 20: ES6+ — Promise ✅
@@ -230,8 +228,8 @@ Update the counts and pass rate after every implemented feature
 || Promise.prototype.then(onFulfilled, onRejected) | ✅ |
 || Promise.prototype.catch(onRejected) | ✅ |
 || Promise.prototype.finally(onFinally) | ✅ |
-|| Promise.all(iterable) | ✅ (stub) |
-|| Promise.race(iterable) | ✅ (stub) |
+|| Promise.all(iterable) | ✅ |
+|| Promise.race(iterable) | ✅ |
 || Internal state machine (pending/fulfilled/rejected) | ✅ |
 || Reaction queue for .then() chaining | ✅ |
 || Class name [object Promise] | ✅ |
@@ -376,3 +374,5 @@ Update the counts and pass rate after every implemented feature
 ||| 53 | **Phase 18: WeakMap / WeakSet built-ins** — WeakMap (constructor, set, get, has, delete) and WeakSet (constructor, add, has, delete). ES6 §23.3-23.4. Key restriction: WeakMap keys must be Objects (TypeError on primitives); WeakSet values must be Objects. No size, clear, or iteration methods. ObjClass.WEAKMAP/WEAKSET added to enum; heap.weakmap_proto/weakset_proto fields; BUILTIN constants 131-139; class_name switch entries for "[object WeakMap/WeakSet]".
 ||| 54 | **Phase 19: Symbol built-in** — Symbol constructor (returns unique symbol STRING TVal with 0xFF prefix byte and is_symbol flag), Symbol.for(key) with global registry (heap-resident linear arrays), Symbol.keyFor(sym), Symbol.prototype.toString() and valueOf(). Added BUILTIN_SYMBOL (140) through BUILTIN_SYMBOL_PROTO_VALUEOF (144). Added heap.symbol_proto, symbol_registry_keys/syms/count/cap fields. Fixed keyword-as-property-name in compiler: after '.' any IdentifierName (including keywords) is accepted, enabling Symbol.for syntax. Fixed GETPROP VM opcode to route symbol STRING TVal to Symbol.prototype (not String.prototype). No regressions on existing test suite.
 ||| 55 | **Phase 20: Promise built-in** — Promise constructor (new Promise(executor)), Promise.resolve(x), Promise.reject(r), Promise.prototype.then(onFulfilled, onRejected), Promise.prototype.catch(onRejected), Promise.prototype.finally(onFinally), Promise.all(iterable) stub, Promise.race(iterable) stub. Internal state machine (pending/fulfilled/rejected) stored in HObject.array_part with reaction queue for .then() chaining. Added ObjClass.PROMISE to enum, heap.promise_proto, BUILTIN constants 145-152, class_name switch for "[object Promise]". Static methods registered as LIGHTFUNC on Promise constructor. Full constructor/prototype wiring with Object.prototype and Function.prototype. No regressions on existing 18-test suite.
+|| 56 | **Skip filter update** — Updated `UNSUPPORTED_PATTERN` in `scripts/run_test262.py` and `UNSUPPORTED_FEATURES` in `scripts/run_test262_per_phase.sh` to unskip tests tagged with now-implemented features: `Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Promise`, `class`, `new.Target`. 328 tests in existing phase directories now runnable. Full re-run: **1,653 pass / 2,592 fail / 1,625 skip** (38.9% of runnable, 3.1% of total 53,568).
+|| 57 | **Phase 20: Promise.all/race + Phase 21: Generators** — Promise.all and Promise.race fully implemented (were stubs). Generator function (`function*`) parsing, `is_generator` flag in compiler, YIELD/LOAD_RESUME opcodes, GeneratorState with state machine, Generator.prototype.next/throw/return builtins, VM generator resumption with `.next(val)` resume values, `.throw()` exception injection, `.return()` completion. `yield*` compiled to array-index loop.

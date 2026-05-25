@@ -11,7 +11,7 @@ if [ ! -f "$VM" ]; then
   cd "$SCRIPT_DIR" && c3c build batch_test_vm 2>&1 | grep -v "ld: warning"
 fi
 
-UNSUPPORTED_FEATURES="class|proxy|Symbol|BigInt|Promise|generator|async|module|Reflect|Proxy|WeakMap|WeakSet|Map|Set|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|new\\.Target|import\\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry"
+UNSUPPORTED_FEATURES="proxy|BigInt|generator|async|module|Reflect|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|import\\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry"
 
 should_skip() {
   local f="$1"

@@ -141,11 +141,11 @@ PHASES = [
 
 UNSUPPORTED_PATTERN = re.compile(
     r"features:\s*\[.*\b(?:"
-    r"class|proxy|Symbol|BigInt|Promise|generator|async|module|"
-    r"Reflect|WeakMap|WeakSet|Map|Set|SharedArrayBuffer|Atomics|Intl|"
+    r"proxy|BigInt|generator|async|module|"
+    r"Reflect|SharedArrayBuffer|Atomics|Intl|"
     r"TypedArray|DataView|Float32Array|Float64Array|Int8Array|Int16Array|"
     r"Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|"
-    r"FinalizationRegistry|structured-clone|new\.Target|import\.meta|"
+    r"FinalizationRegistry|structured-clone|import\.meta|"
     r"dynamic-import"
     r")\b"
 )

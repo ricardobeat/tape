@@ -50,6 +50,48 @@ struct LongjmpState {
     bool     iserror;
 }
 
+// --- GeneratorState (ES6 §25.3) -------------------------------------------
+
+/// Generator execution state per ES6 §25.3.3.1 GeneratorState.
+enum GeneratorStateType : char {
+    GEN_SUSPENDED_START,
+    GEN_SUSPENDED_YIELD,
+    GEN_EXECUTING,
+    GEN_COMPLETED,
+}
+
+/// How a generator was resumed — determines what the YIELD opcode does
+/// when execution reaches a yield point.
+enum ResumeKind : char {
+    NEXT,     /// .next() — yield returns IteratorResult as usual
+    THROW,    /// .throw() — inject exception at yield point
+    RETURN,   /// .return() — inject return at yield point
+}
+
+/// Saved execution context for a generator.
+///
+/// When a generator function is called, instead of executing the body
+/// immediately, the VM saves the initial execution state in this struct
+/// and returns a generator object.  Subsequent calls to .next(), .throw(),
+/// or .return() resume execution from the saved state.
+struct GeneratorState {
+    GeneratorStateType state;
+    void* func;               // CompiledFunction* (opaque to avoid circular deps)
+    TVal* saved_regs;         // malloc'd array of register values
+    uint num_regs;
+    void* saved_pc;           // Instruction* (opaque)
+    void* var_env;            // EnvRecord* (opaque)
+    void* lex_env;            // EnvRecord* (opaque)
+    TVal this_binding;
+    TVal resume_value;        // value passed by .next()
+    ResumeKind resume_kind;   // how the generator was resumed
+    TVal throw_value;         // exception to inject (when resume_kind == THROW)
+    TVal return_value;        // value to return (when resume_kind == RETURN)
+    // yield* delegation state
+    void* delegated_iter;     // HObject* — iterator being delegated to
+    uint delegated_index;     // current index in delegation loop
+}
+
 // --- Heap struct ----------------------------------------------------------
 
 struct Heap {
@@ -116,6 +158,13 @@ struct Heap {
     HObject* weakset_proto;
     HObject* symbol_proto;
     HObject* promise_proto;
+    HObject* generator_proto;
+
+    // Generator resume state (set by .next()/.throw()/.return() builtins,
+    // read by the VM CALL handler and YIELD/RET opcodes).
+    GeneratorState* resume_gen;
+    TVal yield_value;          /// Value yielded by YIELD opcode
+    bool did_yield;            /// True when YIELD was just executed
 
     // Global symbol registry for Symbol.for / Symbol.keyFor
     HString** symbol_registry_keys;   /// Array of key HString* pointers

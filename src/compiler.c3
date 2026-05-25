@@ -223,6 +223,9 @@ struct CompilerContext {
     bool is_constructable;      // true when compiling a class constructor
     bool in_class_body;         // true when parsing a class body (enables super)
     bool has_super_binding;     // true when class has extends (super() available)
+
+    // Generator tracking
+    bool is_generator;          // true when compiling a generator function (function*)
 }
 
 // ============================================================================
@@ -370,6 +373,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_strict = self.is_strict;
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
+    func.flags.is_generator = self.is_generator;
     func.num_args = self.num_args;
     if (self.has_rest) {
         func.num_formals = self.rest_formal_count;
@@ -2098,11 +2102,24 @@ fn void? CompilerContext.expression_statement(&self) {
 fn void? CompilerContext.function_declaration(&self) {
     self.expect(TokenType.FUNCTION)!;
 
+    // Save and reset generator state: nested function declarations
+    // inside a generator do not inherit the generator flag.
+    bool saved_is_generator = self.is_generator;
+    self.is_generator = false;
+
+    // Check for generator star: function* name() {}
+    if (self.match(TokenType.STAR)) {
+        self.is_generator = true;
+    }
+
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
     ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
     // Compile the function into a nested CompiledFunction
     CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+
+    // Restore generator flag
+    self.is_generator = saved_is_generator;
 
     // Add to inner functions table
     uint inner_idx = 0;
@@ -2633,6 +2650,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     // Strict-only engine: always strict, no propagation needed
     inner_ctx.is_strict = true;
     inner_ctx.lexer.set_strict(true);
+
+    // Propagate generator flag: if the caller is compiling a generator,
+    // the inner context (which parses the body) needs to know it's in a generator.
+    inner_ctx.is_generator = self.is_generator;
 
     // Propagate class context (for super expressions)
     inner_ctx.in_class_body = self.in_class_body;
@@ -4055,6 +4076,102 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.FUNCTION:
             return self.function_expr()!;
 
+        case TokenType.YIELD:
+        {
+            self.advance()!;  // consume 'yield'
+            if (!self.is_generator) {
+                return COMPILE_ERROR~;  // yield only valid in generators
+            }
+            // Check for yield* (delegating yield)
+            bool is_delegate = false;
+            if (self.match(TokenType.STAR)) {
+                is_delegate = true;
+            }
+
+            ushort val_reg;
+            if (is_delegate) {
+                // yield* iterable — transform into a loop that yields each element.
+                // Equivalent to: for (let i = 0, len = iterable.length; i < len; i++) yield iterable[i];
+                ushort iterable_reg = self.assignment_expr()!;
+
+                // Allocate persistent registers (not freed until after loop)
+                ushort idx_reg = self.alloc_reg();
+                ushort len_reg = self.alloc_reg();
+                ushort elem_reg = self.alloc_reg();
+                ushort cmp_reg = self.alloc_reg();
+                ushort one_reg = self.alloc_reg();
+                ushort len_str_reg = self.alloc_reg();
+
+                // idx = 0
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, 0));
+
+                // len = iterable.length
+                uint length_str_idx = self.add_string_constant("length");
+                self.emit_abc(Opcode.LDCONST, (uint)len_str_reg, length_str_idx, 0);
+                self.emit_abc(Opcode.GETPROP, (uint)len_reg, (uint)iterable_reg, (uint)len_str_reg);
+
+                // one = 1
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_reg, 1));
+
+                // Loop header
+                uint loop_start = self.code_count;
+
+                // cmp = idx < len
+                self.emit_abc(Opcode.LT, (uint)cmp_reg, (uint)idx_reg, (uint)len_reg);
+                uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cmp_reg);
+
+                // elem = iterable[idx]
+                self.emit_abc(Opcode.GETPROP, (uint)elem_reg, (uint)iterable_reg, (uint)idx_reg);
+
+                // yield elem (YIELD + LOAD_RESUME)
+                self.emit_abc(Opcode.YIELD, (uint)elem_reg, 0, 0);
+                self.emit_abc(Opcode.LOAD_RESUME, (uint)elem_reg, 0, 0);
+
+                // idx = idx + 1
+                self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one_reg);
+
+                // jump back to loop header
+                int back_offset = (int)loop_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+                self.patch_jump(exit_jump);
+
+                // Free loop registers
+                self.free_reg(len_str_reg);
+                self.free_reg(one_reg);
+                self.free_reg(cmp_reg);
+                self.free_reg(elem_reg);
+                self.free_reg(len_reg);
+                self.free_reg(idx_reg);
+                self.free_reg(iterable_reg);
+
+                // yield* result is undefined (delegation completion value)
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)result, 0, 0);
+                return result;
+            } else {
+                // yield expression (optional)
+                if (self.check(TokenType.SEMICOLON) || self.check(TokenType.RBRACE)
+                    || self.check(TokenType.RPAREN) || self.check(TokenType.COMMA)
+                    || self.check(TokenType.COLON) || self.check(TokenType.RBRACKET)
+                    || self.is_at_end()) {
+                    // yield without expression → yield undefined
+                    ushort result = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)result, 0, 0);
+                    self.emit_abc(Opcode.YIELD, (uint)result, 0, 0);
+                    self.emit_abc(Opcode.LOAD_RESUME, (uint)result, 0, 0);
+                    return result;
+                }
+                val_reg = self.assignment_expr()!;
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)result, (uint)val_reg, 0);
+                self.emit_abc(Opcode.YIELD, (uint)result, 0, 0);
+                self.emit_abc(Opcode.LOAD_RESUME, (uint)result, 0, 0);
+                self.free_reg(val_reg);
+                return result;
+            }
+        }
+
         case TokenType.CLASS:
             return self.class_expression()!;
 
@@ -4486,6 +4603,15 @@ fn ushort? CompilerContext.array_literal(&self) {
 fn ushort? CompilerContext.function_expr(&self) {
     self.expect(TokenType.FUNCTION)!;
 
+    // Save and reset generator state
+    bool saved_is_generator = self.is_generator;
+    self.is_generator = false;
+
+    // Check for generator star: function* name?() {}
+    if (self.match(TokenType.STAR)) {
+        self.is_generator = true;
+    }
+
     // Optional function name
     char[] name;
     if (self.check(TokenType.IDENTIFIER)) {
@@ -4495,6 +4621,9 @@ fn ushort? CompilerContext.function_expr(&self) {
 
     // Compile the function body into a sub-context
     CompiledFunction* inner = self.compile_inner_function(name)!;
+
+    // Restore generator flag
+    self.is_generator = saved_is_generator;
 
     // Add to inner functions table
     uint inner_idx = 0;

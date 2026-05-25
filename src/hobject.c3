@@ -72,7 +72,7 @@ const uint FNV1A_PRIME        = 0x0100_0193;
 
 /// Discriminator for the various ECMAScript object classes.
 ///
-/// Encoded in 5 bits inside ObjFlags (up to 32 classes).
+/// Encoded in 6 bits inside ObjFlags (up to 64 classes).
 enum ObjClass : char {
     NONE,
     OBJECT,
@@ -112,6 +112,7 @@ enum ObjClass : char {
     WEAKMAP,
     WEAKSET,
     PROMISE,
+    GENERATOR,
 }
 
 // ============================================================================
@@ -300,6 +301,10 @@ struct HObject {
     /// Compiled regexp bytecode pointer (only for REGEXP class objects).
     /// Allocated by libregexp, freed via re_free().
     void*         regexp_data;
+
+    /// Generator state pointer (only for GENERATOR class objects).
+    /// Points to a GeneratorState struct allocated separately.
+    void*         generator_data;
 }
 
 // ============================================================================

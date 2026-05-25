@@ -183,6 +183,11 @@ const uint BUILTIN_PROMISE_REJECT            = 150;
 const uint BUILTIN_PROMISE_ALL               = 151;
 const uint BUILTIN_PROMISE_RACE              = 152;
 
+const uint BUILTIN_GENERATOR_FUNCTION        = 153;
+const uint BUILTIN_GENERATOR_PROTO_NEXT      = 154;
+const uint BUILTIN_GENERATOR_PROTO_THROW     = 155;
+const uint BUILTIN_GENERATOR_PROTO_RETURN    = 156;
+
 struct BuiltinContext {
     void* vm;
     TVal* regs;
@@ -2393,6 +2398,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
             case hobject::ObjClass.SYMBOL:    class_name = "Symbol"; break;
             case hobject::ObjClass.PROMISE:   class_name = "Promise"; break;
+            case hobject::ObjClass.GENERATOR: class_name = "Generator"; break;
             default:                          class_name = "Object"; break;
         }
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
@@ -7838,31 +7844,114 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_all(BuiltinContext* ctx) {
-    // Stub implementation: create a resolved promise with empty array
+    // Get the iterable argument
+    TVal iterable;
+    iterable.set_undefined();
+    if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
 
-    // Create an empty array result
+    // Helper: resolve result promise with empty array
+    usz len = 0;
+    bool has_len = false;
+    HObject* obj = null;
+
+    if (iterable.tag == OBJECT && iterable.pointer != null) {
+        obj = (HObject*)iterable.pointer;
+        HString* length_key = builtin_intern_string(ctx.heap, "length");
+        if (try len_tv = obj.get_prop(length_key)) {
+            if (len_tv.tag == FASTINT && len_tv.fastint >= 0) {
+                len = (usz)len_tv.fastint;
+                has_len = true;
+            }
+        }
+    }
+
+    // Zero-length or non-iterable — resolve with [] immediately
+    if (!has_len || len == 0) {
+        HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        TVal arr_val;
+        arr_val.set_undefined();
+        if (try arr = arr_raw) {
+            arr.prototype = ctx.heap.array_proto;
+            arr_val.tag = OBJECT;
+            arr_val.pointer = arr;
+        }
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &arr_val);
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    // Allocate results array
     HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
         return;
     }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
-    TVal arr_val;
-    arr_val.tag = OBJECT;
-    arr_val.pointer = arr;
+    usz remaining = len;
+    bool rejected = false;
 
-    promise_set_state(promise, PROMISE_FULFILLED);
-    promise_set_result(promise, &arr_val);
+    for (usz i = 0; i < len; i++) {
+        if (rejected) break;
+
+        TVal idx_tv;
+        idx_tv.tag = FASTINT;
+        idx_tv.fastint = (long)i;
+
+        TVal elem;
+        if (try e = obj.get_prop(&idx_tv)) {
+            elem = e;
+        } else {
+            elem.set_undefined();
+        }
+
+        // Check if element is a Promise
+        if (elem.tag == OBJECT && elem.pointer != null) {
+            HObject* elem_obj = (HObject*)elem.pointer;
+            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
+                if (state == PROMISE_FULFILLED) {
+                    arr.set_array_idx((uint)i, elem_obj.array_part[1]);
+                    remaining--;
+                } else if (state == PROMISE_REJECTED) {
+                    promise_set_state(promise, PROMISE_REJECTED);
+                    promise_set_result(promise, &elem_obj.array_part[1]);
+                    promise_trigger_reactions(promise, ctx.heap);
+                    rejected = true;
+                    break;
+                } else {
+                    // Pending promise — skip (no async support yet)
+                    remaining--;
+                }
+                continue;
+            }
+        }
+
+        // Not a promise — store as value
+        arr.set_array_idx((uint)i, elem);
+        remaining--;
+    }
+
+    if (!rejected && remaining == 0) {
+        TVal arr_val;
+        arr_val.tag = OBJECT;
+        arr_val.pointer = arr;
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &arr_val);
+        promise_trigger_reactions(promise, ctx.heap);
+    }
 
     ctx.result.tag = OBJECT;
     ctx.result.pointer = promise;
@@ -7873,15 +7962,88 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_race(BuiltinContext* ctx) {
-    // Stub: return a pending promise
+    TVal iterable;
+    iterable.set_undefined();
+    if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
+    HObject* promise = prom_raw;
+
+    if (iterable.tag != OBJECT || iterable.pointer == null) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    HObject* obj = (HObject*)iterable.pointer;
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    usz len = 0;
+    bool has_len = false;
+    if (try len_tv = obj.get_prop(length_key)) {
+        if (len_tv.tag == FASTINT && len_tv.fastint >= 0) {
+            len = (usz)len_tv.fastint;
+            has_len = true;
+        }
+    }
+
+    if (!has_len) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    bool settled = false;
+
+    for (usz i = 0; i < len && !settled; i++) {
+        TVal idx_tv;
+        idx_tv.tag = FASTINT;
+        idx_tv.fastint = (long)i;
+
+        TVal elem;
+        if (try e = obj.get_prop(&idx_tv)) {
+            elem = e;
+        } else {
+            elem.set_undefined();
+        }
+
+        // If element is a Promise, check its state
+        if (elem.tag == OBJECT && elem.pointer != null) {
+            HObject* elem_obj = (HObject*)elem.pointer;
+            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
+                if (state == PROMISE_FULFILLED) {
+                    promise_set_state(promise, PROMISE_FULFILLED);
+                    promise_set_result(promise, &elem_obj.array_part[1]);
+                    promise_trigger_reactions(promise, ctx.heap);
+                    settled = true;
+                    break;
+                } else if (state == PROMISE_REJECTED) {
+                    promise_set_state(promise, PROMISE_REJECTED);
+                    promise_set_result(promise, &elem_obj.array_part[1]);
+                    promise_trigger_reactions(promise, ctx.heap);
+                    settled = true;
+                    break;
+                }
+                // Pending: continue (no async support yet)
+                continue;
+            }
+        }
+
+        // Non-promise value — immediate resolution
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &elem);
+        promise_trigger_reactions(promise, ctx.heap);
+        settled = true;
+        break;
+    }
+
     ctx.result.tag = OBJECT;
-    ctx.result.pointer = prom_raw;
+    ctx.result.pointer = promise;
 }
 
 // ============================================================================
@@ -7974,6 +8136,347 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     promise_val.tag = OBJECT;
     promise_val.pointer = ctor;
     env::env_declare(global_env, promise_key, promise_val);
+
+    return true;
+}
+
+// ============================================================================
+// GeneratorFunction constructor (ES6 §25.2.1)
+// ============================================================================
+
+fn void builtin_generator_function(BuiltinContext* ctx) {
+    // GeneratorFunction is not directly callable as a constructor.
+    // The user creates generator functions via function* syntax.
+    // This builtin exists as the GeneratorFunction constructor object
+    // but doesn't actually compile generator functions from strings.
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
+// ============================================================================
+// Generator.prototype.next(value) — ES6 §25.3.1.2
+// ============================================================================
+
+fn void builtin_generator_proto_next(BuiltinContext* ctx) {
+    if (ctx.this_val.tag != OBJECT) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    Heap* vm_heap = ctx.heap;
+    GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
+    if (gs == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    if (gs.state == GEN_EXECUTING) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    if (gs.state == GEN_COMPLETED) {
+        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        if (try r = result_raw) {
+            r.prototype = ctx.heap.object_proto;
+            HString* value_key = builtin_intern_string(ctx.heap, "value");
+            TVal undef_val;
+            undef_val.tag = UNDEFINED;
+            undef_val.pointer = null;
+            r.put_prop(value_key, undef_val, hobject::PROP_FLAGS_WEC);
+
+            HString* done_key = builtin_intern_string(ctx.heap, "done");
+            TVal done_val;
+            done_val.tag = BOOLEAN;
+            done_val.boolean = true;
+            r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = r;
+        }
+        return;
+    }
+
+    // Set the resume value
+    if (ctx.argc >= 1) {
+        gs.resume_value = ctx.regs[ctx.base_reg];
+    } else {
+        gs.resume_value.tag = UNDEFINED;
+        gs.resume_value.pointer = null;
+    }
+
+    // Set heap.resume_gen so the CALL handler knows to resume
+    gs.resume_kind = NEXT;
+    vm_heap.resume_gen = gs;
+    vm_heap.did_yield = false;
+
+    // Create a callable HObject wrapping the generator's compiled function
+    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) {
+        vm_heap.resume_gen = null;
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* func_obj = func_obj_raw;
+    func_obj.flags.callable = true;
+    func_obj.comp_func = (CompiledFunction*)gs.func;
+    func_obj.var_env = (EnvRecord*)gs.var_env;
+    func_obj.lex_env = (EnvRecord*)gs.lex_env;
+
+    TVal func_tv;
+    func_tv.tag = OBJECT;
+    func_tv.pointer = func_obj;
+
+    // Replace callee slot (base_reg - 2) and this slot (base_reg - 1)
+    ctx.regs[ctx.base_reg - 2] = func_tv;
+    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
+
+    // Signal re-dispatch with 0 args
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
+}
+
+// ============================================================================
+// Generator.prototype.throw(exception) — ES6 §25.3.1.4
+// ============================================================================
+
+fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
+    if (ctx.this_val.tag != OBJECT) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    Heap* vm_heap = ctx.heap;
+    GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
+    if (gs == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    if (gs.state == GEN_COMPLETED) {
+        // Already completed — propagate the exception (ES6 §25.3.1.4.a)
+        ctx.should_throw = true;
+        if (ctx.argc >= 1) {
+            ctx.throw_value = ctx.regs[ctx.base_reg];
+        } else {
+            ctx.throw_value.tag = UNDEFINED;
+            ctx.throw_value.pointer = null;
+        }
+        return;
+    }
+
+    if (gs.state == GEN_EXECUTING) {
+        // Cannot throw into an executing generator (ES6 §25.3.1.4.b)
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Set the exception to inject
+    if (ctx.argc >= 1) {
+        gs.throw_value = ctx.regs[ctx.base_reg];
+    } else {
+        gs.throw_value.tag = UNDEFINED;
+        gs.throw_value.pointer = null;
+    }
+    gs.resume_kind = THROW;
+
+    // Set heap.resume_gen so the CALL handler knows to resume
+    vm_heap.resume_gen = gs;
+    vm_heap.did_yield = false;
+
+    // Create a callable HObject wrapping the generator's compiled function
+    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) {
+        vm_heap.resume_gen = null;
+        gs.resume_kind = NEXT;
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* func_obj = func_obj_raw;
+    func_obj.flags.callable = true;
+    func_obj.comp_func = (CompiledFunction*)gs.func;
+    func_obj.var_env = (EnvRecord*)gs.var_env;
+    func_obj.lex_env = (EnvRecord*)gs.lex_env;
+
+    TVal func_tv;
+    func_tv.tag = OBJECT;
+    func_tv.pointer = func_obj;
+
+    // Replace callee slot and this slot
+    ctx.regs[ctx.base_reg - 2] = func_tv;
+    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
+
+    // Signal re-dispatch with 0 args
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
+}
+
+// ============================================================================
+// Generator.prototype.return(value) — ES6 §25.3.1.3
+// ============================================================================
+
+fn void builtin_generator_proto_return(BuiltinContext* ctx) {
+    if (ctx.this_val.tag != OBJECT) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    Heap* vm_heap = ctx.heap;
+    GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
+    if (gs == null) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    if (gs.state == GEN_COMPLETED) {
+        // Already completed — return {value: argument, done: true}
+        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        if (try r = result_raw) {
+            r.prototype = ctx.heap.object_proto;
+            HString* value_key = builtin_intern_string(ctx.heap, "value");
+            TVal arg_val;
+            if (ctx.argc >= 1) {
+                arg_val = ctx.regs[ctx.base_reg];
+            } else {
+                arg_val.tag = UNDEFINED;
+                arg_val.pointer = null;
+            }
+            r.put_prop(value_key, arg_val, hobject::PROP_FLAGS_WEC);
+
+            HString* done_key = builtin_intern_string(ctx.heap, "done");
+            TVal done_val;
+            done_val.tag = BOOLEAN;
+            done_val.boolean = true;
+            r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = r;
+        }
+        return;
+    }
+
+    if (gs.state == GEN_EXECUTING) {
+        // Cannot return into an executing generator
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    if (gs.state == GEN_SUSPENDED_START) {
+        // Generator has never executed — complete immediately without
+        // executing any body code (ES6 §25.3.1.3, step 5).
+        gs.state = GEN_COMPLETED;
+        TVal arg_val;
+        if (ctx.argc >= 1) {
+            arg_val = ctx.regs[ctx.base_reg];
+        } else {
+            arg_val.tag = UNDEFINED;
+            arg_val.pointer = null;
+        }
+        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        if (try r = result_raw) {
+            r.prototype = ctx.heap.object_proto;
+            HString* value_key = builtin_intern_string(ctx.heap, "value");
+            r.put_prop(value_key, arg_val, hobject::PROP_FLAGS_WEC);
+            HString* done_key = builtin_intern_string(ctx.heap, "done");
+            TVal done_val;
+            done_val.tag = BOOLEAN;
+            done_val.boolean = true;
+            r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = r;
+        }
+        return;
+    }
+
+    // Set the return value to inject
+    if (ctx.argc >= 1) {
+        gs.return_value = ctx.regs[ctx.base_reg];
+    } else {
+        gs.return_value.tag = UNDEFINED;
+        gs.return_value.pointer = null;
+    }
+    gs.resume_kind = RETURN;
+
+    // Set heap.resume_gen so the CALL handler knows to resume
+    vm_heap.resume_gen = gs;
+    vm_heap.did_yield = false;
+
+    // Create a callable HObject wrapping the generator's compiled function
+    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) {
+        vm_heap.resume_gen = null;
+        gs.resume_kind = NEXT;
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* func_obj = func_obj_raw;
+    func_obj.flags.callable = true;
+    func_obj.comp_func = (CompiledFunction*)gs.func;
+    func_obj.var_env = (EnvRecord*)gs.var_env;
+    func_obj.lex_env = (EnvRecord*)gs.lex_env;
+
+    TVal func_tv;
+    func_tv.tag = OBJECT;
+    func_tv.pointer = func_obj;
+
+    // Replace callee slot and this slot
+    ctx.regs[ctx.base_reg - 2] = func_tv;
+    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
+
+    // Signal re-dispatch with 0 args
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
+}
+
+// ============================================================================
+// Generator constructor registration
+// ============================================================================
+
+fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Generator.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = heap.object_proto;
+    heap.generator_proto = proto;
+
+    // Register prototype methods
+    if (!register_string_proto_method(proto, heap, "next",   BUILTIN_GENERATOR_PROTO_NEXT))   return false;
+    if (!register_string_proto_method(proto, heap, "throw",  BUILTIN_GENERATOR_PROTO_THROW))  return false;
+    if (!register_string_proto_method(proto, heap, "return", BUILTIN_GENERATOR_PROTO_RETURN)) return false;
+
+    // Wire prototype.constructor → GeneratorFunction constructor
+    // GeneratorFunction constructor is created later; we'll wire it there
 
     return true;
 }
@@ -8264,6 +8767,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_promise_all(ctx);
         case BUILTIN_PROMISE_RACE:
             builtin_promise_race(ctx);
+        case BUILTIN_GENERATOR_FUNCTION:
+            builtin_generator_function(ctx);
+        case BUILTIN_GENERATOR_PROTO_NEXT:
+            builtin_generator_proto_next(ctx);
+        case BUILTIN_GENERATOR_PROTO_THROW:
+            builtin_generator_proto_throw(ctx);
+        case BUILTIN_GENERATOR_PROTO_RETURN:
+            builtin_generator_proto_return(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -8452,6 +8963,11 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Promise constructor and prototype
     if (!register_promise_constructor(global_env, heap)) return false;
 
+    // Register Generator constructor and prototype (GeneratorFunction uses
+    // heap.generator_proto; the GeneratorFunction global is registered
+    // separately as a simple builtin).
+    if (!register_generator_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -8467,6 +8983,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.weakset_proto != null) heap.weakset_proto.prototype = heap.object_proto;
     if (heap.symbol_proto != null) heap.symbol_proto.prototype = heap.object_proto;
     if (heap.promise_proto != null) heap.promise_proto.prototype = heap.object_proto;
+    if (heap.generator_proto != null) heap.generator_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
@@ -8474,7 +8991,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "GeneratorFunction" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {

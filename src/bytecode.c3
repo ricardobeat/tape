@@ -339,6 +339,25 @@ enum Opcode : char {
     /// A-only format: A=result_reg, B=0, C=0.
     NEWTARGET,
 
+    // ---- Generators (ES6) ------------------------------------------------
+
+    /// `A = load_resume` — load the value passed to .next() into A.
+    /// Emitted by the compiler after every YIELD instruction so that the
+    /// yield expression evaluates to the value the caller passed to .next(val).
+    /// ABC format: A=result_reg, B=0, C=0.
+    LOAD_RESUME,
+
+    /// `yield A` — suspend generator execution and return the value in A.
+    /// YIELD saves the current activation state (registers, PC, environments)
+    /// to the generator object and returns {value: A, done: false} to the
+    /// caller of .next()/.throw()/.return().
+    /// ABC format: A=value_reg, B=0, C=0.
+    YIELD,
+
+    /// `A = yield* B` — delegate to another generator/iterable.
+    /// ABC format: A=result_reg, B=iterable_reg, C=0.
+    YIELD_STAR,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -390,6 +409,10 @@ fn OpFormat get_op_format(Opcode op) {
         case SETPROTO:   return ABC;
         case SUPER_CALL: return ABC;
         case NEWTARGET:  return ABC;
+
+        case LOAD_RESUME:  return ABC;
+        case YIELD:      return ABC;
+        case YIELD_STAR: return ABC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -948,6 +971,9 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.SETPROTO.ordinal]    = "SETPROTO",
     [Opcode.SUPER_CALL.ordinal]  = "SUPER_CALL",
     [Opcode.NEWTARGET.ordinal]   = "NEWTARGET",
+    [Opcode.LOAD_RESUME.ordinal] = "LOAD_RESUME",
+    [Opcode.YIELD.ordinal]       = "YIELD",
+    [Opcode.YIELD_STAR.ordinal]  = "YIELD_STAR",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

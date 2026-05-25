@@ -2158,6 +2158,185 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
             CompiledFunction* target = hobj.comp_func;
 
+            // === Generator function handling (ES6 §25.3) ===
+            if (target.is_generator()) {
+                // Resume path: .next()/.throw()/.return() set heap.resume_gen
+                if (vm.heap.resume_gen != null && (CompiledFunction*)vm.heap.resume_gen.func == target) {
+                    GeneratorState* gs = vm.heap.resume_gen;
+
+                    if (gs.state == GEN_COMPLETED) {
+                        vm.heap.resume_gen = null;
+                        regs_base[result_reg].tag = UNDEFINED;
+                        regs_base[result_reg].pointer = null;
+                        break;
+                    }
+
+                    // Set state to EXECUTING
+                    gs.state = GEN_EXECUTING;
+
+                    // Calculate register layout
+                    uint frame_start_r = callee_reg + 2;
+                    uint new_bottom_idx_r = (act.bottom_byteoff / TVal::size) + frame_start_r;
+                    uint needed_r = new_bottom_idx_r + target.num_regs;
+
+                    if (!ensure_valstack(vm, needed_r)) {
+                        gs.state = GEN_SUSPENDED_YIELD;
+                        regs_base[result_reg].tag = UNDEFINED;
+                        regs_base[result_reg].pointer = null;
+                        break;
+                    }
+
+                    regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
+                    if (vm.activation_count >= MAX_CALLS) {
+                        gs.state = GEN_SUSPENDED_YIELD;
+                        regs_base[result_reg].tag = UNDEFINED;
+                        regs_base[result_reg].pointer = null;
+                        break;
+                    }
+
+                    // Push activation
+                    Activation* new_act_r = &vm.activations[vm.activation_count];
+                    vm.activation_count++;
+
+                    new_act_r.parent = act;
+                    new_act_r.func = target;
+                    new_act_r.var_env = gs.var_env;
+                    new_act_r.lex_env = gs.lex_env;
+                    new_act_r.cat = null;
+                    new_act_r.curr_pc = gs.saved_pc;
+                    new_act_r.bottom_byteoff = new_bottom_idx_r * (uint)TVal::size;
+                    new_act_r.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+                    new_act_r.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
+                    new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD;
+                    new_act_r.this_binding = gs.this_binding;
+
+                    // Copy saved registers to valstack
+                    TVal* new_regs_r = ptr_from_byteoff(vm.valstack, new_act_r.bottom_byteoff);
+                    uint new_nregs_r = target.num_regs;
+                    for (uint i = 0; i < new_nregs_r; i++) {
+                        new_regs_r[i] = gs.saved_regs[i];
+                    }
+
+                    vm.valstack_top = (TVal*)((usz)new_regs_r + (usz)new_nregs_r * TVal::size);
+                    vm.valstack_bottom = new_act_r.bottom_byteoff;
+
+                    needs_restart = true;
+                    break;
+                }
+
+                // Initial call: create generator object, don't execute body
+                // Calculate register layout
+                uint frame_start = callee_reg + 2;
+                uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
+                uint needed = new_bottom_idx + target.num_regs;
+
+                if (!ensure_valstack(vm, needed)) {
+                    regs_base[result_reg].tag = UNDEFINED;
+                    regs_base[result_reg].pointer = null;
+                    break;
+                }
+
+                regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
+                // Allocate GeneratorState
+                void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
+                if (gs_raw == null) {
+                    regs_base[result_reg].tag = UNDEFINED;
+                    regs_base[result_reg].pointer = null;
+                    break;
+                }
+                GeneratorState* gs = (GeneratorState*)gs_raw;
+                libc::memset(gs_raw, 0, GeneratorState::size);
+
+                gs.state = GEN_SUSPENDED_START;
+                gs.func = target;
+                gs.num_regs = target.num_regs;
+                gs.saved_pc = target.code;
+                gs.var_env = hobj.var_env;
+                gs.lex_env = hobj.lex_env;
+                gs.this_binding = regs_base[callee_reg + 1];
+
+                // Allocate and copy saved registers
+                usz regs_bytes = (usz)target.num_regs * TVal::size;
+                void* regs_raw = vm.heap.alloc_func(vm.heap.heap_udata, regs_bytes);
+                if (regs_raw == null) {
+                    vm.heap.free_func(vm.heap.heap_udata, gs_raw);
+                    regs_base[result_reg].tag = UNDEFINED;
+                    regs_base[result_reg].pointer = null;
+                    break;
+                }
+                gs.saved_regs = (TVal*)regs_raw;
+                libc::memset(regs_raw, 0, regs_bytes);
+
+                // Initialize registers with args (rest = undefined for extra slots)
+                TVal* base = ptr_from_byteoff(vm.valstack, (usz)new_bottom_idx * TVal::size);
+                TVal* old_args = regs_base + callee_reg + 2;
+                uint copy_count = target.has_rest() ? (uint)target.num_formals : nargs;
+                if (copy_count > target.num_regs) copy_count = target.num_regs;
+                for (uint i = 0; i < copy_count; i++) {
+                    base[i] = old_args[i];
+                    gs.saved_regs[i] = old_args[i];
+                }
+                for (uint i = copy_count; i < target.num_regs; i++) {
+                    base[i].set_undefined();
+                    gs.saved_regs[i].tag = UNDEFINED;
+                    gs.saved_regs[i].pointer = null;
+                }
+
+                // Handle rest parameter: build rest array and store in saved_regs
+                if (target.has_rest() && nargs > (uint)target.num_formals) {
+                    uint rest_idx = (uint)target.num_formals;
+                    uint overflow = nargs - (uint)target.num_formals;
+
+                    HObject*? arr_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                    if (try a = arr_raw) {
+                        a.prototype = vm.heap.array_proto;
+                        for (uint i = 0; i < overflow; i++) {
+                            char[16] ibuf;
+                            int ilen = libc::snprintf(&ibuf, 16, "%u", i);
+                            if (ilen > 0 && ilen < 16) {
+                                HString* key = intern_string(vm, ibuf[:ilen]);
+                                if (key != null) {
+                                    a.put_prop(key, old_args[(uint)target.num_formals + i], hobject::PROP_FLAGS_WEC);
+                                }
+                            }
+                        }
+                        HString* len_str = intern_string(vm, "length");
+                        TVal len_val;
+                        len_val.tag = FASTINT;
+                        len_val.fastint = (long)overflow;
+                        a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
+
+                        base[rest_idx].tag = OBJECT;
+                        base[rest_idx].pointer = a;
+                        gs.saved_regs[rest_idx].tag = OBJECT;
+                        gs.saved_regs[rest_idx].pointer = a;
+                    }
+                }
+
+                // Create Generator HObject
+                HObject*? gen_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.GENERATOR);
+                HObject* gen_obj;
+                if (try go = gen_obj_raw) {
+                    gen_obj = go;
+                } else {
+                    vm.heap.free_func(vm.heap.heap_udata, gs.saved_regs);
+                    vm.heap.free_func(vm.heap.heap_udata, gs_raw);
+                    regs_base[result_reg].tag = UNDEFINED;
+                    regs_base[result_reg].pointer = null;
+                    break;
+                }
+                gen_obj.prototype = vm.heap.generator_proto;
+                gen_obj.generator_data = gs;
+
+                // Return generator object as the call result
+                TVal* result_slot = regs_base + result_reg;
+                result_slot.tag = OBJECT;
+                result_slot.pointer = gen_obj;
+                break;
+            }
+
             // New callee frame starts right after func and this in the caller frame
             // Layout: callee_reg = func, callee_reg+1 = this, callee_reg+2.. callee_reg+1+nargs = args
             uint frame_start = callee_reg + 2;
@@ -2796,9 +2975,301 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.TAILCALL:
             break;
 
+        // === GENERATORS ===
+
+        case Opcode.LOAD_RESUME: {
+            // LOAD_RESUME A — load the value passed to .next(val) into A.
+            // Emitted after YIELD so the yield expression evaluates to the
+            // resume value. Also handles throw/return injection: for THROW,
+            // call vm_throw_value to find the nearest catcher; for RETURN,
+            // mark the generator complete and return to the caller.
+            if (vm.heap.resume_gen != null) {
+                GeneratorState* gs_lr = vm.heap.resume_gen;
+                ResumeKind rk = gs_lr.resume_kind;
+
+                if (rk == THROW) {
+                    // Inject exception: find the nearest catcher in the generator
+                    TVal throw_val = gs_lr.throw_value;
+                    vm.heap.resume_gen = null;
+
+                    if (!vm_throw_value(vm, throw_val, act, &curr_pc, &needs_restart)) {
+                        // No catcher in generator — pop activation and
+                        // propagate error to the caller's catcher chain.
+                        gs_lr.state = GEN_COMPLETED;
+
+                        if (vm.activation_count > 0) {
+                            vm.activation_count--;
+                            if (vm.activation_count > 0) {
+                                Activation* caller_act = &vm.activations[vm.activation_count - 1];
+                                vm.valstack_bottom = caller_act.bottom_byteoff;
+                                uint caller_bottom_idx = caller_act.bottom_byteoff / TVal::size;
+                                if (caller_act.func != null) {
+                                    CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+                                    vm.valstack_top = (TVal*)((usz)vm.valstack
+                                        + (usz)(caller_bottom_idx + caller_func.num_regs) * TVal::size);
+                                }
+
+                                // Try to find a catcher in the caller's chain
+                                if (!vm_throw_value(vm, throw_val, caller_act,
+                                                    &caller_act.curr_pc, &needs_restart)) {
+                                    // Unhandled — set error for the VM to return
+                                    vm.has_error = true;
+                                    TVal* ret_slot = ptr_from_byteoff(vm.valstack,
+                                        caller_act.retval_byteoff);
+                                    ret_slot[0] = throw_val;
+                                }
+                            }
+                        }
+                    }
+                    needs_restart = true;
+                    break;
+                }
+
+                if (rk == RETURN) {
+                    // Inject return: mark generator complete, return to caller
+                    TVal ret_val = gs_lr.return_value;
+                    gs_lr.state = GEN_COMPLETED;
+                    gs_lr.resume_kind = NEXT;
+                    vm.heap.resume_gen = null;
+
+                    // Pop the generator activation
+                    if (vm.activation_count > 0) {
+                        Activation* gen_act = &vm.activations[vm.activation_count - 1];
+                        uint ret_byteoff = gen_act.retval_byteoff;
+                        vm.activation_count--;
+                        if (vm.activation_count > 0) {
+                            Activation* caller_act = &vm.activations[vm.activation_count - 1];
+                            vm.valstack_bottom = caller_act.bottom_byteoff;
+                            uint caller_bottom_idx = caller_act.bottom_byteoff / TVal::size;
+                            if (caller_act.func != null) {
+                                CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+                                vm.valstack_top = (TVal*)((usz)vm.valstack
+                                    + (usz)(caller_bottom_idx + caller_func.num_regs) * TVal::size);
+                            }
+
+                            // Write return value to caller's return slot
+                            TVal* ret_slot = ptr_from_byteoff(vm.valstack, caller_act.retval_byteoff);
+                            ret_slot[0] = ret_val;
+                        }
+                    }
+                    needs_restart = true;
+                    break;
+                }
+
+                // Normal NEXT — load resume value
+                ra[0] = gs_lr.resume_value;
+            } else {
+                ra[0].set_undefined();
+            }
+            break;
+        }
+
+        case Opcode.YIELD: {
+            // YIELD A — suspend generator and return {value: A, done: false}
+            // heap.resume_gen was set by the .next()/.throw()/.return() builtin
+            if (vm.heap.resume_gen != null) {
+                GeneratorState* gs = vm.heap.resume_gen;
+
+                // Save current state
+                TVal* regs_base_r = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                for (uint i = 0; i < gs.num_regs; i++) {
+                    gs.saved_regs[i] = regs_base_r[i];
+                }
+                gs.saved_pc = curr_pc;  // curr_pc already points past YIELD
+                gs.var_env = act.var_env;
+                gs.lex_env = act.lex_env;
+                gs.this_binding = act.this_binding;
+                gs.state = GEN_SUSPENDED_YIELD;
+
+                // Store the yielded value
+                vm.heap.yield_value = ra[0];
+
+                // Check resume kind for throw/return injection
+                ResumeKind rkind = gs.resume_kind;
+
+                if (rkind == THROW) {
+                    // .throw() — inject exception at yield point
+                    // Pop activation, set has_error so the outer loop
+                    // re-enters the generator with an exception pending
+                    vm.heap.resume_gen = null;
+                    vm.heap.did_yield = true;
+
+                    if (vm.activation_count > 0) {
+                        Activation* yield_act = &vm.activations[vm.activation_count - 1];
+                        uint ret_byteoff = yield_act.retval_byteoff;
+
+                        // Write the exception as the result (will be caught by try/catch inside generator)
+                        TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                        ret_slot[0] = gs.throw_value;
+
+                        vm.activation_count--;
+                        if (vm.activation_count > 0) {
+                            Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
+                            vm.valstack_bottom = caller_act2.bottom_byteoff;
+                            uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
+                            if (caller_act2.func != null) {
+                                CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
+                                vm.valstack_top = (TVal*)((usz)vm.valstack
+                                    + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                            }
+                        }
+                    }
+                    needs_restart = true;
+                    break;
+                }
+
+                if (rkind == RETURN) {
+                    // .return() — inject return at yield point
+                    // Mark generator as completed, return {value: rv, done: true}
+                    gs.state = GEN_COMPLETED;
+                    vm.heap.resume_gen = null;
+                    vm.heap.did_yield = false;
+
+                    HObject*? robj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                    TVal wrapped_val;
+                    if (try robj = robj_raw) {
+                        robj.prototype = vm.heap.object_proto;
+                        HString* val_key = intern_string(vm, "value");
+                        if (val_key != null) robj.put_prop(val_key, gs.return_value, hobject::PROP_FLAGS_WEC);
+                        HString* done_key = intern_string(vm, "done");
+                        TVal done_val;
+                        done_val.tag = BOOLEAN;
+                        done_val.boolean = true;
+                        if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+                        wrapped_val.tag = OBJECT;
+                        wrapped_val.pointer = robj;
+                    } else {
+                        wrapped_val = gs.return_value;
+                    }
+
+                    if (vm.activation_count > 0) {
+                        Activation* yield_act = &vm.activations[vm.activation_count - 1];
+                        uint ret_byteoff = yield_act.retval_byteoff;
+                        TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                        ret_slot[0] = wrapped_val;
+
+                        vm.activation_count--;
+                        if (vm.activation_count > 0) {
+                            Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
+                            vm.valstack_bottom = caller_act2.bottom_byteoff;
+                            uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
+                            if (caller_act2.func != null) {
+                                CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
+                                vm.valstack_top = (TVal*)((usz)vm.valstack
+                                    + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                            }
+                        }
+                    }
+                    needs_restart = true;
+                    break;
+                }
+
+                // Normal .next() — clear resume_gen so CALL handler doesn't try to resume again
+                vm.heap.resume_gen = null;
+            }
+
+            vm.heap.did_yield = true;
+
+            // Pop activation and return to caller (the .next() builtin's context)
+            if (vm.activation_count > 0) {
+                Activation* yield_act = &vm.activations[vm.activation_count - 1];
+                uint ret_byteoff = yield_act.retval_byteoff;
+
+                // Create IteratorResult {value: yieldVal, done: false}
+                HObject*? result_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                TVal wrapped_val;
+                if (try robj = result_obj_raw) {
+                    robj.prototype = vm.heap.object_proto;
+                    HString* val_key = intern_string(vm, "value");
+                    if (val_key != null) robj.put_prop(val_key, vm.heap.yield_value, hobject::PROP_FLAGS_WEC);
+                    HString* done_key = intern_string(vm, "done");
+                    TVal done_val;
+                    done_val.tag = BOOLEAN;
+                    done_val.boolean = false;
+                    if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+                    wrapped_val.tag = OBJECT;
+                    wrapped_val.pointer = robj;
+                } else {
+                    wrapped_val = vm.heap.yield_value;
+                }
+
+                // Write wrapped result to caller's frame
+                TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                ret_slot[0] = wrapped_val;
+
+                vm.activation_count--;
+                if (vm.activation_count > 0) {
+                    Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
+                    vm.valstack_bottom = caller_act2.bottom_byteoff;
+                    uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
+                    if (caller_act2.func != null) {
+                        CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
+                        vm.valstack_top = (TVal*)((usz)vm.valstack
+                            + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                    }
+                }
+            }
+            needs_restart = true;
+            break;
+        }
+
+        case Opcode.YIELD_STAR: {
+            // yield* iterable — this opcode should NOT be reached in normal
+            // execution. The compiler transforms yield* into a loop of
+            // GETIDX + YIELD instructions. If we get here, just set undefined.
+            ra[0].set_undefined();
+            break;
+        }
+
         // === RETURNS ===
 
         case Opcode.RET:
+            // If we're in a generator, mark as completed
+            if (vm.heap.resume_gen != null) {
+                GeneratorState* gs = vm.heap.resume_gen;
+                gs.state = GEN_COMPLETED;
+                vm.heap.yield_value = ra[0];
+                vm.heap.did_yield = false;  // completed, not yielded
+                vm.heap.resume_gen = null;
+
+                // Wrap in IteratorResult {value: returnVal, done: true}
+                HObject*? robj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                TVal wrapped_val;
+                if (try robj = robj_raw) {
+                    robj.prototype = vm.heap.object_proto;
+                    HString* val_key = intern_string(vm, "value");
+                    if (val_key != null) robj.put_prop(val_key, ra[0], hobject::PROP_FLAGS_WEC);
+                    HString* done_key = intern_string(vm, "done");
+                    TVal done_val;
+                    done_val.tag = BOOLEAN;
+                    done_val.boolean = true;
+                    if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+                    wrapped_val.tag = OBJECT;
+                    wrapped_val.pointer = robj;
+                } else {
+                    wrapped_val = ra[0];
+                }
+
+                // Write wrapped result to caller's frame
+                Activation* ret_act = &vm.activations[vm.activation_count - 1];
+                uint ret_byteoff = ret_act.retval_byteoff;
+                TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                ret_slot[0] = wrapped_val;
+
+                vm.activation_count--;
+                if (vm.activation_count > 0) {
+                    Activation* caller_act3 = &vm.activations[vm.activation_count - 1];
+                    vm.valstack_bottom = caller_act3.bottom_byteoff;
+                    uint caller_bottom_idx3 = caller_act3.bottom_byteoff / TVal::size;
+                    if (caller_act3.func != null) {
+                        CompiledFunction* caller_func3 = (CompiledFunction*)caller_act3.func;
+                        vm.valstack_top = (TVal*)((usz)vm.valstack
+                            + (usz)(caller_bottom_idx3 + caller_func3.num_regs) * TVal::size);
+                    }
+                }
+                needs_restart = true;
+                break;
+            }
             handle_return(vm, *ra);
             if (vm.activation_count == 0) {
                 return vm.return_val;
@@ -2810,6 +3281,35 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal undef_val;
             undef_val.tag = UNDEFINED;
             undef_val.pointer = null;
+
+            // If we're in a generator, mark as completed
+            if (vm.heap.resume_gen != null) {
+                GeneratorState* gs2 = vm.heap.resume_gen;
+                gs2.state = GEN_COMPLETED;
+                vm.heap.yield_value = undef_val;
+                vm.heap.did_yield = false;  // completed, not yielded
+                vm.heap.resume_gen = null;
+
+                Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
+                uint ret_byteoff2 = ret_act2.retval_byteoff;
+                TVal* ret_slot2 = ptr_from_byteoff(vm.valstack, ret_byteoff2);
+                ret_slot2[0] = undef_val;
+
+                vm.activation_count--;
+                if (vm.activation_count > 0) {
+                    Activation* caller_act4 = &vm.activations[vm.activation_count - 1];
+                    vm.valstack_bottom = caller_act4.bottom_byteoff;
+                    uint caller_bottom_idx4 = caller_act4.bottom_byteoff / TVal::size;
+                    if (caller_act4.func != null) {
+                        CompiledFunction* caller_func4 = (CompiledFunction*)caller_act4.func;
+                        vm.valstack_top = (TVal*)((usz)vm.valstack
+                            + (usz)(caller_bottom_idx4 + caller_func4.num_regs) * TVal::size);
+                    }
+                }
+                needs_restart = true;
+                break;
+            }
+
             handle_return(vm, undef_val);
             if (vm.activation_count == 0) {
                 return vm.return_val;
