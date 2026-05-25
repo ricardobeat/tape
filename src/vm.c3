@@ -1008,12 +1008,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         nregs = vm.current_func.num_regs;
 
         curr_pc = act.curr_pc;
+        Instruction* code_end = code_base + code_count;
 
         TVal* regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
 
         // Inner dispatch loop
         for (; !needs_restart; ) {
-            if (curr_pc >= code_base + code_count) {
+            if (curr_pc >= code_end) {
                 TVal undef_val;
                 undef_val.tag = UNDEFINED;
                 undef_val.pointer = null;
@@ -2438,7 +2439,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
-            func_slot = regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
                 regs_base[result_reg].tag = UNDEFINED;
@@ -2537,6 +2537,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             vm.current_func = target;
             code_base = target.code;
             code_count = target.code_count;
+            code_end = code_base + code_count;
             constants = target.constants;
             nregs = target.num_regs;
             curr_pc = act.curr_pc;
@@ -3378,6 +3379,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             vm.current_func = (CompiledFunction*)act.func;
             code_base = vm.current_func.code;
             code_count = vm.current_func.code_count;
+            code_end = code_base + code_count;
             constants = vm.current_func.constants;
             nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
@@ -3426,6 +3428,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             vm.current_func = (CompiledFunction*)act.func;
             code_base = vm.current_func.code;
             code_count = vm.current_func.code_count;
+            code_end = code_base + code_count;
             constants = vm.current_func.constants;
             nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
