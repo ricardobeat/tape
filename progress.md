@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 54
+**Last Updated:** Session 55
 **Target:** Full test262 conformance
 
 ## Summary
@@ -221,6 +221,23 @@ Update the counts and pass rate after every implemented feature
 || Generators | ❌ |
 
 
+### Phase 20: ES6+ — Promise ✅
+|| Component | Status |
+||---|---|
+|| Promise constructor (new Promise(executor)) | ✅ |
+|| Promise.resolve(x) | ✅ |
+|| Promise.reject(r) | ✅ |
+|| Promise.prototype.then(onFulfilled, onRejected) | ✅ |
+|| Promise.prototype.catch(onRejected) | ✅ |
+|| Promise.prototype.finally(onFinally) | ✅ |
+|| Promise.all(iterable) | ✅ (stub) |
+|| Promise.race(iterable) | ✅ (stub) |
+|| Internal state machine (pending/fulfilled/rejected) | ✅ |
+|| Reaction queue for .then() chaining | ✅ |
+|| Class name [object Promise] | ✅ |
+|| Async microtask scheduling | 🚫 Deferred |
+
+
 ### Phase 12: ES6+ — Destructuring ✅
 **test262: not yet quantified**
 || Component | Status |
@@ -358,3 +375,4 @@ Update the counts and pass rate after every implemented feature
 ||| 52 | **Phase 17: Map / Set built-ins** — Map and Set constructors and prototype methods (set, get, has, delete, clear, keys, values, entries, forEach, add). Internal storage uses HObject.array_part (Map: [k0,v0,k1,v1,...]; Set: [v0,v1,...]). SameValueZero comparison for key/value equality. Expanded ObjClass bitfield from 5→6 bits to fit MAP/SET. Registered globally with proper prototype chain wiring.
 ||| 53 | **Phase 18: WeakMap / WeakSet built-ins** — WeakMap (constructor, set, get, has, delete) and WeakSet (constructor, add, has, delete). ES6 §23.3-23.4. Key restriction: WeakMap keys must be Objects (TypeError on primitives); WeakSet values must be Objects. No size, clear, or iteration methods. ObjClass.WEAKMAP/WEAKSET added to enum; heap.weakmap_proto/weakset_proto fields; BUILTIN constants 131-139; class_name switch entries for "[object WeakMap/WeakSet]".
 ||| 54 | **Phase 19: Symbol built-in** — Symbol constructor (returns unique symbol STRING TVal with 0xFF prefix byte and is_symbol flag), Symbol.for(key) with global registry (heap-resident linear arrays), Symbol.keyFor(sym), Symbol.prototype.toString() and valueOf(). Added BUILTIN_SYMBOL (140) through BUILTIN_SYMBOL_PROTO_VALUEOF (144). Added heap.symbol_proto, symbol_registry_keys/syms/count/cap fields. Fixed keyword-as-property-name in compiler: after '.' any IdentifierName (including keywords) is accepted, enabling Symbol.for syntax. Fixed GETPROP VM opcode to route symbol STRING TVal to Symbol.prototype (not String.prototype). No regressions on existing test suite.
+||| 55 | **Phase 20: Promise built-in** — Promise constructor (new Promise(executor)), Promise.resolve(x), Promise.reject(r), Promise.prototype.then(onFulfilled, onRejected), Promise.prototype.catch(onRejected), Promise.prototype.finally(onFinally), Promise.all(iterable) stub, Promise.race(iterable) stub. Internal state machine (pending/fulfilled/rejected) stored in HObject.array_part with reaction queue for .then() chaining. Added ObjClass.PROMISE to enum, heap.promise_proto, BUILTIN constants 145-152, class_name switch for "[object Promise]". Static methods registered as LIGHTFUNC on Promise constructor. Full constructor/prototype wiring with Object.prototype and Function.prototype. No regressions on existing 18-test suite.

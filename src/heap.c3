@@ -115,6 +115,7 @@ struct Heap {
     HObject* weakmap_proto;
     HObject* weakset_proto;
     HObject* symbol_proto;
+    HObject* promise_proto;
 
     // Global symbol registry for Symbol.for / Symbol.keyFor
     HString** symbol_registry_keys;   /// Array of key HString* pointers

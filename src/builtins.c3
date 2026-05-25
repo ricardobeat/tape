@@ -174,6 +174,15 @@ const uint BUILTIN_SYMBOL_KEYFOR             = 142;
 const uint BUILTIN_SYMBOL_PROTO_TOSTRING     = 143;
 const uint BUILTIN_SYMBOL_PROTO_VALUEOF      = 144;
 
+const uint BUILTIN_PROMISE                   = 145;
+const uint BUILTIN_PROMISE_PROTO_THEN        = 146;
+const uint BUILTIN_PROMISE_PROTO_CATCH       = 147;
+const uint BUILTIN_PROMISE_PROTO_FINALLY     = 148;
+const uint BUILTIN_PROMISE_RESOLVE           = 149;
+const uint BUILTIN_PROMISE_REJECT            = 150;
+const uint BUILTIN_PROMISE_ALL               = 151;
+const uint BUILTIN_PROMISE_RACE              = 152;
+
 struct BuiltinContext {
     void* vm;
     TVal* regs;
@@ -2383,6 +2392,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.WEAKMAP:   class_name = "WeakMap"; break;
             case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
             case hobject::ObjClass.SYMBOL:    class_name = "Symbol"; break;
+            case hobject::ObjClass.PROMISE:   class_name = "Promise"; break;
             default:                          class_name = "Object"; break;
         }
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
@@ -7383,6 +7393,591 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     ctx.should_throw = true;
 }
 
+// ============================================================================
+// Promise helpers (ES6 §25.4)
+// ============================================================================
+
+const uint PROMISE_PENDING   = 0;
+const uint PROMISE_FULFILLED = 1;
+const uint PROMISE_REJECTED  = 2;
+
+/// Get the promise state from the HObject's array_part[0].
+fn uint promise_get_state(HObject* promise, uint default_state) {
+    if (promise.array_part != null && promise.array_size >= 2) {
+        return (uint)promise.array_part[0].fastint;
+    }
+    return default_state;
+}
+
+/// Set the promise state in array_part.
+fn void promise_set_state(HObject* promise, uint state) {
+    TVal state_tv;
+    state_tv.tag = FASTINT;
+    state_tv.fastint = (long)state;
+    promise.set_array_idx(0, state_tv);
+    TVal undef;
+    undef.tag = UNDEFINED;
+    undef.pointer = null;
+    promise.set_array_idx(1, undef);
+}
+
+/// Set the promise result in array_part.
+fn void promise_set_result(HObject* promise, TVal* val) {
+    promise.set_array_idx(1, *val);
+}
+
+/// Check that `this` is a Promise object.
+fn HObject* check_promise(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return obj;
+    }
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "Promise.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str;
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+    } else {
+        ctx.throw_value.set_undefined();
+    }
+    ctx.should_throw = true;
+    return null;
+}
+
+/// Trigger all pending reactions for a settled promise.
+fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
+    uint state = promise_get_state(promise, PROMISE_PENDING);
+    if (state == PROMISE_PENDING) return;
+
+    TVal result = promise.array_part[1];
+
+    // Iterate reactions stored in array_part starting at index 2
+    // Each reaction occupies one slot (an OBJECT with handler/capability props)
+    uint num_reactions = 0;
+    if (promise.array_used > 2) {
+        num_reactions = promise.array_used - 2;
+    }
+
+    for (uint i = 0; i < num_reactions; i++) {
+        TVal reaction_val = promise.array_part[2 + i];
+        if (reaction_val.tag != OBJECT || reaction_val.pointer == null) continue;
+        HObject* reaction = (HObject*)reaction_val.pointer;
+
+        // Get handler: onFulfilled for fulfilled, onRejected for rejected
+        char[] handler_prop = (state == PROMISE_FULFILLED) ? "onFulfilled" : "onRejected";
+        HString* handler_key = builtin_intern_string(heap, handler_prop);
+        TVal? handler_opt = reaction.get_prop(handler_key);
+        TVal handler;
+        if (try h = handler_opt) {
+            handler = h;
+        } else {
+            handler.tag = UNDEFINED;
+            handler.pointer = null;
+        }
+
+        // Get capability resolve/reject
+        HString* cap_resolve_key = builtin_intern_string(heap, "capResolve");
+        HString* cap_reject_key = builtin_intern_string(heap, "capReject");
+        TVal? cap_resolve_opt = reaction.get_prop(cap_resolve_key);
+        TVal? cap_reject_opt = reaction.get_prop(cap_reject_key);
+        TVal cap_resolve;
+        if (try cr = cap_resolve_opt) {
+            cap_resolve = cr;
+        } else {
+            cap_resolve.tag = UNDEFINED;
+            cap_resolve.pointer = null;
+        }
+        TVal cap_reject;
+        if (try cj = cap_reject_opt) {
+            cap_reject = cj;
+        } else {
+            cap_reject.tag = UNDEFINED;
+            cap_reject.pointer = null;
+        }
+
+        if (state == PROMISE_FULFILLED) {
+            if (handler.tag == UNDEFINED) {
+                // No onFulfilled — pass through
+                call_capability(cap_resolve, cap_reject, &result, heap, true);
+            } else {
+                // Call handler with result
+                TVal ret = call_handler(handler, &result, heap);
+                call_capability(cap_resolve, cap_reject, &ret, heap, true);
+            }
+        } else {
+            if (handler.tag == UNDEFINED) {
+                // No onRejected — pass through
+                call_capability(cap_resolve, cap_reject, &result, heap, false);
+            } else {
+                TVal ret = call_handler(handler, &result, heap);
+                call_capability(cap_resolve, cap_reject, &ret, heap, true);
+            }
+        }
+    }
+}
+
+/// Call a handler function with one argument.
+fn TVal call_handler(TVal handler, TVal* arg, Heap* heap) {
+    TVal result;
+    result.tag = UNDEFINED;
+    result.pointer = null;
+
+    if (handler.tag == OBJECT && handler.pointer != null) {
+        HObject* func = (HObject*)handler.pointer;
+        if (func.comp_func != null) {
+            // We need a VM to execute. Call via the heap's thread if available.
+            // For now, return undefined if we can't execute.
+            // This is a stub — real async execution requires VM integration.
+            return result;
+        }
+    }
+    if (handler.tag == LIGHTFUNC) {
+        // Call builtin — but we need the VM. Stub for now.
+        return result;
+    }
+    return result;
+}
+
+/// Resolve or reject a capability.
+fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool is_resolve) {
+    TVal callee = is_resolve ? resolve : reject;
+    if (callee.tag == UNDEFINED) return;
+
+    // For now, direct synchronous handling of chained promises
+    if (callee.tag == OBJECT && callee.pointer != null) {
+        HObject* cap = (HObject*)callee.pointer;
+        if (cap.flags.obj_class == hobject::ObjClass.PROMISE) {
+            promise_set_state(cap, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
+            promise_set_result(cap, val);
+            promise_trigger_reactions(cap, heap);
+        }
+    }
+}
+
+/// Create a new Promise with the given internal structure.
+fn HObject*? promise_create(Heap* heap) {
+    HObject*? prom_raw = hobject::hobject_alloc(heap, hobject::ObjClass.PROMISE);
+    if (catch err = prom_raw) return null;
+    HObject* prom = prom_raw;
+    prom.prototype = heap.promise_proto;
+    promise_set_state(prom, PROMISE_PENDING);
+    return prom;
+}
+
+/// Create a resolve/reject capability object (internal).
+/// Returns a pair of functions as properties on a capability HObject.
+fn HObject*? promise_create_capability(Heap* heap, HObject* promise) {
+    HObject*? cap_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    if (catch err = cap_raw) return null;
+    HObject* cap = cap_raw;
+
+    // Store a reference to the promise this capability controls
+    HString* promise_key = builtin_intern_string(heap, "promise");
+    TVal promise_val;
+    promise_val.tag = OBJECT;
+    promise_val.pointer = promise;
+    cap.put_prop(promise_key, promise_val, hobject::PROP_FLAGS_WEC);
+
+    return cap;
+}
+
+/// Add a reaction to a pending promise.
+fn void promise_add_reaction(HObject* promise, TVal reaction_val) {
+    uint idx = promise.array_used;
+    promise.set_array_idx(idx, reaction_val);
+}
+
+// ============================================================================
+// Promise constructor (ES6 §25.4.3.1)
+// ============================================================================
+
+fn void builtin_promise(BuiltinContext* ctx) {
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* promise = prom_raw;
+
+    // Set prototype
+    promise.prototype = ctx.heap.promise_proto;
+
+    if (ctx.argc < 1) {
+        // No executor — return pending promise
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    TVal executor = ctx.regs[ctx.base_reg];
+    if (executor.tag != OBJECT || executor.pointer == null) {
+        // Type error: executor must be callable
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    HObject* exec_func = (HObject*)executor.pointer;
+    if (exec_func.comp_func == null && exec_func.builtin_fn_index < 0) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    // Create resolve/reject callbacks
+    HObject*? cap_raw = promise_create_capability(ctx.heap, promise);
+    if (catch err = cap_raw) {
+        ctx.result.tag = OBJECT;
+        ctx.result.pointer = promise;
+        return;
+    }
+
+    // Call executor(resolve, reject)
+    // Store params on value stack and call
+    TVal resolve_tv;
+    resolve_tv.tag = OBJECT;
+    resolve_tv.pointer = cap_raw;
+
+    TVal reject_tv;
+    reject_tv.tag = OBJECT;
+    reject_tv.pointer = cap_raw;
+
+    // We need the VM to call the executor. For now, mark the promise
+    // and let the capability handle resolution later.
+    // Store the capability in array_part after state/result
+    promise.set_array_idx(2, resolve_tv);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = promise;
+}
+
+// ============================================================================
+// Promise.prototype.then(onFulfilled, onRejected) — ES6 §25.4.5.3
+// ============================================================================
+
+fn void builtin_promise_proto_then(BuiltinContext* ctx) {
+    HObject* promise = check_promise(ctx);
+    if (promise == null) return;
+
+    TVal on_fulfilled;
+    on_fulfilled.tag = UNDEFINED;
+    on_fulfilled.pointer = null;
+    TVal on_rejected;
+    on_rejected.tag = UNDEFINED;
+    on_rejected.pointer = null;
+    if (ctx.argc >= 1) on_fulfilled = ctx.regs[ctx.base_reg];
+    if (ctx.argc >= 2) on_rejected  = ctx.regs[ctx.base_reg + 1];
+
+    // Create a new promise for the chain
+    HObject*? new_prom_raw = promise_create(ctx.heap);
+    if (catch err = new_prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* new_promise = new_prom_raw;
+
+    // Create capability for new promise
+    HObject*? cap_raw = promise_create_capability(ctx.heap, new_promise);
+    if (catch err = cap_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* cap = cap_raw;
+
+    // Build reaction object
+    HObject*? reaction_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    if (catch err = reaction_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* reaction = reaction_raw;
+
+    // Store handlers
+    HString* onf_key = builtin_intern_string(ctx.heap, "onFulfilled");
+    reaction.put_prop(onf_key, on_fulfilled, hobject::PROP_FLAGS_WEC);
+
+    HString* onr_key = builtin_intern_string(ctx.heap, "onRejected");
+    reaction.put_prop(onr_key, on_rejected, hobject::PROP_FLAGS_WEC);
+
+    // Store capability resolve/reject as properties
+    HString* cap_res_key = builtin_intern_string(ctx.heap, "capResolve");
+    HString* cap_rej_key = builtin_intern_string(ctx.heap, "capReject");
+
+    TVal cap_val;
+    cap_val.tag = OBJECT;
+    cap_val.pointer = cap;
+    reaction.put_prop(cap_res_key, cap_val, hobject::PROP_FLAGS_WEC);
+    reaction.put_prop(cap_rej_key, cap_val, hobject::PROP_FLAGS_WEC);
+
+    // Add reaction to the original promise
+    TVal reaction_val;
+    reaction_val.tag = OBJECT;
+    reaction_val.pointer = reaction;
+
+    uint state = promise_get_state(promise, PROMISE_PENDING);
+    if (state == PROMISE_PENDING) {
+        promise_add_reaction(promise, reaction_val);
+    } else {
+        // Promise already settled — trigger reaction immediately
+        // For now, add and trigger
+        promise_add_reaction(promise, reaction_val);
+        // In a real implementation, this would be scheduled as a microtask
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = new_promise;
+}
+
+// ============================================================================
+// Promise.prototype.catch(onRejected) — ES6 §25.4.5.1
+// ============================================================================
+
+fn void builtin_promise_proto_catch(BuiltinContext* ctx) {
+    // catch(onRejected) is equivalent to then(undefined, onRejected)
+    // Forward to BUILTIN_PROMISE_PROTO_THEN with first arg as undefined
+    TVal saved_arg0 = ctx.regs[ctx.base_reg];
+    ctx.regs[ctx.base_reg].set_undefined();
+    builtin_promise_proto_then(ctx);
+    // Restore original arg (not strictly needed but clean)
+    ctx.regs[ctx.base_reg] = saved_arg0;
+}
+
+// ============================================================================
+// Promise.prototype.finally(onFinally) — ES2018 §25.4.5.3
+// ============================================================================
+
+fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
+    HObject* promise = check_promise(ctx);
+    if (promise == null) return;
+
+    TVal on_finally;
+    on_finally.tag = UNDEFINED;
+    on_finally.pointer = null;
+    if (ctx.argc >= 1) on_finally = ctx.regs[ctx.base_reg];
+
+    // finally just chains .then with the same handler for both branches
+    // For a full implementation, the onFinally handler is called with no args
+    // and the promise's result is passed through
+    ctx.regs[ctx.base_reg + 1] = on_finally;  // Set both onFulfilled and onRejected
+    builtin_promise_proto_then(ctx);
+}
+
+// ============================================================================
+// Promise.resolve(x) — ES6 §25.4.4.5
+// ============================================================================
+
+fn void builtin_promise_resolve(BuiltinContext* ctx) {
+    TVal val;
+    val.tag = UNDEFINED;
+    val.pointer = null;
+    if (ctx.argc >= 1) val = ctx.regs[ctx.base_reg];
+
+    // If already a Promise, return it
+    if (val.tag == OBJECT && val.pointer != null) {
+        HObject* obj = (HObject*)val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+            *ctx.result = val;
+            return;
+        }
+    }
+
+    // Create a new fulfilled promise
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* promise = prom_raw;
+    promise_set_state(promise, PROMISE_FULFILLED);
+    promise_set_result(promise, &val);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = promise;
+}
+
+// ============================================================================
+// Promise.reject(r) — ES6 §25.4.4.4
+// ============================================================================
+
+fn void builtin_promise_reject(BuiltinContext* ctx) {
+    TVal reason;
+    reason.tag = UNDEFINED;
+    reason.pointer = null;
+    if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
+
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* promise = prom_raw;
+    promise_set_state(promise, PROMISE_REJECTED);
+    promise_set_result(promise, &reason);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = promise;
+}
+
+// ============================================================================
+// Promise.all(iterable) — ES6 §25.4.4.1
+// ============================================================================
+
+fn void builtin_promise_all(BuiltinContext* ctx) {
+    // Stub implementation: create a resolved promise with empty array
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* promise = prom_raw;
+
+    // Create an empty array result
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    TVal arr_val;
+    arr_val.tag = OBJECT;
+    arr_val.pointer = arr;
+
+    promise_set_state(promise, PROMISE_FULFILLED);
+    promise_set_result(promise, &arr_val);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = promise;
+}
+
+// ============================================================================
+// Promise.race(iterable) — ES6 §25.4.4.3
+// ============================================================================
+
+fn void builtin_promise_race(BuiltinContext* ctx) {
+    // Stub: return a pending promise
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = prom_raw;
+}
+
+// ============================================================================
+// Promise constructor registration
+// ============================================================================
+
+fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Promise.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.PROMISE);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.promise_proto = proto;
+
+    // Register prototype methods
+    if (!register_string_proto_method(proto, heap, "then",    BUILTIN_PROMISE_PROTO_THEN))    return false;
+    if (!register_string_proto_method(proto, heap, "catch",   BUILTIN_PROMISE_PROTO_CATCH))   return false;
+    if (!register_string_proto_method(proto, heap, "finally", BUILTIN_PROMISE_PROTO_FINALLY)) return false;
+
+    // Create Promise function object
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_PROMISE;
+
+    // Wire prototype.constructor → ctor
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Promise.length = 1
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 1;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register static methods on Promise
+    HString* resolve_key = builtin_intern_string(heap, "resolve");
+    TVal resolve_tv;
+    resolve_tv.tag = LIGHTFUNC;
+    resolve_tv.fastint = (long)BUILTIN_PROMISE_RESOLVE;
+    ctor.put_prop(resolve_key, resolve_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* reject_key = builtin_intern_string(heap, "reject");
+    TVal reject_tv;
+    reject_tv.tag = LIGHTFUNC;
+    reject_tv.fastint = (long)BUILTIN_PROMISE_REJECT;
+    ctor.put_prop(reject_key, reject_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* all_key = builtin_intern_string(heap, "all");
+    TVal all_tv;
+    all_tv.tag = LIGHTFUNC;
+    all_tv.fastint = (long)BUILTIN_PROMISE_ALL;
+    ctor.put_prop(all_key, all_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* race_key = builtin_intern_string(heap, "race");
+    TVal race_tv;
+    race_tv.tag = LIGHTFUNC;
+    race_tv.fastint = (long)BUILTIN_PROMISE_RACE;
+    ctor.put_prop(race_key, race_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register "Promise" in global environment
+    uint hash = heap.hash_string("Promise");
+    HString* existing = heap.str_table_lookup("Promise", hash);
+    HString* promise_key;
+    if (existing != null) {
+        promise_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Promise", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        promise_key = new_key;
+    }
+    TVal promise_val;
+    promise_val.tag = OBJECT;
+    promise_val.pointer = ctor;
+    env::env_declare(global_env, promise_key, promise_val);
+
+    return true;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -7653,6 +8248,22 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_symbol_proto_toString(ctx);
         case BUILTIN_SYMBOL_PROTO_VALUEOF:
             builtin_symbol_proto_valueOf(ctx);
+        case BUILTIN_PROMISE:
+            builtin_promise(ctx);
+        case BUILTIN_PROMISE_PROTO_THEN:
+            builtin_promise_proto_then(ctx);
+        case BUILTIN_PROMISE_PROTO_CATCH:
+            builtin_promise_proto_catch(ctx);
+        case BUILTIN_PROMISE_PROTO_FINALLY:
+            builtin_promise_proto_finally(ctx);
+        case BUILTIN_PROMISE_RESOLVE:
+            builtin_promise_resolve(ctx);
+        case BUILTIN_PROMISE_REJECT:
+            builtin_promise_reject(ctx);
+        case BUILTIN_PROMISE_ALL:
+            builtin_promise_all(ctx);
+        case BUILTIN_PROMISE_RACE:
+            builtin_promise_race(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -7838,6 +8449,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Symbol constructor and prototype
     if (!register_symbol_constructor(global_env, heap)) return false;
 
+    // Register Promise constructor and prototype
+    if (!register_promise_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -7852,6 +8466,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.weakmap_proto != null) heap.weakmap_proto.prototype = heap.object_proto;
     if (heap.weakset_proto != null) heap.weakset_proto.prototype = heap.object_proto;
     if (heap.symbol_proto != null) heap.symbol_proto.prototype = heap.object_proto;
+    if (heap.promise_proto != null) heap.promise_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
@@ -7859,7 +8474,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {

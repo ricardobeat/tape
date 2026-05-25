@@ -61,3 +61,10 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - Keyword-as-property-name: compiler now accepts any keyword token after `.` as an IdentifierName (ES5 §11.2.1)
 - GETPROP auto-box routes symbol primitives to Symbol.prototype (not String.prototype)
 
+### Phase 20: Promise (ES6)
+
+- **Promise** — constructor, Promise.resolve(x), Promise.reject(r), Promise.prototype.then(onFulfilled, onRejected), Promise.prototype.catch(onRejected), Promise.prototype.finally(onFinally), Promise.all(iterable), Promise.race(iterable)
+- Internal state machine (pending/fulfilled/rejected) stored in HObject's array_part
+- Reaction queue for chained `.then()` callbacks
+- Static methods registered as LIGHTFUNC on the Promise constructor
+- Class name `[object Promise]` wired in Object.prototype.toString
