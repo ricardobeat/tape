@@ -2480,8 +2480,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
             vm.valstack_bottom = new_act.bottom_byteoff;
 
-            needs_restart = true;
-            break;
+            // Direct dispatch to new activation (avoid restart overhead)
+            act = new_act;
+            vm.current_func = target;
+            code_base = target.code;
+            code_count = target.code_count;
+            constants = target.constants;
+            nregs = target.num_regs;
+            curr_pc = act.curr_pc;
+            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            continue;
         }
 
         case Opcode.CALL_PROP:
@@ -3313,8 +3321,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (vm.activation_count == 0) {
                 return vm.return_val;
             }
-            needs_restart = true;
-            break;
+            // Direct dispatch after return (avoid restart overhead)
+            act = &vm.activations[vm.activation_count - 1];
+            vm.current_func = (CompiledFunction*)act.func;
+            code_base = vm.current_func.code;
+            code_count = vm.current_func.code_count;
+            constants = vm.current_func.constants;
+            nregs = vm.current_func.num_regs;
+            curr_pc = act.curr_pc;
+            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            continue;
 
         case Opcode.RETUNDEF: {
             TVal undef_val;
@@ -3353,8 +3369,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (vm.activation_count == 0) {
                 return vm.return_val;
             }
-            needs_restart = true;
-            break;
+            // Direct dispatch after return (avoid restart overhead)
+            act = &vm.activations[vm.activation_count - 1];
+            vm.current_func = (CompiledFunction*)act.func;
+            code_base = vm.current_func.code;
+            code_count = vm.current_func.code_count;
+            constants = vm.current_func.constants;
+            nregs = vm.current_func.num_regs;
+            curr_pc = act.curr_pc;
+            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            continue;
         }
 
         // === VARIABLE ACCESS ===
