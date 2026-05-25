@@ -959,6 +959,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         curr_pc = act.curr_pc;
 
+        TVal* regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
         // Inner dispatch loop
         for (; !needs_restart; ) {
             if (curr_pc >= code_base + code_count) {
@@ -979,7 +981,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
             Opcode op = insn.op;
 
-            TVal* regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
             TVal* ra = regs_base + ((uint)insn.a);
             TVal* rb = regs_base + ((uint)insn.b);
             TVal* rc = regs_base + ((uint)insn.c);
@@ -989,19 +990,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         // === LOAD / STORE ===
 
         case Opcode.LDREG:
-            ra.tag = rb.tag;
-            ra.fastint = rb.fastint;
-            ra.number = rb.number;
-            ra.pointer = rb.pointer;
+            *ra = *rb;
             break;
 
         case Opcode.LDCONST: {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
-                ra.tag = constants[bc].tag;
-                ra.fastint = constants[bc].fastint;
-                ra.number = constants[bc].number;
-                ra.pointer = constants[bc].pointer;
+                *ra = constants[bc];
             } else {
                 ra.tag = UNDEFINED;
                 ra.pointer = null;
@@ -1041,10 +1036,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
 
         case Opcode.LDTHIS:
-            ra.tag = act.this_binding.tag;
-            ra.fastint = act.this_binding.fastint;
-            ra.number = act.this_binding.number;
-            ra.pointer = act.this_binding.pointer;
+            *ra = act.this_binding;
             break;
 
         // === ARITHMETIC ===
@@ -1581,10 +1573,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
                     TVal found = get_prop_with_proto(hobj, key);
-                    ra.tag = found.tag;
-                    ra.fastint = found.fastint;
-                    ra.number = found.number;
-                    ra.pointer = found.pointer;
+                    *ra = found;
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
@@ -1629,10 +1618,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     HString* key = get_prop_key(vm, rc);
                     if (key != null) {
                         TVal found = get_prop_with_proto(vm.heap.symbol_proto, key);
-                        ra.tag = found.tag;
-                        ra.fastint = found.fastint;
-                        ra.number = found.number;
-                        ra.pointer = found.pointer;
+                        *ra = found;
                     } else {
                         ra.tag = UNDEFINED;
                         ra.pointer = null;
@@ -1642,10 +1628,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     HString* key = get_prop_key(vm, rc);
                     if (key != null && vm.heap.string_proto != null) {
                         TVal found = get_prop_with_proto(vm.heap.string_proto, key);
-                        ra.tag = found.tag;
-                        ra.fastint = found.fastint;
-                        ra.number = found.number;
-                        ra.pointer = found.pointer;
+                        *ra = found;
                     } else {
                         ra.tag = UNDEFINED;
                         ra.pointer = null;
@@ -1656,10 +1639,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.number_proto != null) {
                     TVal found = get_prop_with_proto(vm.heap.number_proto, key);
-                    ra.tag = found.tag;
-                    ra.fastint = found.fastint;
-                    ra.number = found.number;
-                    ra.pointer = found.pointer;
+                    *ra = found;
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
@@ -1669,10 +1649,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.bool_proto != null) {
                     TVal found = get_prop_with_proto(vm.heap.bool_proto, key);
-                    ra.tag = found.tag;
-                    ra.fastint = found.fastint;
-                    ra.number = found.number;
-                    ra.pointer = found.pointer;
+                    *ra = found;
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
@@ -3419,19 +3396,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 return VM_ERROR~;
                             }
                         } else {
-                            ra.tag = v.tag;
-                            ra.fastint = v.fastint;
-                            ra.number = v.number;
-                            ra.pointer = v.pointer;
+                            *ra = v;
                         }
                     } else {
                         // Not in lex_env — search var_env
                         result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
-                            ra.tag = v2.tag;
-                            ra.fastint = v2.fastint;
-                            ra.number = v2.number;
-                            ra.pointer = v2.pointer;
+                            *ra = v2;
                         } else {
                             // ReferenceError: variable not declared
                             HString* name_hstr = (HString*)key;
@@ -3832,10 +3803,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Read the thrown exception from the nearest catcher
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null) {
-                ra.tag = cat.thrown_val.tag;
-                ra.fastint = cat.thrown_val.fastint;
-                ra.number = cat.thrown_val.number;
-                ra.pointer = cat.thrown_val.pointer;
+                *ra = cat.thrown_val;
 
                 // Clear thrown value
                 cat.thrown_val.tag = UNDEFINED;

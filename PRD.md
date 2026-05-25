@@ -81,3 +81,22 @@ Bitwise ops (BNOT, BAND, BOR, BXOR, SHL, SHR, USHR) extract Int32 operands direc
 
 ### FASTINT direct comparison
 Comparison ops (LT, LE, GT, GE) compare FASTINT operands directly as 64-bit integers, avoiding conversion to double. Mixed NUMBER/FASTINT comparisons still use `num_val()`.
+
+### Session 60: Struct assignment for TVal + regs_base hoist
+
+**Problem**: The VM inner dispatch loop copied TVal values field-by-field (tag, fastint, number, pointer = 4 separate stores) instead of using struct assignment. This caused 3 redundant 8-byte stores per copy (the union was written 3 times before the final write settled). Additionally, `regs_base` (the register-file base pointer into the valstack) was recomputed via `ptr_from_byteoff(vm.valstack, act.bottom_byteoff)` on every single instruction, despite being stable for the entire activation's lifetime.
+
+**Fix**:
+- Replaced all field-by-field copies in the dispatch loop with `*ra = *rb` struct assignment: LDREG, LDCONST, LDTHIS, GETPROP (all 5 auto-box branches), GETVAR (lex_env + var_env), CATCH
+- Hoisted `regs_base` from the inner loop body to the outer restart loop, computing it once per activation instead of once per instruction
+
+**Benchmark impact** (5-iteration averages):
+| Benchmark | Before (ms) | After (ms) | Change |
+|---|---|---|---|
+| bench_object | 1053.4 | 833.8 | **-20.8%** |
+| bench_function_call | 954.5 | 839.0 | **-12.1%** |
+| bench_loop | 724.6 | 698.2 | -3.6% |
+| bench_array | 196.9 | 193.8 | -1.6% |
+| bench_property_lookup | 859.2 | 848.3 | -1.3% |
+| bench_recursion | 3737.1 | 3719.0 | -0.5% |
+| bench_string | 60.6 | 60.8 | +0.2% |
