@@ -5,7 +5,6 @@ justfile := "benchmarks/README.md"
 
 # Build everything (default)
 all: build-lib build-vm build-batch build-bench
-    @just --list
 
 # Build the static library
 build-lib:
@@ -23,8 +22,8 @@ build-batch:
 build-bench:
     c3c build bench_run
 
-# Build a specific target: `just build <target>`
-build t="all":
+# Build a specific target: `just build <target>`  (e.g. just build test_vm)
+build t="duktape":
     c3c build "{{t}}"
 
 # Clean build artifacts
