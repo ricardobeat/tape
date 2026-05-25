@@ -1622,8 +1622,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* hobj = (HObject*)rb.pointer;
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    TVal found = get_prop_with_proto(hobj, key);
-                    *ra = found;
+                    // Inline get_prop_with_proto
+                    TVal? result = hobj.get_prop_proto(key);
+                    if (try v = result) {
+                        *ra = v;
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
@@ -1667,8 +1673,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Auto-box symbol primitive: walk Symbol.prototype chain
                     HString* key = get_prop_key(vm, rc);
                     if (key != null) {
-                        TVal found = get_prop_with_proto(vm.heap.symbol_proto, key);
-                        *ra = found;
+                        TVal? result = vm.heap.symbol_proto.get_prop_proto(key);
+                        if (try v = result) {
+                            *ra = v;
+                        } else {
+                            ra.tag = UNDEFINED;
+                            ra.pointer = null;
+                        }
                     } else {
                         ra.tag = UNDEFINED;
                         ra.pointer = null;
@@ -1677,8 +1688,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Auto-box string primitive: walk String.prototype chain
                     HString* key = get_prop_key(vm, rc);
                     if (key != null && vm.heap.string_proto != null) {
-                        TVal found = get_prop_with_proto(vm.heap.string_proto, key);
-                        *ra = found;
+                        TVal? result = vm.heap.string_proto.get_prop_proto(key);
+                        if (try v = result) {
+                            *ra = v;
+                        } else {
+                            ra.tag = UNDEFINED;
+                            ra.pointer = null;
+                        }
                     } else {
                         ra.tag = UNDEFINED;
                         ra.pointer = null;
@@ -1688,8 +1704,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 // Auto-box number primitive: walk Number.prototype chain
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.number_proto != null) {
-                    TVal found = get_prop_with_proto(vm.heap.number_proto, key);
-                    *ra = found;
+                    TVal? result = vm.heap.number_proto.get_prop_proto(key);
+                    if (try v = result) {
+                        *ra = v;
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;
@@ -1698,8 +1719,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 // Auto-box boolean primitive: walk Boolean.prototype chain
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.bool_proto != null) {
-                    TVal found = get_prop_with_proto(vm.heap.bool_proto, key);
-                    *ra = found;
+                    TVal? result = vm.heap.bool_proto.get_prop_proto(key);
+                    if (try v = result) {
+                        *ra = v;
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;

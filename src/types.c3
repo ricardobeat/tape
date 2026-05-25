@@ -182,31 +182,31 @@ fn double TVal.get_number_or_fastint(&self) {
 // ---------------------------------------------------------------------------
 
 /// Overwrites the slot with undefined.
-fn void TVal.set_undefined(&self) {
+fn void TVal.set_undefined(&self) @inline {
     self.tag     = UNDEFINED;
     self.pointer = null;
 }
 
 /// Overwrites the slot with null.
-fn void TVal.set_null(&self) {
+fn void TVal.set_null(&self) @inline {
     self.tag     = NULL_VAL;
     self.pointer = null;
 }
 
 /// Overwrites the slot with a boolean.
-fn void TVal.set_boolean(&self, bool val) {
+fn void TVal.set_boolean(&self, bool val) @inline {
     self.tag     = BOOLEAN;
     self.boolean = val;
 }
 
 /// Overwrites the slot with a double-precision number.
-fn void TVal.set_number(&self, double val) {
+fn void TVal.set_number(&self, double val) @inline {
     self.tag    = NUMBER;
     self.number = val;
 }
 
 /// Overwrites the slot with a fast integer.
-fn void TVal.set_fastint(&self, long val) {
+fn void TVal.set_fastint(&self, long val) @inline {
     self.tag     = FASTINT;
     self.fastint = val;
 }

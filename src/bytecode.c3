@@ -784,42 +784,42 @@ fn uint CompiledFunction.decref(&self) {
 // ============================================================================
 
 /// Returns `true` when the function uses strict-mode semantics.
-fn bool CompiledFunction.is_strict(&self) {
+fn bool CompiledFunction.is_strict(&self) @inline {
     return self.flags.is_strict;
 }
 
 /// Returns `true` when the function is an arrow function.
-fn bool CompiledFunction.is_arrow(&self) {
+fn bool CompiledFunction.is_arrow(&self) @inline {
     return self.flags.is_arrow;
 }
 
 /// Returns `true` when the function is a generator.
-fn bool CompiledFunction.is_generator(&self) {
+fn bool CompiledFunction.is_generator(&self) @inline {
     return self.flags.is_generator;
 }
 
 /// Returns `true` when the function is async.
-fn bool CompiledFunction.is_async(&self) {
+fn bool CompiledFunction.is_async(&self) @inline {
     return self.flags.is_async;
 }
 
 /// Returns `true` when the function can be used as a constructor.
-fn bool CompiledFunction.is_constructable(&self) {
+fn bool CompiledFunction.is_constructable(&self) @inline {
     return self.flags.is_constructable;
 }
 
 /// Returns `true` when the function uses `arguments`.
-fn bool CompiledFunction.uses_arguments(&self) {
+fn bool CompiledFunction.uses_arguments(&self) @inline {
     return self.flags.uses_arguments;
 }
 
 /// Returns `true` when the function contains direct `eval()` calls.
-fn bool CompiledFunction.has_direct_eval(&self) {
+fn bool CompiledFunction.has_direct_eval(&self) @inline {
     return self.flags.has_direct_eval;
 }
 
 /// Returns `true` when the function has a rest parameter.
-fn bool CompiledFunction.has_rest(&self) {
+fn bool CompiledFunction.has_rest(&self) @inline {
     return self.flags.has_rest;
 }
 

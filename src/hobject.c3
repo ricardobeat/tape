@@ -372,13 +372,13 @@ fn ObjClass HObject.get_class(&self)    { return self.flags.obj_class; }
 fn bool HObject.is_extensible(&self)    { return self.flags.extensible; }
 
 /// Returns true when the object is callable.
-fn bool HObject.is_callable(&self)      { return self.flags.callable; }
+fn bool HObject.is_callable(&self)      @inline { return self.flags.callable; }
 
 /// Returns true when the object can be used as a constructor.
-fn bool HObject.is_constructable(&self) { return self.flags.constructable; }
+fn bool HObject.is_constructable(&self) @inline { return self.flags.constructable; }
 
 /// Returns true when the object is a bound function.
-fn bool HObject.is_bound(&self)         { return self.flags.is_bound; }
+fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 
 /// Seal the object: clear extensible, mark all own properties as
 /// non-configurable.
