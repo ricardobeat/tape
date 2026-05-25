@@ -1525,10 +1525,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* hobj = (HObject*)rb.pointer;
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    ra.tag = get_prop_with_proto(hobj, key).tag;
-                    ra.fastint = get_prop_with_proto(hobj, key).fastint;
-                    ra.number = get_prop_with_proto(hobj, key).number;
-                    ra.pointer = get_prop_with_proto(hobj, key).pointer;
+                    TVal found = get_prop_with_proto(hobj, key);
+                    ra.tag = found.tag;
+                    ra.fastint = found.fastint;
+                    ra.number = found.number;
+                    ra.pointer = found.pointer;
                 } else {
                     ra.tag = UNDEFINED;
                     ra.pointer = null;

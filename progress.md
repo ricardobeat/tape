@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 57
+**Last Updated:** Session 58
 **Target:** Full test262 conformance
 
 ## Summary
@@ -376,3 +376,4 @@ Update the counts and pass rate after every implemented feature
 ||| 55 | **Phase 20: Promise built-in** — Promise constructor (new Promise(executor)), Promise.resolve(x), Promise.reject(r), Promise.prototype.then(onFulfilled, onRejected), Promise.prototype.catch(onRejected), Promise.prototype.finally(onFinally), Promise.all(iterable) stub, Promise.race(iterable) stub. Internal state machine (pending/fulfilled/rejected) stored in HObject.array_part with reaction queue for .then() chaining. Added ObjClass.PROMISE to enum, heap.promise_proto, BUILTIN constants 145-152, class_name switch for "[object Promise]". Static methods registered as LIGHTFUNC on Promise constructor. Full constructor/prototype wiring with Object.prototype and Function.prototype. No regressions on existing 18-test suite.
 || 56 | **Skip filter update** — Updated `UNSUPPORTED_PATTERN` in `scripts/run_test262.py` and `UNSUPPORTED_FEATURES` in `scripts/run_test262_per_phase.sh` to unskip tests tagged with now-implemented features: `Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Promise`, `class`, `new.Target`. 328 tests in existing phase directories now runnable. Full re-run: **1,653 pass / 2,592 fail / 1,625 skip** (38.9% of runnable, 3.1% of total 53,568).
 || 57 | **Phase 20: Promise.all/race + Phase 21: Generators** — Promise.all and Promise.race fully implemented (were stubs). Generator function (`function*`) parsing, `is_generator` flag in compiler, YIELD/LOAD_RESUME opcodes, GeneratorState with state machine, Generator.prototype.next/throw/return builtins, VM generator resumption with `.next(val)` resume values, `.throw()` exception injection, `.return()` completion. `yield*` compiled to array-index loop.
+|| 58 | **Performance fix: GETPROP 4x call bug** — Fixed critical performance bug in GETPROP opcode: the OBJECT-tag branch called `get_prop_with_proto()` **4 times** instead of caching the result in a local variable. The remaining branches (STRING, NUMBER, BOOLEAN, SYMBOL) already used the correct cached pattern. This was the single biggest hotspot in property access. **Benchmark improvements**: property_lookup 6.4x→4.0x (-29%), arithmetic 5.8x→4.6x (-19%), object 6.5x→5.8x (-11%), string 7.6x→6.0x (-20%), array 5.8x→4.9x (-15%), loop 5.3x→4.8x (-8%). Overall average across all benchmarks improved from **6.5x to 5.5x** Duktape ratio.
