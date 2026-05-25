@@ -357,11 +357,61 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
     }
 }
 
+/// Fast integer-to-buffer conversion — writes decimal digits into buf.
+/// Returns the number of bytes written (excluding NUL), or 0 on overflow.
+fn int int_to_buf(long val, char* buf, usz cap) {
+    if (cap < 2) return 0;
+    usz pos = cap;
+    bool neg = false;
+    if (val < 0) {
+        neg = true;
+        val = -val;
+    }
+    ulong uval = (ulong)val;
+    do {
+        if (pos == 0) return 0;
+        pos--;
+        buf[pos] = (char)('0' + (uval % 10));
+        uval /= 10;
+    } while (uval != 0);
+    if (neg) {
+        if (pos == 0) return 0;
+        pos--;
+        buf[pos] = '-';
+    }
+    usz len = cap - pos;
+    if (pos > 0) {
+        libc::memmove(buf, buf + pos, len);
+    }
+    return (int)len;
+}
+
 /// Convert a double to an interned HString* using snprintf.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
     char[64] buf;
     int len = libc::snprintf(&buf, 64, "%.17g", val);
     if (len < 0 || len >= 64) {
+        return null;
+    }
+    char[] s = buf[:len];
+    uint hash = vm.heap.hash_string(s);
+    HString* existing = vm.heap.str_table_lookup(s, hash);
+    if (existing != null) {
+        return existing;
+    }
+    HString*? new_s = hstring::hstring_alloc(vm.heap, s, hash);
+    if (try hstr = new_s) {
+        vm.heap.str_table_insert(hstr);
+        return hstr;
+    }
+    return null;
+}
+
+/// Convert a FASTINT to an interned HString* using fast int-to-string.
+fn HString*? vm_fastint_to_string(Vm* vm, long val) {
+    char[32] buf;
+    int len = int_to_buf(val, &buf, 32);
+    if (len <= 0 || len >= 32) {
         return null;
     }
     char[] s = buf[:len];
@@ -386,7 +436,7 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
         case NUMBER:
             return vm_number_to_string(vm, val.number);
         case FASTINT:
-            return vm_number_to_string(vm, (double)val.fastint);
+            return vm_fastint_to_string(vm, val.fastint);
         case BOOLEAN:
             if (val.boolean) {
                 return intern_string(vm, "true");
@@ -977,7 +1027,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
             Instruction insn = *curr_pc;
             curr_pc++;
-            act.curr_pc = curr_pc;
 
             Opcode op = insn.op;
 
@@ -2479,6 +2528,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
             vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
             vm.valstack_bottom = new_act.bottom_byteoff;
+
+            // Save caller resume point before switching activations
+            act.curr_pc = curr_pc;
 
             // Direct dispatch to new activation (avoid restart overhead)
             act = new_act;
