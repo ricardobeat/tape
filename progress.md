@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 52
+**Last Updated:** Session 53
 **Target:** Full test262 conformance
 
 ## Summary
@@ -215,7 +215,7 @@ Update the counts and pass rate after every implemented feature
 || for-of | ✅ (Phase 14) |
 || Classes | ✅ (Phase 15) |
 || Map / Set | ✅ (Phase 17) |
-||| WeakMap / WeakSet | ❌ |
+||| WeakMap / WeakSet | ✅ (Phase 18) |
 || Symbol | ❌ |
 || Promise | ❌ |
 || Generators | ❌ |
@@ -356,3 +356,4 @@ Update the counts and pass rate after every implemented feature
 || 50 | **Phase 15: ES6 Classes** — Implemented class declarations/expressions with constructors, methods, static methods, `extends`, `super()`, `super.method()`, and `new.target`. Added 3 opcodes: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`. `FuncFlags.is_constructable` now propagated from compiler through `CLOSURE` to `HObject.flags.constructable`. Default base constructors built manually. Fixed `handle_return` to use `this_binding` for constructor instance return (freeing `new_target` for ES6 meta-property). 25/25 class tests pass; no regressions. |
 || 51 | **Phase 16: Nested Templates** — Lexer now supports nested template literals (backtick inside ${...}). Added template_balance_stack (up to 16 levels deep) and template_balance_stack_depth to Lexer struct. When a backtick is encountered in IN_EXPR mode, the current brace balance is pushed, the inner template is scanned via scan_template_head(), and after the inner template closes (TEMPLATE_TAIL), the outer IN_EXPR state is restored. For simple inner templates (no ${}), state restoration happens in next_token() after scan_template_head() returns. No compiler changes required — nested templates are parsed transparently as expressions within expressions. 27/27 template tests pass (20 existing + 7 new nested). |
 ||| 52 | **Phase 17: Map / Set built-ins** — Map and Set constructors and prototype methods (set, get, has, delete, clear, keys, values, entries, forEach, add). Internal storage uses HObject.array_part (Map: [k0,v0,k1,v1,...]; Set: [v0,v1,...]). SameValueZero comparison for key/value equality. Expanded ObjClass bitfield from 5→6 bits to fit MAP/SET. Registered globally with proper prototype chain wiring.
+||| 53 | **Phase 18: WeakMap / WeakSet built-ins** — WeakMap (constructor, set, get, has, delete) and WeakSet (constructor, add, has, delete). ES6 §23.3-23.4. Key restriction: WeakMap keys must be Objects (TypeError on primitives); WeakSet values must be Objects. No size, clear, or iteration methods. ObjClass.WEAKMAP/WEAKSET added to enum; heap.weakmap_proto/weakset_proto fields; BUILTIN constants 131-139; class_name switch entries for "[object WeakMap/WeakSet]".

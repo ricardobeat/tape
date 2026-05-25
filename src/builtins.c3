@@ -157,6 +157,17 @@ const uint BUILTIN_SET_PROTO_VALUES          = 128;
 const uint BUILTIN_SET_PROTO_ENTRIES         = 129;
 const uint BUILTIN_SET_PROTO_FOREACH         = 130;
 
+const uint BUILTIN_WEAKMAP                   = 131;
+const uint BUILTIN_WEAKMAP_PROTO_SET         = 132;
+const uint BUILTIN_WEAKMAP_PROTO_GET         = 133;
+const uint BUILTIN_WEAKMAP_PROTO_HAS         = 134;
+const uint BUILTIN_WEAKMAP_PROTO_DELETE      = 135;
+
+const uint BUILTIN_WEAKSET                   = 136;
+const uint BUILTIN_WEAKSET_PROTO_ADD         = 137;
+const uint BUILTIN_WEAKSET_PROTO_HAS         = 138;
+const uint BUILTIN_WEAKSET_PROTO_DELETE      = 139;
+
 struct BuiltinContext {
     void* vm;
     TVal* regs;
@@ -2361,6 +2372,10 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.MATH:      class_name = "Math"; break;
             case hobject::ObjClass.DATE:      class_name = "Date"; break;
             case hobject::ObjClass.REGEXP:    class_name = "RegExp"; break;
+            case hobject::ObjClass.MAP:       class_name = "Map"; break;
+            case hobject::ObjClass.SET:       class_name = "Set"; break;
+            case hobject::ObjClass.WEAKMAP:   class_name = "WeakMap"; break;
+            case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
             default:                          class_name = "Object"; break;
         }
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
@@ -6666,6 +6681,340 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
     ctx.result.pointer = null;
 }
 
+// ============================================================================
+// WeakMap helpers
+// ============================================================================
+
+fn HObject* check_weakmap(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.WEAKMAP) return obj;
+    }
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "WeakMap.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    return null;
+}
+
+fn int weakmap_find_key(HObject* wm, TVal key) {
+    uint count = wm.array_used;
+    for (uint i = 0; i < count; i += 2) {
+        if (same_value_zero(wm.array_part[i], key)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ============================================================================
+// WeakMap constructor (ES6 §23.3.1)
+// ============================================================================
+fn void builtin_weakmap(BuiltinContext* ctx) {
+    HObject*? wm_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.WEAKMAP);
+    if (catch err = wm_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* wm = wm_raw;
+    wm.prototype = ctx.heap.weakmap_proto;
+
+    if (ctx.argc >= 1 && ctx.is_constructor) {
+        TVal arg = ctx.regs[ctx.base_reg];
+        if (arg.tag == OBJECT && arg.pointer != null) {
+            HObject* iterable = (HObject*)arg.pointer;
+            uint len = array_get_length(iterable, ctx.heap);
+            for (uint i = 0; i < len; i++) {
+                TVal pair = array_get_elem(iterable, i, ctx.heap);
+                if (pair.tag == OBJECT && pair.pointer != null) {
+                    HObject* pair_obj = (HObject*)pair.pointer;
+                    TVal k = array_get_elem(pair_obj, 0, ctx.heap);
+                    TVal v = array_get_elem(pair_obj, 1, ctx.heap);
+                    if (k.tag != OBJECT || k.pointer == null) {
+                        ctx.result.tag = UNDEFINED;
+                        ctx.result.pointer = null;
+                        return;
+                    }
+                    int found = weakmap_find_key(wm, k);
+                    if (found >= 0) {
+                        wm.array_part[(uint)found + 1] = v;
+                    } else {
+                        uint cnt = wm.array_used;
+                        wm.set_array_idx(cnt, k);
+                        wm.set_array_idx(cnt + 1, v);
+                    }
+                }
+            }
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = wm;
+}
+
+// ============================================================================
+// WeakMap.prototype.set(key, value) — ES6 §23.3.3.5
+// ============================================================================
+fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    if (key.tag != OBJECT || key.pointer == null) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used as weak map key");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    TVal value = ctx.regs[ctx.base_reg + 1];
+    int found = weakmap_find_key(wm, key);
+    if (found >= 0) {
+        wm.array_part[(uint)found + 1] = value;
+    } else {
+        uint cnt = wm.array_used;
+        wm.set_array_idx(cnt, key);
+        wm.set_array_idx(cnt + 1, value);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = wm;
+}
+
+// ============================================================================
+// WeakMap.prototype.get(key) — ES6 §23.3.3.3
+// ============================================================================
+fn void builtin_weakmap_proto_get(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = weakmap_find_key(wm, key);
+    if (found >= 0) {
+        *ctx.result = wm.array_part[(uint)found + 1];
+    } else {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+    }
+}
+
+// ============================================================================
+// WeakMap.prototype.has(key) — ES6 §23.3.3.4
+// ============================================================================
+fn void builtin_weakmap_proto_has(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = weakmap_find_key(wm, key);
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (found >= 0);
+}
+
+// ============================================================================
+// WeakMap.prototype.delete(key) — ES6 §23.3.3.2
+// ============================================================================
+fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = weakmap_find_key(wm, key);
+    if (found >= 0) {
+        uint cnt = wm.array_used;
+        for (uint i = (uint)found; i + 2 < cnt; i++) {
+            wm.array_part[i] = wm.array_part[i + 2];
+        }
+        wm.array_part[cnt - 2].tag = UNDEFINED;
+        wm.array_part[cnt - 2].pointer = null;
+        wm.array_part[cnt - 1].tag = UNDEFINED;
+        wm.array_part[cnt - 1].pointer = null;
+        wm.array_used = cnt - 2;
+
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
+// ============================================================================
+// WeakSet helpers
+// ============================================================================
+
+fn HObject* check_weakset(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.WEAKSET) return obj;
+    }
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "WeakSet.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    return null;
+}
+
+fn int weakset_find_value(HObject* ws, TVal val) {
+    uint count = ws.array_used;
+    for (uint i = 0; i < count; i++) {
+        if (same_value_zero(ws.array_part[i], val)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ============================================================================
+// WeakSet constructor (ES6 §23.4.1)
+// ============================================================================
+fn void builtin_weakset(BuiltinContext* ctx) {
+    HObject*? ws_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.WEAKSET);
+    if (catch err = ws_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* ws = ws_raw;
+    ws.prototype = ctx.heap.weakset_proto;
+
+    if (ctx.argc >= 1 && ctx.is_constructor) {
+        TVal arg = ctx.regs[ctx.base_reg];
+        if (arg.tag == OBJECT && arg.pointer != null) {
+            HObject* iterable = (HObject*)arg.pointer;
+            uint len = array_get_length(iterable, ctx.heap);
+            for (uint i = 0; i < len; i++) {
+                TVal v = array_get_elem(iterable, i, ctx.heap);
+                if (v.tag != OBJECT || v.pointer == null) {
+                    ctx.result.tag = UNDEFINED;
+                    ctx.result.pointer = null;
+                    return;
+                }
+                int found = weakset_find_value(ws, v);
+                if (found < 0) {
+                    ws.set_array_idx(ws.array_used, v);
+                }
+            }
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = ws;
+}
+
+// ============================================================================
+// WeakSet.prototype.add(value) — ES6 §23.4.3.1
+// ============================================================================
+fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
+    HObject* ws = check_weakset(ctx);
+    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    if (value.tag != OBJECT || value.pointer == null) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used in weak set");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    int found = weakset_find_value(ws, value);
+    if (found < 0) {
+        ws.set_array_idx(ws.array_used, value);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = ws;
+}
+
+// ============================================================================
+// WeakSet.prototype.has(value) — ES6 §23.4.3.4
+// ============================================================================
+fn void builtin_weakset_proto_has(BuiltinContext* ctx) {
+    HObject* ws = check_weakset(ctx);
+    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    int found = weakset_find_value(ws, value);
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (found >= 0);
+}
+
+// ============================================================================
+// WeakSet.prototype.delete(value) — ES6 §23.4.3.3
+// ============================================================================
+fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
+    HObject* ws = check_weakset(ctx);
+    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    int found = weakset_find_value(ws, value);
+    if (found >= 0) {
+        uint cnt = ws.array_used;
+        for (uint i = (uint)found; i + 1 < cnt; i++) {
+            ws.array_part[i] = ws.array_part[i + 1];
+        }
+        ws.array_part[cnt - 1].tag = UNDEFINED;
+        ws.array_part[cnt - 1].pointer = null;
+        ws.array_used = cnt - 1;
+
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -6908,6 +7257,24 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_set_proto_entries(ctx);
         case BUILTIN_SET_PROTO_FOREACH:
             builtin_set_proto_forEach(ctx);
+        case BUILTIN_WEAKMAP:
+            builtin_weakmap(ctx);
+        case BUILTIN_WEAKMAP_PROTO_SET:
+            builtin_weakmap_proto_set(ctx);
+        case BUILTIN_WEAKMAP_PROTO_GET:
+            builtin_weakmap_proto_get(ctx);
+        case BUILTIN_WEAKMAP_PROTO_HAS:
+            builtin_weakmap_proto_has(ctx);
+        case BUILTIN_WEAKMAP_PROTO_DELETE:
+            builtin_weakmap_proto_delete(ctx);
+        case BUILTIN_WEAKSET:
+            builtin_weakset(ctx);
+        case BUILTIN_WEAKSET_PROTO_ADD:
+            builtin_weakset_proto_add(ctx);
+        case BUILTIN_WEAKSET_PROTO_HAS:
+            builtin_weakset_proto_has(ctx);
+        case BUILTIN_WEAKSET_PROTO_DELETE:
+            builtin_weakset_proto_delete(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -7084,6 +7451,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Set constructor and prototype
     if (!register_set_constructor(global_env, heap)) return false;
 
+    // Register WeakMap constructor and prototype
+    if (!register_weakmap_constructor(global_env, heap)) return false;
+
+    // Register WeakSet constructor and prototype
+    if (!register_weakset_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -7095,6 +7468,8 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.regexp_proto != null) heap.regexp_proto.prototype = heap.object_proto;
     if (heap.map_proto != null)    heap.map_proto.prototype = heap.object_proto;
     if (heap.set_proto != null)    heap.set_proto.prototype = heap.object_proto;
+    if (heap.weakmap_proto != null) heap.weakmap_proto.prototype = heap.object_proto;
+    if (heap.weakset_proto != null) heap.weakset_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
@@ -7102,7 +7477,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {
@@ -8245,6 +8620,145 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     set_val.tag = OBJECT;
     set_val.pointer = ctor;
     env::env_declare(global_env, set_key, set_val);
+
+    return true;
+}
+
+// ============================================================================
+// WeakMap constructor registration
+// ============================================================================
+
+fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.WEAKMAP);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.weakmap_proto = proto;
+
+    if (!register_string_proto_method(proto, heap, "set", BUILTIN_WEAKMAP_PROTO_SET)) return false;
+    if (!register_string_proto_method(proto, heap, "get", BUILTIN_WEAKMAP_PROTO_GET)) return false;
+    if (!register_string_proto_method(proto, heap, "has", BUILTIN_WEAKMAP_PROTO_HAS)) return false;
+    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKMAP_PROTO_DELETE)) return false;
+
+    // Set @@toStringTag
+    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
+    TVal tag_tv;
+    tag_tv.tag = STRING;
+    tag_tv.pointer = builtin_intern_string(heap, "WeakMap");
+    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_WEAKMAP;
+
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 0;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    uint hash = heap.hash_string("WeakMap");
+    HString* existing = heap.str_table_lookup("WeakMap", hash);
+    HString* wm_key;
+    if (existing != null) {
+        wm_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "WeakMap", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        wm_key = new_key;
+    }
+    TVal wm_val;
+    wm_val.tag = OBJECT;
+    wm_val.pointer = ctor;
+    env::env_declare(global_env, wm_key, wm_val);
+
+    return true;
+}
+
+// ============================================================================
+// WeakSet constructor registration
+// ============================================================================
+
+fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.WEAKSET);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.weakset_proto = proto;
+
+    if (!register_string_proto_method(proto, heap, "add", BUILTIN_WEAKSET_PROTO_ADD)) return false;
+    if (!register_string_proto_method(proto, heap, "has", BUILTIN_WEAKSET_PROTO_HAS)) return false;
+    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKSET_PROTO_DELETE)) return false;
+
+    // Set @@toStringTag
+    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
+    TVal tag_tv;
+    tag_tv.tag = STRING;
+    tag_tv.pointer = builtin_intern_string(heap, "WeakSet");
+    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_WEAKSET;
+
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 0;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    uint hash = heap.hash_string("WeakSet");
+    HString* existing = heap.str_table_lookup("WeakSet", hash);
+    HString* ws_key;
+    if (existing != null) {
+        ws_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "WeakSet", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        ws_key = new_key;
+    }
+    TVal ws_val;
+    ws_val.tag = OBJECT;
+    ws_val.pointer = ctor;
+    env::env_declare(global_env, ws_key, ws_val);
 
     return true;
 }

@@ -109,6 +109,8 @@ enum ObjClass : char {
     FLOAT64ARRAY,
     MAP,
     SET,
+    WEAKMAP,
+    WEAKSET,
 }
 
 // ============================================================================

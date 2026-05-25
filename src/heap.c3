@@ -112,6 +112,8 @@ struct Heap {
     HObject* regexp_proto;
     HObject* map_proto;
     HObject* set_proto;
+    HObject* weakmap_proto;
+    HObject* weakset_proto;
 
     // Global checkpoint for __resetGlobals() — saves initial global state
     void**    checkpoint_keys;   /// Array of HString* pointers
