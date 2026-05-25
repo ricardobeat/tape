@@ -1,3 +1,4 @@
 duktape
 *.dSYM
 out/
+quickjs/
