@@ -107,6 +107,8 @@ enum ObjClass : char {
     UINT32ARRAY,
     FLOAT32ARRAY,
     FLOAT64ARRAY,
+    MAP,
+    SET,
 }
 
 // ============================================================================
@@ -152,8 +154,8 @@ bitstruct ObjFlags : uint {
     bool exotic_arguments  : 14;
     /// Exotic behaviour for Proxy objects.
     bool exotic_proxyobj   : 15;
-    /// Internal [[Class]] tag (5 bits → up to 32 classes).
-    ObjClass obj_class     : 16..20;
+    /// Internal [[Class]] tag (6 bits → up to 64 classes).
+    ObjClass obj_class     : 16..21;
 }
 
 // ============================================================================

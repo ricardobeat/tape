@@ -136,6 +136,27 @@ const uint BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF  = 107;
 const uint BUILTIN_OBJECT_PROTO_TOLOCALESTRING = 110;
 const uint BUILTIN_COUNT                         = 111;
 
+const uint BUILTIN_MAP                       = 112;
+const uint BUILTIN_MAP_PROTO_SET             = 113;
+const uint BUILTIN_MAP_PROTO_GET             = 114;
+const uint BUILTIN_MAP_PROTO_HAS             = 115;
+const uint BUILTIN_MAP_PROTO_DELETE          = 116;
+const uint BUILTIN_MAP_PROTO_CLEAR           = 117;
+const uint BUILTIN_MAP_PROTO_KEYS            = 118;
+const uint BUILTIN_MAP_PROTO_VALUES          = 119;
+const uint BUILTIN_MAP_PROTO_ENTRIES         = 120;
+const uint BUILTIN_MAP_PROTO_FOREACH         = 121;
+
+const uint BUILTIN_SET                       = 122;
+const uint BUILTIN_SET_PROTO_ADD             = 123;
+const uint BUILTIN_SET_PROTO_HAS             = 124;
+const uint BUILTIN_SET_PROTO_DELETE          = 125;
+const uint BUILTIN_SET_PROTO_CLEAR           = 126;
+const uint BUILTIN_SET_PROTO_KEYS            = 127;
+const uint BUILTIN_SET_PROTO_VALUES          = 128;
+const uint BUILTIN_SET_PROTO_ENTRIES         = 129;
+const uint BUILTIN_SET_PROTO_FOREACH         = 130;
+
 struct BuiltinContext {
     void* vm;
     TVal* regs;
@@ -5974,6 +5995,677 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
     ctx.result.pointer = result;
 }
 
+// ============================================================================
+// SameValueZero comparison (ES6 §7.2.10)
+// Used by Map and Set for key/value equality.
+// Differs from === only in that NaN equals NaN.
+// ============================================================================
+fn bool same_value_zero(TVal a, TVal b) {
+    if (a.tag == b.tag) {
+        switch (a.tag) {
+            case UNDEFINED: return true;
+            case NULL_VAL:  return true;
+            case BOOLEAN:   return a.boolean == b.boolean;
+            case NUMBER:
+                if (math::is_nan(a.number) && math::is_nan(b.number)) return true;
+                return a.number == b.number;
+            case FASTINT:   return a.fastint == b.fastint;
+            case STRING:    return a.pointer == b.pointer;
+            case OBJECT:    return a.pointer == b.pointer;
+            default: return false;
+        }
+    }
+    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
+        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
+        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+        return av == bv;
+    }
+    return false;
+}
+
+// ============================================================================
+// Map helpers
+// ============================================================================
+
+fn HObject* check_map(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.MAP) return obj;
+    }
+    // TypeError
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "Map.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    return null;
+}
+
+/// Find the index in array_part where a key matches. Returns -1 if not found.
+/// Map entries are stored as [k0, v0, k1, v1, ...] in array_part.
+fn int map_find_key(HObject* map, TVal key) {
+    uint count = map.array_used;
+    for (uint i = 0; i < count; i += 2) {
+        if (same_value_zero(map.array_part[i], key)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ============================================================================
+// Map constructor (ES6 §23.1.1)
+// ============================================================================
+fn void builtin_map(BuiltinContext* ctx) {
+    HObject*? map_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.MAP);
+    if (catch err = map_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* map = map_raw;
+    map.prototype = ctx.heap.map_proto;
+
+    // Set size property
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = 0;
+    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    // If iterable argument, populate map
+    if (ctx.argc >= 1) {
+        TVal arg = ctx.regs[ctx.base_reg];
+        if (arg.tag == OBJECT && arg.pointer != null) {
+            HObject* iterable = (HObject*)arg.pointer;
+            // Simple case: array-like iterable with forEach/pairs
+            // We handle the common case of array of [key, value] pairs
+            uint len = array_get_length(iterable, ctx.heap);
+            for (uint i = 0; i < len; i++) {
+                TVal pair = array_get_elem(iterable, i, ctx.heap);
+                if (pair.tag == OBJECT && pair.pointer != null) {
+                    HObject* pair_obj = (HObject*)pair.pointer;
+                    TVal k = array_get_elem(pair_obj, 0, ctx.heap);
+                    TVal v = array_get_elem(pair_obj, 1, ctx.heap);
+                    // Call builtin_map_proto_set-style logic inline
+                    int found = map_find_key(map, k);
+                    if (found >= 0) {
+                        map.array_part[(uint)found + 1] = v;
+                    } else {
+                        uint cnt = map.array_used;
+                        map.set_array_idx(cnt, k);
+                        map.set_array_idx(cnt + 1, v);
+                    }
+                    // Update size
+                    uint entry_count = map.array_used / 2;
+                    size_val.fastint = (long)entry_count;
+                    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+                }
+            }
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = map;
+}
+
+// ============================================================================
+// Map.prototype.set(key, value) — ES6 §23.1.3.9
+// ============================================================================
+fn void builtin_map_proto_set(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    TVal value = ctx.regs[ctx.base_reg + 1];  // undefined if not provided
+
+    int found = map_find_key(map, key);
+    if (found >= 0) {
+        map.array_part[(uint)found + 1] = value;
+    } else {
+        uint cnt = map.array_used;
+        map.set_array_idx(cnt, key);
+        map.set_array_idx(cnt + 1, value);
+    }
+
+    // Update size property
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = (long)(map.array_used / 2);
+    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    // Return the map itself
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = map;
+}
+
+// ============================================================================
+// Map.prototype.get(key) — ES6 §23.1.3.6
+// ============================================================================
+fn void builtin_map_proto_get(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = map_find_key(map, key);
+    if (found >= 0) {
+        *ctx.result = map.array_part[(uint)found + 1];
+    } else {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+    }
+}
+
+// ============================================================================
+// Map.prototype.has(key) — ES6 §23.1.3.7
+// ============================================================================
+fn void builtin_map_proto_has(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = map_find_key(map, key);
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (found >= 0);
+}
+
+// ============================================================================
+// Map.prototype.delete(key) — ES6 §23.1.3.3
+// ============================================================================
+fn void builtin_map_proto_delete(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal key = ctx.regs[ctx.base_reg];
+    int found = map_find_key(map, key);
+    if (found >= 0) {
+        uint cnt = map.array_used;
+        // Shift elements down to fill the gap
+        for (uint i = (uint)found; i + 2 < cnt; i++) {
+            map.array_part[i] = map.array_part[i + 2];
+        }
+        // Clear the last two slots
+        map.array_part[cnt - 2].tag = UNDEFINED;
+        map.array_part[cnt - 2].pointer = null;
+        map.array_part[cnt - 1].tag = UNDEFINED;
+        map.array_part[cnt - 1].pointer = null;
+        map.array_used = cnt - 2;
+
+        HString* size_key = builtin_intern_string(ctx.heap, "size");
+        TVal size_val;
+        size_val.tag = FASTINT;
+        size_val.fastint = (long)(map.array_used / 2);
+        map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
+// ============================================================================
+// Map.prototype.clear() — ES6 §23.1.3.1
+// ============================================================================
+fn void builtin_map_proto_clear(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    // Reset array_part
+    uint cnt = map.array_used;
+    for (uint i = 0; i < cnt; i++) {
+        map.array_part[i].tag = UNDEFINED;
+        map.array_part[i].pointer = null;
+    }
+    map.array_used = 0;
+
+    // Update size
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = 0;
+    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
+// ============================================================================
+// Map.prototype.keys() — ES6 §23.1.3.8
+// Returns a new Array of all keys in insertion order.
+// ============================================================================
+fn void builtin_map_proto_keys(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = map.array_used;
+    uint key_count = cnt / 2;
+    for (uint i = 0; i < key_count; i++) {
+        array_set_elem(arr, i, map.array_part[i * 2], ctx.heap);
+    }
+    array_set_length(arr, key_count, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Map.prototype.values() — ES6 §23.1.3.11
+// Returns a new Array of all values in insertion order.
+// ============================================================================
+fn void builtin_map_proto_values(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = map.array_used;
+    uint val_count = cnt / 2;
+    for (uint i = 0; i < val_count; i++) {
+        array_set_elem(arr, i, map.array_part[i * 2 + 1], ctx.heap);
+    }
+    array_set_length(arr, val_count, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Map.prototype.entries() — ES6 §23.1.3.4
+// Returns a new Array of [key, value] arrays in insertion order.
+// ============================================================================
+fn void builtin_map_proto_entries(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = map.array_used;
+    uint entry_count = cnt / 2;
+    for (uint i = 0; i < entry_count; i++) {
+        HObject*? pair_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        if (catch pair_err = pair_raw) continue;
+        HObject* pair = pair_raw;
+        pair.prototype = ctx.heap.array_proto;
+        array_set_elem(pair, 0, map.array_part[i * 2], ctx.heap);
+        array_set_elem(pair, 1, map.array_part[i * 2 + 1], ctx.heap);
+        array_set_length(pair, 2, ctx.heap);
+
+        TVal pair_val;
+        pair_val.tag = OBJECT;
+        pair_val.pointer = pair;
+        array_set_elem(arr, i, pair_val, ctx.heap);
+    }
+    array_set_length(arr, entry_count, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Map.prototype.forEach(callbackfn[, thisArg]) — ES6 §23.1.3.5
+// ============================================================================
+fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    if (ctx.argc < 1) {
+        // Missing callback throws TypeError
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // forEach with callback requires VM call mechanism (callback invocation).
+    // For now, we validate the callback exists but don't invoke it.
+    TVal callback = ctx.regs[ctx.base_reg];
+    if (!(callback.tag == OBJECT && callback.pointer != null && ((HObject*)callback.pointer).flags.callable)) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+    }
+
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
+// ============================================================================
+// Set helpers
+// ============================================================================
+
+fn HObject* check_set(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.SET) return obj;
+    }
+    // TypeError
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "Set.prototype method called on incompatible value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    return null;
+}
+
+/// Find the index in array_part where a value matches. Returns -1 if not found.
+/// Set entries are stored as [v0, v1, ...] in array_part.
+fn int set_find_value(HObject* set, TVal val) {
+    uint count = set.array_used;
+    for (uint i = 0; i < count; i++) {
+        if (same_value_zero(set.array_part[i], val)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ============================================================================
+// Set constructor (ES6 §23.2.1)
+// ============================================================================
+fn void builtin_set(BuiltinContext* ctx) {
+    HObject*? set_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.SET);
+    if (catch err = set_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* set = set_raw;
+    set.prototype = ctx.heap.set_proto;
+
+    // Set size property
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = 0;
+    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    // If iterable argument, populate set
+    if (ctx.argc >= 1) {
+        TVal arg = ctx.regs[ctx.base_reg];
+        if (arg.tag == OBJECT && arg.pointer != null) {
+            HObject* iterable = (HObject*)arg.pointer;
+            uint len = array_get_length(iterable, ctx.heap);
+            for (uint i = 0; i < len; i++) {
+                TVal v = array_get_elem(iterable, i, ctx.heap);
+                if (v.tag != UNDEFINED) {
+                    int found = set_find_value(set, v);
+                    if (found < 0) {
+                        set.set_array_idx(set.array_used, v);
+                    }
+                }
+            }
+            size_val.fastint = (long)set.array_used;
+            set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = set;
+}
+
+// ============================================================================
+// Set.prototype.add(value) — ES6 §23.2.3.1
+// ============================================================================
+fn void builtin_set_proto_add(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    int found = set_find_value(set, value);
+    if (found < 0) {
+        set.set_array_idx(set.array_used, value);
+    }
+
+    // Update size
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = (long)set.array_used;
+    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    // Return the set
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = set;
+}
+
+// ============================================================================
+// Set.prototype.has(value) — ES6 §23.2.3.7
+// ============================================================================
+fn void builtin_set_proto_has(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    int found = set_find_value(set, value);
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (found >= 0);
+}
+
+// ============================================================================
+// Set.prototype.delete(value) — ES6 §23.2.3.4
+// ============================================================================
+fn void builtin_set_proto_delete(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+
+    TVal value = ctx.regs[ctx.base_reg];
+    int found = set_find_value(set, value);
+    if (found >= 0) {
+        uint cnt = set.array_used;
+        // Shift elements down
+        for (uint i = (uint)found; i + 1 < cnt; i++) {
+            set.array_part[i] = set.array_part[i + 1];
+        }
+        set.array_part[cnt - 1].tag = UNDEFINED;
+        set.array_part[cnt - 1].pointer = null;
+        set.array_used = cnt - 1;
+
+        HString* size_key = builtin_intern_string(ctx.heap, "size");
+        TVal size_val;
+        size_val.tag = FASTINT;
+        size_val.fastint = (long)set.array_used;
+        set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
+// ============================================================================
+// Set.prototype.clear() — ES6 §23.2.3.2
+// ============================================================================
+fn void builtin_set_proto_clear(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    uint cnt = set.array_used;
+    for (uint i = 0; i < cnt; i++) {
+        set.array_part[i].tag = UNDEFINED;
+        set.array_part[i].pointer = null;
+    }
+    set.array_used = 0;
+
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal size_val;
+    size_val.tag = FASTINT;
+    size_val.fastint = 0;
+    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
+// ============================================================================
+// Set.prototype.keys() — ES6 §23.2.3.8
+// Set's keys() returns the same as values() — a new Array of values.
+// ============================================================================
+fn void builtin_set_proto_keys(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = set.array_used;
+    for (uint i = 0; i < cnt; i++) {
+        array_set_elem(arr, i, set.array_part[i], ctx.heap);
+    }
+    array_set_length(arr, cnt, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Set.prototype.values() — ES6 §23.2.3.10
+// ============================================================================
+fn void builtin_set_proto_values(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = set.array_used;
+    for (uint i = 0; i < cnt; i++) {
+        array_set_elem(arr, i, set.array_part[i], ctx.heap);
+    }
+    array_set_length(arr, cnt, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Set.prototype.entries() — ES6 §23.2.3.5
+// Returns [value, value] pairs for each element.
+// ============================================================================
+fn void builtin_set_proto_entries(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint cnt = set.array_used;
+    for (uint i = 0; i < cnt; i++) {
+        HObject*? pair_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        if (catch pair_err = pair_raw) continue;
+        HObject* pair = pair_raw;
+        pair.prototype = ctx.heap.array_proto;
+        array_set_elem(pair, 0, set.array_part[i], ctx.heap);
+        array_set_elem(pair, 1, set.array_part[i], ctx.heap);
+        array_set_length(pair, 2, ctx.heap);
+
+        TVal pair_val;
+        pair_val.tag = OBJECT;
+        pair_val.pointer = pair;
+        array_set_elem(arr, i, pair_val, ctx.heap);
+    }
+    array_set_length(arr, cnt, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Set.prototype.forEach(callbackfn[, thisArg]) — ES6 §23.2.3.6
+// ============================================================================
+fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    if (ctx.argc < 1) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+
+    // Basic forEach without VM callback support — just returns undefined
+    ctx.result.tag = UNDEFINED;
+    ctx.result.pointer = null;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -6178,6 +6870,44 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_regexp_proto_toString(ctx);
         case BUILTIN_RESET_GLOBALS:
             builtin_reset_globals(ctx);
+        case BUILTIN_MAP:
+            builtin_map(ctx);
+        case BUILTIN_MAP_PROTO_SET:
+            builtin_map_proto_set(ctx);
+        case BUILTIN_MAP_PROTO_GET:
+            builtin_map_proto_get(ctx);
+        case BUILTIN_MAP_PROTO_HAS:
+            builtin_map_proto_has(ctx);
+        case BUILTIN_MAP_PROTO_DELETE:
+            builtin_map_proto_delete(ctx);
+        case BUILTIN_MAP_PROTO_CLEAR:
+            builtin_map_proto_clear(ctx);
+        case BUILTIN_MAP_PROTO_KEYS:
+            builtin_map_proto_keys(ctx);
+        case BUILTIN_MAP_PROTO_VALUES:
+            builtin_map_proto_values(ctx);
+        case BUILTIN_MAP_PROTO_ENTRIES:
+            builtin_map_proto_entries(ctx);
+        case BUILTIN_MAP_PROTO_FOREACH:
+            builtin_map_proto_forEach(ctx);
+        case BUILTIN_SET:
+            builtin_set(ctx);
+        case BUILTIN_SET_PROTO_ADD:
+            builtin_set_proto_add(ctx);
+        case BUILTIN_SET_PROTO_HAS:
+            builtin_set_proto_has(ctx);
+        case BUILTIN_SET_PROTO_DELETE:
+            builtin_set_proto_delete(ctx);
+        case BUILTIN_SET_PROTO_CLEAR:
+            builtin_set_proto_clear(ctx);
+        case BUILTIN_SET_PROTO_KEYS:
+            builtin_set_proto_keys(ctx);
+        case BUILTIN_SET_PROTO_VALUES:
+            builtin_set_proto_values(ctx);
+        case BUILTIN_SET_PROTO_ENTRIES:
+            builtin_set_proto_entries(ctx);
+        case BUILTIN_SET_PROTO_FOREACH:
+            builtin_set_proto_forEach(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -6348,6 +7078,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register RegExp constructor and prototype
     if (!register_regexp_constructor(global_env, heap)) return false;
 
+    // Register Map constructor and prototype
+    if (!register_map_constructor(global_env, heap)) return false;
+
+    // Register Set constructor and prototype
+    if (!register_set_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -6357,6 +7093,8 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.function_proto != null) heap.function_proto.prototype = heap.object_proto;
     if (heap.date_proto != null)   heap.date_proto.prototype = heap.object_proto;
     if (heap.regexp_proto != null) heap.regexp_proto.prototype = heap.object_proto;
+    if (heap.map_proto != null)    heap.map_proto.prototype = heap.object_proto;
+    if (heap.set_proto != null)    heap.set_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
@@ -6364,7 +7102,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {
@@ -7327,6 +8065,186 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     regexp_val.tag = OBJECT;
     regexp_val.pointer = regexp_obj;
     env::env_declare(global_env, regexp_key, regexp_val);
+
+    return true;
+}
+
+// ============================================================================
+// Map constructor registration
+// ============================================================================
+
+fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Map prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.MAP);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.map_proto = proto;
+
+    // Add .set(key, value) method
+    if (!register_string_proto_method(proto, heap, "set", BUILTIN_MAP_PROTO_SET)) return false;
+    // Add .get(key) method
+    if (!register_string_proto_method(proto, heap, "get", BUILTIN_MAP_PROTO_GET)) return false;
+    // Add .has(key) method
+    if (!register_string_proto_method(proto, heap, "has", BUILTIN_MAP_PROTO_HAS)) return false;
+    // Add .delete(key) method
+    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_MAP_PROTO_DELETE)) return false;
+    // Add .clear() method
+    if (!register_string_proto_method(proto, heap, "clear", BUILTIN_MAP_PROTO_CLEAR)) return false;
+    // Add .keys() method
+    if (!register_string_proto_method(proto, heap, "keys", BUILTIN_MAP_PROTO_KEYS)) return false;
+    // Add .values() method
+    if (!register_string_proto_method(proto, heap, "values", BUILTIN_MAP_PROTO_VALUES)) return false;
+    // Add .entries() method
+    if (!register_string_proto_method(proto, heap, "entries", BUILTIN_MAP_PROTO_ENTRIES)) return false;
+    // Add .forEach() method
+    if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_MAP_PROTO_FOREACH)) return false;
+
+    // Add .size property (will be updated on each mutation)
+    HString* size_key = builtin_intern_string(heap, "size");
+    TVal size_tv;
+    size_tv.tag = FASTINT;
+    size_tv.fastint = 0;
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
+
+    // Create Map constructor as a proper function object
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_MAP;
+
+    // Set .constructor on Map.prototype
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set Map.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Set Map.length
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 0;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    // Map.prototype's [[Prototype]] is set later (to Object.prototype)
+
+    // Register Map constructor globally
+    uint hash = heap.hash_string("Map");
+    HString* existing = heap.str_table_lookup("Map", hash);
+    HString* map_key;
+    if (existing != null) {
+        map_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Map", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        map_key = new_key;
+    }
+    TVal map_val;
+    map_val.tag = OBJECT;
+    map_val.pointer = ctor;
+    env::env_declare(global_env, map_key, map_val);
+
+    return true;
+}
+
+// ============================================================================
+// Set constructor registration
+// ============================================================================
+
+fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Set prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.SET);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.set_proto = proto;
+
+    // Add .add(value) method
+    if (!register_string_proto_method(proto, heap, "add", BUILTIN_SET_PROTO_ADD)) return false;
+    // Add .has(value) method
+    if (!register_string_proto_method(proto, heap, "has", BUILTIN_SET_PROTO_HAS)) return false;
+    // Add .delete(value) method
+    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_SET_PROTO_DELETE)) return false;
+    // Add .clear() method
+    if (!register_string_proto_method(proto, heap, "clear", BUILTIN_SET_PROTO_CLEAR)) return false;
+    // Add .keys() method
+    if (!register_string_proto_method(proto, heap, "keys", BUILTIN_SET_PROTO_KEYS)) return false;
+    // Add .values() method
+    if (!register_string_proto_method(proto, heap, "values", BUILTIN_SET_PROTO_VALUES)) return false;
+    // Add .entries() method
+    if (!register_string_proto_method(proto, heap, "entries", BUILTIN_SET_PROTO_ENTRIES)) return false;
+    // Add .forEach() method
+    if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_SET_PROTO_FOREACH)) return false;
+
+    // Add .size property (will be updated on each mutation)
+    HString* size_key = builtin_intern_string(heap, "size");
+    TVal size_tv;
+    size_tv.tag = FASTINT;
+    size_tv.fastint = 0;
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
+
+    // Create Set constructor as a proper function object
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_SET;
+
+    // Set .constructor on Set.prototype
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set Set.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Set Set.length
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 0;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Set constructor globally
+    uint hash = heap.hash_string("Set");
+    HString* existing = heap.str_table_lookup("Set", hash);
+    HString* set_key;
+    if (existing != null) {
+        set_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Set", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        set_key = new_key;
+    }
+    TVal set_val;
+    set_val.tag = OBJECT;
+    set_val.pointer = ctor;
+    env::env_declare(global_env, set_key, set_val);
 
     return true;
 }
