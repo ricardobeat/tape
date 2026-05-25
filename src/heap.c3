@@ -29,6 +29,7 @@ const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
 const int   GC_MARK_RECURSE_LIMIT   = 256;
 const usz   STRS_CACHE_SIZE         = 256;
+const uint  GC_MAX_ROOTS            = 128;
 
 // --- LongjmpState ---------------------------------------------------------
 
@@ -121,7 +122,7 @@ struct Heap {
     int   gc_mark_recurse_depth;
     int   gc_mark_recurse_limit;
     long  gc_trigger_counter;
-    uint  gc_obj_count;
+    // gc_obj_count moved to gc_objects section below
 
     // Current execution thread (HThread*)
     void* curr_thread;
@@ -177,6 +178,19 @@ struct Heap {
     TVal*     checkpoint_vals;   /// Parallel array of TVal values
     uint      checkpoint_count;  /// Number of saved entries
     uint      checkpoint_cap;    /// Allocated capacity
+
+    // GC object tracking — growable array of all heap-allocated objects
+    // (avoiding linked-list pointer casts which cause safe-mode traps)
+    void**    gc_objects;        /// Array of HeapHeader* pointers
+    uint      gc_obj_cap;        /// Allocated capacity
+    uint      gc_obj_count;      /// Number of live objects
+
+    // GC root registration (pointers to always-reachable HeapHeader*)
+    void*[GC_MAX_ROOTS] gc_roots;
+    uint                gc_root_count;
+
+    // GC re-entrancy guard
+    bool                gc_running;
 }
 
 // ============================================================================
@@ -277,13 +291,15 @@ fn Heap*? create(
  * the heap struct itself.
  */
 fn void Heap.destroy(&self) {
-    // Free all objects on the finalize list
-    self.free_header_list(self.finalize_list);
-    self.finalize_list = null;
-
-    // Free all objects on the main heap-allocated list
-    self.free_header_list(self.heap_allocated);
-    self.heap_allocated = null;
+    // Free all objects through the GC array
+    for (uint i = 0; i < self.gc_obj_count; i++) {
+        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
+        if (cur != null && cur.is_object()) {
+            hobject::hobject_free((HObject*)cur);
+        }
+    }
+    libc::free(self.gc_objects);
+    self.gc_objects = null;
 
     // Free the string table array
     if (self.str_table != null) {
@@ -324,6 +340,37 @@ fn void*? Heap.alloc(&self, usz size) {
 }
 
 /**
+ * Allocate a new HObject and register it with the heap's GC tracking list.
+ *
+ * This is the preferred way to create objects — it replaces raw calls to
+ * hobject::hobject_alloc() by also inserting the object into the
+ * heap_allocated list so that the mark-and-sweep collector can find it.
+ *
+ * Returns the new HObject or a fault on allocation failure.
+ */
+fn HObject*? Heap.alloc_object(&self, hobject::ObjClass cls) {
+    HObject*? result = hobject::hobject_alloc((void*)self, cls);
+    if (try obj = result) {
+        // Track in the GC object array (avoids linked-list through
+        // cast pointers which safe-mode forbids).
+        if (self.gc_obj_count >= self.gc_obj_cap) {
+            uint new_cap = self.gc_obj_cap == 0 ? 256 : self.gc_obj_cap * 2;
+            usz new_bytes = (usz)new_cap * void*::size;
+            void* new_arr = libc::realloc(self.gc_objects, new_bytes);
+            if (new_arr == null) {
+                // Can't track, but object is still allocated
+                return result;
+            }
+            self.gc_objects = (void**)new_arr;
+            self.gc_obj_cap = new_cap;
+        }
+        self.gc_objects[self.gc_obj_count] = (void*)obj;
+        self.gc_obj_count++;
+    }
+    return result;
+}
+
+/**
  * Reallocate a block through the heap's allocator, with GC trigger.
  */
 fn void*? Heap.realloc(&self, void* ptr, usz new_size) {
@@ -357,10 +404,11 @@ fn void Heap.free(&self, void* ptr) {
 /**
  * Insert `hdr` at the head of the heap_allocated doubly-linked list.
  * Uses HeapHeader.init() to wire up next/prev pointers.
+ * NOTE: This is currently unused in favor of the array-based gc_objects
+ * tracking.  Kept for compatibility.
  */
 fn void Heap.insert_into_heap_allocated(&self, HeapHeader* hdr) {
     hdr.init(hdr.get_type(), &self.heap_allocated);
-    self.gc_obj_count++;
 }
 
 /**
@@ -369,7 +417,24 @@ fn void Heap.insert_into_heap_allocated(&self, HeapHeader* hdr) {
  */
 fn void Heap.remove_from_heap_allocated(&self, HeapHeader* hdr) {
     hdr.unlink(&self.heap_allocated);
-    if (self.gc_obj_count > 0) { self.gc_obj_count--; }
+}
+
+/**
+ * Insert `hdr` at the head of the heap_allocated list without calling
+ * HeapHeader.init(), preserving any flags already set by the caller.
+ *
+ * This is the safe path for tracked objects where the subtype (HObject,
+ * HString) has already set its flags and we only need the linked-list
+ * wiring.  Use insert_into_heap_allocated() when a full header init is
+ * desired (e.g. raw HeapHeader allocations).
+ */
+fn void Heap.insert_into_heap_allocated_preserve_flags(&self, HeapHeader* hdr) {
+    hdr.prev = null;
+    hdr.next = self.heap_allocated;
+    if (self.heap_allocated != null) {
+        self.heap_allocated.prev = hdr;
+    }
+    self.heap_allocated = hdr;
 }
 
 /**
@@ -394,21 +459,256 @@ fn void Heap.remove_from_finalize_list(&self, HeapHeader* hdr) {
 }
 
 // ============================================================================
-// Garbage collection (stub)
+// GC root registration
 // ============================================================================
 
 /**
- * Trigger a mark-and-sweep GC pass.  Currently a stub that resets the
- * trigger counter; the full implementation lives in a future gc.c3 module.
+ * Register a heap object as a GC root.  Root objects are always treated as
+ * reachable during mark-and-sweep, preventing them from being freed.
  */
-fn void Heap.trigger_gc(&self) {
-    // TODO: implement full mark-and-sweep.
-    // For now simply reset the counter based on the live object count.
+fn void Heap.register_gc_root(&self, HeapHeader* hdr) {
+    if (self.gc_root_count < GC_MAX_ROOTS) {
+        self.gc_roots[self.gc_root_count] = (void*)hdr;
+        self.gc_root_count++;
+    }
+}
+
+// ============================================================================
+// GC marking helpers
+// ============================================================================
+
+/**
+ * Mark a TVal value as reachable.  If the value holds a heap-allocated
+ * object (OBJECT or STRING tag), the pointed-to object is marked.
+ */
+fn void Heap.mark_tval(&self, TVal* v, int depth) {
+    if (v.is_object()) {
+        HObject* obj = (HObject*)v.get_heapptr();
+        if (obj != null) {
+            self.mark_object(obj, depth + 1);
+        }
+    } else if (v.is_string()) {
+        HString* s = (HString*)v.get_heapptr();
+        if (s != null) {
+            HeapHeader* hdr = (HeapHeader*)s;
+            hdr.set_reachable();
+        }
+    }
+}
+
+/**
+ * Recursively mark an HObject and all objects reachable from it.
+ * Uses a depth limit to prevent C-stack overflow on deeply nested
+ * prototype chains or property graphs.
+ */
+fn void Heap.mark_object(&self, HObject* obj, int depth) {
+    if (obj == null) { return; }
+
+    HeapHeader* hdr = (HeapHeader*)obj;
+    if (hdr.is_reachable()) { return; }
+    hdr.set_reachable();
+
+    if (depth > GC_MARK_RECURSE_LIMIT) { return; }
+
+    // Mark prototype chain
+    if (obj.prototype != null) {
+        self.mark_object(obj.prototype, depth + 1);
+    }
+
+    // Mark property keys (HString*) and values (TVal)
+    for (uint i = 0; i < obj.prop_count; i++) {
+        HString* key = (HString*)obj.props[i].key;
+        if (key != null) {
+            ((HeapHeader*)key).set_reachable();
+        }
+        self.mark_tval(&obj.props[i].value, depth);
+        self.mark_tval(&obj.props[i].getter, depth);
+        self.mark_tval(&obj.props[i].setter, depth);
+    }
+
+    // Mark array part values
+    if (obj.array_part != null) {
+        for (uint i = 0; i < obj.array_size; i++) {
+            self.mark_tval(&obj.array_part[i], depth);
+        }
+    }
+
+    // Mark primitive value (wrapper objects like Boolean, Number, String)
+    self.mark_tval(&obj.primitive_value, depth);
+
+    // Mark environment bindings (var_env and lex_env)
+    if (obj.var_env != null && obj.var_env.bindings != null) {
+        self.mark_object(obj.var_env.bindings, depth + 1);
+    }
+    if (obj.lex_env != null && obj.lex_env.bindings != null) {
+        self.mark_object(obj.lex_env.bindings, depth + 1);
+    }
+
+    // Mark CompiledFunction constants (may contain objects/strings).
+    // The comp_func field type (CompiledFunction*) is defined in bytecode.c3
+    // and its fields are not directly accessible here without circular imports.
+    // Constants are typically numbers/booleans/strings; string constants are
+    // already reachable through the string table marking below.
+    // TODO: add a helper in bytecode.c3 to mark constants and inner funcs.
+}
+
+/**
+ * Mark all GC roots: registered roots, built-in prototypes, and the
+ * entire string table (to keep interned strings alive).
+ */
+fn void Heap.mark_roots(&self) {
+    // Mark all registered roots
+    for (uint i = 0; i < self.gc_root_count; i++) {
+        HeapHeader* hdr = (HeapHeader*)self.gc_roots[i];
+        if (hdr != null) {
+            if (hdr.is_object()) {
+                self.mark_object((HObject*)hdr, 0);
+            } else {
+                hdr.set_reachable();
+            }
+        }
+    }
+
+    // Mark built-in error prototypes
+    if (self.err_proto != null) { self.mark_object(self.err_proto, 0); }
+    if (self.type_err_proto != null) { self.mark_object(self.type_err_proto, 0); }
+    if (self.range_err_proto != null) { self.mark_object(self.range_err_proto, 0); }
+    if (self.ref_err_proto != null) { self.mark_object(self.ref_err_proto, 0); }
+    if (self.syntax_err_proto != null) { self.mark_object(self.syntax_err_proto, 0); }
+    if (self.eval_err_proto != null) { self.mark_object(self.eval_err_proto, 0); }
+
+    // Mark built-in constructor prototypes
+    if (self.object_proto != null) { self.mark_object(self.object_proto, 0); }
+    if (self.array_proto != null) { self.mark_object(self.array_proto, 0); }
+    if (self.function_proto != null) { self.mark_object(self.function_proto, 0); }
+    if (self.string_proto != null) { self.mark_object(self.string_proto, 0); }
+    if (self.number_proto != null) { self.mark_object(self.number_proto, 0); }
+    if (self.bool_proto != null) { self.mark_object(self.bool_proto, 0); }
+    if (self.date_proto != null) { self.mark_object(self.date_proto, 0); }
+    if (self.regexp_proto != null) { self.mark_object(self.regexp_proto, 0); }
+    if (self.map_proto != null) { self.mark_object(self.map_proto, 0); }
+    if (self.set_proto != null) { self.mark_object(self.set_proto, 0); }
+    if (self.weakmap_proto != null) { self.mark_object(self.weakmap_proto, 0); }
+    if (self.weakset_proto != null) { self.mark_object(self.weakset_proto, 0); }
+    if (self.symbol_proto != null) { self.mark_object(self.symbol_proto, 0); }
+    if (self.promise_proto != null) { self.mark_object(self.promise_proto, 0); }
+    if (self.generator_proto != null) { self.mark_object(self.generator_proto, 0); }
+
+    // Mark all strings in the string table as reachable
+    // (prevents string collection — can be refined later)
+    for (uint i = 0; i < self.str_table_size; i++) {
+        HString* s = self.str_table[i];
+        if (s != null) {
+            ((HeapHeader*)s).set_reachable();
+        }
+    }
+
+    // Mark symbol registry entries
+    for (uint i = 0; i < self.symbol_registry_count; i++) {
+        HString* key = self.symbol_registry_keys[i];
+        HString* sym = self.symbol_registry_syms[i];
+        if (key != null) { ((HeapHeader*)key).set_reachable(); }
+        if (sym != null) { ((HeapHeader*)sym).set_reachable(); }
+    }
+
+    // Mark built-in cached strings
+    for (uint i = 0; i < STRS_CACHE_SIZE; i++) {
+        HString* s = (HString*)self.strs[i];
+        if (s != null) {
+            ((HeapHeader*)s).set_reachable();
+        }
+    }
+
+    // Mark global checkpoint keys
+    for (uint i = 0; i < self.checkpoint_count; i++) {
+        HString* key = (HString*)self.checkpoint_keys[i];
+        if (key != null) { ((HeapHeader*)key).set_reachable(); }
+    }
+}
+
+// ============================================================================
+// GC sweep
+// ============================================================================
+
+/**
+ * Sweep phase: walk the heap_allocated list and free every object that
+ * was NOT marked reachable during the mark phase.  Clears the reachable
+ * flag on surviving objects for the next cycle.
+ */
+fn void Heap.sweep(&self) {
+    uint kept = 0;
+    for (uint i = 0; i < self.gc_obj_count; i++) {
+        HeapHeader* hdr = (HeapHeader*)self.gc_objects[i];
+        if (hdr == null) { continue; }
+
+        if (!hdr.is_reachable()) {
+            // Free this object
+            if (hdr.is_object()) {
+                hobject::hobject_free((HObject*)hdr);
+            } else if (hdr.is_string()) {
+                libc::free(hdr);
+            } else {
+                self.free_func(self.heap_udata, hdr);
+            }
+            // Removed from array (will be overwritten by kept compaction)
+        } else {
+            // Keep — clear mark bit for next cycle
+            hdr.clear_reachable();
+            self.gc_objects[kept] = self.gc_objects[i];
+            kept++;
+        }
+    }
+    self.gc_obj_count = kept;
+}
+
+// ============================================================================
+// Garbage collection — mark-and-sweep
+// ============================================================================
+
+/**
+ * Run a full mark-and-sweep garbage collection.
+ *
+ * 1. Clear all reachable flags.
+ * 2. Mark all reachable objects starting from roots (built-in prototypes,
+ *    registered GC roots, and the string table).
+ * 3. Sweep unmarked (unreachable) objects, freeing their memory.
+ * 4. Reset the GC trigger counter based on the new live-object count.
+ *
+ * Re-entrancy is prevented by the gc_running guard.
+ */
+fn void Heap.mark_and_sweep(&self) {
+    if (self.gc_running) { return; }
+    self.gc_running = true;
+
+    // --- Phase 1: Clear all reachable flags ---
+    for (uint i = 0; i < self.gc_obj_count; i++) {
+        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
+        if (cur != null) {
+            cur.clear_reachable();
+        }
+    }
+
+    // --- Phase 2: Mark from roots ---
+    self.mark_roots();
+
+    // --- Phase 3: Sweep ---
+    self.sweep();
+
+    // --- Phase 4: Reset trigger counter ---
     long new_trigger = (long)self.gc_obj_count * GC_TRIGGER_GROW_FACTOR;
     if (new_trigger < GC_INITIAL_TRIGGER) {
         new_trigger = GC_INITIAL_TRIGGER;
     }
     self.gc_trigger_counter = new_trigger;
+    self.gc_running = false;
+}
+
+/**
+ * Trigger a mark-and-sweep GC pass.  Called automatically when the
+ * allocation counter reaches zero.
+ */
+fn void Heap.trigger_gc(&self) {
+    self.mark_and_sweep();
 }
 
 // ============================================================================

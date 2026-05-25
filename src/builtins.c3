@@ -632,7 +632,7 @@ fn void builtin_function(BuiltinContext* ctx) {
         func = f;
     } else {
         // Compilation failed: throw SyntaxError
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.syntax_err_proto;
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
@@ -654,7 +654,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     }
 
     // Create an HObject for the compiled function
-    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         ctx.result.set_undefined();
         return;
@@ -670,7 +670,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     // Set the function's .prototype property (standard for JS functions)
     // and its internal [[Prototype]] to Function.prototype
     func_obj.prototype = ctx.heap.function_proto;
-    HObject*? proto_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    HObject*? proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (try proto = proto_raw) {
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
@@ -728,7 +728,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
         func = f;
     } else {
         // Compilation failed: throw SyntaxError
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.syntax_err_proto;
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
@@ -750,7 +750,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
     }
 
     // Create an HObject for the compiled function
-    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         ctx.result.set_undefined();
         return;
@@ -872,7 +872,7 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
 /// Shared constructor: create an error object with ObjClass.ERROR,
 /// set prototype to `proto`, and set .message from args[0] if provided.
 fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch err = err_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -1002,7 +1002,7 @@ fn void builtin_boolean(BuiltinContext* ctx) {
     }
 
     if (ctx.is_constructor) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.BOOLEAN);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -1055,7 +1055,7 @@ fn void builtin_string(BuiltinContext* ctx) {
     }
 
     if (ctx.is_constructor) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.STRING);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -1152,7 +1152,7 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
     }
     // TypeError: String.prototype method called on incompatible value
     HString* type_str = builtin_intern_string(ctx.heap, "String");
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
@@ -1572,7 +1572,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     uint len = s_hstr.blen;
 
     // Create result array
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -1949,7 +1949,7 @@ fn void builtin_number(BuiltinContext* ctx) {
     }
 
     if (ctx.is_constructor) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.NUMBER);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2275,7 +2275,7 @@ fn void builtin_object(BuiltinContext* ctx) {
     // Handle object prototype method calls (this-value dispatch)
     if (!ctx.is_constructor && ctx.argc == 0) {
         // Object() with no args — create and return new empty object
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2293,7 +2293,7 @@ fn void builtin_object(BuiltinContext* ctx) {
 
     // null/undefined/not supplied → new empty object
     if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2315,7 +2315,7 @@ fn void builtin_object(BuiltinContext* ctx) {
 
     // Primitive → create wrapper object (ToObject per ES5 §9.9)
     if (arg.tag == BOOLEAN) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.BOOLEAN);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2331,7 +2331,7 @@ fn void builtin_object(BuiltinContext* ctx) {
     }
 
     if (arg.tag == NUMBER || arg.tag == FASTINT) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.NUMBER);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2346,7 +2346,7 @@ fn void builtin_object(BuiltinContext* ctx) {
     }
 
     if (arg.tag == STRING) {
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.STRING);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -2362,7 +2362,7 @@ fn void builtin_object(BuiltinContext* ctx) {
     }
 
     // Fallback — new empty object
-    HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = obj_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -2584,7 +2584,7 @@ fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
 /// Array() as function (ES5 §15.4.1) or new Array() as constructor (§15.4.2).
 /// Creates and returns a new Array object.
 fn void builtin_array(BuiltinContext* ctx) {
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -2679,7 +2679,7 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
         return (HObject*)this_val.pointer;
     }
     // TypeError: Array.prototype method called on non-object
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -3040,7 +3040,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     }
 
     // Create result array
-    HObject*? new_arr = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -3167,7 +3167,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     }
 
     // Create result array with deleted items
-    HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = result_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -3358,7 +3358,7 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
     // Create result array
-    HObject*? new_arr = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -3592,7 +3592,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
 
     if (!callable) {
         // Throw TypeError
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             // Cannot easily throw from here — set needs_throw or similar
@@ -3903,7 +3903,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     }
 
     // Create bound function object
-    HObject*? bound_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? bound_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = bound_raw) {
         if (bound_args_arr != null) libc::free(bound_args_arr);
         ctx.result.tag = UNDEFINED;
@@ -3942,7 +3942,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.put_prop(key_this, bound_this, internal_flags);
 
     // Store bound args as a JS array
-    HObject*? args_arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? args_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     HObject* args_arr = null;
     if (try a = args_arr_raw) {
         args_arr = a;
@@ -4308,7 +4308,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
     jctx.pos++; // skip '['
     json_skip_ws(jctx);
 
-    HObject*? arr_raw = hobject::hobject_alloc(jctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = jctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     HObject* arr;
     if (try a = arr_raw) {
         arr = a;
@@ -4367,7 +4367,7 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
     jctx.pos++; // skip '{'
     json_skip_ws(jctx);
 
-    HObject*? obj_raw = hobject::hobject_alloc(jctx.heap, hobject::ObjClass.OBJECT);
+    HObject*? obj_raw = jctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     HObject* obj;
     if (try o = obj_raw) {
         obj = o;
@@ -4549,7 +4549,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
 
 /// Helper: throw a SyntaxError from a JSON builtin.
 fn void json_throw_syntax_error(BuiltinContext* ctx, char[] msg) {
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.syntax_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap, msg);
@@ -4627,7 +4627,7 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
             ((HObject*)reviver_arg.pointer) != null &&
             ((HObject*)reviver_arg.pointer).is_callable())) {
             // Create holder object { "": result }
-            HObject*? holder_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+            HObject*? holder_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (try holder = holder_raw) {
                 HString* empty_key = builtin_intern_string(ctx.heap, "");
                 holder.put_prop(empty_key, result, hobject::PROP_FLAGS_WEC);
@@ -5232,7 +5232,7 @@ fn void builtin_date(BuiltinContext* ctx) {
     double now = date_now_ms();
     if (ctx.is_constructor) {
         // new Date(...) — create Date object
-        HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.DATE);
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.DATE);
         if (catch err = obj_raw) {
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -5615,7 +5615,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             flags |= re_bindings::RE_FLAG_DOTALL;
         } else {
             // Invalid flag per ES5 §15.10.4.1 — throw SyntaxError
-            HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
                 err.prototype = ctx.heap.syntax_err_proto;
                 char[80] buf;
@@ -5647,7 +5647,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
 
     if (compiled == null) {
         // Compilation failed — throw SyntaxError (ES5 §15.10.4.1)
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.syntax_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, error_buf[:128]);
@@ -5665,7 +5665,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         return;
     }
 
-    HObject*? obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.REGEXP);
+    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.REGEXP);
     if (catch err = obj_raw) {
         if (compiled != null) re_bindings::re_free(compiled);
         ctx.result.set_undefined();
@@ -5720,7 +5720,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || obj.regexp_data == null) {
         // ES5 §15.10.6.3 step 2: throw TypeError if this is not a RegExp
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.test called on incompatible receiver");
@@ -5819,7 +5819,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || obj.regexp_data == null) {
         // ES5 §15.10.6.2 step 2: throw TypeError if this is not a RegExp
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.exec called on incompatible receiver");
@@ -5919,7 +5919,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     }
 
     // Create result array
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.set_null();
         return;
@@ -6072,7 +6072,7 @@ fn HObject* check_map(BuiltinContext* ctx) {
         if (obj.flags.obj_class == hobject::ObjClass.MAP) return obj;
     }
     // TypeError
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -6104,7 +6104,7 @@ fn int map_find_key(HObject* map, TVal key) {
 // Map constructor (ES6 §23.1.1)
 // ============================================================================
 fn void builtin_map(BuiltinContext* ctx) {
-    HObject*? map_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.MAP);
+    HObject*? map_raw = ctx.heap.alloc_object(hobject::ObjClass.MAP);
     if (catch err = map_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -6291,7 +6291,7 @@ fn void builtin_map_proto_keys(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
@@ -6315,7 +6315,7 @@ fn void builtin_map_proto_values(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
@@ -6339,7 +6339,7 @@ fn void builtin_map_proto_entries(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
@@ -6347,7 +6347,7 @@ fn void builtin_map_proto_entries(BuiltinContext* ctx) {
     uint cnt = map.array_used;
     uint entry_count = cnt / 2;
     for (uint i = 0; i < entry_count; i++) {
-        HObject*? pair_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         if (catch pair_err = pair_raw) continue;
         HObject* pair = pair_raw;
         pair.prototype = ctx.heap.array_proto;
@@ -6375,7 +6375,7 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
 
     if (ctx.argc < 1) {
         // Missing callback throws TypeError
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
@@ -6396,7 +6396,7 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
     // For now, we validate the callback exists but don't invoke it.
     TVal callback = ctx.regs[ctx.base_reg];
     if (!(callback.tag == OBJECT && callback.pointer != null && ((HObject*)callback.pointer).flags.callable)) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
@@ -6425,7 +6425,7 @@ fn HObject* check_set(BuiltinContext* ctx) {
         if (obj.flags.obj_class == hobject::ObjClass.SET) return obj;
     }
     // TypeError
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -6457,7 +6457,7 @@ fn int set_find_value(HObject* set, TVal val) {
 // Set constructor (ES6 §23.2.1)
 // ============================================================================
 fn void builtin_set(BuiltinContext* ctx) {
-    HObject*? set_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.SET);
+    HObject*? set_raw = ctx.heap.alloc_object(hobject::ObjClass.SET);
     if (catch err = set_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -6603,7 +6603,7 @@ fn void builtin_set_proto_keys(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
@@ -6625,7 +6625,7 @@ fn void builtin_set_proto_values(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
@@ -6648,14 +6648,14 @@ fn void builtin_set_proto_entries(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
     uint cnt = set.array_used;
     for (uint i = 0; i < cnt; i++) {
-        HObject*? pair_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         if (catch pair_err = pair_raw) continue;
         HObject* pair = pair_raw;
         pair.prototype = ctx.heap.array_proto;
@@ -6682,7 +6682,7 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
     if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
 
     if (ctx.argc < 1) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
@@ -6714,7 +6714,7 @@ fn HObject* check_weakmap(BuiltinContext* ctx) {
         HObject* obj = (HObject*)this_val.pointer;
         if (obj.flags.obj_class == hobject::ObjClass.WEAKMAP) return obj;
     }
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -6744,7 +6744,7 @@ fn int weakmap_find_key(HObject* wm, TVal key) {
 // WeakMap constructor (ES6 §23.3.1)
 // ============================================================================
 fn void builtin_weakmap(BuiltinContext* ctx) {
-    HObject*? wm_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.WEAKMAP);
+    HObject*? wm_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKMAP);
     if (catch err = wm_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -6796,7 +6796,7 @@ fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
 
     TVal key = ctx.regs[ctx.base_reg];
     if (key.tag != OBJECT || key.pointer == null) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used as weak map key");
@@ -6898,7 +6898,7 @@ fn HObject* check_weakset(BuiltinContext* ctx) {
         HObject* obj = (HObject*)this_val.pointer;
         if (obj.flags.obj_class == hobject::ObjClass.WEAKSET) return obj;
     }
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -6928,7 +6928,7 @@ fn int weakset_find_value(HObject* ws, TVal val) {
 // WeakSet constructor (ES6 §23.4.1)
 // ============================================================================
 fn void builtin_weakset(BuiltinContext* ctx) {
-    HObject*? ws_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.WEAKSET);
+    HObject*? ws_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKSET);
     if (catch err = ws_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -6971,7 +6971,7 @@ fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
 
     TVal value = ctx.regs[ctx.base_reg];
     if (value.tag != OBJECT || value.pointer == null) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used in weak set");
@@ -7175,7 +7175,7 @@ fn HString* symbol_registry_get_key(Heap* heap, HString* sym) {
 fn void builtin_symbol(BuiltinContext* ctx) {
     // Symbol is not constructable with new
     if (ctx.is_constructor) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol is not a constructor");
@@ -7264,7 +7264,7 @@ fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
 
     TVal sym_val = ctx.regs[ctx.base_reg];
     if (!is_symbol_val(sym_val)) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.keyFor requires a symbol argument");
@@ -7316,7 +7316,7 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
     }
 
     if (sym == null) {
-        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.toString called on non-Symbol");
@@ -7380,7 +7380,7 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
         }
     }
 
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
@@ -7439,7 +7439,7 @@ fn HObject* check_promise(BuiltinContext* ctx) {
         HObject* obj = (HObject*)this_val.pointer;
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return obj;
     }
-    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap,
@@ -7571,7 +7571,7 @@ fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool i
 
 /// Create a new Promise with the given internal structure.
 fn HObject*? promise_create(Heap* heap) {
-    HObject*? prom_raw = hobject::hobject_alloc(heap, hobject::ObjClass.PROMISE);
+    HObject*? prom_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
     if (catch err = prom_raw) return null;
     HObject* prom = prom_raw;
     prom.prototype = heap.promise_proto;
@@ -7582,7 +7582,7 @@ fn HObject*? promise_create(Heap* heap) {
 /// Create a resolve/reject capability object (internal).
 /// Returns a pair of functions as properties on a capability HObject.
 fn HObject*? promise_create_capability(Heap* heap, HObject* promise) {
-    HObject*? cap_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? cap_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = cap_raw) return null;
     HObject* cap = cap_raw;
 
@@ -7703,7 +7703,7 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     HObject* cap = cap_raw;
 
     // Build reaction object
-    HObject*? reaction_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+    HObject*? reaction_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = reaction_raw) {
         ctx.result.tag = UNDEFINED;
         ctx.result.pointer = null;
@@ -7875,7 +7875,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
 
     // Zero-length or non-iterable — resolve with [] immediately
     if (!has_len || len == 0) {
-        HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         TVal arr_val;
         arr_val.set_undefined();
         if (try arr = arr_raw) {
@@ -7891,7 +7891,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     }
 
     // Allocate results array
-    HObject*? arr_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ARRAY);
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.tag = OBJECT;
         ctx.result.pointer = promise;
@@ -8052,7 +8052,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
 
 fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Promise.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.PROMISE);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -8064,7 +8064,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "finally", BUILTIN_PROMISE_PROTO_FINALLY)) return false;
 
     // Create Promise function object
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_PROMISE;
@@ -8185,7 +8185,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     }
 
     if (gs.state == GEN_COMPLETED) {
-        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try r = result_raw) {
             r.prototype = ctx.heap.object_proto;
             HString* value_key = builtin_intern_string(ctx.heap, "value");
@@ -8220,7 +8220,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     vm_heap.did_yield = false;
 
     // Create a callable HObject wrapping the generator's compiled function
-    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
         ctx.result.tag = UNDEFINED;
@@ -8304,7 +8304,7 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     vm_heap.did_yield = false;
 
     // Create a callable HObject wrapping the generator's compiled function
-    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
         gs.resume_kind = NEXT;
@@ -8358,7 +8358,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
 
     if (gs.state == GEN_COMPLETED) {
         // Already completed — return {value: argument, done: true}
-        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try r = result_raw) {
             r.prototype = ctx.heap.object_proto;
             HString* value_key = builtin_intern_string(ctx.heap, "value");
@@ -8401,7 +8401,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
             arg_val.tag = UNDEFINED;
             arg_val.pointer = null;
         }
-        HObject*? result_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.OBJECT);
+        HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try r = result_raw) {
             r.prototype = ctx.heap.object_proto;
             HString* value_key = builtin_intern_string(ctx.heap, "value");
@@ -8431,7 +8431,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     vm_heap.did_yield = false;
 
     // Create a callable HObject wrapping the generator's compiled function
-    HObject*? func_obj_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
         gs.resume_kind = NEXT;
@@ -8464,7 +8464,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
 
 fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Generator.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = heap.object_proto;
@@ -8866,7 +8866,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     }
     heap.str_table_insert(console_key);
 
-    HObject*? console_obj = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? console_obj = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = console_obj) {
         return false;
     }
@@ -9008,7 +9008,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
 fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Object.prototype — the root of all prototype chains
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Object.prototype is the root — its [[Prototype]] is null
@@ -9058,7 +9058,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Create Object constructor as a proper HObject (not LIGHTFUNC)
     // so it can carry .prototype, .length, etc.
-    HObject*? obj_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = obj_raw) return false;
     HObject* obj = obj_raw;
     obj.builtin_fn_index = (int)BUILTIN_OBJECT;
@@ -9110,7 +9110,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
 }
 
 fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
-    HObject*? math_raw = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? math_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = math_raw) return false;
     HObject* math = math_raw;
     if (!set_num_prop_lookup(math, heap, "E", 2.718281828459045)) return false;
@@ -9188,7 +9188,7 @@ fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
 
 /// Create JSON global object with .parse and .stringify methods.
 fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
-    HObject*? json_raw = hobject::hobject_alloc(heap, hobject::ObjClass.JSON);
+    HObject*? json_raw = heap.alloc_object(hobject::ObjClass.JSON);
     if (catch err = json_raw) return false;
     HObject* json = json_raw;
 
@@ -9211,7 +9211,7 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
 /// Create Number.prototype and register the Number constructor globally.
 fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Number prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.NUMBER);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.NUMBER);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
@@ -9240,7 +9240,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Create Number constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static properties like Number.MAX_VALUE, Number.NaN, etc.
-    HObject*? num_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? num_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
     num.builtin_fn_index = (int)BUILTIN_NUMBER;
@@ -9415,7 +9415,7 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
 /// Helper: create a prototype object for an error type.
 /// proto_parent is the [[Prototype]] (e.g. Error.prototype for subclasses).
 fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] name_str) {
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.ERROR);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch err = proto_raw) return null;
     HObject* proto = proto_raw;
     proto.prototype = proto_parent;
@@ -9545,7 +9545,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
 /// Create Boolean.prototype and register the Boolean constructor globally.
 fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Boolean.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.BOOLEAN);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.BOOLEAN);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
@@ -9585,7 +9585,7 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
 /// Create String.prototype and register the String constructor globally.
 fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Create String.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.STRING);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.STRING);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
@@ -9659,7 +9659,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
 /// Create Array.prototype and register the Array constructor globally.
 fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Array.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.ARRAY);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
@@ -9701,13 +9701,13 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
 /// the Function constructor globally.
 fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Function constructor as a proper function object FIRST
-    HObject*? func_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.builtin_fn_index = (int)BUILTIN_FUNCTION;
 
     // Create Function.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype
@@ -9787,7 +9787,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
 /// Create Date.prototype and register the Date constructor globally.
 fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Date.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.DATE);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.DATE);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype
@@ -9837,7 +9837,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "getMilliseconds", BUILTIN_DATE_PROTO_GETMILLISECONDS)) return false;
 
     // Register Date as a global constructor (proper function object for static methods)
-    HObject*? date_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? date_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = date_raw) return false;
     HObject* date_obj = date_raw;
     date_obj.builtin_fn_index = (int)BUILTIN_DATE;
@@ -9891,7 +9891,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
 /// Create RegExp.prototype and register the RegExp constructor globally.
 fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     // Create RegExp.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.REGEXP);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.REGEXP);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype
@@ -9914,7 +9914,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "toString", BUILTIN_REGEXP_PROTO_TOSTRING)) return false;
 
     // Register RegExp as a global constructor (proper function object)
-    HObject*? regexp_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? regexp_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = regexp_raw) return false;
     HObject* regexp_obj = regexp_raw;
     regexp_obj.builtin_fn_index = (int)BUILTIN_REGEXP;
@@ -9964,7 +9964,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
 
 fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Map prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.MAP);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.MAP);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -9997,7 +9997,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Map constructor as a proper function object
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_MAP;
@@ -10056,7 +10056,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
 
 fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Set prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.SET);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.SET);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -10087,7 +10087,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Set constructor as a proper function object
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_SET;
@@ -10143,7 +10143,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
 // ============================================================================
 
 fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.WEAKMAP);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.WEAKMAP);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -10161,7 +10161,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     tag_tv.pointer = builtin_intern_string(heap, "WeakMap");
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKMAP;
@@ -10213,7 +10213,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
 // ============================================================================
 
 fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.WEAKSET);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.WEAKSET);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -10230,7 +10230,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     tag_tv.pointer = builtin_intern_string(heap, "WeakSet");
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKSET;
@@ -10283,7 +10283,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
 
 fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Symbol.prototype
-    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.SYMBOL);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.SYMBOL);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -10301,7 +10301,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Symbol function object
-    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_SYMBOL;

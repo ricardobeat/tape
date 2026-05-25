@@ -44,7 +44,7 @@ fn EnvRecord*? env_create(Heap* heap, EnvRecord* parent) {
     env.parent = parent;
     env.is_declarative = false;
 
-    HObject*? bindings = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = bindings) {
         libc::free(raw);
         return types::ALLOC_ERROR~;
@@ -89,7 +89,7 @@ fn EnvRecord*? env_create_declarative(Heap* heap, EnvRecord* parent) {
     env.parent = parent;
     env.is_declarative = true;
 
-    HObject*? bindings = hobject::hobject_alloc(heap, hobject::ObjClass.OBJECT);
+    HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = bindings) {
         libc::free(raw);
         return types::ALLOC_ERROR~;
@@ -102,7 +102,10 @@ fn EnvRecord*? env_create_declarative(Heap* heap, EnvRecord* parent) {
 /// Destroy an environment record and all its owned resources.
 fn void env_destroy(EnvRecord* env) {
     if (env == null) { return; }
-    hobject::hobject_free(env.bindings);
+    // Free parent chain first
+    if (env.parent != null) {
+        env_destroy(env.parent);
+    }
     libc::free(env);
 }
 

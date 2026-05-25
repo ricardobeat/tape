@@ -279,6 +279,11 @@ struct HObject {
     /// Number of slots actually holding a defined value.
     uint          array_used;
 
+    // --- Unified property allocation block --------------------------------
+    /// Single allocation that holds props, hash_table, and array_part
+    /// contiguously (see update_prop_pointers for layout).
+    void*         prop_alloc;
+
     // --- Primitive wrapper storage (for Boolean, Number, String objects) ---
     /// Stores the [[PrimitiveValue]] for wrapper/exotic objects.
     /// For BOOLEAN: tag=BOOLEAN, .boolean = value.
@@ -305,6 +310,35 @@ struct HObject {
     /// Generator state pointer (only for GENERATOR class objects).
     /// Points to a GeneratorState struct allocated separately.
     void*         generator_data;
+}
+
+// ============================================================================
+// HObject — Unified property allocation helpers
+// ============================================================================
+
+/// Compute total size of the property allocation block.
+fn usz HObject.prop_alloc_size(&self) {
+    usz size = (usz)self.prop_capacity * PropEntry::size;
+    size += (usz)self.hash_size * uint::size;
+    size += (usz)self.array_size * TVal::size;
+    return size;
+}
+
+/// Recompute props, hash_table, array_part pointers from prop_alloc.
+fn void HObject.update_prop_pointers(&self) {
+    if (self.prop_alloc == null) {
+        self.props = null;
+        self.hash_table = null;
+        self.array_part = null;
+        return;
+    }
+    char* base = (char*)self.prop_alloc;
+    usz offs = 0;
+    self.props = (PropEntry*)(base + offs);
+    offs += (usz)self.prop_capacity * PropEntry::size;
+    self.hash_table = self.hash_size > 0 ? (uint*)(base + offs) : null;
+    offs += (usz)self.hash_size * uint::size;
+    self.array_part = self.array_size > 0 ? (TVal*)(base + offs) : null;
 }
 
 // ============================================================================
@@ -675,31 +709,40 @@ fn void HObject.grow_props(&self) {
         }
     }
 
-    usz new_bytes = (usz)new_cap * PropEntry::size;
-    void* new_raw;
+    // Save old sizes
+    usz old_size = self.prop_alloc_size();
+    usz old_hash_bytes = (usz)self.hash_size * uint::size;
 
-    if (self.props == null) {
-        new_raw = libc::malloc(new_bytes);
+    // New total size with new prop capacity
+    usz new_size = old_size - (usz)self.prop_capacity * PropEntry::size
+                 + (usz)new_cap * PropEntry::size;
+
+    void* new_raw;
+    if (self.prop_alloc == null) {
+        new_raw = libc::malloc(new_size);
     } else {
-        new_raw = libc::realloc(self.props, new_bytes);
+        new_raw = libc::realloc(self.prop_alloc, new_size);
     }
 
     if (new_raw == null) {
-        return;  // allocation failure — leave state unchanged
+        return;
     }
 
-    self.props = (PropEntry*)new_raw;
+    self.prop_alloc = new_raw;
+    uint old_prop_capacity = self.prop_capacity;
+    self.prop_capacity = new_cap;
 
-    // Zero-initialise the newly added slots.
-    if (new_cap > self.prop_capacity) {
-        usz added_bytes = (usz)(new_cap - self.prop_capacity) * PropEntry::size;
-        void* start = (void*)((usz)new_raw + (usz)self.prop_capacity * PropEntry::size);
+    // Recompute pointers into the new block
+    self.update_prop_pointers();
+
+    // Zero-initialise the newly added property slots
+    if (new_cap > old_prop_capacity) {
+        usz added_bytes = (usz)(new_cap - old_prop_capacity) * PropEntry::size;
+        void* start = (void*)((char*)self.props + (usz)old_prop_capacity * PropEntry::size);
         libc::memset(start, 0, added_bytes);
     }
 
-    self.prop_capacity = new_cap;
-
-    // Rebuild hash table so that the hash_size tracks the new capacity.
+    // Rebuild hash table so that it tracks the new capacity
     if (self.prop_count >= HASH_MIN_PROPS) {
         self.rebuild_hash();
     }
@@ -713,28 +756,37 @@ fn void HObject.grow_array(&self, uint new_size) {
         return;
     }
 
-    usz new_bytes = (usz)new_size * TVal::size;
-    void* new_raw;
+    // Save old sizes
+    usz old_prop_capacity = self.prop_capacity;
+    usz old_hash_size     = self.hash_size;
+    usz old_array_size    = self.array_size;
 
-    if (self.array_part == null) {
+    // New total with grown array
+    usz new_bytes = (usz)old_prop_capacity * PropEntry::size
+                  + (usz)old_hash_size * uint::size
+                  + (usz)new_size * TVal::size;
+
+    void* new_raw;
+    if (self.prop_alloc == null) {
         new_raw = libc::malloc(new_bytes);
     } else {
-        new_raw = libc::realloc(self.array_part, new_bytes);
+        new_raw = libc::realloc(self.prop_alloc, new_bytes);
     }
 
     if (new_raw == null) {
-        return;  // allocation failure
+        return;
     }
 
-    self.array_part = (TVal*)new_raw;
-
-    // Initialise new slots to undefined (tag=0 after memset since
-    // UNDEFINED is the first enum variant with value 0).
-    usz added_bytes = (usz)(new_size - self.array_size) * TVal::size;
-    void* start = (void*)((usz)new_raw + (usz)self.array_size * TVal::size);
-    libc::memset(start, 0, added_bytes);
-
+    self.prop_alloc = new_raw;
     self.array_size = new_size;
+
+    // Recompute pointers
+    self.update_prop_pointers();
+
+    // Initialise new slots to undefined
+    usz added_bytes = (usz)(new_size - old_array_size) * TVal::size;
+    void* start = (void*)((char*)self.array_part + (usz)old_array_size * TVal::size);
+    libc::memset(start, 0, added_bytes);
 }
 
 /// Rebuild (or create) the hash table from scratch.
@@ -750,16 +802,33 @@ fn void HObject.rebuild_hash(&self) {
     // Round up to next power of 2.
     uint new_hash_size = next_power_of_two(desired);
 
-    usz new_bytes = (usz)new_hash_size * uint::size;
-    void* new_raw;
+    // Save old sizes
+    usz old_prop_bytes = (usz)self.prop_capacity * PropEntry::size;
+    usz old_array_bytes = (usz)self.array_size * TVal::size;
 
-    if (self.hash_table == null) {
+    // New total with grown hash
+    usz new_bytes = old_prop_bytes
+                  + (usz)new_hash_size * uint::size
+                  + old_array_bytes;
+
+    void* new_raw;
+    if (self.prop_alloc == null) {
         new_raw = libc::malloc(new_bytes);
     } else {
-        // Always allocate fresh because we re-insert everything.
+        // Always allocate fresh because we re-insert everything
         new_raw = libc::malloc(new_bytes);
         if (new_raw != null) {
-            libc::free(self.hash_table);
+            // Copy old props
+            if (self.props != null && old_prop_bytes > 0) {
+                libc::memcpy(new_raw, self.props, old_prop_bytes);
+            }
+            // Copy old array part
+            if (self.array_part != null && old_array_bytes > 0) {
+                char* dst = (char*)new_raw + old_prop_bytes
+                          + (usz)new_hash_size * uint::size;
+                libc::memcpy(dst, self.array_part, old_array_bytes);
+            }
+            libc::free(self.prop_alloc);
         }
     }
 
@@ -767,17 +836,20 @@ fn void HObject.rebuild_hash(&self) {
         return;  // allocation failure — hash stays as-is
     }
 
-    // Fill with HASH_UNUSED sentinel.
-    libc::memset(new_raw, 0xFF, new_bytes);  // 0xFFFFFFFF == HASH_UNUSED
-
-    self.hash_table = (uint*)new_raw;
+    self.prop_alloc = new_raw;
     self.hash_size  = new_hash_size;
+
+    // Recompute pointers
+    self.update_prop_pointers();
+
+    // Fill with HASH_UNUSED sentinel.
+    libc::memset(self.hash_table, 0xFF, (usz)new_hash_size * uint::size);
 
     // Re-insert every live property.
     uint mask = new_hash_size - 1;
     for (uint i = 0; i < self.prop_count; i++) {
         if (self.props[i].key == null) {
-            continue;  // skip vacant slots (shouldn't exist in a compacted table)
+            continue;
         }
         uint h    = hash_key(self.props[i].key);
         uint slot = h & mask;
@@ -815,6 +887,8 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 
     HObject* obj = (HObject*)raw;
 
+    obj.prop_alloc = null;
+
     // Set up flags.
     obj.flags.htype      = HType.OBJECT;
     obj.flags.extensible = true;
@@ -851,14 +925,10 @@ fn void hobject_free(HObject* obj) {
         obj.regexp_data = null;
     }
 
-    if (obj.props != null) {
-        libc::free(obj.props);
-    }
-    if (obj.hash_table != null) {
-        libc::free(obj.hash_table);
-    }
-    if (obj.array_part != null) {
-        libc::free(obj.array_part);
+    // Free the unified property allocation block (props + hash + array)
+    if (obj.prop_alloc != null) {
+        libc::free(obj.prop_alloc);
+        obj.prop_alloc = null;
     }
 
     libc::free(obj);

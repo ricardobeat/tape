@@ -860,6 +860,10 @@ fn Vm*? vm_create(Heap* heap) {
     }
     vm.global_env = global;
 
+    // Register the global environment's bindings object as a GC root
+    // so that mark-and-sweep never collects the global scope.
+    heap.register_gc_root(global.bindings.as_header());
+
     // Register built-ins
     if (!builtins::register_builtins(global, heap)) {
         env::env_destroy(global);
@@ -879,7 +883,9 @@ fn Vm*? vm_create(Heap* heap) {
 /// Destroy a VM and release all owned resources.
 fn void vm_destroy(Vm* vm) {
     if (vm == null) return;
-    env::env_destroy(vm.global_env);
+    // env_destroy is NOT called here because all HObjects are tracked
+    // in the heap's gc_objects array and freed by heap.destroy().
+    // Calling env_destroy would double-free those tracked objects.
     if (vm.valstack != null) {
         libc::free(vm.valstack);
     }
@@ -1371,7 +1377,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
             if (rval.tag != OBJECT) {
                 // TypeError: right-hand side must be an object
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     HString* msg_key = intern_string(vm, "message");
@@ -1395,7 +1401,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             HObject* rfunc = (HObject*)rval.pointer;
             if (rfunc == null || !rfunc.is_callable()) {
                 // TypeError: right-hand side must be callable
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     HString* msg_key = intern_string(vm, "message");
@@ -1455,7 +1461,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.boolean = false;
 
             if (rc.tag != OBJECT) {
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     HString* msg_key = intern_string(vm, "message");
@@ -1533,7 +1539,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (rc.tag == STRING) {
                     name_hstr = (HString*)rc.pointer;
                 }
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -1634,7 +1640,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (rb.tag == STRING) {
                     name_hstr = (HString*)rb.pointer;
                 }
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -1686,7 +1692,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         // === OBJECT / ARRAY CREATION ===
 
         case Opcode.NEWOBJ: {
-            HObject*? new_obj = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+            HObject*? new_obj = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (try o = new_obj) {
                 o.prototype = vm.heap.object_proto;
                 ra.tag = OBJECT;
@@ -1699,7 +1705,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         }
 
         case Opcode.NEWARR: {
-            HObject*? new_arr = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+            HObject*? new_arr = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (try a = new_arr) {
                 a.prototype = vm.heap.array_proto;
                 ra.tag = OBJECT;
@@ -1768,7 +1774,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         );
 
                         if (compiled != null) {
-                            HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
+                            HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
                                 obj.regexp_data = compiled;
@@ -1813,7 +1819,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         } else {
                             // re_compile failed — still create an empty regexp object
                             // so typeof works correctly
-                            HObject*? obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.REGEXP);
+                            HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
                                 obj.regexp_data = null;
@@ -2028,7 +2034,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (func_val.tag != OBJECT) {
                 // TypeError: value is not a function
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2059,7 +2065,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not callable (e.g., a non-function object)
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2129,7 +2135,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 } else {
                     // Callable object with no compiled function and no builtin index: error
                     HString* type_str = typeof_string(vm, &func_val);
-                    HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                    HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                     if (try err2 = err_raw2) {
                         err2.prototype = vm.heap.type_err_proto;
                         char[160] buf;
@@ -2289,7 +2295,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     uint rest_idx = (uint)target.num_formals;
                     uint overflow = nargs - (uint)target.num_formals;
 
-                    HObject*? arr_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                    HObject*? arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
                     if (try a = arr_raw) {
                         a.prototype = vm.heap.array_proto;
                         for (uint i = 0; i < overflow; i++) {
@@ -2316,7 +2322,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
 
                 // Create Generator HObject
-                HObject*? gen_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.GENERATOR);
+                HObject*? gen_obj_raw = vm.heap.alloc_object(hobject::ObjClass.GENERATOR);
                 HObject* gen_obj;
                 if (try go = gen_obj_raw) {
                     gen_obj = go;
@@ -2394,7 +2400,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 uint rest_idx = copy_count;
                 uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
 
-                HObject*? arr_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                HObject*? arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
                 if (try a = arr_raw) {
                     a.prototype = vm.heap.array_proto;
                     // Copy overflow args into the array
@@ -2478,7 +2484,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (super_val.tag != OBJECT) {
                 // TypeError: superclass is not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2506,7 +2512,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (super_hobj == null || !super_hobj.is_callable()) {
                 // TypeError: not callable
                 HString* type_str = typeof_string(vm, &super_val);
-                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2613,7 +2619,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
                 uint rest_idx = copy_count;
                 uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
-                HObject*? rest_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                HObject*? rest_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
                 if (try rest_obj = rest_obj_raw) {
                     rest_obj.prototype = vm.heap.array_proto;
                     // Copy overflow args into the array
@@ -2710,7 +2716,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (func_val.tag != OBJECT) {
                 // TypeError: value is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2740,7 +2746,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2795,7 +2801,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 // Object claims to be callable but has no compiled function
                 // and no builtin index — treat as non-constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2826,7 +2832,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Arrow functions cannot be used as constructors (ES6 §14.2.2)
             if (target.is_arrow()) {
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw3 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw3 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err3 = err_raw3) {
                     err3.prototype = vm.heap.type_err_proto;
                     char[160] buf;
@@ -2853,7 +2859,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             // Step 1: Create new object
-            HObject*? new_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+            HObject*? new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (catch err = new_obj_raw) {
                 regs_base[result_reg].tag = UNDEFINED;
                 regs_base[result_reg].pointer = null;
@@ -2924,7 +2930,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 uint rest_idx = copy_count;
                 uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
 
-                HObject*? arr2_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                HObject*? arr2_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
                 if (try a2 = arr2_raw) {
                     a2.prototype = vm.heap.array_proto;
                     for (uint i = 0; i < overflow; i++) {
@@ -3125,7 +3131,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     vm.heap.resume_gen = null;
                     vm.heap.did_yield = false;
 
-                    HObject*? robj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                    HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                     TVal wrapped_val;
                     if (try robj = robj_raw) {
                         robj.prototype = vm.heap.object_proto;
@@ -3176,7 +3182,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 uint ret_byteoff = yield_act.retval_byteoff;
 
                 // Create IteratorResult {value: yieldVal, done: false}
-                HObject*? result_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                HObject*? result_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                 TVal wrapped_val;
                 if (try robj = result_obj_raw) {
                     robj.prototype = vm.heap.object_proto;
@@ -3233,7 +3239,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 vm.heap.resume_gen = null;
 
                 // Wrap in IteratorResult {value: returnVal, done: true}
-                HObject*? robj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                 TVal wrapped_val;
                 if (try robj = robj_raw) {
                     robj.prototype = vm.heap.object_proto;
@@ -3333,7 +3339,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         // Check for TDZ sentinel
                         if (env::is_tdz_sentinel(&v)) {
                             HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.ref_err_proto;
                                 char[160] buf;
@@ -3373,7 +3379,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         } else {
                             // ReferenceError: variable not declared
                             HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.ref_err_proto;
                                 char[160] buf;
@@ -3426,7 +3432,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (env::is_tdz_sentinel(&v)) {
                             // TDZ: throw ReferenceError (ES6 behavior)
                             HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.ref_err_proto;
                                 char[160] buf;
@@ -3492,7 +3498,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         // Enforce const: check writability of existing binding
                         if (!env::env_is_lex_writable(act.lex_env, key)) {
                             HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.type_err_proto;
                                 char[160] buf;
@@ -3579,7 +3585,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (bc < vm.current_func.inner_count) {
                 CompiledFunction* template = vm.current_func.inner_funcs[bc];
 
-                HObject*? func_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.FUNCTION);
+                HObject*? func_obj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
                 if (try func_obj = func_obj_raw) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
@@ -3598,7 +3604,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Arrow functions don't get a .prototype property (ES6 §14.2.16)
                     if (!template.is_arrow()) {
                         // ES5 §13.2: create .prototype property (plain object with .constructor)
-                        HObject*? proto_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.OBJECT);
+                        HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try proto_obj = proto_obj_raw) {
                             proto_obj.prototype = vm.heap.object_proto;
                             // Set .constructor on the prototype object
@@ -3649,21 +3655,21 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (ra.tag == OBJECT) {
                 obj = (HObject*)ra.pointer;
             } else if (ra.tag == BOOLEAN) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.BOOLEAN);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
                 obj.primitive_value.tag = BOOLEAN;
                 obj.primitive_value.boolean = ra.boolean;
             } else if (ra.tag == STRING) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.STRING);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
                 obj.primitive_value.tag = STRING;
                 obj.primitive_value.pointer = ra.pointer;
             } else if (ra.tag == NUMBER || ra.tag == FASTINT) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.NUMBER);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
@@ -3863,7 +3869,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             } else if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
                 // TypeError: with cannot be applied to null/undefined
                 HString* msg_key = intern_string(vm, "message");
-                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     char[80] buf;
@@ -3888,21 +3894,21 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
                 break;
             } else if (obj_val.tag == BOOLEAN) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.BOOLEAN);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
                 obj.primitive_value.tag = BOOLEAN;
                 obj.primitive_value.boolean = obj_val.boolean;
             } else if (obj_val.tag == STRING) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.STRING);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
                 obj.primitive_value.tag = STRING;
                 obj.primitive_value.pointer = obj_val.pointer;
             } else if (obj_val.tag == NUMBER || obj_val.tag == FASTINT) {
-                HObject*? wrapped = hobject::hobject_alloc(vm.heap, hobject::ObjClass.NUMBER);
+                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
