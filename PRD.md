@@ -37,111 +37,9 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 ### Scope Chain
 - EnvRecord with parent link, bindings via HObject property table
 - Global scope, function scope, catch scope
-- **Lexical environment (let/const)** — implemented: PUSH_LEX/POP_LEX opcodes, PUTLEX (let) / PUTLEX_C (const) for declarations, INITTZ for TDZ sentinel initialization at block entry, GETVAR/PUTVAR searches lex_env first, block scoping via EnvRecord chain on act.lex_env. TDZ sentinel infrastructure with `is_captured` shadowing detection forces GETVAR across scope boundaries. Const runtime enforcement (TypeError on reassignment) via non-writable property flags. Full TDZ enforcement at block entry via pre-scan lexical declaration collection.
 
 ### RegExp
 - using libregexp (from QuickJS)
-
-### Arrow Functions (ES6)
-- `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags)
-- Parse `IDENTIFIER => expr`, `() => expr`, `(params) => expr`, `(params) => { body }`
-- Lexical `this` — inherited from enclosing scope at call time (VM ignores stack `this` slot)
-- Cannot be used as constructor — `new Arrow()` throws TypeError
-- No `.prototype` property — skipped in CLOSURE opcode handler
-- Implicit return for expression bodies; block bodies need explicit `return`
-
-### Template Literals (ES6)
-- Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` tracking
-- Tokens: TEMPLATE_HEAD (`text${`), TEMPLATE_MIDDLE (`}text${`), TEMPLATE_TAIL (`}text\``)
-- Brace-balance tracking in lexer (`template_brace_balance`) handles object/function bodies inside `${}`
-- No-substitution templates (`` `text` ``) return STRING token — zero cost
-- Compiler emits LDCONST for template parts + ADD for concatenation (ADD opcode handles ToString coercion)
-- Escape sequences processed identically to string literals (\n, \t, \uXXXX, \xHH, etc.)
-- Line continuations (`\<LF>`) supported
-- Tagged templates — implemented: `tag`...`` and `tag`text ${expr} text`` call syntax. Template object array with `.raw` property created as first argument. Chained tagged templates (`tag`a``b``c``) supported. Member expression tags (`obj.tag`...``) preserve `this` binding. | ✅ (Phase 11)
-- Nested templates ✅ (Phase 16)
-
-### Default Parameters (ES6)
-- Each default expression compiled as a zero-argument inner function (via `compile_default_expr`)
-- Default functions resolve free variables at runtime via GETVAR against the outer scope's environment chain
-- At function entry, after PUSH_LEX, each parameter with a default is checked: if `=== undefined`, the default function is called via CLOSURE + CALL and the result assigned to the parameter register and synced to the environment via PUTVAR
-- Default parameters can reference earlier parameters (e.g., `function f(a, b = a + 1)`)
-- `this` in default expressions refers to the function's `this` binding (via LDTHIS)
-- Both function declarations/expressions and standalone function compilation support defaults
-
-| ✅ (Phase 11)
-
-### Rest Parameters (ES6)
-- `...rest` syntax in function parameter lists
-- Rest parameter collects overflow arguments into a real Array
-- Does NOT count toward `Function.length`
-- Works with function declarations, expressions, and arrow functions
-- Compatible with default parameters (defaults before rest)
-- Array built in VM call handler (no separate opcode needed)
-
-| ✅ (Phase 11)
-
-### Destructuring (ES6) ✅ (Phase 12)
-- Array destructuring: `var [a, b] = expr`, `let [x, ...rest] = arr`, `const [m, , n] = tuple`
-- Object destructuring: `var {a, b} = obj`, `let {x: y} = obj` (shorthand + keyed)
-- Works with `var`, `let`, and `const` declarations
-- Works in standard `for`-loop init: `for (var [i, j] = [0,0]; ...)`
-- Elision (holes) in array patterns: `var [a, , b] = [1,2,3]`
-- Rest element in array patterns: `var [first, ...rest] = arr` (position-0 rest assigns RHS directly)
-- Compile-time only: no new opcodes — uses GETPROP with LDINT (array) or LDCONST (object) + existing PUTVAR/PUTLEX/PUTLEX_C
-- for-in destructuring deferred (requires iterator protocol for patterns)
-- Nested patterns, computed properties, default values deferred
-- Assignment destructuring (without declaration) deferred
-
-| ✅ (Phase 12)
-
-### Spread Operator (ES6) ✅ (Phase 13)
-
-- **Array spread** — `[...arr, x, y]` expands an array's elements into a new array literal
-- **Call spread** — `f(...args)` spreads array elements as individual function arguments
-- **Mixed arguments** — non-spread args before spread: `f(a, b, ...args)`
-- New opcodes: `ARRSPRD` (array spread with in-place index), `SPREAD_ARG` (register-level spread), `CALL_S` (dynamic arg count)
-- Uses `.length` + numeric property access (iterator protocol deferred)
-- Multiple spreads in array literals (`[...a, ...b]`) supported
-- Spread before non-spread args (`f(...a, b)`) deferred
-- Object spread (`{...obj}`) deferred (ES2018)
-
-| ✅ (Phase 13)
-
-### for-of Loop (ES6) ✅ (Phase 14)
-
-- **for-in-style lowering** — Uses `GETPROP .length` + numeric index access (no dedicated FOROF opcode, no iterator protocol)
-- **Variable declaration** — `var` / `let` / `const` loop variable (PUTVAR / PUTLEX / PUTLEX_C)
-- **Bare variable** — `for (x of iterable)` without `var`/`let`/`const`, x looked up via GETVAR
-- **Empty iterables** — Loop body skipped when length is 0
-- **break / continue** — Correctly handled via standard push_loop/pop_loop with continue target patching (fixed infinite-loop bug — continue target was set to LT rather than index increment)
-- **Compiler** — `emit_forof_loop()` in `src/compiler.c3:4190-4264` emits LDINT, LT, IF_FALSE, GETPROP (numeric), LDREG, PUTVAR/PUTLEX/PUTLEX_C, body, ADD (index increment), JUMP back
-- Iterator protocol (`Symbol.iterator`, `next()`) deferred — uses array-style numeric index access
-- for-in/for-of with let/const as loop variable deferred (requires scoping per iteration)
-
-| ✅ (Phase 14)
-
-### Classes (ES6) ✅ (Phase 15)
-
-- **Class declarations** — `class Name { ... }` with constructor, methods, static methods
-- **Class expressions** — `class { ... }` and `class Name { ... }` (named/anonymous)
-- **Default constructors** — Auto-generated when no constructor specified (empty body)
-- **Method installation** — Prototype methods via PUTPROP on `constructor.prototype`; static methods on constructor itself
-- **`extends`** — Sets `Derived.prototype.__proto__ = Base.prototype` via `SETPROTO` opcode
-- **`super()` calls** — `SUPER_CALL` opcode with `new.target` pass-through
-- **`super.method()`** — Property access on superclass prototype
-- **`new.target`** — `NEWTARGET` opcode loads constructor function reference
-- **New opcodes**: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`
-- **FuncFlags**: `is_constructable` (bit 16) now propagated from compiler to VM
-- Computed property names, getters/setters, static field initializers, private fields — deferred
-
-| ✅ (Phase 15)
-
-## Deviations from Duktape
-
-- **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.
-
-- **Strict-only mode** — The engine operates exclusively in ES5 strict mode. There is no sloppy/non-strict code path. All code is treated as strict by default, eliminating `is_strict` runtime branching, non-strict `this` coercion, and non-strict error handling paths. The `"use strict"` directive is recognized but is semantically redundant.
 
 ## Technical notes
 
@@ -154,3 +52,12 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - when path is unclear, compare Duktape source against QuickJS to figure out a viable approach
 
 - ignore *staging* features in the ECMAScript spec, focus on ES5/ES6 core
+
+### Phase 19: Symbol (ES6)
+
+- **Symbol** — constructor, Symbol.for(key), Symbol.keyFor(sym), Symbol.prototype.toString(), Symbol.prototype.valueOf()
+- Symbol values stored as HString with 0xFF prefix byte and `is_symbol` flag
+- Global symbol registry for `Symbol.for`/`Symbol.keyFor` using heap-resident linear arrays
+- Keyword-as-property-name: compiler now accepts any keyword token after `.` as an IdentifierName (ES5 §11.2.1)
+- GETPROP auto-box routes symbol primitives to Symbol.prototype (not String.prototype)
+

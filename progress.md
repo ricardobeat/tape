@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 53
+**Last Updated:** Session 54
 **Target:** Full test262 conformance
 
 ## Summary
@@ -216,7 +216,7 @@ Update the counts and pass rate after every implemented feature
 || Classes | ✅ (Phase 15) |
 || Map / Set | ✅ (Phase 17) |
 ||| WeakMap / WeakSet | ✅ (Phase 18) |
-|| Symbol | ❌ |
+|| Symbol | ✅ (Phase 19) |
 || Promise | ❌ |
 || Generators | ❌ |
 
@@ -357,3 +357,4 @@ Update the counts and pass rate after every implemented feature
 || 51 | **Phase 16: Nested Templates** — Lexer now supports nested template literals (backtick inside ${...}). Added template_balance_stack (up to 16 levels deep) and template_balance_stack_depth to Lexer struct. When a backtick is encountered in IN_EXPR mode, the current brace balance is pushed, the inner template is scanned via scan_template_head(), and after the inner template closes (TEMPLATE_TAIL), the outer IN_EXPR state is restored. For simple inner templates (no ${}), state restoration happens in next_token() after scan_template_head() returns. No compiler changes required — nested templates are parsed transparently as expressions within expressions. 27/27 template tests pass (20 existing + 7 new nested). |
 ||| 52 | **Phase 17: Map / Set built-ins** — Map and Set constructors and prototype methods (set, get, has, delete, clear, keys, values, entries, forEach, add). Internal storage uses HObject.array_part (Map: [k0,v0,k1,v1,...]; Set: [v0,v1,...]). SameValueZero comparison for key/value equality. Expanded ObjClass bitfield from 5→6 bits to fit MAP/SET. Registered globally with proper prototype chain wiring.
 ||| 53 | **Phase 18: WeakMap / WeakSet built-ins** — WeakMap (constructor, set, get, has, delete) and WeakSet (constructor, add, has, delete). ES6 §23.3-23.4. Key restriction: WeakMap keys must be Objects (TypeError on primitives); WeakSet values must be Objects. No size, clear, or iteration methods. ObjClass.WEAKMAP/WEAKSET added to enum; heap.weakmap_proto/weakset_proto fields; BUILTIN constants 131-139; class_name switch entries for "[object WeakMap/WeakSet]".
+||| 54 | **Phase 19: Symbol built-in** — Symbol constructor (returns unique symbol STRING TVal with 0xFF prefix byte and is_symbol flag), Symbol.for(key) with global registry (heap-resident linear arrays), Symbol.keyFor(sym), Symbol.prototype.toString() and valueOf(). Added BUILTIN_SYMBOL (140) through BUILTIN_SYMBOL_PROTO_VALUEOF (144). Added heap.symbol_proto, symbol_registry_keys/syms/count/cap fields. Fixed keyword-as-property-name in compiler: after '.' any IdentifierName (including keywords) is accepted, enabling Symbol.for syntax. Fixed GETPROP VM opcode to route symbol STRING TVal to Symbol.prototype (not String.prototype). No regressions on existing test suite.

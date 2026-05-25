@@ -114,6 +114,13 @@ struct Heap {
     HObject* set_proto;
     HObject* weakmap_proto;
     HObject* weakset_proto;
+    HObject* symbol_proto;
+
+    // Global symbol registry for Symbol.for / Symbol.keyFor
+    HString** symbol_registry_keys;   /// Array of key HString* pointers
+    HString** symbol_registry_syms;   /// Array of symbol HString* pointers
+    uint      symbol_registry_count;  /// Number of entries
+    uint      symbol_registry_cap;    /// Allocated capacity
 
     // Global checkpoint for __resetGlobals() — saves initial global state
     void**    checkpoint_keys;   /// Array of HString* pointers

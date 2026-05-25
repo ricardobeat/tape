@@ -168,6 +168,12 @@ const uint BUILTIN_WEAKSET_PROTO_ADD         = 137;
 const uint BUILTIN_WEAKSET_PROTO_HAS         = 138;
 const uint BUILTIN_WEAKSET_PROTO_DELETE      = 139;
 
+const uint BUILTIN_SYMBOL                    = 140;
+const uint BUILTIN_SYMBOL_FOR                = 141;
+const uint BUILTIN_SYMBOL_KEYFOR             = 142;
+const uint BUILTIN_SYMBOL_PROTO_TOSTRING     = 143;
+const uint BUILTIN_SYMBOL_PROTO_VALUEOF      = 144;
+
 struct BuiltinContext {
     void* vm;
     TVal* regs;
@@ -2376,6 +2382,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.SET:       class_name = "Set"; break;
             case hobject::ObjClass.WEAKMAP:   class_name = "WeakMap"; break;
             case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
+            case hobject::ObjClass.SYMBOL:    class_name = "Symbol"; break;
             default:                          class_name = "Object"; break;
         }
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
@@ -7015,6 +7022,367 @@ fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
     }
 }
 
+// ============================================================================
+// Symbol helpers
+// ============================================================================
+
+/// Symbol creation counter — incremented for each unique symbol to guarantee
+/// uniqueness even with identical descriptions.
+uint g_symbol_counter = 0;
+
+/// Create a new Symbol HString with 0xFF prefix byte.
+/// Symbols are NOT inserted into the string table (they are unique).
+fn HString* create_symbol_string(Heap* heap, char[] desc) {
+    // Build internal representation: 0xFF + description
+    // We add a counter suffix for uniqueness when description is empty
+    uint counter = g_symbol_counter;
+    g_symbol_counter++;
+
+    char[256] buf;
+    buf[0] = (char)0xFF;
+    int pos = 1;
+
+    for (int i = 0; i < desc.len && pos < 255; i++) {
+        buf[pos] = desc[i];
+        pos++;
+    }
+
+    uint hash = heap.hash_seed ^ counter;  // Simple unique hash
+
+    HString*? sym = hstring::hstring_alloc(heap, buf[:(uint)pos], hash);
+    if (try s = sym) {
+        // Don't intern in string table — symbols are unique
+        return s;
+    }
+    return null;
+}
+
+/// Check if a TVal is a Symbol (STRING tag with is_symbol flag)
+fn bool is_symbol_val(TVal val) {
+    if (val.tag != STRING) return false;
+    HString* s = (HString*)val.pointer;
+    return s != null && s.is_symbol();
+}
+
+/// Get the description bytes of a Symbol (everything after the 0xFF prefix)
+fn char[] symbol_description(HString* sym) {
+    if (sym.blen <= 1) return "";
+    char* ptr = sym.get_cstr();
+    return ptr[1:(sz)(sym.blen - 1)];
+}
+
+// ============================================================================
+// Symbol global registry (Symbol.for / Symbol.keyFor)
+// ============================================================================
+
+/// Look up a key in the global symbol registry.
+/// Returns the registered symbol HString*, or null if not found.
+fn HString* symbol_registry_get(Heap* heap, char[] key) {
+    for (uint i = 0; i < heap.symbol_registry_count; i++) {
+        HString* reg_key = heap.symbol_registry_keys[i];
+        if (reg_key.blen == (uint)key.len) {
+            char* reg_data = reg_key.get_cstr();
+            bool match = true;
+            for (int j = 0; j < key.len; j++) {
+                if (reg_data[j] != key[j]) { match = false; break; }
+            }
+            if (match) return heap.symbol_registry_syms[i];
+        }
+    }
+    return null;
+}
+
+/// Register a key→symbol pair in the global registry.
+fn bool symbol_registry_put(Heap* heap, char[] key, HString* sym) {
+    uint count = heap.symbol_registry_count;
+    uint cap = heap.symbol_registry_cap;
+
+    // Grow if needed
+    if (count >= cap) {
+        uint new_cap = (cap == 0) ? 8 : cap * 2;
+        usz key_bytes = (usz)new_cap * void*::size;
+        usz sym_bytes = (usz)new_cap * void*::size;
+
+        HString** new_keys = (HString**)heap.alloc_func(heap.heap_udata, key_bytes);
+        HString** new_syms = (HString**)heap.alloc_func(heap.heap_udata, sym_bytes);
+        if (new_keys == null || new_syms == null) return false;
+
+        // Copy existing entries
+        for (uint i = 0; i < count; i++) {
+            new_keys[i] = heap.symbol_registry_keys[i];
+            new_syms[i] = heap.symbol_registry_syms[i];
+        }
+        // Free old arrays
+        if (heap.symbol_registry_keys != null) {
+            heap.free_func(heap.heap_udata, heap.symbol_registry_keys);
+        }
+        if (heap.symbol_registry_syms != null) {
+            heap.free_func(heap.heap_udata, heap.symbol_registry_syms);
+        }
+        heap.symbol_registry_keys = new_keys;
+        heap.symbol_registry_syms = new_syms;
+        heap.symbol_registry_cap = new_cap;
+    }
+
+    // Allocate a key HString (interned)
+    uint hash = heap.hash_string(key);
+    HString* existing = heap.str_table_lookup(key, hash);
+    HString* key_str;
+    if (existing != null) {
+        key_str = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, key, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key_str = new_key;
+    }
+
+    heap.symbol_registry_keys[count] = key_str;
+    heap.symbol_registry_syms[count] = sym;
+    heap.symbol_registry_count = count + 1;
+    return true;
+}
+
+/// Reverse lookup: find key for a symbol in the registry.
+fn HString* symbol_registry_get_key(Heap* heap, HString* sym) {
+    for (uint i = 0; i < heap.symbol_registry_count; i++) {
+        if (heap.symbol_registry_syms[i] == sym) {
+            return heap.symbol_registry_keys[i];
+        }
+    }
+    return null;
+}
+
+// ============================================================================
+// Symbol constructor (ES6 §19.4.1)
+// ============================================================================
+fn void builtin_symbol(BuiltinContext* ctx) {
+    // Symbol is not constructable with new
+    if (ctx.is_constructor) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol is not a constructor");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return;
+    }
+
+    // Get description from first argument (ToString if present)
+    char[] desc = "";
+    if (ctx.argc >= 1) {
+        TVal arg = ctx.regs[ctx.base_reg];
+        HString* desc_str = builtin_to_string(ctx.heap, &arg);
+        if (desc_str != null) {
+            desc = desc_str.get_data();
+        }
+    }
+
+    HString* sym = create_symbol_string(ctx.heap, desc);
+    if (sym == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    ctx.result.tag = STRING;
+    ctx.result.pointer = sym;
+}
+
+// ============================================================================
+// Symbol.for(key) — ES6 §19.4.2.1
+// ============================================================================
+fn void builtin_symbol_for(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal key_val = ctx.regs[ctx.base_reg];
+    HString* key_str = builtin_to_string(ctx.heap, &key_val);
+    if (key_str == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    char[] key_bytes = key_str.get_data();
+
+    // Check registry
+    HString* existing = symbol_registry_get(ctx.heap, key_bytes);
+    if (existing != null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = existing;
+        return;
+    }
+
+    // Create new global symbol
+    HString* sym = create_symbol_string(ctx.heap, key_bytes);
+    if (sym == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    symbol_registry_put(ctx.heap, key_bytes, sym);
+
+    ctx.result.tag = STRING;
+    ctx.result.pointer = sym;
+}
+
+// ============================================================================
+// Symbol.keyFor(sym) — ES6 §19.4.2.5
+// ============================================================================
+fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal sym_val = ctx.regs[ctx.base_reg];
+    if (!is_symbol_val(sym_val)) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.keyFor requires a symbol argument");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return;
+    }
+
+    HString* sym = (HString*)sym_val.pointer;
+    HString* key = symbol_registry_get_key(ctx.heap, sym);
+    if (key != null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = key;
+    } else {
+        ctx.result.set_undefined();
+    }
+}
+
+// ============================================================================
+// Symbol.prototype.toString() — ES6 §19.4.3.2
+// ============================================================================
+fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+
+    // this value must be a Symbol (primitive or wrapper)
+    HString* sym = null;
+    if (this_val.tag == STRING) {
+        HString* s = (HString*)this_val.pointer;
+        if (s != null && s.is_symbol()) {
+            sym = s;
+        }
+    } else if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
+            // Extract [[SymbolData]] — for now, check if there's a stored symbol
+            // We look for the "_symbol" property or just describe as "Symbol()"
+        }
+    }
+
+    if (sym == null) {
+        HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.toString called on non-Symbol");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.tag = STRING;
+                msg_val.pointer = msg_str;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return;
+    }
+
+    // Build "Symbol(description)" string
+    char[] desc = symbol_description(sym);
+    char[512] result_buf;
+    result_buf[0] = 'S';
+    result_buf[1] = 'y';
+    result_buf[2] = 'm';
+    result_buf[3] = 'b';
+    result_buf[4] = 'o';
+    result_buf[5] = 'l';
+    result_buf[6] = '(';
+    int pos = 7;
+    for (int i = 0; i < desc.len && pos < 510; i++) {
+        result_buf[pos] = desc[i];
+        pos++;
+    }
+    result_buf[pos] = ')';
+    pos++;
+    result_buf[pos] = 0;
+
+    HString* result = builtin_intern_string(ctx.heap, result_buf[:(uint)pos]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Symbol.prototype.valueOf() — ES6 §19.4.3.3
+// ============================================================================
+fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+
+    if (this_val.tag == STRING) {
+        HString* s = (HString*)this_val.pointer;
+        if (s != null && s.is_symbol()) {
+            *ctx.result = this_val;
+            return;
+        }
+    } else if (this_val.tag == OBJECT && this_val.pointer != null) {
+        HObject* obj = (HObject*)this_val.pointer;
+        if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
+            // Return the [[SymbolData]] value
+            // For now just return undefined for wrapper objects
+        }
+    }
+
+    HObject*? err_raw = hobject::hobject_alloc(ctx.heap, hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.tag = STRING;
+            msg_val.pointer = msg_str;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+    } else {
+        ctx.throw_value.set_undefined();
+    }
+    ctx.should_throw = true;
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -7275,6 +7643,16 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_weakset_proto_has(ctx);
         case BUILTIN_WEAKSET_PROTO_DELETE:
             builtin_weakset_proto_delete(ctx);
+        case BUILTIN_SYMBOL:
+            builtin_symbol(ctx);
+        case BUILTIN_SYMBOL_FOR:
+            builtin_symbol_for(ctx);
+        case BUILTIN_SYMBOL_KEYFOR:
+            builtin_symbol_keyfor(ctx);
+        case BUILTIN_SYMBOL_PROTO_TOSTRING:
+            builtin_symbol_proto_toString(ctx);
+        case BUILTIN_SYMBOL_PROTO_VALUEOF:
+            builtin_symbol_proto_valueOf(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -7457,6 +7835,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register WeakSet constructor and prototype
     if (!register_weakset_constructor(global_env, heap)) return false;
 
+    // Register Symbol constructor and prototype
+    if (!register_symbol_constructor(global_env, heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -7470,6 +7851,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.set_proto != null)    heap.set_proto.prototype = heap.object_proto;
     if (heap.weakmap_proto != null) heap.weakmap_proto.prototype = heap.object_proto;
     if (heap.weakset_proto != null) heap.weakset_proto.prototype = heap.object_proto;
+    if (heap.symbol_proto != null) heap.symbol_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
@@ -7477,7 +7859,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {
@@ -8759,6 +9141,95 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     ws_val.tag = OBJECT;
     ws_val.pointer = ctor;
     env::env_declare(global_env, ws_key, ws_val);
+
+    return true;
+}
+
+// ============================================================================
+// Symbol constructor registration
+// ============================================================================
+
+fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
+    // Create Symbol.prototype
+    HObject*? proto_raw = hobject::hobject_alloc(heap, hobject::ObjClass.SYMBOL);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;
+    heap.symbol_proto = proto;
+
+    // Register prototype methods
+    if (!register_string_proto_method(proto, heap, "toString", BUILTIN_SYMBOL_PROTO_TOSTRING)) return false;
+    if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_SYMBOL_PROTO_VALUEOF)) return false;
+
+    // Set @@toStringTag on prototype
+    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
+    TVal tag_tv;
+    tag_tv.tag = STRING;
+    tag_tv.pointer = builtin_intern_string(heap, "Symbol");
+    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+
+    // Create Symbol function object
+    HObject*? ctor_raw = hobject::hobject_alloc(heap, hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.builtin_fn_index = (int)BUILTIN_SYMBOL;
+
+    // Wire prototype.constructor → ctor
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = ctor;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Symbol.length = 0
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv;
+    length_tv.tag = FASTINT;
+    length_tv.fastint = 0;
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Symbol.for as a property of the Symbol function
+    HString* for_key = builtin_intern_string(heap, "for");
+    TVal for_tv;
+    for_tv.tag = LIGHTFUNC;
+    for_tv.fastint = (long)BUILTIN_SYMBOL_FOR;
+    ctor.put_prop(for_key, for_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Symbol.keyFor as a property of the Symbol function
+    HString* keyfor_key = builtin_intern_string(heap, "keyFor");
+    TVal keyfor_tv;
+    keyfor_tv.tag = LIGHTFUNC;
+    keyfor_tv.fastint = (long)BUILTIN_SYMBOL_KEYFOR;
+    ctor.put_prop(keyfor_key, keyfor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register "Symbol" in global environment
+    uint hash = heap.hash_string("Symbol");
+    HString* existing = heap.str_table_lookup("Symbol", hash);
+    HString* sym_key;
+    if (existing != null) {
+        sym_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Symbol", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        sym_key = new_key;
+    }
+    TVal sym_val;
+    sym_val.tag = OBJECT;
+    sym_val.pointer = ctor;
+    env::env_declare(global_env, sym_key, sym_val);
 
     return true;
 }

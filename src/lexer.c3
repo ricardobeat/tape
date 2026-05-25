@@ -188,6 +188,15 @@ fn TokenType? lookup_keyword(char[] name, bool strict_mode) {
     return NOT_A_KEYWORD~;
 }
 
+/// Reverse lookup: given a keyword TokenType, return its string representation.
+/// Returns an empty string if the token type is not a keyword.
+fn char[] keyword_to_string(TokenType tt) {
+    foreach (&kw : KEYWORDS) {
+        if (kw.type == tt) return kw.name;
+    }
+    return "";
+}
+
 // ============================================================================
 // Character classification helpers
 // ============================================================================

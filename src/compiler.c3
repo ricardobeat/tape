@@ -436,6 +436,20 @@ fn bool CompilerContext.check(&self, TokenType tt) {
     return self.peek_type() == tt;
 }
 
+/// Read the next token as a property name (IdentifierName).
+/// After '.' or other contexts where any keyword can be used as a name,
+/// this returns the string value regardless of whether the token is an
+/// IDENTIFIER or a keyword token.
+fn char[]? CompilerContext.read_property_name(&self) {
+    Token? tok_opt = self.lexer.next_token();
+    if (catch err = tok_opt) return COMPILE_ERROR~;
+    Token tok = tok_opt;
+    if (tok.str_value.len > 0) return tok.str_value;
+    char[] kw_str = lexer::keyword_to_string(tok.type);
+    if (kw_str.len > 0) return kw_str;
+    return COMPILE_ERROR~;
+}
+
 /// Check if the next token is a template literal token (backtick-originated).
 /// Only returns true for tokens that START a template literal (TEMPLATE, TEMPLATE_HEAD,
 /// or STRING with is_template). Does NOT return true for TEMPLATE_MIDDLE or TEMPLATE_TAIL
@@ -3310,8 +3324,8 @@ fn ushort? CompilerContext.call_expr(&self) {
             }
         } else if (self.match(TokenType.DOT)) {
             // Property access: callee.name
-            Token prop_name = self.expect(TokenType.IDENTIFIER)!;
-            uint prop_const = self.add_string_constant(prop_name.str_value);
+            char[] prop_str = self.read_property_name()!;
+            uint prop_const = self.add_string_constant(prop_str);
 
             ushort prop_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
@@ -3349,8 +3363,8 @@ fn ushort? CompilerContext.call_expr(&self) {
             if (self.check(TokenType.LPAREN)) {
                 callee = self.emit_call(callee)!;
             } else {
-                Token prop_name = self.expect(TokenType.IDENTIFIER)!;
-                uint prop_const = self.add_string_constant(prop_name.str_value);
+                char[] prop_str = self.read_property_name()!;
+                uint prop_const = self.add_string_constant(prop_str);
 
                 ushort prop_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
@@ -3680,14 +3694,20 @@ fn ushort? CompilerContext.new_expr(&self) {
 
     // Check for new.target meta-property
     if (self.match(TokenType.DOT)) {
-        Token target_tok = self.expect(TokenType.IDENTIFIER)!;
-        if (target_tok.str_value.len == 6
-            && target_tok.str_value[0] == 't'
-            && target_tok.str_value[1] == 'a'
-            && target_tok.str_value[2] == 'r'
-            && target_tok.str_value[3] == 'g'
-            && target_tok.str_value[4] == 'e'
-            && target_tok.str_value[5] == 't') {
+        Token? target_tok_opt = self.lexer.next_token();
+        if (catch err = target_tok_opt) return COMPILE_ERROR~;
+        Token target_tok = target_tok_opt;
+        char[] target_name = target_tok.str_value;
+        if (target_name.len == 0) {
+            target_name = lexer::keyword_to_string(target_tok.type);
+        }
+        if (target_name.len == 6
+            && target_name[0] == 't'
+            && target_name[1] == 'a'
+            && target_name[2] == 'r'
+            && target_name[3] == 'g'
+            && target_name[4] == 'e'
+            && target_name[5] == 't') {
             ushort result_reg = self.alloc_reg();
             self.emit_abc(Opcode.NEWTARGET, (uint)result_reg, 0, 0);
             return result_reg;
@@ -3746,8 +3766,20 @@ fn ushort? CompilerContext.member_expr(&self) {
 
     for (;;) {
         if (self.match(TokenType.DOT)) {
-            Token prop_name = self.expect(TokenType.IDENTIFIER)!;
-            uint prop_const = self.add_string_constant(prop_name.str_value);
+            // Get next token — after '.' it can be an identifier OR any keyword
+            // (ES5 §11.2.1: property name must be an IdentifierName)
+            Token? prop_name_opt = self.lexer.next_token();
+            if (catch err = prop_name_opt) return COMPILE_ERROR~;
+            Token prop_name = prop_name_opt;
+            char[] prop_str = prop_name.str_value;
+            // If it's a keyword, str_value was set; if not, use keyword_to_string
+            if (prop_str.len == 0) {
+                prop_str = lexer::keyword_to_string(prop_name.type);
+            }
+            if (prop_name.type != TokenType.IDENTIFIER && prop_str.len == 0) {
+                return COMPILE_ERROR~;
+            }
+            uint prop_const = self.add_string_constant(prop_str);
 
             ushort prop_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
@@ -4098,8 +4130,8 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // Now parse the property access
                 ushort result;
                 if (self.match(TokenType.DOT)) {
-                    Token prop_name = self.expect(TokenType.IDENTIFIER)!;
-                    uint prop_idx = self.add_string_constant(prop_name.str_value);
+                    char[] prop_str = self.read_property_name()!;
+                    uint prop_idx = self.add_string_constant(prop_str);
                     ushort prop_key_reg = self.alloc_reg();
                     self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_key_reg, prop_idx));
                     result = self.alloc_reg();

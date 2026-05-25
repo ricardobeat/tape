@@ -1560,17 +1560,34 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     return VM_ERROR~;
                 }
             } else if (rb.tag == STRING) {
-                // Auto-box string primitive: walk String.prototype chain
-                HString* key = get_prop_key(vm, rc);
-                if (key != null && vm.heap.string_proto != null) {
-                    TVal found = get_prop_with_proto(vm.heap.string_proto, key);
-                    ra.tag = found.tag;
-                    ra.fastint = found.fastint;
-                    ra.number = found.number;
-                    ra.pointer = found.pointer;
+                // Check if this is a Symbol (0xFF-prefixed string)
+                HString* h_str = (HString*)rb.pointer;
+                if (h_str != null && h_str.is_symbol() && vm.heap.symbol_proto != null) {
+                    // Auto-box symbol primitive: walk Symbol.prototype chain
+                    HString* key = get_prop_key(vm, rc);
+                    if (key != null) {
+                        TVal found = get_prop_with_proto(vm.heap.symbol_proto, key);
+                        ra.tag = found.tag;
+                        ra.fastint = found.fastint;
+                        ra.number = found.number;
+                        ra.pointer = found.pointer;
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    // Auto-box string primitive: walk String.prototype chain
+                    HString* key = get_prop_key(vm, rc);
+                    if (key != null && vm.heap.string_proto != null) {
+                        TVal found = get_prop_with_proto(vm.heap.string_proto, key);
+                        ra.tag = found.tag;
+                        ra.fastint = found.fastint;
+                        ra.number = found.number;
+                        ra.pointer = found.pointer;
+                    } else {
+                        ra.tag = UNDEFINED;
+                        ra.pointer = null;
+                    }
                 }
             } else if (rb.tag == NUMBER || rb.tag == FASTINT) {
                 // Auto-box number primitive: walk Number.prototype chain
