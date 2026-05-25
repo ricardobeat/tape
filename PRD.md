@@ -43,7 +43,7 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 ## Technical notes
 
-- **FASTINT preservation** — Arithmetic ops keep FASTINT when both operands are FASTINT and result fits in 48-bit range. Fall back to NUMBER otherwise.
+- **FASTINT preservation** — Arithmetic ops keep FASTINT when both operands are FASTINT and result fits in 52-bit signed integer range (±2^51). Fall back to NUMBER otherwise. Bitwise ops always produce Int32 which fits in FASTINT.
 
 - **String interning consistency** — Both compiler and runtime use the same heap's PRNG-seeded hash function for string deduplication. `str_table_insert` must not create duplicate entries.
 
@@ -68,3 +68,16 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 - Reaction queue for chained `.then()` callbacks
 - Static methods registered as LIGHTFUNC on the Promise constructor
 - Class name `[object Promise]` wired in Object.prototype.toString
+
+## Performance Optimizations (Session 59)
+
+### FASTINT preservation
+All arithmetic ops (SUB, MUL, MOD) now keep FASTINT when both operands are FASTINT and the result fits in the 52-bit signed integer range. Previously only ADD had this optimization.
+
+Unary ops (UNP, UNM) keep FASTINT when the input is FASTINT — no conversion to double.
+
+### Fast Int32 path for bitwise ops
+Bitwise ops (BNOT, BAND, BOR, BXOR, SHL, SHR, USHR) extract Int32 operands directly without converting through double, and store results as FASTINT (always fits since Int32). This eliminates FASTINT→double→int32→double roundtrips.
+
+### FASTINT direct comparison
+Comparison ops (LT, LE, GT, GE) compare FASTINT operands directly as 64-bit integers, avoiding conversion to double. Mixed NUMBER/FASTINT comparisons still use `num_val()`.

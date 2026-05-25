@@ -99,6 +99,10 @@ enum TValTag : char {
 /// Uses an explicit tag + union rather than NaN-boxing so that the
 /// representation is clear and the compiler can optimise discriminated
 /// access.
+/// FASTINT uses 52-bit signed integer range (fits in double mantissa exactly).
+const long FASTINT_MIN = -2251799813685248L;  // -2^51
+const long FASTINT_MAX =  2251799813685247L;  //  2^51 - 1
+
 struct TVal {
     TValTag tag;
     union {

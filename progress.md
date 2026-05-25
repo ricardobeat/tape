@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 58
+**Last Updated:** Session 59
 **Target:** Full test262 conformance
 
 ## Summary
@@ -377,3 +377,4 @@ Update the counts and pass rate after every implemented feature
 || 56 | **Skip filter update** — Updated `UNSUPPORTED_PATTERN` in `scripts/run_test262.py` and `UNSUPPORTED_FEATURES` in `scripts/run_test262_per_phase.sh` to unskip tests tagged with now-implemented features: `Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Promise`, `class`, `new.Target`. 328 tests in existing phase directories now runnable. Full re-run: **1,653 pass / 2,592 fail / 1,625 skip** (38.9% of runnable, 3.1% of total 53,568).
 || 57 | **Phase 20: Promise.all/race + Phase 21: Generators** — Promise.all and Promise.race fully implemented (were stubs). Generator function (`function*`) parsing, `is_generator` flag in compiler, YIELD/LOAD_RESUME opcodes, GeneratorState with state machine, Generator.prototype.next/throw/return builtins, VM generator resumption with `.next(val)` resume values, `.throw()` exception injection, `.return()` completion. `yield*` compiled to array-index loop.
 || 58 | **Performance fix: GETPROP 4x call bug** — Fixed critical performance bug in GETPROP opcode: the OBJECT-tag branch called `get_prop_with_proto()` **4 times** instead of caching the result in a local variable. The remaining branches (STRING, NUMBER, BOOLEAN, SYMBOL) already used the correct cached pattern. This was the single biggest hotspot in property access. **Benchmark improvements**: property_lookup 6.4x→4.0x (-29%), arithmetic 5.8x→4.6x (-19%), object 6.5x→5.8x (-11%), string 7.6x→6.0x (-20%), array 5.8x→4.9x (-15%), loop 5.3x→4.8x (-8%). Overall average across all benchmarks improved from **6.5x to 5.5x** Duktape ratio.
+|| 59 | **VM speed: FASTINT preservation across 15+ opcodes** — Extended FASTINT preservation from ADD-only to SUB, MUL, MOD, UNP, UNM. Bitwise ops (BNOT, BAND, BOR, BXOR, SHL, SHR, USHR) now extract Int32 operands directly and store results as FASTINT, eliminating double conversion roundtrips. Comparison ops (LT, LE, GT, GE) compare FASTINT operands directly without promoting to double. Added `types::FASTINT_MIN`/`types::FASTINT_MAX` constants. All C3 unit tests and JS test suite continue to pass with no regressions. Theoretical benefit: fewer int↔double conversions in the hottest VM loops. macOS benchmark variance too high for conclusive single-run measurement, but `function_call` and `object` benchmarks consistently show improvement.

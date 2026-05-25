@@ -978,7 +978,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             act.curr_pc = curr_pc;
 
             Opcode op = insn.op;
-            uint insn_raw = (uint)insn.op.ordinal;
 
             TVal* regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
             TVal* ra = regs_base + ((uint)insn.a);
@@ -1076,7 +1075,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
                 // Both operands are fast integers — keep as fastint if result fits
                 long sum = rb.fastint + rc.fastint;
-                if (sum >= -2251799813685248L && sum <= 2251799813685247L) {
+                if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
                     ra.tag = FASTINT;
                     ra.fastint = sum;
                 } else {
@@ -1091,21 +1090,42 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
             break;
 
-        case Opcode.SUB: {
-            double sub_b = num_val(rb);
-            double sub_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = sub_b - sub_c;
+        case Opcode.SUB:
+            if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                long diff = rb.fastint - rc.fastint;
+                if (diff >= types::FASTINT_MIN && diff <= types::FASTINT_MAX) {
+                    ra.tag = FASTINT;
+                    ra.fastint = diff;
+                } else {
+                    ra.tag = NUMBER;
+                    ra.number = (double)diff;
+                }
+            } else {
+                double sub_b = num_val(rb);
+                double sub_c = num_val(rc);
+                ra.tag = NUMBER;
+                ra.number = sub_b - sub_c;
+            }
             break;
-        }
 
-        case Opcode.MUL: {
-            double mul_b = num_val(rb);
-            double mul_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = mul_b * mul_c;
+        case Opcode.MUL:
+            if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                // Use 64-bit multiply and check overflow
+                long mul_result = rb.fastint * rc.fastint;
+                if (mul_result >= types::FASTINT_MIN && mul_result <= types::FASTINT_MAX) {
+                    ra.tag = FASTINT;
+                    ra.fastint = mul_result;
+                } else {
+                    ra.tag = NUMBER;
+                    ra.number = (double)mul_result;
+                }
+            } else {
+                double mul_b = num_val(rb);
+                double mul_c = num_val(rc);
+                ra.tag = NUMBER;
+                ra.number = mul_b * mul_c;
+            }
             break;
-        }
 
         case Opcode.DIV: {
             double div_b = num_val(rb);
@@ -1115,13 +1135,19 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
-        case Opcode.MOD: {
-            double mod_b = num_val(rb);
-            double mod_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (mod_b % mod_c);
+        case Opcode.MOD:
+            if (rb.tag == FASTINT && rc.tag == FASTINT && rc.fastint != 0) {
+                long mod_result = rb.fastint % rc.fastint;
+                // Result always fits in FASTINT range
+                ra.tag = FASTINT;
+                ra.fastint = mod_result;
+            } else {
+                double mod_b = num_val(rb);
+                double mod_c = num_val(rc);
+                ra.tag = NUMBER;
+                ra.number = (mod_b % mod_c);
+            }
             break;
-        }
 
         case Opcode.EXP: {
             double exp_b = num_val(rb);
@@ -1133,24 +1159,38 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         // === UNARY ===
 
-        case Opcode.UNP: {
-            double unp_b = num_val(rb);
-            ra.tag = NUMBER;
-            ra.number = unp_b;
+        case Opcode.UNP:
+            if (rb.tag == FASTINT) {
+                // Unary + on FASTINT stays FASTINT
+                ra.tag = FASTINT;
+                ra.fastint = rb.fastint;
+            } else {
+                double unp_b = num_val(rb);
+                ra.tag = NUMBER;
+                ra.number = unp_b;
+            }
             break;
-        }
 
-        case Opcode.UNM: {
-            double unm_b = num_val(rb);
-            ra.tag = NUMBER;
-            ra.number = -unm_b;
+        case Opcode.UNM:
+            if (rb.tag == FASTINT) {
+                // Unary - on FASTINT stays FASTINT (negation always fits)
+                ra.tag = FASTINT;
+                ra.fastint = -rb.fastint;
+            } else {
+                double unm_b = num_val(rb);
+                ra.tag = NUMBER;
+                ra.number = -unm_b;
+            }
             break;
-        }
 
         case Opcode.BNOT:
-            ra.tag = NUMBER;
-            ra.number = (double)(~(int)num_val(rb));
+            // Bitwise NOT always produces Int32, always fits in FASTINT
+        {
+            int bnot_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(~bnot_b);
             break;
+        }
 
         case Opcode.LNOT:
             ra.tag = BOOLEAN;
@@ -1171,51 +1211,58 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         // === BITWISE ===
 
-        case Opcode.BAND: {
-            double band_b = num_val(rb);
-            double band_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((int)band_b & (int)band_c);
+        case Opcode.BAND:
+            // Bitwise ops always produce Int32, always fit in FASTINT
+        {
+            int band_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            int band_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(band_b & band_c);
             break;
         }
 
-        case Opcode.BOR: {
-            double bor_b = num_val(rb);
-            double bor_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((int)bor_b | (int)bor_c);
+        case Opcode.BOR:
+        {
+            int bor_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            int bor_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(bor_b | bor_c);
             break;
         }
 
-        case Opcode.BXOR: {
-            double bxor_b = num_val(rb);
-            double bxor_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((int)bxor_b ^ (int)bxor_c);
+        case Opcode.BXOR:
+        {
+            int bxor_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            int bxor_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(bxor_b ^ bxor_c);
             break;
         }
 
-        case Opcode.SHL: {
-            double shl_b = num_val(rb);
-            double shl_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((int)shl_b << ((int)shl_c & 0x1F));
+        case Opcode.SHL:
+        {
+            int shl_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            int shl_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(shl_b << (shl_c & 0x1F));
             break;
         }
 
-        case Opcode.SHR: {
-            double shr_b = num_val(rb);
-            double shr_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((int)shr_b >> ((int)shr_c & 0x1F));
+        case Opcode.SHR:
+        {
+            int shr_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
+            int shr_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(shr_b >> (shr_c & 0x1F));
             break;
         }
 
-        case Opcode.USHR: {
-            double ushr_b = num_val(rb);
-            double ushr_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = (double)((uint)ushr_b >> ((int)ushr_c & 0x1F));
+        case Opcode.USHR:
+        {
+            uint ushr_b = (rb.tag == FASTINT) ? (uint)rb.fastint : (uint)(int)rb.number;
+            int  ushr_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
+            ra.tag = FASTINT;
+            ra.fastint = (long)(ushr_b >> (ushr_c & 0x1F));
             break;
         }
 
@@ -1300,6 +1347,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.tag = BOOLEAN;
             if (rb.tag == STRING && rc.tag == STRING) {
                 ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) < 0);
+            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                ra.boolean = (rb.fastint < rc.fastint);
             } else {
                 ra.boolean = (num_val(rb) < num_val(rc));
             }
@@ -1309,6 +1358,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.tag = BOOLEAN;
             if (rb.tag == STRING && rc.tag == STRING) {
                 ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) <= 0);
+            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                ra.boolean = (rb.fastint <= rc.fastint);
             } else {
                 ra.boolean = (num_val(rb) <= num_val(rc));
             }
@@ -1318,6 +1369,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.tag = BOOLEAN;
             if (rb.tag == STRING && rc.tag == STRING) {
                 ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) > 0);
+            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                ra.boolean = (rb.fastint > rc.fastint);
             } else {
                 ra.boolean = (num_val(rb) > num_val(rc));
             }
@@ -1327,6 +1380,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.tag = BOOLEAN;
             if (rb.tag == STRING && rc.tag == STRING) {
                 ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) >= 0);
+            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
+                ra.boolean = (rb.fastint >= rc.fastint);
             } else {
                 ra.boolean = (num_val(rb) >= num_val(rc));
             }
