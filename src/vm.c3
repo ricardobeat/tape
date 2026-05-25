@@ -800,13 +800,13 @@ fn TVal handle_return(Vm* vm, TVal val) {
 
     // Write result to caller's frame at the saved retval_byteoff
     if (callee_result_byteoff != 0 && callee_result_byteoff < vm.valstack_size * TVal::size) {
-        // For construct calls: if return value is not an object, use new_target
+        // For construct calls: if return value is not an object, use this_binding
         TVal final_val = val;
         if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
             if (final_val.tag != OBJECT || final_val.pointer == null) {
-                if (callee_act.new_target != null) {
-                    final_val.tag = OBJECT;
-                    final_val.pointer = callee_act.new_target;
+                // Return the instance (this) instead of the constructor's return value
+                if (callee_act.this_binding.tag == OBJECT && callee_act.this_binding.pointer != null) {
+                    final_val = callee_act.this_binding;
                 }
             }
         }
@@ -2254,6 +2254,228 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             ra.pointer = null;
             break;
 
+        case Opcode.SETPROTO: {
+            // A.[[Prototype]] = B
+            // ABC format: A=obj_reg, B=proto_reg
+            if (ra.tag != OBJECT || rb.tag != OBJECT) {
+                // Non-object operands — silently ignore or error
+                break;
+            }
+            HObject* obj = (HObject*)ra.pointer;
+            HObject* proto = (HObject*)rb.pointer;
+            if (obj != null && proto != null) {
+                obj.prototype = proto;
+            }
+            break;
+        }
+
+        case Opcode.SUPER_CALL: {
+            // A = super(B, args...) — call superclass constructor
+            // Uses current activation's new.target
+            uint result_reg = insn.a;
+            uint callee_reg = insn.b;
+            uint nargs = insn.c;
+
+            TVal* super_slot = regs_base + callee_reg;
+            TVal super_val = *super_slot;
+
+            if (super_val.tag != OBJECT) {
+                // TypeError: superclass is not a constructor
+                HString* type_str = typeof_string(vm, &super_val);
+                HObject*? err_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                             type_str.get_cstr());
+                    if (len > 0 && len < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val;
+                    err_val.tag = OBJECT;
+                    err_val.pointer = err;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                }
+                break;
+            }
+
+            HObject* super_hobj = (HObject*)super_val.pointer;
+            if (super_hobj == null || !super_hobj.is_callable()) {
+                // TypeError: not callable
+                HString* type_str = typeof_string(vm, &super_val);
+                HObject*? err_raw2 = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ERROR);
+                if (try err2 = err_raw2) {
+                    err2.prototype = vm.heap.type_err_proto;
+                    char[160] buf;
+                    int len2 = libc::snprintf(&buf, 160, "%s is not a constructor",
+                                              type_str.get_cstr());
+                    if (len2 > 0 && len2 < 160) {
+                        HString* msg_str = intern_string(vm, buf[:len2]);
+                        TVal msg_val;
+                        msg_val.tag = STRING;
+                        msg_val.pointer = msg_str;
+                        HString* msg_key = intern_string(vm, "message");
+                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val2;
+                    err_val2.tag = OBJECT;
+                    err_val2.pointer = err2;
+                    if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                }
+                break;
+            }
+
+            // Use new.target from the current activation (set by NEW_OBJ)
+            HObject* new_target = act.new_target;
+            if (new_target == null) {
+                // Not in a constructor — new.target is undefined
+                // Fall back to simple call behavior
+                // This shouldn't normally happen since super() is only valid in constructors
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+                break;
+            }
+
+            // Handle builtin super constructors
+            if (super_hobj.comp_func == null) {
+                if (super_hobj.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)super_hobj.builtin_fn_index;
+                    builtins::BuiltinContext ctx;
+                    ctx.vm = vm;
+                    ctx.regs = vm.valstack;
+                    ctx.base_reg = (ushort)(act.bottom_byteoff / TVal::size) + (ushort)(callee_reg + 2);
+                    ctx.argc = (ushort)nargs;
+                    ctx.result = regs_base + result_reg;
+                    ctx.heap = vm.heap;
+                    ctx.this_val = regs_base[callee_reg + 1];
+                    ctx.is_constructor = true;
+                    ctx.needs_re_dispatch = false;
+                    ctx.re_nargs = 0;
+                    ctx.global_env = vm.global_env;
+                    ctx.should_throw = false;
+                    builtins::dispatch_builtin(fn_idx, &ctx);
+                }
+                break;
+            }
+
+            CompiledFunction* super_target = super_hobj.comp_func;
+
+            // Set up activation frame for superclass constructor
+            // The 'this' slot should already have new_target (set by caller)
+            uint frame_start = callee_reg + 2;
+            uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
+            uint needed = new_bottom_idx + super_target.num_regs;
+
+            if (!ensure_valstack(vm, needed)) {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+                break;
+            }
+
+            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
+            if (vm.activation_count >= MAX_CALLS) {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+                break;
+            }
+
+            Activation* new_act = &vm.activations[vm.activation_count];
+            vm.activation_count++;
+
+            new_act.parent = act;
+            new_act.func = super_target;
+            new_act.var_env = super_hobj.var_env;
+            new_act.lex_env = super_hobj.lex_env;
+            new_act.cat = null;
+            new_act.curr_pc = super_target.code;
+            new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
+            new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+            new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
+            new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
+            new_act.this_binding = regs_base[callee_reg + 1];
+            new_act.new_target = new_target;  // Pass through new.target
+
+            TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            uint new_nregs = super_target.num_regs;
+
+            // Copy args
+            TVal* old_args = regs_base + callee_reg + 2;
+            if (super_target.has_rest()) {
+                uint copy_count = (uint)super_target.num_formals;
+                for (uint i = 0; i < nargs && i < copy_count; i++) {
+                    new_regs[i] = old_args[i];
+                }
+                uint rest_idx = copy_count;
+                uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
+                HObject*? rest_obj_raw = hobject::hobject_alloc(vm.heap, hobject::ObjClass.ARRAY);
+                if (try rest_obj = rest_obj_raw) {
+                    rest_obj.prototype = vm.heap.array_proto;
+                    // Copy overflow args into the array
+                    for (uint j = 0; j < overflow; j++) {
+                        char[16] ibuf;
+                        int ilen = libc::snprintf(&ibuf, 16, "%u", j);
+                        if (ilen > 0 && ilen < 16) {
+                            HString* key = intern_string(vm, ibuf[:ilen]);
+                            if (key != null) {
+                                TVal elem = old_args[copy_count + j];
+                                rest_obj.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                    }
+                    // Set .length
+                    HString* len_key = intern_string(vm, "length");
+                    TVal len_val;
+                    len_val.tag = FASTINT;
+                    new_regs[rest_idx].tag = OBJECT;
+                    new_regs[rest_idx].pointer = rest_obj;
+                } else {
+                    new_regs[rest_idx].tag = UNDEFINED;
+                    new_regs[rest_idx].pointer = null;
+                }
+                for (uint i = copy_count + 1; i < new_nregs; i++) {
+                    new_regs[i].tag = UNDEFINED;
+                    new_regs[i].pointer = null;
+                }
+            } else {
+                for (uint i = 0; i < nargs && i < new_nregs; i++) {
+                    new_regs[i] = old_args[i];
+                }
+                for (uint i = nargs; i < new_nregs; i++) {
+                    new_regs[i].tag = UNDEFINED;
+                    new_regs[i].pointer = null;
+                }
+            }
+
+            vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
+            vm.valstack_bottom = new_act.bottom_byteoff;
+
+            needs_restart = true;
+            break;
+        }
+
+        case Opcode.NEWTARGET: {
+            // A = new.target
+            HObject* nt = act.new_target;
+            if (nt != null) {
+                ra.tag = OBJECT;
+                ra.pointer = nt;
+            } else {
+                ra.tag = UNDEFINED;
+                ra.pointer = null;
+            }
+            break;
+        }
+
         case Opcode.NEW_OBJ: {
             // Compiler convention: A=result_reg, B=callee_reg, C=nargs
             uint result_reg = insn.a;
@@ -2490,7 +2712,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
             new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
             new_act.this_binding = this_tval;
-            new_act.new_target = new_obj;
+            new_act.new_target = hobj;  // constructor function, not instance
 
             TVal* new_regs2 = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
             uint new_nregs2 = target.num_regs;
@@ -2844,6 +3066,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (try func_obj = func_obj_raw) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
+                    func_obj.flags.constructable = template.is_constructable();
                     func_obj.comp_func = template;
                     func_obj.var_env = act.var_env;
                     func_obj.lex_env = act.lex_env;

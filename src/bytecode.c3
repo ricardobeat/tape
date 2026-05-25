@@ -324,6 +324,21 @@ enum Opcode : char {
     /// ABC format: A=result_reg, B=callee_reg, C=nargs_reg.
     CALL_S,
 
+    // ---- ES6 Classes -----------------------------------------------------
+
+    /// `A.[[Prototype]] = B` — set the internal [[Prototype]] of object A
+    /// to object B (used for `extends` to set `Derived.prototype.__proto__`).
+    /// ABC format: A=derived_obj_reg, B=proto_reg.
+    SETPROTO,
+    /// `A = super(B, C..C+N)` — call superclass constructor.
+    /// Uses the current activation's `new.target` as the new object's constructor.
+    /// ABC format: A=result_reg, B=super_ctor_reg, C=arg_count.
+    SUPER_CALL,
+    /// `A = new.target` — load `new.target` into register A.
+    /// Returns undefined if not in a constructor call.
+    /// A-only format: A=result_reg, B=0, C=0.
+    NEWTARGET,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -372,6 +387,9 @@ fn OpFormat get_op_format(Opcode op) {
         case ARRSPRD:    return ABC;
         case SPREAD_ARG: return ABC;
         case CALL_S:     return ABC;
+        case SETPROTO:   return ABC;
+        case SUPER_CALL: return ABC;
+        case NEWTARGET:  return ABC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -927,6 +945,9 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.ARRSPRD.ordinal]     = "ARRSPRD",
     [Opcode.SPREAD_ARG.ordinal]  = "SPREAD_ARG",
     [Opcode.CALL_S.ordinal]      = "CALL_S",
+    [Opcode.SETPROTO.ordinal]    = "SETPROTO",
+    [Opcode.SUPER_CALL.ordinal]  = "SUPER_CALL",
+    [Opcode.NEWTARGET.ordinal]   = "NEWTARGET",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

@@ -121,6 +121,22 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 | ✅ (Phase 14)
 
+### Classes (ES6) ✅ (Phase 15)
+
+- **Class declarations** — `class Name { ... }` with constructor, methods, static methods
+- **Class expressions** — `class { ... }` and `class Name { ... }` (named/anonymous)
+- **Default constructors** — Auto-generated when no constructor specified (empty body)
+- **Method installation** — Prototype methods via PUTPROP on `constructor.prototype`; static methods on constructor itself
+- **`extends`** — Sets `Derived.prototype.__proto__ = Base.prototype` via `SETPROTO` opcode
+- **`super()` calls** — `SUPER_CALL` opcode with `new.target` pass-through
+- **`super.method()`** — Property access on superclass prototype
+- **`new.target`** — `NEWTARGET` opcode loads constructor function reference
+- **New opcodes**: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`
+- **FuncFlags**: `is_constructable` (bit 16) now propagated from compiler to VM
+- Computed property names, getters/setters, static field initializers, private fields — deferred
+
+| ✅ (Phase 15)
+
 ## Deviations from Duktape
 
 - **Computed goto dispatch (from QuickJS)** — Replace the inner loop switch-based dispatch with a computed goto jump table (direct threading). This eliminates a branch prediction bottleneck and typically yields 15-30% improvement on bytecode-heavy workloads.

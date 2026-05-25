@@ -262,6 +262,28 @@
 ||| Iterator protocol | 🚫 Deferred (uses .length) |
 ||| for-of in for-in | 🚫 Deferred |
 
+### Phase 15: ES6+ — Classes ✅
+**test262: not yet quantified**
+| Component | Status |
+|---|---|
+| Class declarations (`class Name { }`) | ✅ |
+| Class expressions (named and anonymous) | ✅ |
+| Constructor methods | ✅ |
+| Default constructors (base) | ✅ |
+| Prototype methods | ✅ |
+| Static methods | ✅ |
+| `extends` clause (SETPROTO opcode) | ✅ |
+| `super()` calls (SUPER_CALL opcode) | ✅ |
+| `super.method()` access | ✅ |
+| `new.target` meta-property (NEWTARGET opcode) | ✅ |
+| `is_constructable` flag propagation | ✅ |
+| Default derived constructor | 🚫 Deferred |
+| Computed property names | 🚫 Deferred |
+| Getters/setters | 🚫 Deferred |
+| Static field initializers | 🚫 Deferred |
+| Private fields/methods | 🚫 Deferred |
+| `extends null` | 🚫 Deferred |
+
 ## Session History
 
 | Session | Key Features |
@@ -315,6 +337,7 @@
 | 47 | **Phase 11: Rest parameters** — Added `has_rest`, `rest_formal_count`, and `num_args` fields to CompilerContext. `finish()` now sets `func.num_formals` from `rest_formal_count` when `has_rest=true`. Modified `parse_function_body()`, `compile_inner_function()`, and `compile_arrow_inner()` to detect `...rest` in parameter lists. Arrow function detection updated to handle ELLIPSIS in paren params. CLOSURE opcode handler now sets `.length` property from `num_formals` (fixing pre-existing gap). VM CALL and NEW_OBJ handlers build rest array: copy first `num_formals` args normally, create HObject ARRAY from overflow args with indexed properties and `.length`. No regressions on existing suite. |
 | 48 | **Phase 13: Spread operator** — Array literal spread: `[...arr, x]` using new `ARRSPRD` opcode (ABC format, in-place index update). Call spread: `f(...args)` using `SPREAD_ARG` (register-level copy) + `CALL_S` (dynamic arg count). Compiler `emit_call()` detects `...` prefix, allocates count registers, emits SPREAD_ARG + ADD accumulation + CALL_S. Array literal handles mixed spread+non-spread with register-based index tracking (switches from compile-time index when first spread encountered). Multiple spreads per array supported. Non-spread-before-spread in calls supported; spread-before-non-spread deferred. No regressions. |
 | 49 | **Phase 14: for-of loop bugfix** — Fixed `continue` in for-of causing infinite loop. Root cause: `emit_forof_loop()` set `push_loop(loop_start, true)` which set `continue_target` to the LT comparison at loop_start. When `continue` executed, it jumped back to LT without advancing the index, re-entering the same iteration forever. Fix: added `self.loop_stack[self.loop_depth - 1].continue_target = self.code_count` after `self.statement()!` and before the index increment, so `continue` advances to the next element. All 7 for-of test cases (var/let/const/bare/empty/break/continue) now pass; no regressions on existing suite. **Test262: 1,621 pass.** |
+|| 50 | **Phase 15: ES6 Classes** — Implemented class declarations/expressions with constructors, methods, static methods, `extends`, `super()`, `super.method()`, and `new.target`. Added 3 opcodes: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`. `FuncFlags.is_constructable` now propagated from compiler through `CLOSURE` to `HObject.flags.constructable`. Default base constructors built manually. Fixed `handle_return` to use `this_binding` for constructor instance return (freeing `new_target` for ES6 meta-property). 25/25 class tests pass; no regressions. |
 
 ## Refreshing Counts
 
