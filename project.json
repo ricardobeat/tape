@@ -15,6 +15,10 @@
     "batch_test_vm": {
       "type": "executable",
       "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ]
+    },
+    "bench_run": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/bench_run.c3" ]
     }
   }
 }
