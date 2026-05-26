@@ -823,6 +823,86 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
 }
 
 /// Handle return from current activation.
+/// Invoke a getter function found on the prototype chain.
+/// Sets up an ECMAScript call frame for the getter with `this` = this_obj,
+/// and result register = result_reg (in the caller's frame).
+/// Returns true if the call was set up (caller should `break` with needs_restart).
+fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
+                      TVal* this_val, uint result_reg,
+                      Activation* act, Instruction** curr_pc, bool* needs_restart,
+                      TVal* regs_base) {
+    TVal getter_fn = acc.accessor_fn;
+
+    // If getter is undefined/null, return undefined (no-op)
+    if (getter_fn.tag == UNDEFINED || getter_fn.tag == NULL_VAL) {
+        regs_base[result_reg].tag = UNDEFINED;
+        regs_base[result_reg].pointer = null;
+        return false;
+    }
+
+    if (getter_fn.tag != OBJECT) return false;
+    HObject* func_obj = (HObject*)getter_fn.pointer;
+    if (func_obj == null || !func_obj.is_callable()) return false;
+
+    CompiledFunction* target = func_obj.comp_func;
+    if (target == null) return false;
+
+    // Set up call frame: callee_reg = result_reg (we reuse it)
+    uint callee_reg = result_reg;
+    uint frame_start = callee_reg + 2;
+    uint new_bottom_idx = (act.bottom_byteoff / (uint)TVal::size) + frame_start;
+    uint needed = new_bottom_idx + target.num_regs;
+
+    if (!ensure_valstack(vm, needed)) {
+        regs_base[result_reg].tag = UNDEFINED;
+        regs_base[result_reg].pointer = null;
+        return false;
+    }
+
+    // Re-acquire regs_base after potential reallocation
+    TVal* caller_regs = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+    caller_regs[callee_reg] = getter_fn;
+    caller_regs[callee_reg + 1] = *this_val;
+
+    if (vm.activation_count >= MAX_CALLS) {
+        caller_regs[result_reg].tag = UNDEFINED;
+        caller_regs[result_reg].pointer = null;
+        return false;
+    }
+
+    Activation* new_act = &vm.activations[vm.activation_count];
+    vm.activation_count++;
+
+    new_act.parent = act;
+    new_act.func = target;
+    new_act.var_env = func_obj.var_env;
+    new_act.lex_env = func_obj.lex_env;
+    new_act.cat = null;
+    new_act.curr_pc = target.code;
+    new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
+    new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+    new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
+    new_act.flags = ACT_FLAG_STRICT;
+    new_act.this_binding = *this_val;
+
+    // Clear registers and copy args (getters have 0 args)
+    TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+    uint new_nregs = target.num_regs;
+    for (uint i = 0; i < new_nregs; i++) {
+        new_regs[i].tag = UNDEFINED;
+        new_regs[i].pointer = null;
+    }
+
+    vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * TVal::size);
+    vm.valstack_bottom = new_act.bottom_byteoff;
+
+    // Save caller's PC so it resumes correctly after getter returns
+    act.curr_pc = *curr_pc;
+
+    *needs_restart = true;
+    return true;
+}
+
 /// val: the return value (or undefined for RETUNDEF)
 fn TVal handle_return(Vm* vm, TVal val) {
     if (vm.activation_count == 0) {
@@ -1622,7 +1702,21 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* hobj = (HObject*)rb.pointer;
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    // Inline get_prop_with_proto
+                    // Check for accessor property first
+                    hobject::AccessorResult acc = hobj.find_accessor_proto(key, true);
+                    if (acc.found) {
+                        TVal obj_val;
+                        obj_val.tag = OBJECT;
+                        obj_val.pointer = hobj;
+                        if (invoke_getter(vm, &acc, &obj_val, (uint)insn.a,
+                                          act, &curr_pc, &needs_restart, regs_base)) {
+                            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                            break;
+                        }
+                        // If invoke_getter returned false, result was set to undefined
+                        break;
+                    }
+                    // Data property: inline get_prop_with_proto
                     TVal? result = hobj.get_prop_proto(key);
                     if (try v = result) {
                         *ra = v;
@@ -1741,7 +1835,67 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* hobj = (HObject*)ra.pointer;
                 void* key = get_prop_key(vm, rb);
                 if (key != null) {
-                    hobj.put_prop(key, *rc, hobject::PROP_FLAGS_WEC);
+                    // Save the value before ensure_valstack may reallocate
+                    TVal put_val = *rc;
+
+                    // Check for setter on prototype chain
+                    hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
+                    if (acc.found && acc.accessor_fn.tag == OBJECT && acc.accessor_fn.pointer != null) {
+                        // Invoke setter: this=obj, arg=value
+                        HObject* setter_obj = (HObject*)acc.accessor_fn.pointer;
+                        if (setter_obj.is_callable() && setter_obj.comp_func != null) {
+                            CompiledFunction* target = setter_obj.comp_func;
+
+                            uint callee_reg = (uint)insn.a + 1;
+                            uint frame_start = callee_reg + 2;
+                            uint new_bottom_idx = (act.bottom_byteoff / (uint)TVal::size) + frame_start;
+                            uint needed = new_bottom_idx + target.num_regs;
+
+                            if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
+                                TVal* caller_regs = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
+                                caller_regs[callee_reg] = acc.accessor_fn;
+                                TVal obj_tv;
+                                obj_tv.tag = OBJECT;
+                                obj_tv.pointer = acc.this_obj;
+                                caller_regs[callee_reg + 1] = obj_tv;
+                                caller_regs[callee_reg + 2] = put_val;
+
+                                Activation* new_act = &vm.activations[vm.activation_count];
+                                vm.activation_count++;
+
+                                new_act.parent = act;
+                                new_act.func = target;
+                                new_act.var_env = setter_obj.var_env;
+                                new_act.lex_env = setter_obj.lex_env;
+                                new_act.cat = null;
+                                new_act.curr_pc = target.code;
+                                new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
+                                new_act.retval_byteoff = act.bottom_byteoff + ((uint)insn.a) * (uint)TVal::size;
+                                new_act.reserve_byteoff = byte_offset(vm.valstack, vm.valstack_end);
+                                new_act.flags = ACT_FLAG_STRICT;
+                                new_act.this_binding = obj_tv;
+
+                                TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+                                for (uint i = 0; i < target.num_regs; i++) {
+                                    new_regs[i].tag = UNDEFINED;
+                                    new_regs[i].pointer = null;
+                                }
+                                // Copy arg (the value being set)
+                                new_regs[0] = put_val;
+
+                                vm.valstack_top = (TVal*)((usz)new_regs + (usz)target.num_regs * TVal::size);
+                                vm.valstack_bottom = new_act.bottom_byteoff;
+
+                                // Save caller's PC for resumption after setter returns
+                                act.curr_pc = curr_pc;
+
+                                needs_restart = true;
+                                break;
+                            }
+                        }
+                    }
+                    hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
                 }
             } else if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
                 // TypeError: Cannot set properties of null/undefined
@@ -3094,6 +3248,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             vm.valstack_top = (TVal*)((usz)new_regs2 + (usz)new_nregs2 * (usz)TVal::size);
             vm.valstack_bottom = new_act.bottom_byteoff;
 
+            act.curr_pc = curr_pc;
             needs_restart = true;
             break;
         }
@@ -3972,11 +4127,67 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.CONTINUE:
             break;
 
-        case Opcode.INITSET:
+        case Opcode.INITGET: {
+            // A=object, B=key, C=getter_function
+            // Define a getter accessor property on object A with key B.
+            if (ra.tag == OBJECT) {
+                HObject* hobj = (HObject*)ra.pointer;
+                void* key = get_prop_key(vm, rb);
+                TVal getter_val = *rc;
+                if (key != null && hobj != null) {
+                    // Check if property already exists as accessor
+                    int idx = hobj.find_prop_idx(key);
+                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                        // Update existing accessor's getter
+                        hobj.props[idx].getter = getter_val;
+                    } else {
+                        // Create new accessor property
+                        TVal undef;
+                        undef.tag = UNDEFINED;
+                        undef.pointer = null;
+                        hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
+                        // Find it again (put_prop may have grown the array)
+                        int new_idx = hobj.find_prop_idx(key);
+                        if (new_idx >= 0) {
+                            hobj.props[new_idx].getter = getter_val;
+                            hobj.props[new_idx].setter = undef;
+                        }
+                    }
+                }
+            }
             break;
+        }
 
-        case Opcode.INITGET:
+        case Opcode.INITSET: {
+            // A=object, B=key, C=setter_function
+            // Define a setter accessor property on object A with key B.
+            if (ra.tag == OBJECT) {
+                HObject* hobj = (HObject*)ra.pointer;
+                void* key = get_prop_key(vm, rb);
+                TVal setter_val = *rc;
+                if (key != null && hobj != null) {
+                    // Check if property already exists as accessor
+                    int idx = hobj.find_prop_idx(key);
+                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                        // Update existing accessor's setter
+                        hobj.props[idx].setter = setter_val;
+                    } else {
+                        // Create new accessor property
+                        TVal undef;
+                        undef.tag = UNDEFINED;
+                        undef.pointer = null;
+                        hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
+                        // Find it again (put_prop may have grown the array)
+                        int new_idx = hobj.find_prop_idx(key);
+                        if (new_idx >= 0) {
+                            hobj.props[new_idx].getter = undef;
+                            hobj.props[new_idx].setter = setter_val;
+                        }
+                    }
+                }
+            }
             break;
+        }
 
         case Opcode.INITSETI:
             break;

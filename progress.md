@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 62
+**Last Updated:** Session 65
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,8 +10,8 @@
 | Total test262 tests | 53,568 |
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
-| Currently passing (test262) | 1,653 |
-| Pass rate | 3.1% (of 53,568) |
+| Currently passing (test262) | 1,629 |
+| Pass rate | 3.0% (of 53,568) |
 
 ## Refreshing test pass rate
 
@@ -299,7 +299,7 @@ Update the counts and pass rate after every implemented feature
 | `is_constructable` flag propagation | ✅ |
 | Default derived constructor | 🚫 Deferred |
 | Computed property names | 🚫 Deferred |
-| Getters/setters | 🚫 Deferred |
+| Getters/setters | ✅ (Session 65) |
 | Static field initializers | 🚫 Deferred |
 | Private fields/methods | 🚫 Deferred |
 | `extends null` | 🚫 Deferred |
@@ -383,3 +383,4 @@ Update the counts and pass rate after every implemented feature
 || 62 | **VM speed: Remove per-instruction act.curr_pc store + fast int-to-string** — Two performance improvements: (1) Removed the `act.curr_pc = curr_pc` store from every instruction in the inner dispatch loop (was updating the activation struct's program counter through a pointer on every opcode). The store is deferred to only when needed: before CALL direct dispatch (to save the caller's resume point). The JUMP/IF_TRUE/IF_FALSE handlers retain their own `act.curr_pc` updates. (2) Added `int_to_buf` fast integer-to-string conversion and `vm_fastint_to_string` to replace `snprintf("%.17g")` + double conversion for FASTINT property keys. This avoids libc snprintf overhead (format string parsing, locale handling) and the double→long conversion when converting FASTINT values to interned strings for property access. Combined: reduces memory store bandwidth, eliminates snprintf for integer keys, fewer function calls in the hottest property-access paths. Test262: no regressions (phase 0-1: 447, phase 2: 379, phase 3: 101, phase 4: 45).
 ||| 63 | **VM speed: code_end hoisting + dead store removal** — Hoisted `code_end` pointer computation out of every inner-loop instruction into a local variable, eliminating one redundant address addition per bytecode dispatch cycle. Also removed a dead `func_slot` assignment in the CALL ECMAScript path (was written but never read after `ensure_valstack`). Test262: no regressions (phase 0-1: 441 pass with 7 pre-existing timeouts).|
 ||| 64 | **VM speed: @inline annotations + get_prop_with_proto inlining** — Added `@inline` to hot-path flag accessors: `HObject.is_callable()/is_constructable()/is_bound()`, `CompiledFunction.is_arrow()/is_generator()/is_async()/is_constructable()/uses_arguments()/has_direct_eval()/has_rest()/is_strict()`, and all `TVal.set_*()` methods. Inlined `get_prop_with_proto` calls in all GETPROP branches to eliminate function call + TVal return copy overhead. All tests pass with no regressions.|
+||| 65 | **Phase 15: Getters/setters + NEW_OBJ curr_pc fix** — Implemented getter/setter support for class bodies and object literals. Added `AccessorResult` struct and `find_accessor_proto()` to walk prototype chain for accessor properties. GETPROP handler checks for accessor before data property lookup; PUTPROP checks for setter before direct write. `invoke_getter()` sets up ECMAScript call frame for getter with proper `this` binding. INITGET/INITSET opcode handlers define accessor properties. Compiler parses `get prop(){}` / `set prop(v){}` in class bodies and object literals. **Bug fix**: NEW_OBJ missing `act.curr_pc = curr_pc` (from Session 62 removal) caused infinite loop on constructor return. Test262: 1,629 pass. All 102 local tests pass.|

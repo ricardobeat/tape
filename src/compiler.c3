@@ -2147,6 +2147,8 @@ struct ClassMethod {
     char[] name;
     uint   inner_idx;
     bool   is_static;
+    bool   is_getter;
+    bool   is_setter;
 }
 
 /// Create a default constructor CompiledFunction without using the lexer.
@@ -2340,10 +2342,37 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         // Get the method name
         Token method_name;
         bool is_constructor = false;
+        bool is_getter = false;
+        bool is_setter = false;
 
         if (self.check(TokenType.IDENTIFIER)) {
             method_name = self.advance()!;
-            if (!is_static && method_name.str_value.len == 11
+            // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
+            if ((method_name.str_value.len == 3
+                 && method_name.str_value[0] == 'g'
+                 && method_name.str_value[1] == 'e'
+                 && method_name.str_value[2] == 't')
+                || (method_name.str_value.len == 3
+                    && method_name.str_value[0] == 's'
+                    && method_name.str_value[1] == 'e'
+                    && method_name.str_value[2] == 't')) {
+                // Check if next token is a property key (not `:` or `(`)
+                if (!self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
+                    // This is a getter/setter declaration
+                    is_getter = (method_name.str_value[0] == 'g');
+                    is_setter = !is_getter;
+                    // Parse the actual property name
+                    if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)) {
+                        method_name = self.advance()!;
+                    } else if (self.check(TokenType.LBRACKET)) {
+                        // Computed property name — skip for now
+                        return COMPILE_ERROR~;
+                    } else {
+                        return COMPILE_ERROR~;
+                    }
+                }
+            }
+            if (!is_getter && !is_setter && !is_static && method_name.str_value.len == 11
                 && method_name.str_value[0] == 'c'
                 && method_name.str_value[1] == 'o'
                 && method_name.str_value[2] == 'n'
@@ -2397,6 +2426,8 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             methods[method_count].name = method_name.str_value;
             methods[method_count].inner_idx = inner_idx;
             methods[method_count].is_static = is_static;
+            methods[method_count].is_getter = is_getter;
+            methods[method_count].is_setter = is_setter;
             method_count++;
         }
     }
@@ -2454,7 +2485,15 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         uint key_idx = self.add_string_constant(methods[mi].name);
         ushort key_reg = self.alloc_reg();
         self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
-        self.emit_abc(Opcode.PUTPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+
+        if (methods[mi].is_getter) {
+            self.emit_abc(Opcode.INITGET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+        } else if (methods[mi].is_setter) {
+            self.emit_abc(Opcode.INITSET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+        } else {
+            self.emit_abc(Opcode.PUTPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+        }
+
         self.free_reg(key_reg);
         self.free_reg(method_reg);
     }
@@ -4434,6 +4473,67 @@ fn ushort? CompilerContext.object_literal(&self) {
             if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING) {
                 Token key_tok = self.advance()!;
 
+                // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
+                // If key is "get" or "set" AND next token is a property key (not `:` or `(`)
+                bool is_obj_getter = false;
+                bool is_obj_setter = false;
+                if (key_tt == TokenType.IDENTIFIER && !self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
+                    if (key_tok.str_value.len == 3
+                        && key_tok.str_value[0] == 'g'
+                        && key_tok.str_value[1] == 'e'
+                        && key_tok.str_value[2] == 't') {
+                        is_obj_getter = true;
+                    } else if (key_tok.str_value.len == 3
+                        && key_tok.str_value[0] == 's'
+                        && key_tok.str_value[1] == 'e'
+                        && key_tok.str_value[2] == 't') {
+                        is_obj_setter = true;
+                    }
+                }
+
+                if (is_obj_getter || is_obj_setter) {
+                    // Parse the actual property name
+                    Token prop_tok;
+                    TokenType prop_tt = self.peek_type();
+                    if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING) {
+                        prop_tok = self.advance()!;
+                    } else if (prop_tt == TokenType.NUMBER) {
+                        prop_tok = self.advance()!;
+                    } else if (prop_tt == TokenType.LBRACKET) {
+                        // Computed property — skip for now
+                        return COMPILE_ERROR~;
+                    } else {
+                        return COMPILE_ERROR~;
+                    }
+
+                    // Emit key constant
+                    uint prop_key_idx;
+                    if (prop_tt == TokenType.NUMBER) {
+                        prop_key_idx = self.add_number_constant(prop_tok.num_value);
+                    } else {
+                        prop_key_idx = self.add_string_constant(prop_tok.str_value);
+                    }
+                    key_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, prop_key_idx));
+
+                    // Compile the getter/setter function body
+                    ushort accessor_reg = self.function_expr_body()!;
+
+                    if (is_obj_getter) {
+                        self.emit_abc(Opcode.INITGET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
+                    } else {
+                        self.emit_abc(Opcode.INITSET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
+                    }
+                    self.free_reg(accessor_reg);
+                    self.free_reg(key_reg);
+
+                    if (!self.match(TokenType.COMMA)) {
+                        break;
+                    }
+                    continue;
+                }
+
+                // Regular property (not getter/setter)
                 // Duplicate data property check in strict mode
                 if (self.is_strict) {
                     for (usz i = 0; i < seen_count; i++) {
@@ -4483,7 +4583,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 return COMPILE_ERROR~;
             }
 
-            // Check for getter/setter shorthand or method shorthand
+            // Check for method shorthand or data property
             if (self.check(TokenType.LPAREN)) {
                 // Method shorthand: key() { ... }
                 ushort method_reg = self.function_expr_body()!;

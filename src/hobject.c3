@@ -209,6 +209,25 @@ const PropFlags PROP_FLAGS_EC = {
     .is_accessor  = false
 };
 
+/// Convenience constant: accessor property (enumerable, configurable).
+/// Used for getter/setter properties in object literals and class bodies.
+const PropFlags PROP_FLAGS_ACCESSOR = {
+    .writable     = false,
+    .enumerable   = true,
+    .configurable = true,
+    .is_accessor  = true
+};
+
+/// Result of searching for an accessor property on the prototype chain.
+struct AccessorResult {
+    /// The getter or setter TVal (function), or undefined if not found.
+    TVal accessor_fn;
+    /// The object that owns the accessor (needed for `this` binding).
+    HObject* this_obj;
+    /// Whether an accessor was actually found.
+    bool found;
+}
+
 // ============================================================================
 // PropEntry — a single named property
 // ============================================================================
@@ -983,6 +1002,38 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
     }
 
     return PROP_NOT_FOUND~;
+}
+
+/// Search the prototype chain for an accessor property (getter or setter).
+///
+/// Returns an AccessorResult with the accessor function and its owning object
+/// (for `this` binding), or `.found = false` if no accessor exists.
+/// If a data property is found before any accessor, the search stops (no accessor).
+fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter) {
+    const uint MAX_PROTO_DEPTH = 256;
+    HObject* cur = self;
+    uint depth = 0;
+
+    while (cur != null && depth < MAX_PROTO_DEPTH) {
+        int idx = cur.find_prop_idx(key);
+        if (idx >= 0) {
+            PropEntry* pe = &cur.props[idx];
+            if (pe.flags.is_accessor) {
+                TVal accessor_fn = want_getter ? pe.getter : pe.setter;
+                if (accessor_fn.tag == OBJECT && accessor_fn.pointer != null) {
+                    return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
+                }
+                // Accessor exists but the specific getter/setter is undefined
+                return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
+            }
+            // Data property found — stop searching
+            return { .found = false };
+        }
+        cur = cur.prototype;
+        depth++;
+    }
+
+    return { .found = false };
 }
 
 /// Check whether the property exists anywhere on the prototype chain.
