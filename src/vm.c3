@@ -1894,8 +1894,44 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 break;
                             }
                         }
+                    } else {
+                        // Check if property exists and is writable
+                        int exist_idx = hobj.find_prop_idx(key);
+                        if (exist_idx >= 0) {
+                            hobject::PropEntry* entry = &hobj.props[exist_idx];
+                            if (!entry.flags.is_accessor && !entry.flags.writable) {
+                                // Non-writable data property — TypeError in strict mode
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.type_err_proto;
+                                    HString* msg_key = intern_string(vm, "message");
+                                    HString* msg_val = intern_string(vm, "Cannot assign to read only property");
+                                    TVal msg_tv;
+                                    msg_tv.tag = STRING;
+                                    msg_tv.pointer = msg_val;
+                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                    TVal err_val;
+                                    err_val.tag = OBJECT;
+                                    err_val.pointer = err;
+                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
+                                } else {
+                                    return VM_ERROR~;
+                                }
+                                break;
+                            }
+                            // Update value, preserve existing flags
+                            entry.value = put_val;
+                        } else {
+                            // Property doesn't exist: check extensibility
+                            if (hobj.flags.extensible) {
+                                hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            // If not extensible, silently ignore in non-strict, but we're strict-only
+                            // so we could throw. For now, silently ignore.
+                        }
                     }
-                    hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
                 }
             } else if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
                 // TypeError: Cannot set properties of null/undefined

@@ -193,6 +193,7 @@ const uint BUILTIN_OBJECT_ISEXTENSIBLE       = 159;
 const uint BUILTIN_OBJECT_PREVENTEXTENSIONS  = 160;
 
 const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR = 161;
+const uint BUILTIN_OBJECT_DEFINEPROPERTY           = 162;
 
 struct BuiltinContext {
     void* vm;
@@ -2820,6 +2821,514 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
     ctx.result.tag = OBJECT;
     ctx.result.pointer = desc;
+}
+
+/// ToPropertyDescriptor — ES5 §8.10.5
+///
+/// Parses a descriptor object into PropFlags + value (or getter/setter).
+/// `out_flags` receives the flags to use for a newly created property.
+/// `out_value` receives the data value (or getter/setter).
+/// `is_accessor_out` is set true when the descriptor is an accessor descriptor.
+/// Returns true on success, sets ctx.should_throw on error.
+fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
+                               hobject::PropFlags* out_flags,
+                               TVal* out_value, bool* is_accessor_out) {
+    // Check the five possible descriptor fields.
+    HString* enum_key   = builtin_intern_string(ctx.heap, "enumerable");
+    HString* conf_key   = builtin_intern_string(ctx.heap, "configurable");
+    HString* value_key  = builtin_intern_string(ctx.heap, "value");
+    HString* writ_key   = builtin_intern_string(ctx.heap, "writable");
+    HString* get_key    = builtin_intern_string(ctx.heap, "get");
+    HString* set_key    = builtin_intern_string(ctx.heap, "set");
+
+    if (enum_key   == null) return false;
+    if (conf_key   == null) return false;
+    if (value_key  == null) return false;
+    if (writ_key   == null) return false;
+    if (get_key    == null) return false;
+    if (set_key    == null) return false;
+
+    TVal enum_val;   bool has_enumerable   = false;
+    if (try v = desc_obj.get_prop_proto(enum_key)) {
+        enum_val = v; has_enumerable = true; }
+    TVal conf_val;   bool has_configurable = false;
+    if (try v = desc_obj.get_prop_proto(conf_key)) {
+        conf_val = v; has_configurable = true; }
+    TVal value_val;  bool has_value        = false;
+    if (try v = desc_obj.get_prop_proto(value_key)) {
+        value_val = v; has_value = true; }
+    TVal writ_val;   bool has_writable     = false;
+    if (try v = desc_obj.get_prop_proto(writ_key)) {
+        writ_val = v; has_writable = true; }
+    TVal get_val;    bool has_get          = false;
+    if (try v = desc_obj.get_prop_proto(get_key)) {
+        get_val = v; has_get = true; }
+    TVal set_val;    bool has_set          = false;
+    if (try v = desc_obj.get_prop_proto(set_key)) {
+        set_val = v; has_set = true; }
+
+    // Step 16: If both data and accessor fields present, throw TypeError
+    if ((has_value || has_writable) && (has_get || has_set)) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) return false;
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Invalid property descriptor — cannot have both data and accessor fields");
+        if (msg_key == null || msg_str == null) return false;
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return false;
+    }
+
+    // Validate getter/setter are callable or undefined
+    if (has_get && get_val.tag != UNDEFINED) {
+        if (get_val.tag != OBJECT && get_val.tag != LIGHTFUNC) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err2 = err_raw) return false;
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key2 = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str2 = builtin_intern_string(ctx.heap, "Getter must be callable or undefined");
+            if (msg_key2 == null || msg_str2 == null) return false;
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str2;
+            err.put_prop(msg_key2, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+            return false;
+        }
+        HObject* fn_obj = (HObject*)get_val.pointer;
+        if (!fn_obj.is_callable()) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err3 = err_raw) return false;
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key3 = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str3 = builtin_intern_string(ctx.heap, "Getter must be callable");
+            if (msg_key3 == null || msg_str3 == null) return false;
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str3;
+            err.put_prop(msg_key3, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+            return false;
+        }
+    }
+    if (has_set && set_val.tag != UNDEFINED) {
+        if (set_val.tag != OBJECT && set_val.tag != LIGHTFUNC) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err4 = err_raw) return false;
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key4 = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str4 = builtin_intern_string(ctx.heap, "Setter must be callable or undefined");
+            if (msg_key4 == null || msg_str4 == null) return false;
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str4;
+            err.put_prop(msg_key4, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+            return false;
+        }
+        HObject* fn_obj = (HObject*)set_val.pointer;
+        if (!fn_obj.is_callable()) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err5 = err_raw) return false;
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key5 = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str5 = builtin_intern_string(ctx.heap, "Setter must be callable");
+            if (msg_key5 == null || msg_str5 == null) return false;
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str5;
+            err.put_prop(msg_key5, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+            return false;
+        }
+    }
+
+    bool is_accessor = has_get || has_set;
+
+    // Build output flags
+    hobject::PropFlags flags;
+    flags.is_accessor = is_accessor;
+
+    // Set defaults: if descriptor doesn't mention a field, preserve existing
+    // (will be handled by caller). Here we set sentinel values:
+    // For a new property, absent fields default to false.
+    if (has_enumerable) {
+        flags.enumerable = builtin_to_boolean(&enum_val);
+    } else {
+        flags.enumerable = false;
+    }
+
+    if (has_configurable) {
+        flags.configurable = builtin_to_boolean(&conf_val);
+    } else {
+        flags.configurable = false;
+    }
+
+    if (has_writable && !is_accessor) {
+        flags.writable = builtin_to_boolean(&writ_val);
+    } else if (!is_accessor) {
+        flags.writable = false;
+    }
+
+    if (is_accessor) {
+        flags.writable = false;
+        if (has_get) {
+            out_value[0] = get_val;
+        } else {
+            out_value[0] = types::make_undefined();
+        }
+        if (has_set) {
+            out_value[1] = set_val;
+        } else {
+            out_value[1] = types::make_undefined();
+        }
+    } else {
+        if (has_value) {
+            out_value[0] = value_val;
+        } else {
+            out_value[0] = types::make_undefined();
+        }
+        out_value[1] = types::make_undefined(); // not used for data
+    }
+
+    out_flags[0] = flags;
+    is_accessor_out[0] = is_accessor;
+    return true;
+}
+
+/// Object.defineProperty — ES5 §15.2.3.6
+fn void builtin_object_defineProperty(BuiltinContext* ctx) {
+    // Step 1: Check first arg is Object
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg0 = ctx.regs[ctx.base_reg];
+    if (arg0.tag != OBJECT) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.defineProperty called on non-object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj = (HObject*)arg0.pointer;
+
+    // Step 2: Convert property key to string
+    if (ctx.argc < 2) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal key_val = ctx.regs[ctx.base_reg + 1];
+    void* key = null;
+    char[64] key_buf;
+    if (key_val.tag == STRING) {
+        key = key_val.pointer;
+    } else if (key_val.tag == FASTINT) {
+        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.fastint);
+        if (len < 0 || len >= 64) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+        if (catch err2 = key_str) {
+            ctx.result.set_undefined();
+            return;
+        }
+        ctx.heap.str_table_insert(key_str);
+        key = key_str;
+    } else if (key_val.tag == NUMBER) {
+        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.number);
+        if (len < 0 || len >= 64) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+        if (catch err3 = key_str) {
+            ctx.result.set_undefined();
+            return;
+        }
+        ctx.heap.str_table_insert(key_str);
+        key = key_str;
+    } else {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err4 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key2 = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str2 = builtin_intern_string(ctx.heap, "Object.defineProperty property key must be a string or number");
+        if (msg_key2 == null || msg_str2 == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str2;
+        err.put_prop(msg_key2, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+
+    // Step 3: Check Attributes is Object
+    if (ctx.argc < 3) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal attr_val = ctx.regs[ctx.base_reg + 2];
+    if (attr_val.tag != OBJECT) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err5 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key3 = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str3 = builtin_intern_string(ctx.heap, "Object.defineProperty called with non-object descriptor");
+        if (msg_key3 == null || msg_str3 == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str3;
+        err.put_prop(msg_key3, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* desc_obj = (HObject*)attr_val.pointer;
+
+    // Step 4: ToPropertyDescriptor
+    hobject::PropFlags desc_flags;
+    TVal[2] desc_vals;  // [0]=value/getter, [1]=setter (unused for data)
+    bool is_accessor;
+    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor)) {
+        if (ctx.should_throw) return;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Step 5: [[DefineOwnProperty]]
+    // Check if property already exists
+    int existing_idx = obj.find_prop_idx(key);
+    if (existing_idx < 0) {
+        // Property doesn't exist — check extensibility
+        if (!obj.flags.extensible) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err6 = err_raw) {
+                ctx.result.set_undefined();
+                return;
+            }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key4 = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str4 = builtin_intern_string(ctx.heap, "Cannot define property on a non-extensible object");
+            if (msg_key4 == null || msg_str4 == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv;
+            msg_tv.tag = STRING;
+            msg_tv.pointer = msg_str4;
+            err.put_prop(msg_key4, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+            return;
+        }
+        // Create new property
+        if (is_accessor) {
+            // Accessor property — set value as getter placeholder
+            obj.put_prop(key, desc_vals[0], desc_flags);
+            int idx = obj.find_prop_idx(key);
+            if (idx >= 0) {
+                obj.props[idx].getter = desc_vals[0];
+                obj.props[idx].setter = desc_vals[1];
+            }
+        } else {
+            obj.put_prop(key, desc_vals[0], desc_flags);
+        }
+    } else {
+        // Property exists — validate changes per ES5 §8.12.9
+        hobject::PropEntry* current = &obj.props[existing_idx];
+        hobject::PropFlags cur_flags = current.flags;
+        TVal cur_value = current.value;
+
+        // Check if descriptor is empty (generic, no fields)
+        bool has_value_field   = (ctx.regs[ctx.base_reg + 2].tag == OBJECT); // already validated
+        // We've already extracted descriptor fields above, so check what was present
+
+        // Check configurable constraint
+        if (!cur_flags.configurable) {
+            bool reject = false;
+            if (desc_flags.configurable != cur_flags.configurable) reject = true;
+            if (desc_flags.enumerable != cur_flags.enumerable) reject = true;
+            if (reject) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (catch err7 = err_raw) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                HObject* err = err_raw;
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_key5 = builtin_intern_string(ctx.heap, "message");
+                HString* msg_str5 = builtin_intern_string(ctx.heap, "Cannot redefine non-configurable property");
+                if (msg_key5 == null || msg_str5 == null) { ctx.result.set_undefined(); return; }
+                TVal msg_tv;
+                msg_tv.tag = STRING;
+                msg_tv.pointer = msg_str5;
+                err.put_prop(msg_key5, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+                return;
+            }
+        }
+
+        // Update the property
+        if (is_accessor != cur_flags.is_accessor) {
+            // Changing from data to accessor or vice versa on non-configurable
+            if (!cur_flags.configurable) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (catch err8 = err_raw) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                HObject* err = err_raw;
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_key6 = builtin_intern_string(ctx.heap, "message");
+                HString* msg_str6 = builtin_intern_string(ctx.heap, "Cannot change property type from data to accessor or vice versa on non-configurable property");
+                if (msg_key6 == null || msg_str6 == null) { ctx.result.set_undefined(); return; }
+                TVal msg_tv;
+                msg_tv.tag = STRING;
+                msg_tv.pointer = msg_str6;
+                err.put_prop(msg_key6, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+                return;
+            }
+            // Type change allowed only if configurable
+        }
+
+        if (is_accessor) {
+            // Update accessor fields
+            bool has_get_in_desc = false;
+            bool has_set_in_desc = false;
+            // Re-check which fields were in the descriptor
+            HString* get_k = builtin_intern_string(ctx.heap, "get");
+            HString* set_k = builtin_intern_string(ctx.heap, "set");
+            if (get_k != null) has_get_in_desc = desc_obj.find_prop_idx(get_k) >= 0;
+            if (set_k != null) has_set_in_desc = desc_obj.find_prop_idx(set_k) >= 0;
+
+            if (has_get_in_desc) current.getter = desc_vals[0];
+            if (has_set_in_desc) current.setter = desc_vals[1];
+
+            // Update flags
+            current.flags.is_accessor = true;
+            current.flags.enumerable = desc_flags.enumerable;
+            current.flags.configurable = desc_flags.configurable;
+        } else {
+            // Update data property
+            bool has_val_in_desc = false;
+            bool has_wrt_in_desc = false;
+            bool has_enum_in_desc = false;
+            bool has_conf_in_desc = false;
+            HString* val_k  = builtin_intern_string(ctx.heap, "value");
+            HString* writ_k = builtin_intern_string(ctx.heap, "writable");
+            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
+            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
+            if (val_k  != null) has_val_in_desc  = desc_obj.find_prop_idx(val_k)  >= 0;
+            if (writ_k != null) has_wrt_in_desc  = desc_obj.find_prop_idx(writ_k) >= 0;
+            if (enum_k != null) has_enum_in_desc = desc_obj.find_prop_idx(enum_k) >= 0;
+            if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
+
+            // Check writable → non-writable transition when non-configurable
+            if (!cur_flags.configurable && !cur_flags.writable && has_wrt_in_desc && desc_flags.writable) {
+                // Cannot change non-writable to writable on non-configurable
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (catch err9 = err_raw) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                HObject* err = err_raw;
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_key7 = builtin_intern_string(ctx.heap, "message");
+                HString* msg_str7 = builtin_intern_string(ctx.heap, "Cannot change writable attribute of non-configurable property from false to true");
+                if (msg_key7 == null || msg_str7 == null) { ctx.result.set_undefined(); return; }
+                TVal msg_tv;
+                msg_tv.tag = STRING;
+                msg_tv.pointer = msg_str7;
+                err.put_prop(msg_key7, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+                return;
+            }
+
+            if (has_val_in_desc) {
+                // If non-writable and non-configurable, value can only be set once
+                if (!cur_flags.configurable && !cur_flags.writable) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err10 = err_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_key8 = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str8 = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
+                    if (msg_key8 == null || msg_str8 == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv;
+                    msg_tv.tag = STRING;
+                    msg_tv.pointer = msg_str8;
+                    err.put_prop(msg_key8, msg_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.tag = OBJECT;
+                    ctx.throw_value.pointer = err;
+                    return;
+                }
+                current.value = desc_vals[0];
+            }
+
+            if (has_wrt_in_desc)  current.flags.writable     = desc_flags.writable;
+            if (has_enum_in_desc) current.flags.enumerable   = desc_flags.enumerable;
+            if (has_conf_in_desc) current.flags.configurable = desc_flags.configurable;
+        }
+    }
+
+    // Step 6: Return O
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
 }
 
 /// Object.prototype.toString — returns "[object Class]"
@@ -9005,6 +9514,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_preventExtensions(ctx);
         case BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR:
             builtin_object_getOwnPropertyDescriptor(ctx);
+        case BUILTIN_OBJECT_DEFINEPROPERTY:
+            builtin_object_defineProperty(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
         case BUILTIN_MATH_ABS:
@@ -9586,6 +10097,14 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     getownpropdesc_tv.tag = LIGHTFUNC;
     getownpropdesc_tv.fastint = (long)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR;
     obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.defineProperty — ES5 §15.2.3.6
+    HString* defineprop_key = builtin_intern_string(heap, "defineProperty");
+    if (defineprop_key == null) return false;
+    TVal defineprop_tv;
+    defineprop_tv.tag = LIGHTFUNC;
+    defineprop_tv.fastint = (long)BUILTIN_OBJECT_DEFINEPROPERTY;
+    obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");

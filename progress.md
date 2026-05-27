@@ -154,6 +154,7 @@ Update the counts and pass rate after every implemented feature
 | Date | ✅ |
 | RegExp | ✅ (engine integrated + prototype chain wired, SyntaxError on invalid pattern/flags, .constructor on error prototypes — 144 test262 passing) |
 | Object.keys, getPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions | ✅ (Session 67-68) |
+| **Object.defineProperty** | **✅ (Session 69)** |
 
 ### Phase 9: Strict Mode — ✅ (Impl.)
 **test262: strict-mode tests — not yet quantified**
@@ -388,3 +389,4 @@ Update the counts and pass rate after every implemented feature
 ||| 66 | **Phase 15: Computed property names** — Implemented computed property names for object literals (data, methods, getters, setters) and class bodies (methods, getters, setters, static). Compiled key expressions as 0-arg inner functions via `compile_key_expr()`, deferred evaluation via CLOSURE+LDTHIS+CALL at method-install time. Removed `computed-property-names` from test262 skip lists. 17/17 local tests pass. 11/48 test262 computed-property-name tests pass (37 fail due to pre-existing `new X().prop` compiler bug).|
 ||| 67 | **Phase 8: Object.keys** — Implemented `Object.keys()` as a static method on the Object constructor per ES5 §15.2.3.14. Function collects own enumerable property names (both named properties and dense array indices), returns them in a new Array. Addressed stale-binary caching issue (full `rm` + rebuild required). Test262: 8/59 Object.keys tests passing.|
 |||| 68 | **Phase 8: Object.getPrototypeOf, isExtensible, preventExtensions, getOwnPropertyDescriptor** — Implemented 4 additional ES5 Object static methods with proper TypeError handling for non-object arguments and full property descriptor construction. |
+|||| 69 | **Phase 8: Object.defineProperty + PUTPROP writable check** — Implemented Object.defineProperty (ES5 §15.2.3.6) with ToPropertyDescriptor, [[DefineOwnProperty]] validation (configurable/writable constraints), getter/setter accessor support, and proper TypeError errors. Fixed PUTPROP VM opcode to check writable flag before writing — non-writable data properties now throw TypeError in strict mode instead of silently succeeding. |
