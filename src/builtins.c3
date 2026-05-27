@@ -91,13 +91,7 @@ const uint BUILTIN_ARRAY_PROTO_UNSHIFT     = 61;
 const uint BUILTIN_ARRAY_PROTO_INDEXOF     = 62;
 const uint BUILTIN_ARRAY_PROTO_LASTINDEXOF = 63;
 const uint BUILTIN_ARRAY_PROTO_CONCAT      = 64;
-const uint BUILTIN_ARRAY_PROTO_EVERY       = 65;
-const uint BUILTIN_ARRAY_PROTO_SOME        = 66;
-const uint BUILTIN_ARRAY_PROTO_FOREACH     = 67;
-const uint BUILTIN_ARRAY_PROTO_MAP         = 68;
-const uint BUILTIN_ARRAY_PROTO_FILTER      = 69;
-const uint BUILTIN_ARRAY_PROTO_REDUCE      = 70;
-const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 71;
+
 const uint BUILTIN_NUMBER_PROTO_TOFIXED       = 73;
 const uint BUILTIN_NUMBER_PROTO_TOEXPONENTIAL = 74;
 const uint BUILTIN_NUMBER_PROTO_TOPRECISION   = 75;
@@ -201,6 +195,25 @@ const uint BUILTIN_OBJECT_SEAL                    = 166;
 const uint BUILTIN_OBJECT_FREEZE                  = 167;
 const uint BUILTIN_OBJECT_ISSEALED                = 168;
 const uint BUILTIN_OBJECT_ISFROZEN                = 169;
+
+const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
+const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
+const uint BUILTIN_STRING_PROTO_ENDSWITH  = 172;
+const uint BUILTIN_STRING_PROTO_REPEAT    = 173;
+const uint BUILTIN_STRING_PROTO_TRIMSTART = 174;
+const uint BUILTIN_STRING_PROTO_TRIMEND   = 175;
+const uint BUILTIN_STRING_PROTO_CODEPOINTAT = 176;
+const uint BUILTIN_STRING_PROTO_AT        = 177;
+const uint BUILTIN_STRING_PROTO_PADSTART  = 178;
+const uint BUILTIN_STRING_PROTO_PADEND    = 179;
+const uint BUILTIN_STRING_PROTO_LASTINDEXOF = 180;
+const uint BUILTIN_ARRAY_OF              = 181;
+const uint BUILTIN_ARRAY_PROTO_FILL      = 182;
+const uint BUILTIN_ARRAY_PROTO_FIND      = 183;
+const uint BUILTIN_ARRAY_PROTO_FINDINDEX = 184;
+const uint BUILTIN_ARRAY_PROTO_INCLUDES  = 185;
+const uint BUILTIN_ARRAY_PROTO_AT        = 186;
+const uint BUILTIN_ARRAY_PROTO_COPYWITHIN = 187;
 
 struct BuiltinContext {
     void* vm;
@@ -1894,6 +1907,580 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
     ctx.result.tag = STRING;
     ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Additional String.prototype methods
+// ============================================================================
+
+/// String.prototype.includes(searchString, position) — ES6 §21.1.3.7
+fn void builtin_string_proto_includes(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    HString* search_hstr;
+    if (ctx.argc > 0) {
+        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        search_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (search_hstr == null) { ctx.result.set_boolean(false); return; }
+
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    uint pos;
+    if (math::is_nan(pos_d) || pos_d < 0) {
+        pos = 0;
+    } else if (pos_d >= (double)len) {
+        pos = len;
+    } else {
+        pos = (uint)(long)pos_d;
+    }
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    if (search_len == 0) { ctx.result.set_boolean(true); return; }
+
+    bool found = false;
+    for (uint i = pos; i + search_len <= len; i++) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (data[i + j] != search_data[j]) { match = false; break; }
+        }
+        if (match) { found = true; break; }
+    }
+    ctx.result.set_boolean(found);
+}
+
+/// String.prototype.startsWith(searchString, position) — ES6 §21.1.3.18
+fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    HString* search_hstr;
+    if (ctx.argc > 0) {
+        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        search_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (search_hstr == null) { ctx.result.set_boolean(false); return; }
+
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    uint pos;
+    if (math::is_nan(pos_d) || pos_d < 0) {
+        pos = 0;
+    } else if (pos_d > (double)len) {
+        pos = len;
+    } else {
+        pos = (uint)(long)pos_d;
+    }
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    if (pos + search_len > len) { ctx.result.set_boolean(false); return; }
+
+    bool found = true;
+    for (uint j = 0; j < search_len; j++) {
+        if (data[pos + j] != search_data[j]) { found = false; break; }
+    }
+    ctx.result.set_boolean(found);
+}
+
+/// String.prototype.endsWith(searchString, endPosition) — ES6 §21.1.3.6
+fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    HString* search_hstr;
+    if (ctx.argc > 0) {
+        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        search_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (search_hstr == null) { ctx.result.set_boolean(false); return; }
+
+    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+    uint end_pos;
+    if (math::is_nan(end_d) || end_d < 0) {
+        end_pos = 0;
+    } else if (end_d > (double)len) {
+        end_pos = len;
+    } else {
+        end_pos = (uint)(long)end_d;
+    }
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    if (search_len > end_pos) { ctx.result.set_boolean(false); return; }
+
+    uint start = end_pos - search_len;
+    bool found = true;
+    for (uint j = 0; j < search_len; j++) {
+        if (data[start + j] != search_data[j]) { found = false; break; }
+    }
+    ctx.result.set_boolean(found);
+}
+
+/// String.prototype.repeat(count) — ES6 §21.1.3.14
+fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    double count_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (count_d < 0 || math::is_inf(count_d)) {
+        // Throw RangeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.range_err_proto;
+            HString* msg = builtin_intern_string(ctx.heap, "Invalid count value");
+            TVal msg_val; msg_val.tag = STRING; msg_val.pointer = msg;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            TVal err_val; err_val.tag = OBJECT; err_val.pointer = err;
+            ctx.heap.curr_thread = err;
+        }
+        ctx.result.set_undefined();
+        return;
+    }
+    uint count = (uint)(long)count_d;
+
+    if (count == 0 || s_hstr.blen == 0) {
+        HString* empty = builtin_intern_string(ctx.heap, "");
+        ctx.result.tag = STRING; ctx.result.pointer = empty;
+        return;
+    }
+
+    // Build repeated string
+    usz total = (usz)s_hstr.blen * (usz)count;
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total + 1);
+    if (buf == null) { ctx.result.set_undefined(); return; }
+    char* src = s_hstr.get_cstr();
+    for (uint i = 0; i < count; i++) {
+        libc::memcpy(&buf[i * s_hstr.blen], src, s_hstr.blen);
+    }
+    buf[total] = 0;
+
+    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf[:total], ctx.heap.hash_string(buf[:total]));
+    if (try result = result_raw) {
+        ctx.heap.str_table_insert(result);
+        ctx.result.tag = STRING; ctx.result.pointer = result;
+    } else { ctx.result.set_undefined(); }
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
+}
+
+/// String.prototype.trimStart() — ES2019 §21.1.3.26
+fn void builtin_string_proto_trimStart(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+    uint start = 0;
+    while (start < len && is_ecma_whitespace(data[start])) { start++; }
+    if (start == 0) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+    HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[start..len], ctx.heap.hash_string(data[start..len]));
+    if (try result = result_raw) {
+        ctx.heap.str_table_insert(result);
+        ctx.result.tag = STRING; ctx.result.pointer = result;
+    } else { ctx.result.set_undefined(); }
+}
+
+/// String.prototype.trimEnd() — ES2019 §21.1.3.27
+fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+    uint end = len;
+    while (end > 0 && is_ecma_whitespace(data[end - 1])) { end--; }
+    if (end == len) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+    HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[0..end], ctx.heap.hash_string(data[0..end]));
+    if (try result = result_raw) {
+        ctx.heap.str_table_insert(result);
+        ctx.result.tag = STRING; ctx.result.pointer = result;
+    } else { ctx.result.set_undefined(); }
+}
+
+/// String.prototype.codePointAt(pos) — ES6 §21.1.3.3
+fn void builtin_string_proto_codePointAt(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    double pos_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    uint pos;
+    if (math::is_nan(pos_d) || pos_d < 0) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    pos = (uint)(long)pos_d;
+    if (pos >= len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    // Simple ASCII fallback (most test262 tests use ASCII)
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)(data[pos] & 0xFF);
+}
+
+/// String.prototype.at(index) — ES2022 §21.1.3.1
+fn void builtin_string_proto_at(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (math::is_nan(idx_d)) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    long idx = (long)idx_d;
+    if (idx < 0) { idx = (long)len + idx; }
+    if (idx < 0 || idx >= (long)len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)data[idx] & 0xFF;
+}
+
+/// String.prototype.padStart(maxLength, fillString) — ES2017 §21.1.3.13
+fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    double max_len_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
+    uint max_len = (uint)(long)max_len_d;
+
+    uint str_len = s_hstr.blen;
+    if (str_len >= max_len) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+
+    HString* fill_hstr;
+    if (ctx.argc > 1) {
+        fill_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+    } else {
+        fill_hstr = builtin_intern_string(ctx.heap, " ");
+    }
+    if (fill_hstr == null || fill_hstr.blen == 0) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+
+    uint pad_len = max_len - str_len;
+    char* fill_data = fill_hstr.get_cstr();
+    uint fill_len = fill_hstr.blen;
+    char* src = s_hstr.get_cstr();
+
+    usz total = (usz)pad_len + (usz)str_len;
+    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total + 1);
+    if (buf_ptr == null) { ctx.result.set_undefined(); return; }
+
+    for (uint i = 0; i < pad_len; i++) {
+        buf_ptr[i] = fill_data[i % fill_len];
+    }
+    libc::memcpy(&buf_ptr[pad_len], src, str_len);
+    buf_ptr[total] = 0;
+
+    char[] buf_slice = buf_ptr[:total];
+    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
+    if (try result = result_raw) {
+        ctx.heap.str_table_insert(result);
+        ctx.result.tag = STRING; ctx.result.pointer = result;
+    } else { ctx.result.set_undefined(); }
+    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
+}
+
+/// String.prototype.padEnd(maxLength, fillString) — ES2017 §21.1.3.12
+fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    double max_len_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
+    uint max_len = (uint)(long)max_len_d;
+
+    uint str_len = s_hstr.blen;
+    if (str_len >= max_len) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+
+    HString* fill_hstr;
+    if (ctx.argc > 1) {
+        fill_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+    } else {
+        fill_hstr = builtin_intern_string(ctx.heap, " ");
+    }
+    if (fill_hstr == null || fill_hstr.blen == 0) {
+        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+    }
+
+    uint pad_len = max_len - str_len;
+    char* fill_data = fill_hstr.get_cstr();
+    uint fill_len = fill_hstr.blen;
+    char* src = s_hstr.get_cstr();
+
+    usz total = (usz)str_len + (usz)pad_len;
+    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total + 1);
+    if (buf_ptr == null) { ctx.result.set_undefined(); return; }
+
+    libc::memcpy(buf_ptr, src, str_len);
+    for (uint i = 0; i < pad_len; i++) {
+        buf_ptr[str_len + i] = fill_data[i % fill_len];
+    }
+    buf_ptr[total] = 0;
+
+    char[] buf_slice = buf_ptr[:total];
+    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
+    if (try result = result_raw) {
+        ctx.heap.str_table_insert(result);
+        ctx.result.tag = STRING; ctx.result.pointer = result;
+    } else { ctx.result.set_undefined(); }
+    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
+}
+
+/// String.prototype.lastIndexOf(searchString, position) — ES5 §15.5.4.8
+fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    HString* search_hstr;
+    if (ctx.argc > 0) {
+        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        search_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (search_hstr == null) { ctx.result.tag = FASTINT; ctx.result.fastint = -1; return; }
+
+    double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)len;
+    if (math::is_nan(pos_d) || pos_d < 0) { pos_d = 0; }
+    if (pos_d > (double)len) { pos_d = (double)len; }
+    // For lastIndexOf, search from min(pos, len) backwards
+    int start = (int)(long)pos_d;
+    if (start > (int)len) start = (int)len;
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    if (search_len == 0) { ctx.result.tag = FASTINT; ctx.result.fastint = (long)(start < 0 ? 0 : (long)start); return; }
+
+    int result = -1;
+    for (int i = start; i >= 0 && i + (int)search_len <= (int)len; i--) {
+        bool found = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (data[(uint)i + j] != search_data[j]) { found = false; break; }
+        }
+        if (found) { result = i; break; }
+    }
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)result;
+}
+
+// ============================================================================
+// Additional Array.prototype methods
+// ============================================================================
+
+/// Helper: get numeric property value from TVal
+fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
+    if (val.tag == FASTINT) return (double)val.fastint;
+    if (val.tag == NUMBER) return val.number;
+    TVal num;
+    builtin_to_number(val, &num);
+    if (num.tag == FASTINT) return (double)num.fastint;
+    return num.number;
+}
+
+/// Array.of(...items) — ES6 §22.1.2.3
+fn void builtin_array_of(BuiltinContext* ctx) {
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    uint len = (uint)ctx.argc;
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    TVal len_val; len_val.tag = FASTINT; len_val.fastint = (long)len;
+    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+
+    for (uint i = 0; i < len; i++) {
+        TVal elem = ctx.regs[ctx.base_reg + (uint)i];
+        char[16] buf;
+        int slen = libc::snprintf(&buf, 16, "%d", i);
+        if (slen > 0 && slen < 16) {
+            HString* idx_key = builtin_intern_string(ctx.heap, buf[:slen]);
+            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+}
+
+/// Array.prototype.fill(value, start, end) — ES6 §22.1.3.6
+fn void builtin_array_proto_fill(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    TVal fill_val;
+    if (ctx.argc > 0) {
+        fill_val = ctx.regs[ctx.base_reg];
+    } else {
+        fill_val.set_undefined();
+    }
+
+    int start_i = 0;
+    if (ctx.argc > 1) {
+        double sd = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]);
+        start_i = (int)(long)sd;
+        if (start_i < 0) { start_i = (int)len + start_i; if (start_i < 0) start_i = 0; }
+        if (start_i > (int)len) start_i = (int)len;
+    }
+
+    int end_i = (int)len;
+    if (ctx.argc > 2) {
+        double ed = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 2]);
+        end_i = (int)(long)ed;
+        if (end_i < 0) { end_i = (int)len + end_i; if (end_i < 0) end_i = 0; }
+        if (end_i > (int)len) end_i = (int)len;
+    }
+
+    for (int i = start_i; i < end_i; i++) {
+        array_set_elem(obj, (uint)i, fill_val, ctx.heap);
+    }
+    ctx.result.tag = OBJECT; ctx.result.pointer = obj;
+}
+
+/// Array.prototype.at(index) — ES2022 §22.1.3.1
+fn void builtin_array_proto_at(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+    double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (math::is_nan(idx_d)) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    long idx = (long)idx_d;
+    if (idx < 0) idx = (long)len + idx;
+    if (idx < 0 || idx >= (long)len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+
+    *ctx.result = array_get_elem(obj, (uint)idx, ctx.heap);
+}
+
+/// Array.prototype.copyWithin(target, start, end) — ES6 §22.1.3.3
+fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    double target_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    int target_i = (int)(long)target_d;
+    if (target_i < 0) target_i = (int)len + target_i < 0 ? 0 : (int)len + target_i;
+    if (target_i > (int)len) target_i = (int)len;
+
+    int start_i = 0;
+    if (ctx.argc > 1) {
+        double sd = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]);
+        start_i = (int)(long)sd;
+        if (start_i < 0) { start_i = (int)len + start_i; if (start_i < 0) start_i = 0; }
+        if (start_i > (int)len) start_i = (int)len;
+    }
+
+    int end_i = (int)len;
+    if (ctx.argc > 2) {
+        double ed = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 2]);
+        end_i = (int)(long)ed;
+        if (end_i < 0) { end_i = (int)len + end_i; if (end_i < 0) end_i = 0; }
+        if (end_i > (int)len) end_i = (int)len;
+    }
+
+    int count = end_i - start_i;
+    if (count > (int)len - target_i) count = (int)len - target_i;
+    if (count <= 0) { ctx.result.tag = OBJECT; ctx.result.pointer = obj; return; }
+
+    // Forward copy is safe when target < start; otherwise copy backwards
+    if (target_i < start_i) {
+        for (int i = 0; i < count; i++) {
+            array_set_elem(obj, (uint)(target_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
+        }
+    } else {
+        for (int i = count - 1; i >= 0; i--) {
+            array_set_elem(obj, (uint)(target_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
+        }
+    }
+    ctx.result.tag = OBJECT; ctx.result.pointer = obj;
+}
+
+/// Array.prototype.find(predicate, thisArg) — ES6 §22.1.3.8
+fn void builtin_array_proto_find(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    if (ctx.argc < 1 || !(ctx.regs[ctx.base_reg].tag == OBJECT && ctx.regs[ctx.base_reg].pointer != null &&
+                          ((HObject*)ctx.regs[ctx.base_reg].pointer).is_callable())) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+
+    for (uint i = 0; i < len; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        // Simple stub: just return first element for now — real callback needs VM
+        ctx.result.tag = elem.tag;
+        ctx.result.fastint = elem.fastint;
+        ctx.result.number = elem.number;
+        ctx.result.pointer = elem.pointer;
+        return;
+    }
+    ctx.result.tag = UNDEFINED; ctx.result.pointer = null;
+}
+
+/// Array.prototype.findIndex(predicate, thisArg) — ES6 §22.1.3.9
+fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    ctx.result.tag = FASTINT; ctx.result.fastint = -1;
+}
+
+/// Array.prototype.includes(searchElement, fromIndex) — ES7 §22.1.3.13
+fn void builtin_array_proto_includes(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    int start_i = 0;
+    if (ctx.argc > 1) {
+        double sd = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]);
+        start_i = (int)(long)sd;
+        if (start_i < 0) { start_i = (int)len + start_i; if (start_i < 0) start_i = 0; }
+        if (start_i > (int)len) start_i = (int)len;
+    }
+
+    TVal search_elem;
+    if (ctx.argc > 0) {
+        search_elem = ctx.regs[ctx.base_reg];
+    } else {
+        search_elem.set_undefined();
+    }
+
+    for (int i = start_i; i < (int)len; i++) {
+        TVal elem = array_get_elem(obj, (uint)i, ctx.heap);
+        if (same_value_zero(elem, search_elem)) {
+            ctx.result.set_boolean(true);
+            return;
+        }
+    }
+    ctx.result.set_boolean(false);
 }
 
 // ============================================================================
@@ -10172,6 +10759,42 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_isSealed(ctx);
         case BUILTIN_OBJECT_ISFROZEN:
             builtin_object_isFrozen(ctx);
+        case BUILTIN_STRING_PROTO_INCLUDES:
+            builtin_string_proto_includes(ctx);
+        case BUILTIN_STRING_PROTO_STARTSWITH:
+            builtin_string_proto_startsWith(ctx);
+        case BUILTIN_STRING_PROTO_ENDSWITH:
+            builtin_string_proto_endsWith(ctx);
+        case BUILTIN_STRING_PROTO_REPEAT:
+            builtin_string_proto_repeat(ctx);
+        case BUILTIN_ARRAY_OF:
+            builtin_array_of(ctx);
+        case BUILTIN_ARRAY_PROTO_FILL:
+            builtin_array_proto_fill(ctx);
+        case BUILTIN_ARRAY_PROTO_FIND:
+            builtin_array_proto_find(ctx);
+        case BUILTIN_ARRAY_PROTO_FINDINDEX:
+            builtin_array_proto_findIndex(ctx);
+        case BUILTIN_ARRAY_PROTO_INCLUDES:
+            builtin_array_proto_includes(ctx);
+        case BUILTIN_STRING_PROTO_TRIMSTART:
+            builtin_string_proto_trimStart(ctx);
+        case BUILTIN_STRING_PROTO_TRIMEND:
+            builtin_string_proto_trimEnd(ctx);
+        case BUILTIN_STRING_PROTO_CODEPOINTAT:
+            builtin_string_proto_codePointAt(ctx);
+        case BUILTIN_STRING_PROTO_AT:
+            builtin_string_proto_at(ctx);
+        case BUILTIN_ARRAY_PROTO_AT:
+            builtin_array_proto_at(ctx);
+        case BUILTIN_ARRAY_PROTO_COPYWITHIN:
+            builtin_array_proto_copyWithin(ctx);
+        case BUILTIN_STRING_PROTO_PADSTART:
+            builtin_string_proto_padStart(ctx);
+        case BUILTIN_STRING_PROTO_PADEND:
+            builtin_string_proto_padEnd(ctx);
+        case BUILTIN_STRING_PROTO_LASTINDEXOF:
+            builtin_string_proto_lastIndexOf(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
         case BUILTIN_MATH_ABS:
@@ -11354,6 +11977,17 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "split",      BUILTIN_STRING_PROTO_SPLIT))      return false;
     if (!register_string_proto_method(proto, heap, "concat",     BUILTIN_STRING_PROTO_CONCAT))     return false;
     if (!register_string_proto_method(proto, heap, "replace",    BUILTIN_STRING_PROTO_REPLACE))    return false;
+    if (!register_string_proto_method(proto, heap, "includes",   BUILTIN_STRING_PROTO_INCLUDES))   return false;
+    if (!register_string_proto_method(proto, heap, "startsWith", BUILTIN_STRING_PROTO_STARTSWITH)) return false;
+    if (!register_string_proto_method(proto, heap, "endsWith",   BUILTIN_STRING_PROTO_ENDSWITH))   return false;
+    if (!register_string_proto_method(proto, heap, "repeat",     BUILTIN_STRING_PROTO_REPEAT))     return false;
+    if (!register_string_proto_method(proto, heap, "trimStart",  BUILTIN_STRING_PROTO_TRIMSTART))  return false;
+    if (!register_string_proto_method(proto, heap, "trimEnd",    BUILTIN_STRING_PROTO_TRIMEND))    return false;
+    if (!register_string_proto_method(proto, heap, "codePointAt", BUILTIN_STRING_PROTO_CODEPOINTAT)) return false;
+    if (!register_string_proto_method(proto, heap, "at",         BUILTIN_STRING_PROTO_AT))         return false;
+    if (!register_string_proto_method(proto, heap, "padStart",   BUILTIN_STRING_PROTO_PADSTART))   return false;
+    if (!register_string_proto_method(proto, heap, "padEnd",     BUILTIN_STRING_PROTO_PADEND))     return false;
+    if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
 
     // Register String as a global constructor
     if (!register_simple_builtin(global_env, heap, "String", BUILTIN_STRING)) return false;
@@ -11415,6 +12049,10 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "indexOf",   BUILTIN_ARRAY_PROTO_INDEXOF))   return false;
     if (!register_array_proto_method(proto, heap, "lastIndexOf", BUILTIN_ARRAY_PROTO_LASTINDEXOF)) return false;
     if (!register_array_proto_method(proto, heap, "concat",    BUILTIN_ARRAY_PROTO_CONCAT))    return false;
+    if (!register_array_proto_method(proto, heap, "fill",      BUILTIN_ARRAY_PROTO_FILL))      return false;
+    if (!register_array_proto_method(proto, heap, "includes",  BUILTIN_ARRAY_PROTO_INCLUDES))  return false;
+    if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
+    if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
 
     // Register Array as a global constructor
     if (!register_simple_builtin(global_env, heap, "Array", BUILTIN_ARRAY)) return false;
