@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 77 (Array.of + Array.prototype.find/findIndex registration)
+**Last Updated:** Session 78 (Object.is, Object.hasOwn, Object.setPrototypeOf)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,371 |
 | Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 6,086 |
-| Currently failing (test262) | 24,285 |
-| Pass rate (of run tests) | 20.1% |
+| Currently passing (test262) | 6,152 |
+| Currently failing (test262) | 24,219 |
+| Pass rate (of run tests) | 20.3% |
 
 ## Refreshing test pass rate
 
@@ -29,9 +29,9 @@ Update the counts and pass rate after every implemented feature
 | 0-1: Core VM | 2,185 | 562 | 535 | 1,088 |
 | 1: Calling Convention | 426 | 26 | 316 | 84 |
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,499 | 5,479 | 788 |
+| 3: Object System | 7,766 | 1,565 | 5,413 | 788 |
 | 4: Error Handling | 402 | 56 | 282 | 64 |
-| 5: Built-in Constructors | 8,615 | 1,849 | 6,253 | 513 |
+| 5: Built-in Constructors | 8,615 | 1,915 | 6,187 | 513 |
 | 6: Prototype Methods | 4,713 | 605 | 3,802 | 306 |
 | 7: ES5 Features | 1,240 | 212 | 401 | 627 |
 | 8: ES5 Built-in Objects | 2,747 | 477 | 1,967 | 303 |
@@ -41,7 +41,7 @@ Update the counts and pass rate after every implemented feature
 | 15: Classes | 8,520 | 142 | 2,153 | 6,225 |
 | 17-20: Map/Set/Symbol/Promise | 1,588 | 162 | 823 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,371** | **6,078** | **24,293** | **11,616** |
+| **Overall** | **30,371** | **6,152** | **24,219** | **11,616** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 543 pass / 554 fail (skip: 1,088)**
@@ -91,7 +91,7 @@ Update the counts and pass rate after every implemented feature
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System
-**test262: 7,766 files — 1,343 pass / 5,635 fail (skip: 788)**
+**test262: 7,766 files — 1,565 pass / 5,413 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -117,7 +117,7 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 1,846 pass / 6,256 fail (skip: 513)**
+**test262: 8,615 files — 1,915 pass / 6,187 fail (skip: 513)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -172,7 +172,7 @@ Update the counts and pass rate after every implemented feature
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 472 pass / 1,972 fail (skip: 303)**
+**test262: 2,747 files — 477 pass / 1,967 fail (skip: 303)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -180,6 +180,9 @@ Update the counts and pass rate after every implemented feature
 | RegExp | ✅ (engine integrated + prototype chain wired, SyntaxError on invalid pattern/flags, .constructor on error prototypes — 144 test262 passing) |
 | Object.keys, getPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions, getOwnPropertyNames | ✅ (Session 67-68, 70) |
 | **Object.defineProperty** | **✅ (Session 69)** |
+| Object.is | ✅ (Session 78) |
+| Object.hasOwn | ✅ (Session 78) |
+| Object.setPrototypeOf | ✅ (Session 78) |
 
 ### Phase 9: Strict Mode — ✅ (Impl.)
 **test262: strict-mode tests — not yet quantified**
@@ -355,6 +358,7 @@ Update the counts and pass rate after every implemented feature
 | 75 | **Session 75: Number static methods** — Implemented `Number.isNaN()` (ES6 §20.1.2.4), `Number.isFinite()` (ES6 §20.1.2.2), `Number.isInteger()` (ES6 §20.1.2.3), and `Number.isSafeInteger()` (ES6 §20.1.2.5) as static methods on the Number constructor. No-coercion type checks per ES6 spec. New constants 191-194. Test262: Phase 5 +18 (1,684→1,702), overall **5,659 pass / 24,712 fail (18.6%)** — +53 new passing tests. |
 | 76 | **Session 76: String.fromCharCode + String constructor upgrade** — Upgraded String constructor from LIGHTFUNC to proper HObject (ObjClass.FUNCTION), following the same pattern as Number (Session 75). `String.prototype.constructor` now correctly points to the String object. Implemented `String.fromCharCode()` (ES5 §15.5.3.2) with ToUint16 conversion and UTF-8 encoding for non-BMP code units. New constant BUILTIN_STRING_FROMCHARCODE (217). Static method registered on String constructor object. Test262: Phase 0-1 +19 (543→562), Phase 1 +1 (25→26), Phase 3 +153 (1,343→1,496), Phase 5 +144 (1,702→1,846), Phase 6 +94 (509→603), Phase 7 +3 (209→212), Phase 8 +5 (472→477), overall **6,078 pass / 24,293 fail (20.0%)** — +419 new passing tests. |
 | 77 | **Session 77: Array.of + Array.prototype.find/findIndex registration** — Registered `Array.of()` (ES6 §22.1.2.3) as a static LIGHTFUNC method on the Array constructor. Implementation was already complete but not wired up. Also registered `Array.prototype.find` (ES6 §22.1.3.8) and `Array.prototype.findIndex` (ES6 §22.1.3.9) on Array.prototype (stub implementations — return first element / -1 without calling callback). Test262: Phase 3 +3 (1,496→1,499), Phase 5 +3 (1,846→1,849), Phase 6 +2 (603→605), overall **6,086 pass / 24,285 fail (20.1%)** — +8 new passing tests. |
+| 78 | **Session 78: Object.is, Object.hasOwn, Object.setPrototypeOf** — Implemented `Object.is()` (ES6 §19.1.2.10) using SameValue algorithm (NaN===NaN, +0!==-0). Implemented `Object.hasOwn()` (ES2022 §19.1.2.10) delegating to hasOwnProperty check. Implemented `Object.setPrototypeOf()` (ES2015 §19.1.2.19) with prototype chain mutation and TypeError on invalid args. Added `same_value()` function alongside existing `same_value_zero()`. New BUILTIN constants 218-220. Test262: Phase 3 +66 (1,499→1,565), Phase 5 +66 (1,849→1,915), overall **6,152 pass / 24,219 fail (20.3%)** — +66 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |

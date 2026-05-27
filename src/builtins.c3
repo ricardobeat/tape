@@ -241,6 +241,9 @@ const uint BUILTIN_MATH_CLZ32  = 214;
 const uint BUILTIN_MATH_IMUL   = 215;
 const uint BUILTIN_ARRAY_ISARRAY = 216;
 const uint BUILTIN_STRING_FROMCHARCODE = 217;
+const uint BUILTIN_OBJECT_IS           = 218;
+const uint BUILTIN_OBJECT_HASOWN       = 219;
+const uint BUILTIN_OBJECT_SETPROTOTYPEOF = 220;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -4982,7 +4985,145 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
     ctx.result.tag = OBJECT; ctx.result.pointer = target;
 }
 
-/// Object.prototype.toString — returns "[object Class]"
+// ============================================================================
+// Object.is — ES6 §19.1.2.10
+// ============================================================================
+/// Object.is(value1, value2) — SameValue comparison.
+/// Differs from === in two ways: NaN === NaN, and +0 !== -0.
+fn void builtin_object_is(BuiltinContext* ctx) {
+    if (ctx.argc < 2) {
+        // Missing args → undefined (per ES6 spec, both args required)
+        TVal undef; undef.set_undefined();
+        TVal undef2; undef2.set_undefined();
+        // With < 2 args, default is undefined === undefined → true
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = (ctx.argc == 0) ? true : same_value(ctx.regs[ctx.base_reg], undef2);
+        return;
+    }
+    TVal x = ctx.regs[ctx.base_reg];
+    TVal y = ctx.regs[ctx.base_reg + 1];
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = same_value(x, y);
+}
+
+// ============================================================================
+// Object.hasOwn — ES2022 §19.1.2.10
+// ============================================================================
+/// Object.hasOwn(obj, prop) — returns true if obj has own property prop.
+/// Equivalent to Object.prototype.hasOwnProperty.call(obj, prop).
+fn void builtin_object_hasOwn(BuiltinContext* ctx) {
+    if (ctx.argc < 2) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.hasOwn requires 2 arguments");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    TVal obj_val = ctx.regs[ctx.base_reg];
+    TVal prop_val = ctx.regs[ctx.base_reg + 1];
+    // ToObject on first argument — throw TypeError for null/undefined
+    if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err2 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj;
+    if (obj_val.tag == OBJECT) {
+        obj = (HObject*)obj_val.pointer;
+    } else {
+        // Primitive — wrap via ToObject (for now, return false)
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    HString* key = builtin_to_string(ctx.heap, &prop_val);
+    if (key == null) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    PropEntry*? entry = obj.find_prop(key);
+    if (try e = entry) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+    } else {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+    }
+}
+
+// ============================================================================
+// Object.setPrototypeOf — ES2015 §19.1.2.19
+// ============================================================================
+/// Object.setPrototypeOf(obj, proto) — sets the prototype of obj to proto.
+fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
+    if (ctx.argc < 2) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal obj_val = ctx.regs[ctx.base_reg];
+    TVal proto_val = ctx.regs[ctx.base_reg + 1];
+    // TypeError if obj is not an object (null/undefined/primitive)
+    if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    // TypeError if proto is not an object or null
+    if (proto_val.tag != NULL_VAL && proto_val.tag != OBJECT) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err2 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object or null");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    // Only set prototype on objects (not primitives)
+    if (obj_val.tag != OBJECT) {
+        ctx.result.tag = obj_val.tag;
+        ctx.result.fastint = obj_val.fastint;
+        return;
+    }
+    HObject* obj = (HObject*)obj_val.pointer;
+    if (proto_val.tag == NULL_VAL) {
+        obj.prototype = null;
+    } else {
+        obj.prototype = (HObject*)proto_val.pointer;
+    }
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.tag == OBJECT && this_val.pointer != null) {
@@ -8847,6 +8988,38 @@ fn bool same_value_zero(TVal a, TVal b) {
 }
 
 // ============================================================================
+// SameValue comparison (ES6 §7.2.9)
+// Used by Object.is.
+// Differs from SameValueZero in that +0 !== -0.
+// ============================================================================
+fn bool same_value(TVal a, TVal b) {
+    if (a.tag == b.tag) {
+        switch (a.tag) {
+            case UNDEFINED: return true;
+            case NULL_VAL:  return true;
+            case BOOLEAN:   return a.boolean == b.boolean;
+            case NUMBER:
+                if (math::is_nan(a.number) && math::is_nan(b.number)) return true;
+                // +0 !== -0: check if both are zero with different signs
+                if (a.number == 0.0 && b.number == 0.0) {
+                    return 1.0 / a.number == 1.0 / b.number;
+                }
+                return a.number == b.number;
+            case FASTINT:   return a.fastint == b.fastint;
+            case STRING:    return a.pointer == b.pointer;
+            case OBJECT:    return a.pointer == b.pointer;
+            default: return false;
+        }
+    }
+    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
+        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
+        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+        return av == bv;
+    }
+    return false;
+}
+
+// ============================================================================
 // Map helpers
 // ============================================================================
 
@@ -11374,6 +11547,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_values(ctx);
         case BUILTIN_OBJECT_ASSIGN:
             builtin_object_assign(ctx);
+        case BUILTIN_OBJECT_IS:
+            builtin_object_is(ctx);
+        case BUILTIN_OBJECT_HASOWN:
+            builtin_object_hasOwn(ctx);
+        case BUILTIN_OBJECT_SETPROTOTYPEOF:
+            builtin_object_setPrototypeOf(ctx);
         case BUILTIN_STRING_PROTO_INCLUDES:
             builtin_string_proto_includes(ctx);
         case BUILTIN_STRING_PROTO_STARTSWITH:
@@ -12123,6 +12302,30 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     assign_tv.tag = LIGHTFUNC;
     assign_tv.fastint = (long)BUILTIN_OBJECT_ASSIGN;
     obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.is — ES6 §19.1.2.10
+    HString* is_key = builtin_intern_string(heap, "is");
+    if (is_key == null) return false;
+    TVal is_tv;
+    is_tv.tag = LIGHTFUNC;
+    is_tv.fastint = (long)BUILTIN_OBJECT_IS;
+    obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.hasOwn — ES2022 §19.1.2.10
+    HString* hasown_static_key = builtin_intern_string(heap, "hasOwn");
+    if (hasown_static_key == null) return false;
+    TVal hasown_static_tv;
+    hasown_static_tv.tag = LIGHTFUNC;
+    hasown_static_tv.fastint = (long)BUILTIN_OBJECT_HASOWN;
+    obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.setPrototypeOf — ES2015 §19.1.2.19
+    HString* setproto_key = builtin_intern_string(heap, "setPrototypeOf");
+    if (setproto_key == null) return false;
+    TVal setproto_tv;
+    setproto_tv.tag = LIGHTFUNC;
+    setproto_tv.fastint = (long)BUILTIN_OBJECT_SETPROTOTYPEOF;
+    obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
