@@ -131,6 +131,53 @@ PHASES = [
         "label": "Phase 8: ES5 Built-in Objects",
         "dirs": [
             "built-ins/JSON", "built-ins/Date", "built-ins/RegExp",
+            "built-ins/parseInt", "built-ins/parseFloat",
+        ],
+    },
+    {
+        "label": "Phase 11: Arrow Functions & Templates",
+        "dirs": [
+            "language/expressions/arrow-function",
+            "language/expressions/template-literal",
+            "language/expressions/tagged-template",
+        ],
+    },
+    {
+        "label": "Phase 12-13: Destructuring & Spread",
+        "dirs": [
+            "language/destructuring",
+            "language/expressions/spread",
+        ],
+    },
+    {
+        "label": "Phase 14: for-of",
+        "dirs": [
+            "language/statements/for-of",
+        ],
+    },
+    {
+        "label": "Phase 15: Classes",
+        "dirs": [
+            "language/expressions/class",
+            "language/statements/class",
+            "language/expressions/super",
+        ],
+    },
+    {
+        "label": "Phase 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet",
+        "dirs": [
+            "built-ins/Map", "built-ins/Set",
+            "built-ins/Symbol",
+            "built-ins/Promise",
+            "built-ins/WeakMap", "built-ins/WeakSet",
+        ],
+    },
+    {
+        "label": "Phase 21: Generators",
+        "dirs": [
+            "language/expressions/yield",
+            "language/expressions/generators",
+            "language/statements/generators",
         ],
     },
 ]
@@ -141,12 +188,24 @@ PHASES = [
 
 UNSUPPORTED_PATTERN = re.compile(
     r"features:\s*\[.*\b(?:"
-    r"proxy|BigInt|generator|async|module|"
+    r"proxy|BigInt|async|module|"
     r"Reflect|SharedArrayBuffer|Atomics|Intl|"
     r"TypedArray|DataView|Float32Array|Float64Array|Int8Array|Int16Array|"
     r"Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|"
-    r"FinalizationRegistry|structured-clone|import\.meta|"
-    r"dynamic-import"
+    r"FinalizationRegistry|WeakRef|structured-clone|import\.meta|"
+    r"dynamic-import|"
+    # Class features not yet implemented
+    r"class-methods-private|class-static-methods-private|"
+    r"class-fields-private|class-fields-public|"
+    r"class-static-fields-private|class-static-fields-public|"
+    r"class-static-block|"
+    # Other unimplemented ES features
+    r"object-rest|explicit-resource-management|"
+    r"optional-chaining|logical-assignment|resizable-arraybuffer|"
+    r"array-grouping|upsert|set-methods|"
+    r"symbols-as-weakmap-keys|cross-realm|"
+    r"numeric-separator-literal|await-dictionary|"
+    r"Promise\.allSettled|Promise\.any"
     r")\b"
 )
 
@@ -269,7 +328,7 @@ class Worker:
 
 
 def build_phase_tests(phase_idx):
-    """Collect test files for a phase, applying skip filter."""
+    """Collect test files for a phase, applying skip filter. Recurses into subdirs."""
     phase = PHASES[phase_idx]
     tests = []
     skipped = 0
@@ -277,14 +336,15 @@ def build_phase_tests(phase_idx):
         full = os.path.join(TEST262_DIR, rel_dir)
         if not os.path.isdir(full):
             continue
-        for entry in os.listdir(full):
-            if not entry.endswith(".js"):
-                continue
-            path = os.path.join(full, entry)
-            if should_skip(path):
-                skipped += 1
-                continue
-            tests.append(path)
+        for dirpath, _dirnames, filenames in os.walk(full):
+            for entry in filenames:
+                if not entry.endswith(".js"):
+                    continue
+                path = os.path.join(dirpath, entry)
+                if should_skip(path):
+                    skipped += 1
+                    continue
+                tests.append(path)
     return tests, skipped
 
 

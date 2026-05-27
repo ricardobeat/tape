@@ -298,7 +298,7 @@ Update the counts and pass rate after every implemented feature
 | `new.target` meta-property (NEWTARGET opcode) | ✅ |
 | `is_constructable` flag propagation | ✅ |
 | Default derived constructor | 🚫 Deferred |
-| Computed property names | 🚫 Deferred |
+| Computed property names | ✅ (Session 66) |
 | Getters/setters | ✅ (Session 65) |
 | Static field initializers | 🚫 Deferred |
 | Private fields/methods | 🚫 Deferred |
@@ -384,3 +384,4 @@ Update the counts and pass rate after every implemented feature
 ||| 63 | **VM speed: code_end hoisting + dead store removal** — Hoisted `code_end` pointer computation out of every inner-loop instruction into a local variable, eliminating one redundant address addition per bytecode dispatch cycle. Also removed a dead `func_slot` assignment in the CALL ECMAScript path (was written but never read after `ensure_valstack`). Test262: no regressions (phase 0-1: 441 pass with 7 pre-existing timeouts).|
 ||| 64 | **VM speed: @inline annotations + get_prop_with_proto inlining** — Added `@inline` to hot-path flag accessors: `HObject.is_callable()/is_constructable()/is_bound()`, `CompiledFunction.is_arrow()/is_generator()/is_async()/is_constructable()/uses_arguments()/has_direct_eval()/has_rest()/is_strict()`, and all `TVal.set_*()` methods. Inlined `get_prop_with_proto` calls in all GETPROP branches to eliminate function call + TVal return copy overhead. All tests pass with no regressions.|
 ||| 65 | **Phase 15: Getters/setters + NEW_OBJ curr_pc fix** — Implemented getter/setter support for class bodies and object literals. Added `AccessorResult` struct and `find_accessor_proto()` to walk prototype chain for accessor properties. GETPROP handler checks for accessor before data property lookup; PUTPROP checks for setter before direct write. `invoke_getter()` sets up ECMAScript call frame for getter with proper `this` binding. INITGET/INITSET opcode handlers define accessor properties. Compiler parses `get prop(){}` / `set prop(v){}` in class bodies and object literals. **Bug fix**: NEW_OBJ missing `act.curr_pc = curr_pc` (from Session 62 removal) caused infinite loop on constructor return. Test262: 1,629 pass. All 102 local tests pass.|
+||| 66 | **Phase 15: Computed property names** — Implemented computed property names for object literals (data, methods, getters, setters) and class bodies (methods, getters, setters, static). Compiled key expressions as 0-arg inner functions via `compile_key_expr()`, deferred evaluation via CLOSURE+LDTHIS+CALL at method-install time. Removed `computed-property-names` from test262 skip lists. 17/17 local tests pass. 11/48 test262 computed-property-name tests pass (37 fail due to pre-existing `new X().prop` compiler bug).|

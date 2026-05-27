@@ -2149,6 +2149,7 @@ struct ClassMethod {
     bool   is_static;
     bool   is_getter;
     bool   is_setter;
+    uint   computed_key_inner_idx;  // MAX_INNER_FUNCS = not computed
 }
 
 /// Create a default constructor CompiledFunction without using the lexer.
@@ -2345,7 +2346,28 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         bool is_getter = false;
         bool is_setter = false;
 
-        if (self.check(TokenType.IDENTIFIER)) {
+        // Check for computed key [expr]
+        bool has_computed_key = false;
+        uint computed_key_inner_idx = MAX_INNER_FUNCS;
+
+        if (self.check(TokenType.LBRACKET)) {
+            // Computed property name: [expr]
+            self.advance()!; // consume `[`
+            has_computed_key = true;
+
+            // Compile key expression as a 0-arg inner function
+            CompiledFunction* key_func = self.compile_key_expr()!;
+            self.expect(TokenType.RBRACKET)!;
+
+            if (self.inner_func_count < MAX_INNER_FUNCS) {
+                computed_key_inner_idx = self.inner_func_count;
+                self.inner_funcs[computed_key_inner_idx] = key_func;
+                self.inner_func_count++;
+            }
+
+            // Still need a method name for compile_inner_function (used as debug name)
+            method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+        } else if (self.check(TokenType.IDENTIFIER)) {
             method_name = self.advance()!;
             // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
             if ((method_name.str_value.len == 3
@@ -2362,11 +2384,22 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                     is_getter = (method_name.str_value[0] == 'g');
                     is_setter = !is_getter;
                     // Parse the actual property name
-                    if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)) {
+                    if (self.check(TokenType.LBRACKET)) {
+                        // Computed getter/setter key
+                        self.advance()!; // consume `[`
+                        has_computed_key = true;
+                        CompiledFunction* accessor_key_func = self.compile_key_expr()!;
+                        self.expect(TokenType.RBRACKET)!;
+                        if (self.inner_func_count < MAX_INNER_FUNCS) {
+                            computed_key_inner_idx = self.inner_func_count;
+                            self.inner_funcs[computed_key_inner_idx] = accessor_key_func;
+                            self.inner_func_count++;
+                        }
+                        method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+                    } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)) {
                         method_name = self.advance()!;
-                    } else if (self.check(TokenType.LBRACKET)) {
-                        // Computed property name — skip for now
-                        return COMPILE_ERROR~;
+                    } else if (self.check(TokenType.NUMBER)) {
+                        method_name = self.advance()!;
                     } else {
                         return COMPILE_ERROR~;
                     }
@@ -2388,8 +2421,9 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             }
         } else if (self.check(TokenType.STRING)) {
             method_name = self.advance()!;
+        } else if (self.check(TokenType.NUMBER)) {
+            method_name = self.advance()!;
         } else {
-            // Could be getter/setter — skip for now
             return COMPILE_ERROR~;
         }
 
@@ -2428,6 +2462,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             methods[method_count].is_static = is_static;
             methods[method_count].is_getter = is_getter;
             methods[method_count].is_setter = is_setter;
+            methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
             method_count++;
         }
     }
@@ -2482,9 +2517,24 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)method_reg, mi_idx));
 
         ushort target_reg = methods[mi].is_static ? ctor_reg : proto_reg;
-        uint key_idx = self.add_string_constant(methods[mi].name);
-        ushort key_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+
+        // Get the key register — either from computed key expression or static name
+        ushort key_reg;
+        if (methods[mi].computed_key_inner_idx != MAX_INNER_FUNCS) {
+            // Computed key: CLOSURE + CALL to evaluate key expression
+            // CALL convention: CALL result_reg, callee_reg, nargs
+            // this must be at callee_reg + 1, args at callee_reg + 2, ...
+            key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)key_reg, methods[mi].computed_key_inner_idx));
+            ushort this_slot = self.alloc_reg(); // must be key_reg + 1
+            self.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_slot, 0));
+            self.emit_abc(Opcode.CALL, (uint)key_reg, (uint)key_reg, 0);
+            self.free_reg(this_slot);
+        } else {
+            uint key_idx = self.add_string_constant(methods[mi].name);
+            key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+        }
 
         if (methods[mi].is_getter) {
             self.emit_abc(Opcode.INITGET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
@@ -2677,6 +2727,26 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
 
     CompiledFunction* func = def_ctx.finish()!;
 
+    return func;
+}
+
+/// Compile a computed property key expression into a 0-arg inner function.
+/// The caller must have already consumed the `[` token.
+/// This function compiles the expression and `]` is consumed by the caller after.
+fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
+    CompilerContext key_ctx;
+    key_ctx.init(self.lexer, self.heap);
+    key_ctx.is_strict = true;
+    key_ctx.lexer.set_strict(true);
+    key_ctx.in_class_body = self.in_class_body;
+    key_ctx.has_super_binding = self.has_super_binding;
+
+    key_ctx.emit_simple(Opcode.PUSH_LEX);
+    ushort expr_reg = key_ctx.assignment_expr()!;
+    key_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+    key_ctx.emit_simple(Opcode.POP_LEX);
+
+    CompiledFunction* func = key_ctx.finish()!;
     return func;
 }
 
@@ -4493,28 +4563,32 @@ fn ushort? CompilerContext.object_literal(&self) {
 
                 if (is_obj_getter || is_obj_setter) {
                     // Parse the actual property name
-                    Token prop_tok;
                     TokenType prop_tt = self.peek_type();
-                    if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING) {
-                        prop_tok = self.advance()!;
-                    } else if (prop_tt == TokenType.NUMBER) {
-                        prop_tok = self.advance()!;
-                    } else if (prop_tt == TokenType.LBRACKET) {
-                        // Computed property — skip for now
-                        return COMPILE_ERROR~;
+                    if (prop_tt == TokenType.LBRACKET) {
+                        // Computed getter/setter key: `get [expr]() {}` / `set [expr](v) {}`
+                        self.advance()!; // consume `[`
+                        key_reg = self.assignment_expr()!;
+                        self.expect(TokenType.RBRACKET)!;
                     } else {
-                        return COMPILE_ERROR~;
-                    }
+                        Token prop_tok;
+                        if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING) {
+                            prop_tok = self.advance()!;
+                        } else if (prop_tt == TokenType.NUMBER) {
+                            prop_tok = self.advance()!;
+                        } else {
+                            return COMPILE_ERROR~;
+                        }
 
-                    // Emit key constant
-                    uint prop_key_idx;
-                    if (prop_tt == TokenType.NUMBER) {
-                        prop_key_idx = self.add_number_constant(prop_tok.num_value);
-                    } else {
-                        prop_key_idx = self.add_string_constant(prop_tok.str_value);
+                        // Emit key constant
+                        uint prop_key_idx;
+                        if (prop_tt == TokenType.NUMBER) {
+                            prop_key_idx = self.add_number_constant(prop_tok.num_value);
+                        } else {
+                            prop_key_idx = self.add_string_constant(prop_tok.str_value);
+                        }
+                        key_reg = self.alloc_reg();
+                        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, prop_key_idx));
                     }
-                    key_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, prop_key_idx));
 
                     // Compile the getter/setter function body
                     ushort accessor_reg = self.function_expr_body()!;
