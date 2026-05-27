@@ -126,21 +126,23 @@ fn int run_worker_loop() {
     // Read test paths from stdin line by line
     char[4096] buf;
     while (libc::fgets(&buf[0], 4096, libc::stdin()) != null) {
-        // Strip trailing newline
-        usz len = libc::strlen((ZString)&buf[0]);
-        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) { len--; }
-        buf[len] = 0;
-        if (len == 0) { continue; }
+        @pool() {
+            // Strip trailing newline
+            usz len = libc::strlen((ZString)&buf[0]);
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) { len--; }
+            buf[len] = 0;
+            if (len == 0) { continue; }
 
-        char[] path = buf[:len];
-        int rc = run_test_fresh_with_harness(path, assert_src);
+            char[] path = buf[:len];
+            int rc = run_test_fresh_with_harness(path, assert_src);
 
-        if (rc == 0) {
-            io::printfn("PASS %s", (String)path);
-        } else {
-            io::printfn("FAIL %s", (String)path);
-        }
-        libc::fflush(libc::stdout());
+            if (rc == 0) {
+                io::printfn("PASS %s", (String)path);
+            } else {
+                io::printfn("FAIL %s", (String)path);
+            }
+            libc::fflush(libc::stdout());
+        };
     }
     return 0;
 }
@@ -174,18 +176,20 @@ fn int main(String[] args) {
     int fail = 0;
 
     for (int i = 0; i < num; i++) {
-        char[] tp = entries[i].path[:entries[i].len];
-        bool report = (num <= 20) || (i % 100 == 0) || (i == num - 1);
+        @pool() {
+            char[] tp = entries[i].path[:entries[i].len];
+            bool report = (num <= 20) || (i % 100 == 0) || (i == num - 1);
 
-        int rc = run_test_fresh(tp);
-        if (rc == 0) { pass++; } else { fail++; }
+            int rc = run_test_fresh(tp);
+            if (rc == 0) { pass++; } else { fail++; }
 
-        if (report) {
-            io::printfn("%s  %s", rc == 0 ? "PASS" : "FAIL", (String)tp);
-        }
-        if ((i + 1) % 500 == 0 || i == num - 1) {
-            io::eprintfn("[%d/%d] pass=%d fail=%d", i + 1, num, pass, fail);
-        }
+            if (report) {
+                io::printfn("%s  %s", rc == 0 ? "PASS" : "FAIL", (String)tp);
+            }
+            if ((i + 1) % 500 == 0 || i == num - 1) {
+                io::eprintfn("[%d/%d] pass=%d fail=%d", i + 1, num, pass, fail);
+            }
+        };
     }
 
     io::printfn("---");
