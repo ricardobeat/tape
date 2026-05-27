@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 71
+**Last Updated:** Session 72 (memory leak fix + full re-run)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -8,10 +8,11 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| ES5-relevant tests (approx) | ~26,351 |
-| Actually runnable (ES5, no hangs) | ~5,000 |
-| Currently passing (test262) | 1,645 |
-| Pass rate | 3.1% (of 53,568) |
+| Tests run (phases 0-21) | 30,371 |
+| Skipped (unsupported features) | 11,616 |
+| Currently passing (test262) | 5,464 |
+| Currently failing (test262) | 24,907 |
+| Pass rate (of run tests) | 18.0% |
 
 ## Refreshing test pass rate
 
@@ -23,8 +24,27 @@ Update the counts and pass rate after every implemented feature
 
 ## Per-Phase Status
 
-### Phase 0-1: Core VM — ✅ (Impl.)
-**test262: 1,686 files — 447 pass / 502 fail**
+| Phase | Total | Pass | Fail | Skip |
+|-------|-------|------|------|------|
+| 0-1: Core VM | 2,185 | 543 | 554 | 1,088 |
+| 1: Calling Convention | 426 | 25 | 317 | 84 |
+| 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
+| 3: Object System | 7,766 | 1,343 | 5,635 | 788 |
+| 4: Error Handling | 402 | 56 | 282 | 64 |
+| 5: Built-in Constructors | 8,615 | 1,608 | 6,494 | 513 |
+| 6: Prototype Methods | 4,713 | 443 | 3,964 | 306 |
+| 7: ES5 Features | 1,240 | 209 | 404 | 627 |
+| 8: ES5 Built-in Objects | 2,747 | 472 | 1,972 | 303 |
+| 11: Arrow/Templates | 427 | 60 | 227 | 140 |
+| 12-13: Destructuring | 19 | 0 | 17 | 2 |
+| 14: for-of | 751 | 3 | 562 | 186 |
+| 15: Classes | 8,520 | 142 | 2,153 | 6,225 |
+| 17-20: Map/Set/Symbol/Promise | 1,588 | 162 | 823 | 603 |
+| 21: Generators | 619 | 6 | 483 | 130 |
+| **Overall** | **30,371** | **5,464** | **24,907** | **11,616** |
+
+### Phase 0-1: Core VM
+**test262: 2,185 files — 543 pass / 554 fail (skip: 1,088)**
 | Component | Status |
 |---|---|
 | TVal tagged values | ✅ |
@@ -35,8 +55,8 @@ Update the counts and pass rate after every implemented feature
 | VM execution loop | ✅ |
 | Built-in print/console.log | ✅ |
 
-### Phase 1: Calling Convention & Closures — ✅ (Impl.)
-**test262: 231 files — 25 pass / 152 fail (skip: 54)**
+### Phase 1: Calling Convention & Closures
+**test262: 426 files — 25 pass / 317 fail (skip: 84)**
 | Component | Status |
 |---|---|
 | Register-based call convention | ✅ |
@@ -44,8 +64,8 @@ Update the counts and pass rate after every implemented feature
 | CLOSURE with env capture | ✅ |
 | Nested calls | ✅ |
 
-### Phase 2: Basic Operators — ✅ (Impl.)
-**test262: 1,593 files — 391 pass / 863 fail (skip: 339)**
+### Phase 2: Basic Operators
+**test262: 1,969 files — 392 pass / 1,020 fail (skip: 557)**
 | Component | Status |
 |---|---|
 | Addition (+) | ✅ |
@@ -70,8 +90,8 @@ Update the counts and pass rate after every implemented feature
 | NaN/Infinity globals | ✅ |
 | NaN semantics | ✅ |
 
-### Phase 3: Object System — ✅ (Impl.)
-**test262: 521 files — 99 pass / 366 fail (skip: 56)**
+### Phase 3: Object System
+**test262: 7,766 files — 1,343 pass / 5,635 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -83,8 +103,8 @@ Update the counts and pass rate after every implemented feature
 | `new` operator | ✅ |
 | Member LHS assignment | ✅ |
 
-### Phase 4: Error Handling & References — ✅ (Impl.)
-**test262: 142 files — 45 pass / 67 fail (skip: 30)**
+### Phase 4: Error Handling & References
+**test262: 402 files — 56 pass / 282 fail (skip: 64)**
 | Component | Status |
 |---|---|
 | Error constructors | ✅ |
@@ -96,8 +116,8 @@ Update the counts and pass rate after every implemented feature
 | Catcher chain with activation unwinding | ✅ |
 | FINALLY block support | ✅ |
 
-### Phase 5: Built-in Constructors — ✅ COMPLETE
-**test262: 527 files — 195 pass / 235 fail (skip: 97)**
+### Phase 5: Built-in Constructors
+**test262: 8,615 files — 1,608 pass / 6,494 fail (skip: 513)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -110,8 +130,8 @@ Update the counts and pass rate after every implemented feature
 | Array constructor | ✅ |
 | Function constructor | ✅ |
 
-### Phase 6: Built-in Prototype Methods — ✅ (Impl.)
-**test262: 54 files — 9 pass / 45 fail**
+### Phase 6: Built-in Prototype Methods
+**test262: 4,713 files — 443 pass / 3,964 fail (skip: 306)**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -121,8 +141,8 @@ Update the counts and pass rate after every implemented feature
 | Boolean.prototype | ✅ |
 | Function.prototype | ✅ |
 
-### Phase 7: Remaining ES5 Features — ✅ (Impl.)
-**test262: runnable subset — 130 pass / 109 fail (skip: 305)**
+### Phase 7: Remaining ES5 Features
+**test262: 1,240 files — 209 pass / 404 fail (skip: 627)**
 | Feature | Files | Pass | Fail |
 |---|---|---|---|
 | instanceof | 43 | 16 | 27 |
@@ -146,8 +166,8 @@ Update the counts and pass rate after every implemented feature
 | with statement | ✅ |
 | eval | ✅ |
 
-### Phase 8: ES5 Built-in Objects — ✅ ~100%
-**test262: 572 files — 328 pass / 244 fail (skip: 0)**
+### Phase 8: ES5 Built-in Objects
+**test262: 2,747 files — 472 pass / 1,972 fail (skip: 303)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -189,9 +209,8 @@ Update the counts and pass rate after every implemented feature
 | is_captured shadowing detection (GETVAR across scope boundaries) | ✅ |
 | for-in/for-of with let/const | 🚫 Deferred |
 
-### Phase 11: ES6+ — 🚧 Arrow Functions ✅, Template Literals ✅, Default Parameters ✅, Rest Parameters ✅
-**test262: arrow-function tests — not yet quantified**
-**test262: template-literal tests — 6/11 passing (tagged templates now implemented; remaining failures due to object ToString VM limitation)**
+### Phase 11: ES6+ — Arrow Functions, Templates, Default/Rest Parameters
+**test262: 427 files — 60 pass / 227 fail (skip: 140)**
 ||  | | _Tagged templates now implemented (Session 45); remaining test failures due to unrelated VM limitations._ |
 || Component | Status |
 ||---|---|
@@ -221,7 +240,9 @@ Update the counts and pass rate after every implemented feature
 || Generators | ✅ (Phase 21) |
 
 
-### Phase 20: ES6+ — Promise ✅
+### Phase 20: ES6+ — Promise
+**test262: 1,588 files — 162 pass / 823 fail (skip: 603)**
+*(includes Map, Set, Symbol, WeakMap, WeakSet)*
 || Component | Status |
 ||---|---|
 || Promise constructor (new Promise(executor)) | ✅ |
@@ -238,8 +259,8 @@ Update the counts and pass rate after every implemented feature
 || Async microtask scheduling | 🚫 Deferred |
 
 
-### Phase 12: ES6+ — Destructuring ✅
-**test262: not yet quantified**
+### Phase 12-13: Destructuring & Spread
+**test262: 19 files — 0 pass / 17 fail (skip: 2)**
 || Component | Status |
 ||---|---|
 || Array destructuring (`var [a, b] = expr`) | ✅ |
@@ -256,7 +277,6 @@ Update the counts and pass rate after every implemented feature
 || Computed property keys in object patterns | 🚫 Deferred |
 
 ### Phase 13: ES6+ — Spread Operator ✅
-**test262: not yet quantified**
 ||| Component | Status |
 ||---|---|
 ||| Array literal spread (`[...arr, x]`) | ✅ |
@@ -270,8 +290,8 @@ Update the counts and pass rate after every implemented feature
 ||| Spread before non-spread in calls | 🚫 Deferred |
 ||| Object spread (`{...obj}`) | 🚫 Deferred |
 
-### Phase 14: ES6+ — for-of Loop ✅
-**test262: not yet quantified**
+### Phase 14: ES6+ — for-of Loop
+**test262: 751 files — 3 pass / 562 fail (skip: 186)**
 ||| Component | Status |
 ||---|---|
 ||| `var` for-of | ✅ (Phase 14) |
@@ -284,8 +304,8 @@ Update the counts and pass rate after every implemented feature
 ||| Iterator protocol | 🚫 Deferred (uses .length) |
 ||| for-of in for-in | 🚫 Deferred |
 
-### Phase 15: ES6+ — Classes ✅
-**test262: not yet quantified**
+### Phase 15: ES6+ — Classes
+**test262: 8,520 files — 142 pass / 2,153 fail (skip: 6,225)**
 | Component | Status |
 |---|---|
 | Class declarations (`class Name { }`) | ✅ |
@@ -307,8 +327,7 @@ Update the counts and pass rate after every implemented feature
 | `extends null` | 🚫 Deferred |
 
 
-### Phase 16: ES6+ — Nested Templates ✅
-**test262: not yet quantified**
+### Phase 16: ES6+ — Nested Templates
 ||| Component | Status |
 |---|---|
 ||| Nested template literals (lexer stack) | ✅ |
@@ -317,11 +336,15 @@ Update the counts and pass rate after every implemented feature
 ||| Triple+ nesting levels | ✅ |
 ||| Object literals in nested expressions | ✅ |
 
+### Phase 21: ES6+ — Generators
+**test262: 619 files — 6 pass / 483 fail (skip: 130)**
+
 ## Session History
 
 | Session | Key Features |
 |---|---|
 | 1 | Core VM, calling convention, closures, basic comparisons |
+| 72 | **Memory leak fix**: `Heap.destroy` now frees HString objects in the string table and CompiledFunction objects. Full test262 re-run: **5,464 pass / 24,907 fail (18.0%)** |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |

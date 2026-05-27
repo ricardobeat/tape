@@ -3,6 +3,7 @@ module duktape::heap;
 import duktape::types;
 import duktape::hstring;
 import duktape::hobject;
+import duktape::bytecode;
 import std::io;
 import libc;
 
@@ -185,6 +186,12 @@ struct Heap {
     uint      gc_obj_cap;        /// Allocated capacity
     uint      gc_obj_count;      /// Number of live objects
 
+    // CompiledFunction tracking — growable array of all CompiledFunction*
+    // allocated through the compiler.  Freed in Heap.destroy.
+    void**    compiled_funcs;    /// Array of CompiledFunction* pointers
+    uint      compiled_func_cap; /// Allocated capacity
+    uint      compiled_func_count; /// Number of tracked entries
+
     // GC root registration (pointers to always-reachable HeapHeader*)
     void*[GC_MAX_ROOTS] gc_roots;
     uint                gc_root_count;
@@ -301,8 +308,30 @@ fn void Heap.destroy(&self) {
     libc::free(self.gc_objects);
     self.gc_objects = null;
 
-    // Free the string table array
+    // Free all tracked CompiledFunction objects and their sub-arrays.
+    if (self.compiled_funcs != null) {
+        for (uint i = 0; i < self.compiled_func_count; i++) {
+            bytecode::CompiledFunction* cf = (bytecode::CompiledFunction*)self.compiled_funcs[i];
+            if (cf != null) {
+                if (cf.code != null) { libc::free(cf.code); }
+                if (cf.constants != null) { libc::free(cf.constants); }
+                if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
+                if (cf.line_table != null) { libc::free(cf.line_table); }
+                libc::free(cf);
+            }
+        }
+        libc::free(self.compiled_funcs);
+        self.compiled_funcs = null;
+    }
+
+    // Free all interned HStrings in the string table before freeing the table itself
     if (self.str_table != null) {
+        for (uint i = 0; i < self.str_table_size; i++) {
+            hstring::HString* s = self.str_table[i];
+            if (s != null) {
+                hstring::hstring_free(s);
+            }
+        }
         self.free_func(self.heap_udata, self.str_table);
         self.str_table = null;
     }
@@ -311,6 +340,29 @@ fn void Heap.destroy(&self) {
     FreeFunc    ffn   = self.free_func;
     void*       udata = self.heap_udata;
     ffn(udata, self);
+}
+
+// ============================================================================
+// CompiledFunction tracking
+// ============================================================================
+
+/**
+ * Register a CompiledFunction* for cleanup when the heap is destroyed.
+ * The compiler allocates CompiledFunctions via libc::malloc and they are not
+ * tracked by the GC object array, so we need a separate list.
+ */
+fn void Heap.track_compiled_func(&self, void* cf) {
+    if (cf == null) { return; }
+    if (self.compiled_func_count >= self.compiled_func_cap) {
+        uint new_cap = self.compiled_func_cap == 0 ? 64 : self.compiled_func_cap * 2;
+        usz new_bytes = (usz)new_cap * void*::size;
+        void* new_arr = libc::realloc(self.compiled_funcs, new_bytes);
+        if (new_arr == null) { return; }
+        self.compiled_funcs = (void**)new_arr;
+        self.compiled_func_cap = new_cap;
+    }
+    self.compiled_funcs[self.compiled_func_count] = cf;
+    self.compiled_func_count++;
 }
 
 // ============================================================================

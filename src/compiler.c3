@@ -381,6 +381,10 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         func.num_formals = self.num_args;
     }
 
+    // Track the CompiledFunction for cleanup when the heap is destroyed
+    heap::Heap* hp = (heap::Heap*)self.heap;
+    hp.track_compiled_func(raw);
+
     return func;
 }
 
@@ -2476,6 +2480,9 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             return COMPILE_ERROR~;
         }
         CompiledFunction* ctor_func = ctor_func_raw;
+        // Track for heap cleanup
+        heap::Heap* hp = (heap::Heap*)self.heap;
+        hp.track_compiled_func((void*)ctor_func);
         if (self.inner_func_count < MAX_INNER_FUNCS) {
             ctor_inner_idx = self.inner_func_count;
             self.inner_funcs[ctor_inner_idx] = ctor_func;
