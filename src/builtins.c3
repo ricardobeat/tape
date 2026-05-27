@@ -188,6 +188,11 @@ const uint BUILTIN_GENERATOR_PROTO_NEXT      = 154;
 const uint BUILTIN_GENERATOR_PROTO_THROW     = 155;
 const uint BUILTIN_GENERATOR_PROTO_RETURN    = 156;
 const uint BUILTIN_OBJECT_KEYS               = 157;
+const uint BUILTIN_OBJECT_GETPROTOTYPEOF     = 158;
+const uint BUILTIN_OBJECT_ISEXTENSIBLE       = 159;
+const uint BUILTIN_OBJECT_PREVENTEXTENSIONS  = 160;
+
+const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR = 161;
 
 struct BuiltinContext {
     void* vm;
@@ -2471,6 +2476,350 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
     ctx.result.tag = OBJECT;
     ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Object.getPrototypeOf — ES5 §15.2.3.2
+// ============================================================================
+/// Returns the [[Prototype]] of an object. Throws TypeError if argument is
+/// not an object (null or undefined).
+fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        // Throw TypeError: Object.getPrototypeOf requires an argument
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf requires a value");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    if (arg.tag != OBJECT) {
+        // Throw TypeError for null/undefined/primitives
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err2 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf called on non-object");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj = (HObject*)arg.pointer;
+    HObject* proto = obj.prototype;
+    if (proto == null) {
+        ctx.result.set_null();
+        return;
+    }
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = proto;
+}
+
+// ============================================================================
+// Object.isExtensible — ES5 §15.2.3.13
+// ============================================================================
+/// Returns true if the object is extensible (can have new properties added).
+/// Throws TypeError if argument is not an object.
+fn void builtin_object_isExtensible(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    if (arg.tag != OBJECT) {
+        // Throw TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.isExtensible called on non-object");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj = (HObject*)arg.pointer;
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = obj.is_extensible();
+}
+
+// ============================================================================
+// Object.preventExtensions — ES5 §15.2.3.10
+// ============================================================================
+/// Makes an object non-extensible (prevents adding new properties).
+/// Returns the object itself. Throws TypeError if argument is not an object.
+fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        // Throw TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions requires a value");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    if (arg.tag != OBJECT) {
+        // Throw TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err2 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions called on non-object");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj = (HObject*)arg.pointer;
+    obj.flags.extensible = false;
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = obj;
+}
+
+// ============================================================================
+// Object.getOwnPropertyDescriptor — ES5 §15.2.3.3
+// ============================================================================
+/// Returns a property descriptor for an own property of the given object.
+/// Throws TypeError if first argument is not an object.
+fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg0 = ctx.regs[ctx.base_reg];
+    if (arg0.tag != OBJECT) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyDescriptor called on non-object");
+        TVal msg_tv;
+        msg_tv.tag = STRING;
+        msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT;
+        ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj = (HObject*)arg0.pointer;
+
+    // Resolve the property key (second argument)
+    if (ctx.argc < 2) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal key_val = ctx.regs[ctx.base_reg + 1];
+    void* key = null;
+    char[64] key_buf;
+    if (key_val.tag == STRING) {
+        key = key_val.pointer;
+    } else if (key_val.tag == FASTINT) {
+        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.fastint);
+        if (len < 0 || len >= 64) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+        if (catch err2 = key_str) {
+            ctx.result.set_undefined();
+            return;
+        }
+        ctx.heap.str_table_insert(key_str);
+        key = key_str;
+    } else if (key_val.tag == NUMBER) {
+        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.number);
+        if (len < 0 || len >= 64) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+        if (catch err3 = key_str) {
+            ctx.result.set_undefined();
+            return;
+        }
+        ctx.heap.str_table_insert(key_str);
+        key = key_str;
+    } else {
+        // For other types (boolean, null, undefined), just return undefined
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Look up own property (not prototype chain - don't fall through to array_part
+    // unless the key matches a numeric index and this is an Array)
+    int idx = obj.find_prop_idx(key);
+    if (idx < 0) {
+        // Check dense array part if key is a string representing a valid index
+        HString* key_str = (HString*)key;
+        char[] kd = key_str.get_data();
+        bool is_numeric = true;
+        uint arr_idx = 0;
+        for (usz i = 0; i < kd.len; i++) {
+            if (kd[i] < '0' || kd[i] > '9') {
+                is_numeric = false;
+                break;
+            }
+            arr_idx = arr_idx * 10 + (uint)(kd[i] - '0');
+        }
+        if (is_numeric && kd.len > 0 && kd.len <= 10 && arr_idx < obj.array_size) {
+            TVal av = obj.array_part[arr_idx];
+            if (av.tag == UNDEFINED) {
+                ctx.result.set_undefined();
+                return;
+            }
+            // Build a data descriptor
+            HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+            if (catch err5 = desc_raw) {
+                ctx.result.set_undefined();
+                return;
+            }
+            HObject* desc = desc_raw;
+            desc.prototype = ctx.heap.object_proto;
+
+            HString* value_key = builtin_intern_string(ctx.heap, "value");
+            TVal vt;
+            vt.tag = STRING;
+            vt.pointer = key_str;
+            // Actually set the array element value as the descriptor value
+            TVal array_val = obj.array_part[arr_idx];
+            desc.put_prop(value_key, array_val, hobject::PROP_FLAGS_WEC);
+
+            HString* writable_key = builtin_intern_string(ctx.heap, "writable");
+            TVal w_tv;
+            w_tv.tag = BOOLEAN;
+            w_tv.boolean = true;
+            desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
+
+            HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
+            TVal e_tv;
+            e_tv.tag = BOOLEAN;
+            e_tv.boolean = true;
+            desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
+
+            HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
+            TVal c_tv;
+            c_tv.tag = BOOLEAN;
+            c_tv.boolean = true;
+            desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
+
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = desc;
+            return;
+        }
+        ctx.result.set_undefined();
+        return;
+    }
+
+    hobject::PropEntry* entry = &obj.props[idx];
+
+    // Build the descriptor object
+    HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err6 = desc_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* desc = desc_raw;
+    desc.prototype = ctx.heap.object_proto;
+
+    if (entry.flags.is_accessor) {
+        // Accessor descriptor: { get, set, enumerable, configurable }
+        HString* get_key = builtin_intern_string(ctx.heap, "get");
+        desc.put_prop(get_key, entry.getter, hobject::PROP_FLAGS_WEC);
+
+        HString* set_key = builtin_intern_string(ctx.heap, "set");
+        desc.put_prop(set_key, entry.setter, hobject::PROP_FLAGS_WEC);
+
+        HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
+        TVal e_tv;
+        e_tv.tag = BOOLEAN;
+        e_tv.boolean = entry.flags.enumerable;
+        desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
+
+        HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
+        TVal c_tv;
+        c_tv.tag = BOOLEAN;
+        c_tv.boolean = entry.flags.configurable;
+        desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
+    } else {
+        // Data descriptor: { value, writable, enumerable, configurable }
+        HString* value_key = builtin_intern_string(ctx.heap, "value");
+        desc.put_prop(value_key, entry.value, hobject::PROP_FLAGS_WEC);
+
+        HString* writable_key = builtin_intern_string(ctx.heap, "writable");
+        TVal w_tv;
+        w_tv.tag = BOOLEAN;
+        w_tv.boolean = entry.flags.writable;
+        desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
+
+        HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
+        TVal e_tv;
+        e_tv.tag = BOOLEAN;
+        e_tv.boolean = entry.flags.enumerable;
+        desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
+
+        HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
+        TVal c_tv;
+        c_tv.tag = BOOLEAN;
+        c_tv.boolean = entry.flags.configurable;
+        desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = desc;
 }
 
 /// Object.prototype.toString — returns "[object Class]"
@@ -8648,6 +8997,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_proto_valueOf(ctx);
         case BUILTIN_OBJECT_KEYS:
             builtin_object_keys(ctx);
+        case BUILTIN_OBJECT_GETPROTOTYPEOF:
+            builtin_object_getPrototypeOf(ctx);
+        case BUILTIN_OBJECT_ISEXTENSIBLE:
+            builtin_object_isExtensible(ctx);
+        case BUILTIN_OBJECT_PREVENTEXTENSIONS:
+            builtin_object_preventExtensions(ctx);
+        case BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR:
+            builtin_object_getOwnPropertyDescriptor(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
         case BUILTIN_MATH_ABS:
@@ -9197,6 +9554,38 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     keys_tv.tag = LIGHTFUNC;
     keys_tv.fastint = (long)BUILTIN_OBJECT_KEYS;
     obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WEC);
+
+    // Object.getPrototypeOf — ES5 §15.2.3.2
+    HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
+    if (getproto_key == null) return false;
+    TVal getproto_tv;
+    getproto_tv.tag = LIGHTFUNC;
+    getproto_tv.fastint = (long)BUILTIN_OBJECT_GETPROTOTYPEOF;
+    obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.isExtensible — ES5 §15.2.3.13
+    HString* isext_key = builtin_intern_string(heap, "isExtensible");
+    if (isext_key == null) return false;
+    TVal isext_tv;
+    isext_tv.tag = LIGHTFUNC;
+    isext_tv.fastint = (long)BUILTIN_OBJECT_ISEXTENSIBLE;
+    obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.preventExtensions — ES5 §15.2.3.10
+    HString* prevext_key = builtin_intern_string(heap, "preventExtensions");
+    if (prevext_key == null) return false;
+    TVal prevext_tv;
+    prevext_tv.tag = LIGHTFUNC;
+    prevext_tv.fastint = (long)BUILTIN_OBJECT_PREVENTEXTENSIONS;
+    obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.getOwnPropertyDescriptor — ES5 §15.2.3.3
+    HString* getownpropdesc_key = builtin_intern_string(heap, "getOwnPropertyDescriptor");
+    if (getownpropdesc_key == null) return false;
+    TVal getownpropdesc_tv;
+    getownpropdesc_tv.tag = LIGHTFUNC;
+    getownpropdesc_tv.fastint = (long)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR;
+    obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
