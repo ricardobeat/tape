@@ -198,6 +198,10 @@ const uint BUILTIN_OBJECT_ISFROZEN                = 169;
 const uint BUILTIN_OBJECT_ENTRIES                 = 188;
 const uint BUILTIN_OBJECT_VALUES                  = 189;
 const uint BUILTIN_OBJECT_ASSIGN                  = 190;
+const uint BUILTIN_NUMBER_ISNAN                   = 191;
+const uint BUILTIN_NUMBER_ISFINITE                = 192;
+const uint BUILTIN_NUMBER_ISINTEGER               = 193;
+const uint BUILTIN_NUMBER_ISSAFEINTEGER           = 194;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -2865,6 +2869,104 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     }
     ctx.result.tag = UNDEFINED;
     ctx.result.pointer = null;
+}
+
+// ============================================================================
+// Number static methods (ES6 §20.1.2)
+// ============================================================================
+
+/// Number.isNaN(number) — ES6 §20.1.2.4
+/// Returns true only if the argument is the NaN number value (no coercion).
+fn void builtin_number_isNaN(BuiltinContext* ctx) {
+    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    ctx.result.tag = BOOLEAN;
+    if (arg.tag == NUMBER) {
+        ctx.result.boolean = math::is_nan(arg.number);
+    } else {
+        // FASTINT is never NaN
+        ctx.result.boolean = false;
+    }
+}
+
+/// Number.isFinite(number) — ES6 §20.1.2.2
+/// Returns true only if the argument is a finite number value (no coercion).
+fn void builtin_number_isFinite(BuiltinContext* ctx) {
+    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    ctx.result.tag = BOOLEAN;
+    if (arg.tag == NUMBER) {
+        ctx.result.boolean = !math::is_nan(arg.number) && !math::is_inf(arg.number);
+    } else {
+        // FASTINT is always finite
+        ctx.result.boolean = true;
+    }
+}
+
+/// Number.isInteger(number) — ES6 §20.1.2.3
+/// Returns true only if the argument is an integer number value (no coercion).
+fn void builtin_number_isInteger(BuiltinContext* ctx) {
+    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    double d;
+    if (arg.tag == FASTINT) {
+        // FASTINT is always an integer
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+        return;
+    }
+    d = arg.number;
+    // NaN, Infinity, -Infinity are not integers
+    if (math::is_nan(d) || math::is_inf(d)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    // Check: floor(abs(d)) == abs(d) — i.e. no fractional part
+    double abs_d = d < 0 ? -d : d;
+    double fl = math::floor(abs_d);
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (fl == abs_d);
+}
+
+/// Number.isSafeInteger(number) — ES6 §20.1.2.5
+/// Returns true only if the argument is a safe integer (±(2^53 - 1)).
+fn void builtin_number_isSafeInteger(BuiltinContext* ctx) {
+    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    if (arg.tag == FASTINT) {
+        // FASTINT values are always safe integers
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = true;
+        return;
+    }
+    double d = arg.number;
+    if (math::is_nan(d) || math::is_inf(d)) {
+        ctx.result.tag = BOOLEAN;
+        ctx.result.boolean = false;
+        return;
+    }
+    double abs_d = d < 0 ? -d : d;
+    double fl = math::floor(abs_d);
+    // Must be integer AND within safe range (2^53 - 1 = 9007199254740991)
+    ctx.result.tag = BOOLEAN;
+    ctx.result.boolean = (fl == abs_d) && (abs_d <= 9007199254740991.0);
 }
 
 // ============================================================================
@@ -10951,6 +11053,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_number_proto_toExponential(ctx);
         case BUILTIN_NUMBER_PROTO_TOPRECISION:
             builtin_number_proto_toPrecision(ctx);
+        case BUILTIN_NUMBER_ISNAN:
+            builtin_number_isNaN(ctx);
+        case BUILTIN_NUMBER_ISFINITE:
+            builtin_number_isFinite(ctx);
+        case BUILTIN_NUMBER_ISINTEGER:
+            builtin_number_isInteger(ctx);
+        case BUILTIN_NUMBER_ISSAFEINTEGER:
+            builtin_number_isSafeInteger(ctx);
         case BUILTIN_OBJECT:
             builtin_object(ctx);
         case BUILTIN_OBJECT_PROTO_TOSTRING:
@@ -11888,6 +11998,15 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (!set_num_static_prop(num, heap, "NEGATIVE_INFINITY", -double::inf)) return false;
     // Add Number.POSITIVE_INFINITY (ES5 §15.7.3.6)
     if (!set_num_static_prop(num, heap, "POSITIVE_INFINITY", double::inf)) return false;
+
+    // Add Number.isNaN (ES6 §20.1.2.4)
+    if (!register_string_proto_method(num, heap, "isNaN", BUILTIN_NUMBER_ISNAN)) return false;
+    // Add Number.isFinite (ES6 §20.1.2.2)
+    if (!register_string_proto_method(num, heap, "isFinite", BUILTIN_NUMBER_ISFINITE)) return false;
+    // Add Number.isInteger (ES6 §20.1.2.3)
+    if (!register_string_proto_method(num, heap, "isInteger", BUILTIN_NUMBER_ISINTEGER)) return false;
+    // Add Number.isSafeInteger (ES6 §20.1.2.5)
+    if (!register_string_proto_method(num, heap, "isSafeInteger", BUILTIN_NUMBER_ISSAFEINTEGER)) return false;
 
     // Register Number constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Number");

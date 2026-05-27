@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 74 (Object.entries, Object.values, Object.assign)
+**Last Updated:** Session 75 (Number static methods: isNaN, isFinite, isInteger, isSafeInteger)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,371 |
 | Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 5,606 |
-| Currently failing (test262) | 24,765 |
-| Pass rate (of run tests) | 18.5% |
+| Currently passing (test262) | 5,659 |
+| Currently failing (test262) | 24,712 |
+| Pass rate (of run tests) | 18.6% |
 
 ## Refreshing test pass rate
 
@@ -31,7 +31,7 @@ Update the counts and pass rate after every implemented feature
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
 | 3: Object System | 7,766 | 1,343 | 5,635 | 788 |
 | 4: Error Handling | 402 | 56 | 282 | 64 |
-| 5: Built-in Constructors | 8,615 | 1,684 | 6,418 | 513 |
+| 5: Built-in Constructors | 8,615 | 1,702 | 6,400 | 513 |
 | 6: Prototype Methods | 4,713 | 509 | 3,898 | 306 |
 | 7: ES5 Features | 1,240 | 209 | 404 | 627 |
 | 8: ES5 Built-in Objects | 2,747 | 472 | 1,972 | 303 |
@@ -41,7 +41,7 @@ Update the counts and pass rate after every implemented feature
 | 15: Classes | 8,520 | 142 | 2,153 | 6,225 |
 | 17-20: Map/Set/Symbol/Promise | 1,588 | 162 | 823 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,371** | **5,574** | **24,807** | **11,616** |
+| **Overall** | **30,371** | **5,659** | **24,712** | **11,616** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 543 pass / 554 fail (skip: 1,088)**
@@ -117,7 +117,7 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 1,684 pass / 6,418 fail (skip: 513)**
+**test262: 8,615 files — 1,702 pass / 6,400 fail (skip: 513)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -347,6 +347,7 @@ Update the counts and pass rate after every implemented feature
 | 72 | **Memory leak fix**: `Heap.destroy` now frees HString objects in the string table and CompiledFunction objects. Full test262 re-run: **5,464 pass / 24,907 fail (18.0%)** |
 | 73 | **Session 73: String.prototype + Array.prototype methods** — Implemented `includes`, `startsWith`, `endsWith`, `repeat`, `trimStart`, `trimEnd`, `codePointAt`, `at`, `padStart`, `padEnd`, `lastIndexOf` on String.prototype. Implemented `fill`, `includes`, `at`, `copyWithin` on Array.prototype. New constants 170-187, dispatch cases, and registrations. Test262: Phase 5 +66 (1,608→1,674), Phase 6 +66 (443→509), overall **5,596 pass / 24,775 fail (18.4%)** — +132 new passing tests. |
 | 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |
+| 75 | **Session 75: Number static methods** — Implemented `Number.isNaN()` (ES6 §20.1.2.4), `Number.isFinite()` (ES6 §20.1.2.2), `Number.isInteger()` (ES6 §20.1.2.3), and `Number.isSafeInteger()` (ES6 §20.1.2.5) as static methods on the Number constructor. No-coercion type checks per ES6 spec. New constants 191-194. Test262: Phase 5 +18 (1,684→1,702), overall **5,659 pass / 24,712 fail (18.6%)** — +53 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
