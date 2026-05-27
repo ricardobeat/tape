@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 75 (Number static methods: isNaN, isFinite, isInteger, isSafeInteger)
+**Last Updated:** Session 76 (String.fromCharCode + String constructor upgrade to HObject)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,371 |
 | Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 5,659 |
-| Currently failing (test262) | 24,712 |
-| Pass rate (of run tests) | 18.6% |
+| Currently passing (test262) | 6,078 |
+| Currently failing (test262) | 24,293 |
+| Pass rate (of run tests) | 20.0% |
 
 ## Refreshing test pass rate
 
@@ -26,22 +26,22 @@ Update the counts and pass rate after every implemented feature
 
 | Phase | Total | Pass | Fail | Skip |
 |-------|-------|------|------|------|
-| 0-1: Core VM | 2,185 | 543 | 554 | 1,088 |
-| 1: Calling Convention | 426 | 25 | 317 | 84 |
+| 0-1: Core VM | 2,185 | 562 | 535 | 1,088 |
+| 1: Calling Convention | 426 | 26 | 316 | 84 |
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,343 | 5,635 | 788 |
+| 3: Object System | 7,766 | 1,496 | 5,482 | 788 |
 | 4: Error Handling | 402 | 56 | 282 | 64 |
-| 5: Built-in Constructors | 8,615 | 1,702 | 6,400 | 513 |
-| 6: Prototype Methods | 4,713 | 509 | 3,898 | 306 |
-| 7: ES5 Features | 1,240 | 209 | 404 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 472 | 1,972 | 303 |
+| 5: Built-in Constructors | 8,615 | 1,846 | 6,256 | 513 |
+| 6: Prototype Methods | 4,713 | 603 | 3,804 | 306 |
+| 7: ES5 Features | 1,240 | 212 | 401 | 627 |
+| 8: ES5 Built-in Objects | 2,747 | 477 | 1,967 | 303 |
 | 11: Arrow/Templates | 427 | 60 | 227 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
 | 15: Classes | 8,520 | 142 | 2,153 | 6,225 |
 | 17-20: Map/Set/Symbol/Promise | 1,588 | 162 | 823 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,371** | **5,659** | **24,712** | **11,616** |
+| **Overall** | **30,371** | **6,078** | **24,293** | **11,616** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 543 pass / 554 fail (skip: 1,088)**
@@ -117,15 +117,17 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 1,702 pass / 6,400 fail (skip: 513)**
+**test262: 8,615 files — 1,846 pass / 6,256 fail (skip: 513)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
 | String constructor | ✅ |
+| String.fromCharCode | ✅ (Session 76) |
 | Number() as function | ✅ |
 | Number constructor (new Number()) | ✅ |
 | Number.prototype.toString/valueOf | ✅ |
 | Number static properties (NaN, MAX_VALUE…) | ✅ |
+| Number static methods (isNaN, isFinite…) | ✅ (Session 75) |
 | Object() as function | ✅ |
 | Array constructor | ✅ |
 | Function constructor | ✅ |
@@ -348,6 +350,7 @@ Update the counts and pass rate after every implemented feature
 | 73 | **Session 73: String.prototype + Array.prototype methods** — Implemented `includes`, `startsWith`, `endsWith`, `repeat`, `trimStart`, `trimEnd`, `codePointAt`, `at`, `padStart`, `padEnd`, `lastIndexOf` on String.prototype. Implemented `fill`, `includes`, `at`, `copyWithin` on Array.prototype. New constants 170-187, dispatch cases, and registrations. Test262: Phase 5 +66 (1,608→1,674), Phase 6 +66 (443→509), overall **5,596 pass / 24,775 fail (18.4%)** — +132 new passing tests. |
 | 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |
 | 75 | **Session 75: Number static methods** — Implemented `Number.isNaN()` (ES6 §20.1.2.4), `Number.isFinite()` (ES6 §20.1.2.2), `Number.isInteger()` (ES6 §20.1.2.3), and `Number.isSafeInteger()` (ES6 §20.1.2.5) as static methods on the Number constructor. No-coercion type checks per ES6 spec. New constants 191-194. Test262: Phase 5 +18 (1,684→1,702), overall **5,659 pass / 24,712 fail (18.6%)** — +53 new passing tests. |
+| 76 | **Session 76: String.fromCharCode + String constructor upgrade** — Upgraded String constructor from LIGHTFUNC to proper HObject (ObjClass.FUNCTION), following the same pattern as Number (Session 75). `String.prototype.constructor` now correctly points to the String object. Implemented `String.fromCharCode()` (ES5 §15.5.3.2) with ToUint16 conversion and UTF-8 encoding for non-BMP code units. New constant BUILTIN_STRING_FROMCHARCODE (217). Static method registered on String constructor object. Test262: Phase 0-1 +19 (543→562), Phase 1 +1 (25→26), Phase 3 +153 (1,343→1,496), Phase 5 +144 (1,702→1,846), Phase 6 +94 (509→603), Phase 7 +3 (209→212), Phase 8 +5 (472→477), overall **6,078 pass / 24,293 fail (20.0%)** — +419 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |

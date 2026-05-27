@@ -22,6 +22,21 @@ extern fn double math_log(double x)           @MathLibc("log");
 extern fn double math_sin(double x)           @MathLibc("sin");
 extern fn double math_cos(double x)           @MathLibc("cos");
 extern fn double math_tan(double x)           @MathLibc("tan");
+extern fn double math_acos(double x)          @MathLibc("acos");
+extern fn double math_asin(double x)          @MathLibc("asin");
+extern fn double math_atan(double x)          @MathLibc("atan");
+extern fn double math_atan2(double y, double x) @MathLibc("atan2");
+extern fn double math_cosh(double x)          @MathLibc("cosh");
+extern fn double math_sinh(double x)          @MathLibc("sinh");
+extern fn double math_tanh(double x)          @MathLibc("tanh");
+extern fn double math_acosh(double x)         @MathLibc("acosh");
+extern fn double math_asinh(double x)         @MathLibc("asinh");
+extern fn double math_atanh(double x)         @MathLibc("atanh");
+extern fn double math_log2(double x)          @MathLibc("log2");
+extern fn double math_log10(double x)         @MathLibc("log10");
+extern fn double math_log1p(double x)         @MathLibc("log1p");
+extern fn double math_expm1(double x)         @MathLibc("expm1");
+extern fn double math_cbrt(double x)          @MathLibc("cbrt");
 
 // Date/time library externals (link-time resolved via libc)
 // The Tm struct mirrors C's struct tm layout exactly.
@@ -202,6 +217,30 @@ const uint BUILTIN_NUMBER_ISNAN                   = 191;
 const uint BUILTIN_NUMBER_ISFINITE                = 192;
 const uint BUILTIN_NUMBER_ISINTEGER               = 193;
 const uint BUILTIN_NUMBER_ISSAFEINTEGER           = 194;
+
+const uint BUILTIN_MATH_ACOS   = 195;
+const uint BUILTIN_MATH_ASIN   = 196;
+const uint BUILTIN_MATH_ATAN   = 197;
+const uint BUILTIN_MATH_ATAN2  = 198;
+const uint BUILTIN_MATH_COSH   = 199;
+const uint BUILTIN_MATH_SINH   = 200;
+const uint BUILTIN_MATH_TANH   = 201;
+const uint BUILTIN_MATH_ACOSH  = 202;
+const uint BUILTIN_MATH_ASINH  = 203;
+const uint BUILTIN_MATH_ATANH  = 204;
+const uint BUILTIN_MATH_LOG2   = 205;
+const uint BUILTIN_MATH_LOG10  = 206;
+const uint BUILTIN_MATH_LOG1P  = 207;
+const uint BUILTIN_MATH_EXPM1  = 208;
+const uint BUILTIN_MATH_CBRT   = 209;
+const uint BUILTIN_MATH_HYPOT  = 210;
+const uint BUILTIN_MATH_TRUNC  = 211;
+const uint BUILTIN_MATH_SIGN   = 212;
+const uint BUILTIN_MATH_FROUND = 213;
+const uint BUILTIN_MATH_CLZ32  = 214;
+const uint BUILTIN_MATH_IMUL   = 215;
+const uint BUILTIN_ARRAY_ISARRAY = 216;
+const uint BUILTIN_STRING_FROMCHARCODE = 217;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -1105,6 +1144,55 @@ fn void builtin_string(BuiltinContext* ctx) {
         ctx.result.tag = STRING;
         ctx.result.pointer = s;
     }
+}
+
+/// ToUint16 abstract operation (ES5 §9.7).
+fn uint to_uint16(TVal* val) {
+    TVal num;
+    builtin_to_number(val, &num);
+    double n;
+    if (num.tag == FASTINT) {
+        n = (double)num.fastint;
+    } else if (num.tag == NUMBER) {
+        n = num.number;
+    } else {
+        return 0;
+    }
+    if (math::is_nan(n) || n == 0.0 || n == double::inf || n == -double::inf) return 0;
+    double pos_int = math::abs(n);
+    pos_int = math::floor(pos_int);
+    long int_val = (long)pos_int;
+    return (uint)(ushort)(int)(int_val & 0xFFFF);
+}
+
+/// String.fromCharCode (ES5 §15.5.3.2)
+fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        HString* empty = builtin_intern_string(ctx.heap, "");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = empty;
+        return;
+    }
+    // Build string from code units (max ~256 args, cap at 512 bytes)
+    char[512] buf;
+    usz offset = 0;
+    ushort max_args = (ushort)(ctx.argc < 256 ? ctx.argc : 256);
+    for (ushort i = 0; i < max_args && offset < 510; i++) {
+        uint cu = to_uint16(&ctx.regs[ctx.base_reg + i]);
+        if (cu < 128) {
+            buf[offset++] = (char)cu;
+        } else if (cu < 2048) {
+            buf[offset++] = (char)(0xC0 | (cu >> 6));
+            buf[offset++] = (char)(0x80 | (cu & 0x3F));
+        } else {
+            buf[offset++] = (char)(0xE0 | (cu >> 12));
+            buf[offset++] = (char)(0x80 | ((cu >> 6) & 0x3F));
+            buf[offset++] = (char)(0x80 | (cu & 0x3F));
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
 }
 
 /// String.prototype.toString — returns the wrapped string value
@@ -6075,6 +6163,183 @@ fn void builtin_math_random(BuiltinContext* ctx) {
     ctx.result.number = (double)state / 4294967296.0;
 }
 
+fn void builtin_math_acos(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_acos(x);
+}
+
+fn void builtin_math_asin(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_asin(x);
+}
+
+fn void builtin_math_atan(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_atan(x);
+}
+
+fn void builtin_math_atan2(BuiltinContext* ctx) {
+    double y = math_arg(ctx, 0);
+    double x = math_arg(ctx, 1);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_atan2(y, x);
+}
+
+fn void builtin_math_cosh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_cosh(x);
+}
+
+fn void builtin_math_sinh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_sinh(x);
+}
+
+fn void builtin_math_tanh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_tanh(x);
+}
+
+fn void builtin_math_acosh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_acosh(x);
+}
+
+fn void builtin_math_asinh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_asinh(x);
+}
+
+fn void builtin_math_atanh(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_atanh(x);
+}
+
+fn void builtin_math_log2(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_log2(x);
+}
+
+fn void builtin_math_log10(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_log10(x);
+}
+
+fn void builtin_math_log1p(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_log1p(x);
+}
+
+fn void builtin_math_expm1(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_expm1(x);
+}
+
+fn void builtin_math_cbrt(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_cbrt(x);
+}
+
+fn void builtin_math_hypot(BuiltinContext* ctx) {
+    double result = 0.0;
+    for (ushort i = 0; i < ctx.argc; i++) {
+        double v = math_arg(ctx, i);
+        if (math::is_nan(v)) { result = double::nan; break; }
+        result = result + v * v;
+    }
+    ctx.result.tag = NUMBER;
+    ctx.result.number = math_sqrt(result);
+}
+
+fn void builtin_math_trunc(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    if (x >= 0) {
+        ctx.result.number = math::floor(x);
+    } else {
+        ctx.result.number = math::ceil(x);
+    }
+}
+
+fn void builtin_math_sign(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    if (math::is_nan(x) || x == 0.0) {
+        ctx.result.number = x;
+    } else if (x > 0.0) {
+        ctx.result.number = 1.0;
+    } else {
+        ctx.result.number = -1.0;
+    }
+}
+
+fn void builtin_math_fround(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    ctx.result.tag = NUMBER;
+    if (math::is_nan(x) || math::is_inf(x) || x == 0.0) {
+        ctx.result.number = x;
+    } else {
+        // Round to nearest float32
+        float f = (float)x;
+        ctx.result.number = (double)f;
+    }
+}
+
+fn void builtin_math_clz32(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    uint val = (uint)x;
+    if (val == 0) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = 32;
+    } else {
+        uint count = 0;
+        while ((val & 0x80000000) == 0) {
+            count++;
+            val <<= 1;
+        }
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = (long)count;
+    }
+}
+
+fn void builtin_math_imul(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    double y = math_arg(ctx, 1);
+    int a = (int)(uint)x;
+    int b = (int)(uint)y;
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = (long)(a * b);
+}
+
+/// Array.isArray(arg) — ES6 §22.1.2.2
+fn void builtin_array_isArray(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        ctx.result.set_boolean(false);
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    if (arg.tag != OBJECT || arg.pointer == null) {
+        ctx.result.set_boolean(false);
+        return;
+    }
+    HObject* obj = (HObject*)arg.pointer;
+    ctx.result.set_boolean(obj.get_class() == hobject::ObjClass.ARRAY);
+}
+
 // ============================================================================
 // Function.prototype methods
 // ============================================================================
@@ -11041,6 +11306,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_toString(ctx);
         case BUILTIN_STRING_PROTO_VALUEOF:
             builtin_string_proto_valueOf(ctx);
+        case BUILTIN_STRING_FROMCHARCODE:
+            builtin_string_fromcharcode(ctx);
         case BUILTIN_NUMBER:
             builtin_number(ctx);
         case BUILTIN_NUMBER_PROTO_TOSTRING:
@@ -11173,6 +11440,50 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_math_tan(ctx);
         case BUILTIN_MATH_RANDOM:
             builtin_math_random(ctx);
+        case BUILTIN_MATH_ACOS:
+            builtin_math_acos(ctx);
+        case BUILTIN_MATH_ASIN:
+            builtin_math_asin(ctx);
+        case BUILTIN_MATH_ATAN:
+            builtin_math_atan(ctx);
+        case BUILTIN_MATH_ATAN2:
+            builtin_math_atan2(ctx);
+        case BUILTIN_MATH_COSH:
+            builtin_math_cosh(ctx);
+        case BUILTIN_MATH_SINH:
+            builtin_math_sinh(ctx);
+        case BUILTIN_MATH_TANH:
+            builtin_math_tanh(ctx);
+        case BUILTIN_MATH_ACOSH:
+            builtin_math_acosh(ctx);
+        case BUILTIN_MATH_ASINH:
+            builtin_math_asinh(ctx);
+        case BUILTIN_MATH_ATANH:
+            builtin_math_atanh(ctx);
+        case BUILTIN_MATH_LOG2:
+            builtin_math_log2(ctx);
+        case BUILTIN_MATH_LOG10:
+            builtin_math_log10(ctx);
+        case BUILTIN_MATH_LOG1P:
+            builtin_math_log1p(ctx);
+        case BUILTIN_MATH_EXPM1:
+            builtin_math_expm1(ctx);
+        case BUILTIN_MATH_CBRT:
+            builtin_math_cbrt(ctx);
+        case BUILTIN_MATH_HYPOT:
+            builtin_math_hypot(ctx);
+        case BUILTIN_MATH_TRUNC:
+            builtin_math_trunc(ctx);
+        case BUILTIN_MATH_SIGN:
+            builtin_math_sign(ctx);
+        case BUILTIN_MATH_FROUND:
+            builtin_math_fround(ctx);
+        case BUILTIN_MATH_CLZ32:
+            builtin_math_clz32(ctx);
+        case BUILTIN_MATH_IMUL:
+            builtin_math_imul(ctx);
+        case BUILTIN_ARRAY_ISARRAY:
+            builtin_array_isArray(ctx);
         case BUILTIN_STRING_PROTO_CHARAT:
             builtin_string_proto_charAt(ctx);
         case BUILTIN_STRING_PROTO_CHARCODEAT:
@@ -11861,6 +12172,27 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(math, heap, "cos",    BUILTIN_MATH_COS))    return false;
     if (!register_math_method(math, heap, "tan",    BUILTIN_MATH_TAN))    return false;
     if (!register_math_method(math, heap, "random", BUILTIN_MATH_RANDOM)) return false;
+    if (!register_math_method(math, heap, "acos",   BUILTIN_MATH_ACOS))   return false;
+    if (!register_math_method(math, heap, "asin",   BUILTIN_MATH_ASIN))   return false;
+    if (!register_math_method(math, heap, "atan",   BUILTIN_MATH_ATAN))   return false;
+    if (!register_math_method(math, heap, "atan2",  BUILTIN_MATH_ATAN2))  return false;
+    if (!register_math_method(math, heap, "cosh",   BUILTIN_MATH_COSH))   return false;
+    if (!register_math_method(math, heap, "sinh",   BUILTIN_MATH_SINH))   return false;
+    if (!register_math_method(math, heap, "tanh",   BUILTIN_MATH_TANH))   return false;
+    if (!register_math_method(math, heap, "acosh",  BUILTIN_MATH_ACOSH))  return false;
+    if (!register_math_method(math, heap, "asinh",  BUILTIN_MATH_ASINH))  return false;
+    if (!register_math_method(math, heap, "atanh",  BUILTIN_MATH_ATANH))  return false;
+    if (!register_math_method(math, heap, "log2",   BUILTIN_MATH_LOG2))   return false;
+    if (!register_math_method(math, heap, "log10",  BUILTIN_MATH_LOG10))  return false;
+    if (!register_math_method(math, heap, "log1p",  BUILTIN_MATH_LOG1P))  return false;
+    if (!register_math_method(math, heap, "expm1",  BUILTIN_MATH_EXPM1))  return false;
+    if (!register_math_method(math, heap, "cbrt",   BUILTIN_MATH_CBRT))   return false;
+    if (!register_math_method(math, heap, "hypot",  BUILTIN_MATH_HYPOT))  return false;
+    if (!register_math_method(math, heap, "trunc",  BUILTIN_MATH_TRUNC))  return false;
+    if (!register_math_method(math, heap, "sign",   BUILTIN_MATH_SIGN))   return false;
+    if (!register_math_method(math, heap, "fround", BUILTIN_MATH_FROUND)) return false;
+    if (!register_math_method(math, heap, "clz32",  BUILTIN_MATH_CLZ32))  return false;
+    if (!register_math_method(math, heap, "imul",   BUILTIN_MATH_IMUL))   return false;
 
     TVal math_tv;
     math_tv.tag = OBJECT;
@@ -12324,13 +12656,6 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     proto.prototype = null;  // Will be Object.prototype in later phases
     heap.string_proto = proto;
 
-    // Set .constructor to String lightfunc
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
-    TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_STRING;
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
-
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
@@ -12370,8 +12695,51 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "padEnd",     BUILTIN_STRING_PROTO_PADEND))     return false;
     if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
 
-    // Register String as a global constructor
-    if (!register_simple_builtin(global_env, heap, "String", BUILTIN_STRING)) return false;
+    // Create String constructor as a proper function object (not LIGHTFUNC)
+    // so it can carry static methods like String.fromCharCode.
+    HObject*? str_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = str_obj_raw) return false;
+    HObject* str_obj = str_obj_raw;
+    str_obj.builtin_fn_index = (int)BUILTIN_STRING;
+
+    // Set .constructor on String.prototype to point to the actual String object
+    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    TVal constructor_tv;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = str_obj;
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set String.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    str_obj.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Add String.fromCharCode (ES5 §15.5.3.2)
+    if (!register_string_proto_method(str_obj, heap, "fromCharCode", BUILTIN_STRING_FROMCHARCODE)) return false;
+
+    // Register String constructor globally as an OBJECT (not LIGHTFUNC)
+    uint hash = heap.hash_string("String");
+    HString* existing = heap.str_table_lookup("String", hash);
+    HString* str_key;
+    if (existing != null) {
+        str_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "String", hash);
+        if (catch err2 = new_key) return false;
+        heap.str_table_insert(new_key);
+        str_key = new_key;
+    }
+    TVal str_val;
+    str_val.tag = OBJECT;
+    str_val.pointer = str_obj;
+    env::env_declare(global_env, str_key, str_val);
 
     return true;
 }
@@ -12409,12 +12777,31 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     proto.prototype = null;  // Will be Object.prototype in later phases
     heap.array_proto = proto;
 
-    // Set .constructor to Array lightfunc
+    // Create Array constructor as a proper HObject (not LIGHTFUNC)
+    // so it can carry static methods like Array.isArray
+    HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = arr_raw) return false;
+    HObject* arr = arr_raw;
+    arr.builtin_fn_index = (int)BUILTIN_ARRAY;
+
+    // Set .constructor on Array.prototype to point to the actual Array constructor object
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_ARRAY;
+    constructor_tv.tag = OBJECT;
+    constructor_tv.pointer = arr;
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+
+    // Set Array.prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    TVal proto_tv;
+    proto_tv.tag = OBJECT;
+    proto_tv.pointer = proto;
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    arr.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Register Array.prototype methods
     if (!register_array_proto_method(proto, heap, "toString",  BUILTIN_ARRAY_PROTO_TOSTRING))  return false;
@@ -12435,8 +12822,30 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
 
-    // Register Array as a global constructor
-    if (!register_simple_builtin(global_env, heap, "Array", BUILTIN_ARRAY)) return false;
+    // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
+    HString* isarray_key = builtin_intern_string(heap, "isArray");
+    if (isarray_key == null) return false;
+    TVal isarray_tv;
+    isarray_tv.tag = LIGHTFUNC;
+    isarray_tv.fastint = (long)BUILTIN_ARRAY_ISARRAY;
+    arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WEC);
+
+    // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
+    uint hash = heap.hash_string("Array");
+    HString* existing = heap.str_table_lookup("Array", hash);
+    HString* arr_key;
+    if (existing != null) {
+        arr_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Array", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        arr_key = new_key;
+    }
+    TVal arr_val;
+    arr_val.tag = OBJECT;
+    arr_val.pointer = arr;
+    env::env_declare(global_env, arr_key, arr_val);
 
     return true;
 }
