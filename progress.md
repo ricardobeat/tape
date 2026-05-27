@@ -10,8 +10,8 @@
 | Total test262 tests | 53,568 |
 | ES5-relevant tests (approx) | ~26,351 |
 | Actually runnable (ES5, no hangs) | ~5,000 |
-| Currently passing (test262) | 1,629 |
-| Pass rate | 3.0% (of 53,568) |
+| Currently passing (test262) | 1,645 |
+| Pass rate | 3.1% (of 53,568) |
 
 ## Refreshing test pass rate
 
@@ -146,14 +146,14 @@ Update the counts and pass rate after every implemented feature
 | with statement | ✅ |
 | eval | ✅ |
 
-### Phase 8: ES5 Built-in Objects — ✅ ~80%
-**test262: 572 files — 312 pass / 253 fail (skip: 7)**
+### Phase 8: ES5 Built-in Objects — ✅ ~85%
+**test262: 572 files — 328 pass / 244 fail (skip: 0)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
 | Date | ✅ |
 | RegExp | ✅ (engine integrated + prototype chain wired, SyntaxError on invalid pattern/flags, .constructor on error prototypes — 144 test262 passing) |
-| Object.keys, getPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions | ✅ (Session 67-68) |
+| Object.keys, getPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions, getOwnPropertyNames | ✅ (Session 67-68, 70) |
 | **Object.defineProperty** | **✅ (Session 69)** |
 
 ### Phase 9: Strict Mode — ✅ (Impl.)
@@ -390,3 +390,4 @@ Update the counts and pass rate after every implemented feature
 ||| 67 | **Phase 8: Object.keys** — Implemented `Object.keys()` as a static method on the Object constructor per ES5 §15.2.3.14. Function collects own enumerable property names (both named properties and dense array indices), returns them in a new Array. Addressed stale-binary caching issue (full `rm` + rebuild required). Test262: 8/59 Object.keys tests passing.|
 |||| 68 | **Phase 8: Object.getPrototypeOf, isExtensible, preventExtensions, getOwnPropertyDescriptor** — Implemented 4 additional ES5 Object static methods with proper TypeError handling for non-object arguments and full property descriptor construction. |
 |||| 69 | **Phase 8: Object.defineProperty + PUTPROP writable check** — Implemented Object.defineProperty (ES5 §15.2.3.6) with ToPropertyDescriptor, [[DefineOwnProperty]] validation (configurable/writable constraints), getter/setter accessor support, and proper TypeError errors. Fixed PUTPROP VM opcode to check writable flag before writing — non-writable data properties now throw TypeError in strict mode instead of silently succeeding. |
+|||| 70 | **Phase 8: Object.getOwnPropertyNames** — Implemented `Object.getOwnPropertyNames()` as a static method on the Object constructor per ES5 §15.2.3.4. Returns all own property names (both enumerable and non-enumerable) as an array. 16/30 test262 tests passing. |

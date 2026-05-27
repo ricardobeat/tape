@@ -194,6 +194,7 @@ const uint BUILTIN_OBJECT_PREVENTEXTENSIONS  = 160;
 
 const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR = 161;
 const uint BUILTIN_OBJECT_DEFINEPROPERTY           = 162;
+const uint BUILTIN_OBJECT_GETOWNPROPERTYNAMES      = 163;
 
 struct BuiltinContext {
     void* vm;
@@ -2436,6 +2437,107 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     uint idx = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
+            HString* key = (HString*)obj.props[i].key;
+            TVal key_tv;
+            key_tv.tag = STRING;
+            key_tv.pointer = key;
+            array_set_elem(arr, idx, key_tv, ctx.heap);
+            idx++;
+        }
+    }
+    // Dense array indices (as strings)
+    char[32] buf;
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) {
+            int len = libc::snprintf(&buf, 32, "%u", i);
+            if (len < 0) {
+                ctx.result.tag = UNDEFINED;
+                ctx.result.pointer = null;
+                return;
+            }
+            uint hash = ctx.heap.hash_string(buf[..len]);
+            HString*? key = hstring::hstring_alloc(ctx.heap, buf[..len], hash);
+            if (catch err = key) {
+                ctx.result.tag = UNDEFINED;
+                ctx.result.pointer = null;
+                return;
+            }
+            ctx.heap.str_table_insert(key);
+            TVal key_tv;
+            key_tv.tag = STRING;
+            key_tv.pointer = key;
+            array_set_elem(arr, idx, key_tv, ctx.heap);
+            idx++;
+        }
+    }
+    // Set .length
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = (long)idx;
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Object.getOwnPropertyNames — ES5 §15.2.3.4
+// ============================================================================
+/// Returns an array of all own property names (both enumerable and non-enumerable)
+/// of the given object. Equivalent to Object.keys but without the enumerable filter.
+fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // TypeError if argument is null or undefined
+    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* obj;
+    if (arg.tag == OBJECT) {
+        obj = (HObject*)arg.pointer;
+    } else {
+        // ToObject wrapper for primitives
+        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = wrapped) {
+            ctx.result.tag = UNDEFINED;
+            ctx.result.pointer = null;
+            return;
+        }
+        obj = wrapped;
+        obj.prototype = ctx.heap.object_proto;
+    }
+    // First pass: count all own properties (named, both enumerable and non-enumerable)
+    uint count = 0;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].key != null) {
+            count++;
+        }
+    }
+    // Count dense array indices as own properties
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) {
+            count++;
+        }
+    }
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.tag = UNDEFINED;
+        ctx.result.pointer = null;
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    // Fill array with property names: named properties first, then dense indices
+    uint idx = 0;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].key != null) {
             HString* key = (HString*)obj.props[i].key;
             TVal key_tv;
             key_tv.tag = STRING;
@@ -9516,6 +9618,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_getOwnPropertyDescriptor(ctx);
         case BUILTIN_OBJECT_DEFINEPROPERTY:
             builtin_object_defineProperty(ctx);
+        case BUILTIN_OBJECT_GETOWNPROPERTYNAMES:
+            builtin_object_getOwnPropertyNames(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
         case BUILTIN_MATH_ABS:
@@ -10105,6 +10209,14 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     defineprop_tv.tag = LIGHTFUNC;
     defineprop_tv.fastint = (long)BUILTIN_OBJECT_DEFINEPROPERTY;
     obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.getOwnPropertyNames — ES5 §15.2.3.4
+    HString* getownpropnames_key = builtin_intern_string(heap, "getOwnPropertyNames");
+    if (getownpropnames_key == null) return false;
+    TVal getownpropnames_tv;
+    getownpropnames_tv.tag = LIGHTFUNC;
+    getownpropnames_tv.fastint = (long)BUILTIN_OBJECT_GETOWNPROPERTYNAMES;
+    obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
