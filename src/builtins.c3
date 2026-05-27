@@ -195,6 +195,9 @@ const uint BUILTIN_OBJECT_SEAL                    = 166;
 const uint BUILTIN_OBJECT_FREEZE                  = 167;
 const uint BUILTIN_OBJECT_ISSEALED                = 168;
 const uint BUILTIN_OBJECT_ISFROZEN                = 169;
+const uint BUILTIN_OBJECT_ENTRIES                 = 188;
+const uint BUILTIN_OBJECT_VALUES                  = 189;
+const uint BUILTIN_OBJECT_ASSIGN                  = 190;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -4558,6 +4561,235 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
 
     ctx.result.tag = BOOLEAN;
     ctx.result.boolean = true;
+}
+
+// ============================================================================
+// Object.entries — ES2017 §19.1.2.21
+// ============================================================================
+/// Returns an array of the given object's own enumerable string-keyed property
+/// [key, value] pairs.
+fn void builtin_object_entries(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // TypeError if argument is null or undefined
+    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj;
+    if (arg.tag == OBJECT) {
+        obj = (HObject*)arg.pointer;
+    } else {
+        // ToObject wrapper for primitives
+        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
+        obj = wrapped;
+        obj.prototype = ctx.heap.object_proto;
+    }
+    // Count enumerable own properties
+    uint count = 0;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
+    }
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) count++;
+    }
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    uint idx = 0;
+    // Named properties → [key, value] pairs
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
+            HString* key = (HString*)obj.props[i].key;
+            // Create pair array [key, value]
+            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
+            HObject* pair = pair_raw;
+            pair.prototype = ctx.heap.array_proto;
+            TVal key_tv; key_tv.tag = STRING; key_tv.pointer = key;
+            array_set_elem(pair, 0, key_tv, ctx.heap);
+            array_set_elem(pair, 1, obj.props[i].value, ctx.heap);
+            TVal len_tv; len_tv.tag = FASTINT; len_tv.fastint = 2;
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+            TVal pair_tv; pair_tv.tag = OBJECT; pair_tv.pointer = pair;
+            array_set_elem(arr, idx, pair_tv, ctx.heap);
+            idx++;
+        }
+    }
+    // Dense array indices → [key, value] pairs
+    char[32] buf;
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) {
+            int slen = libc::snprintf(&buf, 32, "%u", i);
+            if (slen < 0) continue;
+            uint hash = ctx.heap.hash_string(buf[..slen]);
+            HString*? key_s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
+            if (catch err5 = key_s) continue;
+            ctx.heap.str_table_insert(key_s);
+            HObject*? pair_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err6 = pair_raw2) continue;
+            HObject* pair2 = pair_raw2;
+            pair2.prototype = ctx.heap.array_proto;
+            TVal key_tv2; key_tv2.tag = STRING; key_tv2.pointer = key_s;
+            array_set_elem(pair2, 0, key_tv2, ctx.heap);
+            array_set_elem(pair2, 1, obj.array_part[i], ctx.heap);
+            TVal len_tv2; len_tv2.tag = FASTINT; len_tv2.fastint = 2;
+            HString* len_key2 = builtin_intern_string(ctx.heap, "length");
+            pair2.put_prop(len_key2, len_tv2, hobject::PROP_FLAGS_WEC);
+            TVal pair_tv2; pair_tv2.tag = OBJECT; pair_tv2.pointer = pair2;
+            array_set_elem(arr, idx, pair_tv2, ctx.heap);
+            idx++;
+        }
+    }
+    // Set .length on result array
+    TVal rlen_tv; rlen_tv.tag = FASTINT; rlen_tv.fastint = (long)idx;
+    HString* rlen_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Object.values — ES2017 §19.1.2.22
+// ============================================================================
+/// Returns an array of the given object's own enumerable string-keyed property values.
+fn void builtin_object_values(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // TypeError if argument is null or undefined
+    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    HObject* obj;
+    if (arg.tag == OBJECT) {
+        obj = (HObject*)arg.pointer;
+    } else {
+        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
+        obj = wrapped;
+        obj.prototype = ctx.heap.object_proto;
+    }
+    // Count enumerable own properties
+    uint count = 0;
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
+    }
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) count++;
+    }
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    uint idx = 0;
+    // Named properties
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
+            array_set_elem(arr, idx, obj.props[i].value, ctx.heap);
+            idx++;
+        }
+    }
+    // Dense array indices
+    for (uint i = 0; i < obj.array_size; i++) {
+        if (obj.array_part[i].tag != UNDEFINED) {
+            array_set_elem(arr, idx, obj.array_part[i], ctx.heap);
+            idx++;
+        }
+    }
+    // Set .length
+    TVal rlen_tv; rlen_tv.tag = FASTINT; rlen_tv.fastint = (long)idx;
+    HString* rlen_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+}
+
+// ============================================================================
+// Object.assign — ES2015 §19.1.2.2
+// ============================================================================
+/// Copies enumerable own properties from source objects to a target object.
+fn void builtin_object_assign(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal target_val = ctx.regs[ctx.base_reg];
+    // TypeError if target is null or undefined
+    if (target_val.tag == NULL_VAL || target_val.tag == UNDEFINED) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        ctx.should_throw = true;
+        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        return;
+    }
+    // ToObject on target
+    HObject* target;
+    if (target_val.tag == OBJECT) {
+        target = (HObject*)target_val.pointer;
+    } else {
+        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
+        target = wrapped;
+        target.prototype = ctx.heap.object_proto;
+    }
+    // Copy properties from each source (args 1..N)
+    for (uint s = 1; s < ctx.argc; s++) {
+        TVal source = ctx.regs[ctx.base_reg + s];
+        // Skip null, undefined, and non-objects
+        if (source.tag == NULL_VAL || source.tag == UNDEFINED) continue;
+        if (source.tag != OBJECT) continue;
+        HObject* src_obj = (HObject*)source.pointer;
+        // Copy enumerable own named properties
+        for (uint i = 0; i < src_obj.prop_count; i++) {
+            if (src_obj.props[i].flags.enumerable && src_obj.props[i].key != null) {
+                target.put_prop(src_obj.props[i].key, src_obj.props[i].value, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        // Copy enumerable own dense array indices
+        for (uint i = 0; i < src_obj.array_size; i++) {
+            if (src_obj.array_part[i].tag != UNDEFINED) {
+                array_set_elem(target, i, src_obj.array_part[i], ctx.heap);
+            }
+        }
+    }
+    ctx.result.tag = OBJECT; ctx.result.pointer = target;
 }
 
 /// Object.prototype.toString — returns "[object Class]"
@@ -10759,6 +10991,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_object_isSealed(ctx);
         case BUILTIN_OBJECT_ISFROZEN:
             builtin_object_isFrozen(ctx);
+        case BUILTIN_OBJECT_ENTRIES:
+            builtin_object_entries(ctx);
+        case BUILTIN_OBJECT_VALUES:
+            builtin_object_values(ctx);
+        case BUILTIN_OBJECT_ASSIGN:
+            builtin_object_assign(ctx);
         case BUILTIN_STRING_PROTO_INCLUDES:
             builtin_string_proto_includes(ctx);
         case BUILTIN_STRING_PROTO_STARTSWITH:
@@ -11440,6 +11678,30 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     isfrozen_tv.tag = LIGHTFUNC;
     isfrozen_tv.fastint = (long)BUILTIN_OBJECT_ISFROZEN;
     obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.entries — ES2017 §19.1.2.21
+    HString* entries_key = builtin_intern_string(heap, "entries");
+    if (entries_key == null) return false;
+    TVal entries_tv;
+    entries_tv.tag = LIGHTFUNC;
+    entries_tv.fastint = (long)BUILTIN_OBJECT_ENTRIES;
+    obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.values — ES2017 §19.1.2.22
+    HString* values_key = builtin_intern_string(heap, "values");
+    if (values_key == null) return false;
+    TVal values_tv;
+    values_tv.tag = LIGHTFUNC;
+    values_tv.fastint = (long)BUILTIN_OBJECT_VALUES;
+    obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.assign — ES2015 §19.1.2.2
+    HString* assign_key = builtin_intern_string(heap, "assign");
+    if (assign_key == null) return false;
+    TVal assign_tv;
+    assign_tv.tag = LIGHTFUNC;
+    assign_tv.fastint = (long)BUILTIN_OBJECT_ASSIGN;
+    obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
