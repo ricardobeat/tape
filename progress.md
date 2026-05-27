@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 76 (String.fromCharCode + String constructor upgrade to HObject)
+**Last Updated:** Session 77 (Array.of + Array.prototype.find/findIndex registration)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,371 |
 | Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 6,078 |
-| Currently failing (test262) | 24,293 |
-| Pass rate (of run tests) | 20.0% |
+| Currently passing (test262) | 6,086 |
+| Currently failing (test262) | 24,285 |
+| Pass rate (of run tests) | 20.1% |
 
 ## Refreshing test pass rate
 
@@ -29,10 +29,10 @@ Update the counts and pass rate after every implemented feature
 | 0-1: Core VM | 2,185 | 562 | 535 | 1,088 |
 | 1: Calling Convention | 426 | 26 | 316 | 84 |
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,496 | 5,482 | 788 |
+| 3: Object System | 7,766 | 1,499 | 5,479 | 788 |
 | 4: Error Handling | 402 | 56 | 282 | 64 |
-| 5: Built-in Constructors | 8,615 | 1,846 | 6,256 | 513 |
-| 6: Prototype Methods | 4,713 | 603 | 3,804 | 306 |
+| 5: Built-in Constructors | 8,615 | 1,849 | 6,253 | 513 |
+| 6: Prototype Methods | 4,713 | 605 | 3,802 | 306 |
 | 7: ES5 Features | 1,240 | 212 | 401 | 627 |
 | 8: ES5 Built-in Objects | 2,747 | 477 | 1,967 | 303 |
 | 11: Arrow/Templates | 427 | 60 | 227 | 140 |
@@ -130,6 +130,9 @@ Update the counts and pass rate after every implemented feature
 | Number static methods (isNaN, isFinite…) | ✅ (Session 75) |
 | Object() as function | ✅ |
 | Array constructor | ✅ |
+| Array.of | ✅ (Session 77) |
+| Array.prototype.find | ✅ (Session 77, stub) |
+| Array.prototype.findIndex | ✅ (Session 77, stub) |
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
@@ -351,6 +354,7 @@ Update the counts and pass rate after every implemented feature
 | 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |
 | 75 | **Session 75: Number static methods** — Implemented `Number.isNaN()` (ES6 §20.1.2.4), `Number.isFinite()` (ES6 §20.1.2.2), `Number.isInteger()` (ES6 §20.1.2.3), and `Number.isSafeInteger()` (ES6 §20.1.2.5) as static methods on the Number constructor. No-coercion type checks per ES6 spec. New constants 191-194. Test262: Phase 5 +18 (1,684→1,702), overall **5,659 pass / 24,712 fail (18.6%)** — +53 new passing tests. |
 | 76 | **Session 76: String.fromCharCode + String constructor upgrade** — Upgraded String constructor from LIGHTFUNC to proper HObject (ObjClass.FUNCTION), following the same pattern as Number (Session 75). `String.prototype.constructor` now correctly points to the String object. Implemented `String.fromCharCode()` (ES5 §15.5.3.2) with ToUint16 conversion and UTF-8 encoding for non-BMP code units. New constant BUILTIN_STRING_FROMCHARCODE (217). Static method registered on String constructor object. Test262: Phase 0-1 +19 (543→562), Phase 1 +1 (25→26), Phase 3 +153 (1,343→1,496), Phase 5 +144 (1,702→1,846), Phase 6 +94 (509→603), Phase 7 +3 (209→212), Phase 8 +5 (472→477), overall **6,078 pass / 24,293 fail (20.0%)** — +419 new passing tests. |
+| 77 | **Session 77: Array.of + Array.prototype.find/findIndex registration** — Registered `Array.of()` (ES6 §22.1.2.3) as a static LIGHTFUNC method on the Array constructor. Implementation was already complete but not wired up. Also registered `Array.prototype.find` (ES6 §22.1.3.8) and `Array.prototype.findIndex` (ES6 §22.1.3.9) on Array.prototype (stub implementations — return first element / -1 without calling callback). Test262: Phase 3 +3 (1,496→1,499), Phase 5 +3 (1,846→1,849), Phase 6 +2 (603→605), overall **6,086 pass / 24,285 fail (20.1%)** — +8 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |

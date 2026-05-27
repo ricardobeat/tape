@@ -12821,6 +12821,8 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "includes",  BUILTIN_ARRAY_PROTO_INCLUDES))  return false;
     if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
+    if (!register_array_proto_method(proto, heap, "find",      BUILTIN_ARRAY_PROTO_FIND))      return false;
+    if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX)) return false;
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
     HString* isarray_key = builtin_intern_string(heap, "isArray");
@@ -12829,6 +12831,14 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     isarray_tv.tag = LIGHTFUNC;
     isarray_tv.fastint = (long)BUILTIN_ARRAY_ISARRAY;
     arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WEC);
+
+    // Add Array.of (ES6 §22.1.2.3) as static method on the constructor
+    HString* of_key = builtin_intern_string(heap, "of");
+    if (of_key == null) return false;
+    TVal of_tv;
+    of_tv.tag = LIGHTFUNC;
+    of_tv.fastint = (long)BUILTIN_ARRAY_OF;
+    arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Array");
