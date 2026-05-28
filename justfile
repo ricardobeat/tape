@@ -4,7 +4,7 @@ justfile := "benchmarks/README.md"
 # ── Build ────────────────────────────────────────────────────────────────────
 
 # Build everything (default)
-all: build-lib build-vm build-batch build-bench
+all: build-lib build-vm build-batch build-bench build-orig-duktape
 
 # Build the static library
 build-lib:
@@ -21,6 +21,10 @@ build-batch:
 # Build the benchmark runner
 build-bench:
     c3c build bench_run
+
+# Build original Duktape v2.7.0 for comparison benchmarks
+build-orig-duktape:
+    @cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.
 
 # Build a specific target: `just build <target>`  (e.g. just build test_vm)
 build t="duktape":
@@ -53,14 +57,15 @@ test262-phase phase="0":
 
 # Run all benchmarks without rebuilding (default: 3 iterations)
 bench n="3":
-    @test -f out/bench_run || { echo "ERROR: out/bench_run not found — run: c3c build bench_run"; exit 1; }
-    @test -f out/duktape_orig || { echo "ERROR: out/duktape_orig not found"; exit 1; }
-    bash scripts/run_benchmarks.sh {{n}}
+	@test -f out/bench_run || { echo "ERROR: out/bench_run not found — run: c3c build bench_run"; exit 1; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	bash scripts/run_benchmarks.sh {{n}}
 
 # Rebuild bench_run and run all benchmarks
 bench-rebuild n="3":
-    c3c build bench_run
-    bash scripts/run_benchmarks.sh {{n}}
+	c3c build bench_run
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	bash scripts/run_benchmarks.sh {{n}}
 
 # Run a single benchmark file: `just bench-one benchmarks/bench_loop.js`
 bench-one file n="3":
@@ -69,8 +74,8 @@ bench-one file n="3":
 
 # Run a single benchmark on original Duktape
 bench-orig file:
-    @test -f out/duktape_orig || { echo "ERROR: out/duktape_orig not found"; exit 1; }
-    ./out/duktape_orig {{file}}
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	./out/duktape_orig {{file}}
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
