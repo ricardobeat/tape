@@ -257,6 +257,8 @@ const uint BUILTIN_ARRAY_PROTO_TOREVERSED = 229;
 const uint BUILTIN_ARRAY_PROTO_TOSORTED   = 230;
 const uint BUILTIN_ARRAY_PROTO_TOSPLICED  = 231;
 const uint BUILTIN_ARRAY_PROTO_WITH       = 232;
+const uint BUILTIN_STRING_PROTO_MATCH     = 233;
+const uint BUILTIN_STRING_PROTO_SEARCH    = 234;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -2902,6 +2904,299 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     }
     ctx.result.tag = FASTINT;
     ctx.result.fastint = (long)result;
+}
+
+/// Helper: check if a TVal is a RegExp object
+fn bool is_regexp_object(TVal* val) {
+    if (val.tag != OBJECT || val.pointer == null) return false;
+    HObject* obj = (HObject*)val.pointer;
+    return obj.get_class() == hobject::ObjClass.REGEXP && obj.regexp_data != null;
+}
+
+/// String.prototype.match(regexp) — ES5 §15.5.4.10
+fn void builtin_string_proto_match(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* input = s_hstr.get_cstr();
+    int input_len = (int)s_hstr.blen;
+
+    // No args or undefined → null (per spec: RegExp(undefined) would match "undefined" string,
+    // but most engines return null for match() with no args)
+    if (ctx.argc == 0) {
+        ctx.result.set_null();
+        return;
+    }
+
+    TVal* regexp_arg = &ctx.regs[ctx.base_reg];
+
+    // If arg is a RegExp object, use it directly
+    if (is_regexp_object(regexp_arg)) {
+        HObject* rx = (HObject*)regexp_arg.pointer;
+
+        // Get global flag
+        HString* global_key = builtin_intern_string(ctx.heap, "global");
+        bool global_flag = false;
+        if (try gv = rx.get_prop(global_key)) {
+            if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+        }
+
+        if (!global_flag) {
+            // Non-global: single exec call
+            int out_start = 0;
+            int out_end = 0;
+            int out_num_captures = 0;
+            int[re_bindings::RE_MAX_CAPTURES] caps_start;
+            int[re_bindings::RE_MAX_CAPTURES] caps_end;
+            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+            // Get lastIndex
+            HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+            int start_pos = 0;
+            if (try liv = rx.get_prop(li_key)) {
+                if (liv.tag == FASTINT) { start_pos = (int)liv.fastint; }
+                else if (liv.tag == NUMBER) { start_pos = (int)liv.number; }
+            }
+
+            int result = re_bindings::re_exec(
+                rx.regexp_data, input, input_len, start_pos,
+                &out_start, &out_end, &out_num_captures,
+                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            );
+
+            if (result != re_bindings::RE_MATCH) {
+                ctx.result.set_null();
+                return;
+            }
+
+            // Create result array with full match as element 0
+            HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err = arr_raw) { ctx.result.set_null(); return; }
+            HObject* arr = arr_raw;
+            arr.prototype = ctx.heap.array_proto;
+
+            usz match_len = (usz)(out_end - out_start);
+            HString* match_str;
+            if (match_len == 0) {
+                match_str = builtin_intern_string(ctx.heap, "");
+            } else {
+                match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
+            }
+            TVal elem;
+            elem.tag = STRING;
+            elem.pointer = match_str;
+            HString* zero_key = builtin_intern_string(ctx.heap, "0");
+            arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+            // Set index property
+            TVal idx_tv;
+            idx_tv.tag = FASTINT;
+            idx_tv.fastint = (long)out_start;
+            HString* idx_key = builtin_intern_string(ctx.heap, "index");
+            arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
+
+            // Set input property
+            TVal input_tv;
+            input_tv.tag = STRING;
+            input_tv.pointer = s_hstr;
+            HString* input_key = builtin_intern_string(ctx.heap, "input");
+            arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
+
+            TVal len_tv;
+            len_tv.tag = FASTINT;
+            len_tv.fastint = 1;
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = arr;
+            return;
+        } else {
+            // Global: collect all matches
+            HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+
+            // Reset lastIndex to 0
+            TVal zero_tv;
+            zero_tv.tag = FASTINT;
+            zero_tv.fastint = 0;
+            rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+            HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err = arr_raw) { ctx.result.set_null(); return; }
+            HObject* arr = arr_raw;
+            arr.prototype = ctx.heap.array_proto;
+
+            uint arr_idx = 0;
+            int search_pos = 0;
+
+            while (search_pos <= input_len) {
+                int out_start = 0;
+                int out_end = 0;
+                int out_num_captures = 0;
+                int[re_bindings::RE_MAX_CAPTURES] caps_start;
+                int[re_bindings::RE_MAX_CAPTURES] caps_end;
+                libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+                libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+                int result = re_bindings::re_exec(
+                    rx.regexp_data, input, input_len, search_pos,
+                    &out_start, &out_end, &out_num_captures,
+                    &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+                );
+
+                if (result != re_bindings::RE_MATCH) break;
+
+                // Add match string to array
+                usz match_len = (usz)(out_end - out_start);
+                HString* match_str;
+                if (match_len == 0) {
+                    match_str = builtin_intern_string(ctx.heap, "");
+                } else {
+                    match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
+                }
+                TVal elem;
+                elem.tag = STRING;
+                elem.pointer = match_str;
+                char[16] idx_buf;
+                int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
+                HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+                arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+                arr_idx++;
+
+                // Advance: if empty match, move by one; else go to end of match
+                if (out_end == search_pos) {
+                    search_pos = out_end + 1;
+                    if (search_pos > input_len) break;
+                } else {
+                    search_pos = out_end;
+                }
+            }
+
+            if (arr_idx == 0) {
+                // Reset lastIndex
+                rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+                ctx.result.set_null();
+                return;
+            }
+
+            // Update lastIndex on the regexp
+            TVal li_tv;
+            li_tv.tag = FASTINT;
+            li_tv.fastint = 0;
+            rx.put_prop(li_key, li_tv, hobject::PROP_FLAGS_WEC);
+
+            TVal len_tv;
+            len_tv.tag = FASTINT;
+            len_tv.fastint = (long)arr_idx;
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+            ctx.result.tag = OBJECT;
+            ctx.result.pointer = arr;
+            return;
+        }
+    }
+
+    // Non-RegExp arg: convert to string and do literal search
+    HString* search_hstr = builtin_to_string(ctx.heap, regexp_arg);
+    if (search_hstr == null) { ctx.result.set_null(); return; }
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    // Find first occurrence via indexOf
+    int found_pos = -1;
+    for (uint i = 0; i + search_len <= (uint)input_len; i++) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (input[i + j] != search_data[j]) { match = false; break; }
+        }
+        if (match) { found_pos = (int)i; break; }
+    }
+
+    if (found_pos < 0) {
+        ctx.result.set_null();
+        return;
+    }
+
+    // Create result array with single match
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.set_null(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    TVal elem;
+    elem.tag = STRING;
+    elem.pointer = search_hstr;
+    HString* zero_key = builtin_intern_string(ctx.heap, "0");
+    arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+    TVal len_tv;
+    len_tv.tag = FASTINT;
+    len_tv.fastint = 1;
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = arr;
+}
+
+/// String.prototype.search(regexp) — ES5 §15.5.4.12
+fn void builtin_string_proto_search(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* input = s_hstr.get_cstr();
+    int input_len = (int)s_hstr.blen;
+
+    if (ctx.argc == 0) {
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = -1;
+        return;
+    }
+
+    TVal* regexp_arg = &ctx.regs[ctx.base_reg];
+
+    // If arg is a RegExp object, use it directly
+    if (is_regexp_object(regexp_arg)) {
+        HObject* rx = (HObject*)regexp_arg.pointer;
+
+        int out_start = 0;
+        int out_end = 0;
+        int out_num_captures = 0;
+        int[re_bindings::RE_MAX_CAPTURES] caps_start;
+        int[re_bindings::RE_MAX_CAPTURES] caps_end;
+        libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+        libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+        int result = re_bindings::re_exec(
+            rx.regexp_data, input, input_len, 0,
+            &out_start, &out_end, &out_num_captures,
+            &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+        );
+
+        ctx.result.tag = FASTINT;
+        ctx.result.fastint = (result == re_bindings::RE_MATCH) ? (long)out_start : -1;
+        return;
+    }
+
+    // Non-RegExp arg: convert to string and do literal search
+    HString* search_hstr = builtin_to_string(ctx.heap, regexp_arg);
+    if (search_hstr == null) { ctx.result.tag = FASTINT; ctx.result.fastint = -1; return; }
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    for (uint i = 0; i + search_len <= (uint)input_len; i++) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (input[i + j] != search_data[j]) { match = false; break; }
+        }
+        if (match) {
+            ctx.result.tag = FASTINT;
+            ctx.result.fastint = (long)i;
+            return;
+        }
+    }
+    ctx.result.tag = FASTINT;
+    ctx.result.fastint = -1;
 }
 
 // ============================================================================
@@ -12604,6 +12899,10 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_padEnd(ctx);
         case BUILTIN_STRING_PROTO_LASTINDEXOF:
             builtin_string_proto_lastIndexOf(ctx);
+        case BUILTIN_STRING_PROTO_MATCH:
+            builtin_string_proto_match(ctx);
+        case BUILTIN_STRING_PROTO_SEARCH:
+            builtin_string_proto_search(ctx);
         case BUILTIN_ARRAY:
             builtin_array(ctx);
         case BUILTIN_MATH_ABS:
@@ -13957,6 +14256,8 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "padStart",   BUILTIN_STRING_PROTO_PADSTART))   return false;
     if (!register_string_proto_method(proto, heap, "padEnd",     BUILTIN_STRING_PROTO_PADEND))     return false;
     if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
+    if (!register_string_proto_method(proto, heap, "match",      BUILTIN_STRING_PROTO_MATCH))      return false;
+    if (!register_string_proto_method(proto, heap, "search",     BUILTIN_STRING_PROTO_SEARCH))     return false;
 
     // Create String constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static methods like String.fromCharCode.
