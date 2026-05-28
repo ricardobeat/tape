@@ -121,21 +121,21 @@ const ulong TAG_STRING     = 0xFFF8;  // embed: HString* ptr
 const ulong TAG_OBJECT     = 0xFFF9;  // embed: HObject* ptr
 const ulong TAG_BUFFER     = 0xFFFA;  // embed: buffer ptr
 
-fn ulong nanbox_encode_tagged(ulong tag, ulong payload) @inline {
+macro ulong nanbox_encode_tagged(ulong tag, ulong payload) {
     return (tag << 48) | (payload & NANBOX_PAYLOAD_MASK);
 }
 
 /// True if the value is a regular double (not a tagged NaN).
 /// Doubles have bits 63-48 <= 0xFFF0; tagged values >= 0xFFF1.
-fn bool nanbox_is_double(ulong v) @inline {
+macro bool nanbox_is_double(ulong v) {
     return (v >> 48) <= 0xFFF0;
 }
 
-fn ulong nanbox_get_tag(ulong v) @inline {
+macro ulong nanbox_get_tag(ulong v) {
     return v >> 48;
 }
 
-fn ulong nanbox_get_payload(ulong v) @inline {
+macro ulong nanbox_get_payload(ulong v) {
     return v & NANBOX_PAYLOAD_MASK;
 }
 
@@ -162,7 +162,7 @@ struct TVal @if(!USE_NANBOX) {
 
 /// Returns the TValTag discriminator. In the NaN-box path, this decodes
 /// from the NaN-box tag bits.
-fn TValTag TVal.get_tag(&self) @inline {
+macro TValTag TVal.get_tag(&self) {
 $if USE_NANBOX:
     if (nanbox_is_double(self.bits)) return NUMBER;
     switch (nanbox_get_tag(self.bits)) {
@@ -186,7 +186,7 @@ $endif
 // TVal — type predicates
 // ---------------------------------------------------------------------------
 
-fn bool TVal.is_undefined(&self) @inline {
+macro bool TVal.is_undefined(&self) {
 $if USE_NANBOX:
     return self.bits == (TAG_UNDEFINED << 48);
 $else
@@ -194,7 +194,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_null(&self) @inline {
+macro bool TVal.is_null(&self) {
 $if USE_NANBOX:
     return self.bits == (TAG_NULL_VAL << 48);
 $else
@@ -202,7 +202,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_boolean(&self) @inline {
+macro bool TVal.is_boolean(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_BOOLEAN;
 $else
@@ -210,7 +210,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_number(&self) @inline {
+macro bool TVal.is_number(&self) {
 $if USE_NANBOX:
     return nanbox_is_double(self.bits);
 $else
@@ -218,7 +218,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_fastint(&self) @inline {
+macro bool TVal.is_fastint(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_FASTINT;
 $else
@@ -226,7 +226,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_string(&self) @inline {
+macro bool TVal.is_string(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_STRING;
 $else
@@ -234,7 +234,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_object(&self) @inline {
+macro bool TVal.is_object(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_OBJECT;
 $else
@@ -242,7 +242,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_buffer(&self) @inline {
+macro bool TVal.is_buffer(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_BUFFER;
 $else
@@ -250,7 +250,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_pointer(&self) @inline {
+macro bool TVal.is_pointer(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_POINTER;
 $else
@@ -258,7 +258,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_lightfunc(&self) @inline {
+macro bool TVal.is_lightfunc(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_LIGHTFUNC;
 $else
@@ -266,7 +266,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_nullish(&self) @inline {
+macro bool TVal.is_nullish(&self) {
 $if USE_NANBOX:
     return self.is_undefined() || self.is_null();
 $else
@@ -274,7 +274,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_numeric(&self) @inline {
+macro bool TVal.is_numeric(&self) {
 $if USE_NANBOX:
     return (self.bits >> 48) <= TAG_FASTINT;
 $else
@@ -282,7 +282,7 @@ $else
 $endif
 }
 
-fn bool TVal.is_heap_allocated(&self) @inline {
+macro bool TVal.is_heap_allocated(&self) {
 $if USE_NANBOX:
     ulong tag = self.bits >> 48;
     return tag >= TAG_STRING && tag <= TAG_BUFFER;
@@ -295,7 +295,7 @@ $endif
 // TVal — getters
 // ---------------------------------------------------------------------------
 
-fn bool TVal.get_boolean(&self) @inline {
+macro bool TVal.get_boolean(&self) {
 $if USE_NANBOX:
     return nanbox_get_payload(self.bits) != 0;
 $else
@@ -303,7 +303,7 @@ $else
 $endif
 }
 
-fn double TVal.get_number(&self) @inline {
+macro double TVal.get_number(&self) {
 $if USE_NANBOX:
     return bitcast(self.bits, double);
 $else
@@ -311,7 +311,7 @@ $else
 $endif
 }
 
-fn long TVal.get_fastint(&self) @inline {
+macro long TVal.get_fastint(&self) {
 $if USE_NANBOX:
     // Branchless sign extension from 48-bit two's complement.
     // Shift left 16 to put sign bit at bit 63, then arithmetic right shift.
@@ -322,7 +322,7 @@ $else
 $endif
 }
 
-fn void* TVal.get_heapptr(&self) @inline {
+macro void* TVal.get_heapptr(&self) {
 $if USE_NANBOX:
     return (void*)nanbox_get_payload(self.bits);
 $else
@@ -330,7 +330,7 @@ $else
 $endif
 }
 
-fn double TVal.get_number_or_fastint(&self) @inline {
+macro double TVal.get_number_or_fastint(&self) {
 $if USE_NANBOX:
     if (self.is_fastint()) {
         return (double)self.get_fastint();
@@ -348,7 +348,7 @@ $endif
 // TVal — mutating setters
 // ---------------------------------------------------------------------------
 
-fn void TVal.set_undefined(&self) @inline {
+macro void TVal.set_undefined(&self) {
 $if USE_NANBOX:
     self.bits = TAG_UNDEFINED << 48;
 $else
@@ -357,7 +357,7 @@ $else
 $endif
 }
 
-fn void TVal.set_null(&self) @inline {
+macro void TVal.set_null(&self) {
 $if USE_NANBOX:
     self.bits = TAG_NULL_VAL << 48;
 $else
@@ -366,7 +366,7 @@ $else
 $endif
 }
 
-fn void TVal.set_boolean(&self, bool val) @inline {
+macro void TVal.set_boolean(&self, bool val) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_BOOLEAN, val ? 1 : 0);
 $else
@@ -375,7 +375,7 @@ $else
 $endif
 }
 
-fn void TVal.set_number(&self, double val) @inline {
+macro void TVal.set_number(&self, double val) {
 $if USE_NANBOX:
     ulong bits = bitcast(val, ulong);
     // NaN normalization: negative NaNs have bits 63-48 >= 0xFFF8, which
@@ -390,7 +390,7 @@ $else
 $endif
 }
 
-fn void TVal.set_fastint(&self, long val) @inline {
+macro void TVal.set_fastint(&self, long val) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_FASTINT, (ulong)val);
 $else
@@ -399,7 +399,7 @@ $else
 $endif
 }
 
-fn void TVal.set_string(&self, void* ptr) @inline {
+macro void TVal.set_string(&self, void* ptr) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_STRING, (usz)ptr);
 $else
@@ -408,7 +408,7 @@ $else
 $endif
 }
 
-fn void TVal.set_object(&self, void* ptr) @inline {
+macro void TVal.set_object(&self, void* ptr) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_OBJECT, (usz)ptr);
 $else
@@ -417,7 +417,7 @@ $else
 $endif
 }
 
-fn void TVal.set_buffer(&self, void* ptr) @inline {
+macro void TVal.set_buffer(&self, void* ptr) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_BUFFER, (usz)ptr);
 $else
@@ -426,7 +426,7 @@ $else
 $endif
 }
 
-fn void TVal.set_pointer(&self, void* ptr) @inline {
+macro void TVal.set_pointer(&self, void* ptr) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_POINTER, (usz)ptr);
 $else
@@ -435,7 +435,7 @@ $else
 $endif
 }
 
-fn void TVal.set_lightfunc(&self, void* ptr) @inline {
+macro void TVal.set_lightfunc(&self, void* ptr) {
 $if USE_NANBOX:
     self.bits = nanbox_encode_tagged(TAG_LIGHTFUNC, (usz)ptr);
 $else
@@ -448,7 +448,7 @@ $endif
 // TVal — static constructors
 // ---------------------------------------------------------------------------
 
-fn TVal make_undefined() @inline {
+macro TVal make_undefined() {
 $if USE_NANBOX:
     TVal tv;
     tv.bits = TAG_UNDEFINED << 48;
@@ -458,7 +458,7 @@ $else
 $endif
 }
 
-fn TVal make_null() @inline {
+macro TVal make_null() {
 $if USE_NANBOX:
     TVal tv;
     tv.bits = nanbox_encode_tagged(TAG_NULL_VAL, 0);
@@ -468,7 +468,7 @@ $else
 $endif
 }
 
-fn TVal make_boolean(bool val) @inline {
+macro TVal make_boolean(bool val) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_BOOLEAN, val ? 1 : 0);
@@ -479,7 +479,7 @@ $endif
     return tv;
 }
 
-fn TVal make_number(double val) @inline {
+macro TVal make_number(double val) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = bitcast(val, ulong);
@@ -490,7 +490,7 @@ $endif
     return tv;
 }
 
-fn TVal make_fastint(long val) @inline {
+macro TVal make_fastint(long val) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_FASTINT, (ulong)val);
@@ -501,7 +501,7 @@ $endif
     return tv;
 }
 
-fn TVal make_string(void* ptr) @inline {
+macro TVal make_string(void* ptr) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_STRING, (usz)ptr);
@@ -512,7 +512,7 @@ $endif
     return tv;
 }
 
-fn TVal make_object(void* ptr) @inline {
+macro TVal make_object(void* ptr) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_OBJECT, (usz)ptr);
@@ -523,7 +523,7 @@ $endif
     return tv;
 }
 
-fn TVal make_buffer(void* ptr) @inline {
+macro TVal make_buffer(void* ptr) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_BUFFER, (usz)ptr);
@@ -534,7 +534,7 @@ $endif
     return tv;
 }
 
-fn TVal make_pointer(void* ptr) @inline {
+macro TVal make_pointer(void* ptr) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_POINTER, (usz)ptr);
@@ -545,7 +545,7 @@ $endif
     return tv;
 }
 
-fn TVal make_lightfunc(void* ptr) @inline {
+macro TVal make_lightfunc(void* ptr) {
     TVal tv;
 $if USE_NANBOX:
     tv.bits = nanbox_encode_tagged(TAG_LIGHTFUNC, (usz)ptr);
