@@ -57,6 +57,6 @@ fn int main(String[] args) {
     io::printfn("=== EXECUTING ===");
 
     TVal? result = v.execute(f);
-    if (catch err = result) { io::eprintfn("VM error"); return 1; }
+    if (catch err = result) { io::eprintfn("VM error: %s (at execute)", err); return 1; }
     return 0;
 }

@@ -103,7 +103,7 @@ fn int run_test_fresh_with_harness(char[] test_path, char[] assert_src) {
     if (try k = ks) {
         TVal? tv = env::env_get(v.global_env, k);
         if (try val = tv) {
-            return (val.fastint == 0) ? 0 : 1;
+            return (val.get_fastint() == 0) ? 0 : 1;
         }
     }
     return 1;

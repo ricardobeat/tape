@@ -40,7 +40,7 @@ fn long run_one(char[] source) {
     CompiledFunction* f = func;
 
     TVal? res = v.execute(f);
-    if (catch err = res) { io::eprintfn("execute failed"); return -1; }
+    if (catch err = res) { io::eprintfn("execute failed: %s", err); return -1; }
 
     Clock t1 = clock::now();
     return (long)(t1 - t0);

@@ -305,19 +305,19 @@ struct BuiltinContext {
 alias BuiltinFunc = fn void(BuiltinContext*);
 
 fn void print_tval(TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED:
             io::printf("undefined");
         case NULL_VAL:
             io::printf("null");
         case BOOLEAN:
-            if (val.boolean) {
+            if (val.get_boolean()) {
                 io::printf("true");
             } else {
                 io::printf("false");
             }
         case NUMBER:
-            double v = val.number;
+            double v = val.get_number();
             if (math::is_nan(v)) {
                 io::printf("NaN");
             } else if (math::is_inf(v)) {
@@ -331,9 +331,9 @@ fn void print_tval(TVal* val) {
                 }
             }
         case FASTINT:
-            io::printf("%d", val.fastint);
+            io::printf("%d", val.get_fastint());
         case STRING:
-            HString* s = (HString*)val.pointer;
+            HString* s = (HString*)val.get_heapptr();
             if (s != null) {
                 char[] d = s.get_data();
                 for (usz i = 0; i < d.len; i++) {
@@ -359,8 +359,7 @@ fn void builtin_print(BuiltinContext* ctx) {
         print_tval(&ctx.regs[ctx.base_reg + i]);
     }
     io::putchar('\n');
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 fn void builtin_console_log(BuiltinContext* ctx) {
@@ -371,15 +370,14 @@ fn void builtin_console_log(BuiltinContext* ctx) {
         print_tval(&ctx.regs[ctx.base_reg + i]);
     }
     io::putchar('\n');
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 fn double string_to_double(TVal* val) {
-    if (val.tag == FASTINT) return (double)val.fastint;
-    if (val.tag == NUMBER) return val.number;
-    if (val.tag == STRING) {
-        HString* h = (HString*)val.pointer;
+    if (val.is_fastint()) return (double)val.get_fastint();
+    if (val.is_number()) return val.get_number();
+    if (val.is_string()) {
+        HString* h = (HString*)val.get_heapptr();
         if (h == null || h.blen == 0) return double::nan;
         char* end;
         double r = libc::strtod((ZString)h.get_cstr(), &end);
@@ -477,18 +475,15 @@ fn double builtin_string_to_number(HString* hstr) {
 /// Convert any TVal to a numeric TVal per ES5 §9.3.
 /// Preserves FASTINT where possible.
 fn void builtin_to_number(TVal* val, TVal* result) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED:
-            result.tag = NUMBER;
-            result.number = double::nan;
+            result.set_number(double::nan);
             return;
         case NULL_VAL:
-            result.tag = FASTINT;
-            result.fastint = 0;
+            result.set_fastint(0);
             return;
         case BOOLEAN:
-            result.tag = FASTINT;
-            result.fastint = val.boolean ? 1 : 0;
+            result.set_fastint(val.get_boolean() ? 1 : 0);
             return;
         case NUMBER:
             *result = *val;
@@ -497,61 +492,54 @@ fn void builtin_to_number(TVal* val, TVal* result) {
             *result = *val;
             return;
         case STRING: {
-            double d = builtin_string_to_number((HString*)val.pointer);
+            double d = builtin_string_to_number((HString*)val.get_heapptr());
             // Try fastint preservation
             long fi = (long)d;
             if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
-                result.tag = FASTINT;
-                result.fastint = fi;
+                result.set_fastint(fi);
                 return;
             }
-            result.tag = NUMBER;
-            result.number = d;
+            result.set_number(d);
             return;
         }
         case OBJECT: {
             // For wrapper objects, unwrap via ToPrimitive
             TVal prim = to_primitive_value_local(val);
-            if (prim.tag != OBJECT) {
+            if (!prim.is_object()) {
                 builtin_to_number(&prim, result);
                 return;
             }
             // Non-wrapper objects -> NaN
-            result.tag = NUMBER;
-            result.number = double::nan;
+            result.set_number(double::nan);
             return;
         }
         default:
-            result.tag = NUMBER;
-            result.number = double::nan;
+            result.set_number(double::nan);
             return;
     }
 }
 
 /// Simplified ToPrimitive for builtins — unwraps Boolean/Number/String wrapper objects.
 fn TVal to_primitive_value_local(TVal* val) {
-    if (val.tag == OBJECT && val.pointer != null) {
-        HObject* obj = (HObject*)val.pointer;
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
         if (cls == hobject::ObjClass.BOOLEAN &&
-            obj.primitive_value.tag == BOOLEAN) {
+            obj.primitive_value.is_boolean()) {
             TVal result;
-            result.tag = BOOLEAN;
-            result.boolean = obj.primitive_value.boolean;
+            result.set_boolean(obj.primitive_value.get_boolean());
             return result;
         }
         if (cls == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
             TVal result;
-            result.tag = obj.primitive_value.tag;
-            result.number = obj.primitive_value.number;
+            result.set_number(obj.primitive_value.get_number());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
-            obj.primitive_value.tag == STRING) {
+            obj.primitive_value.is_string()) {
             TVal result;
-            result.tag = STRING;
-            result.pointer = obj.primitive_value.pointer;
+            result.set_string(obj.primitive_value.get_heapptr());
             return result;
         }
     }
@@ -560,25 +548,21 @@ fn TVal to_primitive_value_local(TVal* val) {
 
 fn void builtin_parse_int(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
-    if (arg.tag == FASTINT) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = arg.fastint;
+    if (arg.is_fastint()) {
+        ctx.result.set_fastint(arg.get_fastint());
         return;
     }
-    if (arg.tag != STRING) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+    if (!arg.is_string()) {
+        ctx.result.set_number(double::nan);
         return;
     }
-    HString* h = (HString*)arg.pointer;
+    HString* h = (HString*)arg.get_heapptr();
     if (h == null || h.blen == 0) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     char* cstr = h.get_cstr();
@@ -589,7 +573,7 @@ fn void builtin_parse_int(BuiltinContext* ctx) {
     int radix;
     if (ctx.argc > 1) {
         TVal* rad_arg = &ctx.regs[ctx.base_reg + 1];
-        radix = (int)(rad_arg.tag == FASTINT ? rad_arg.fastint : rad_arg.number);
+        radix = (int)(rad_arg.is_fastint() ? rad_arg.get_fastint() : rad_arg.get_number());
     } else {
         radix = 0;  // auto-detect (0x = hex, 0 = octal legacy, else decimal)
     }
@@ -597,46 +581,38 @@ fn void builtin_parse_int(BuiltinContext* ctx) {
     char* end;
     long result = libc::strtol(p, &end, radix);
     if (end == cstr) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = result;
+    ctx.result.set_fastint(result);
 }
 
 fn void builtin_parse_float(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     double d = string_to_double(&ctx.regs[ctx.base_reg]);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = d;
+    ctx.result.set_number(d);
 }
 
 fn void builtin_is_nan(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     TVal num;
     builtin_to_number(&ctx.regs[ctx.base_reg], &num);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (num.tag == NUMBER) ? math::is_nan(num.number) : false;
+    ctx.result.set_boolean((num.is_number()) ? math::is_nan(num.get_number()) : false);
 }
 
 fn void builtin_is_finite(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     double d = string_to_double(&ctx.regs[ctx.base_reg]);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = !math::is_nan(d) && !math::is_inf(d);
+    ctx.result.set_boolean(!math::is_nan(d) && !math::is_inf(d));
 }
 
 // ============================================================================
@@ -664,8 +640,8 @@ fn void builtin_function(BuiltinContext* ctx) {
     } else {
         // Get the body from the last argument
         TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
-        if (body_arg.tag == STRING && body_arg.pointer != null) {
-            HString* s = (HString*)body_arg.pointer;
+        if (body_arg.is_string() && body_arg.get_heapptr() != null) {
+            HString* s = (HString*)body_arg.get_heapptr();
             body_str = s.get_cstr();
             body_len = s.blen;
         } else {
@@ -680,8 +656,8 @@ fn void builtin_function(BuiltinContext* ctx) {
             TVal* arg = &ctx.regs[ctx.base_reg + (uint)i];
             char* pname = "";
             usz plen = 0;
-            if (arg.tag == STRING && arg.pointer != null) {
-                HString* s = (HString*)arg.pointer;
+            if (arg.is_string() && arg.get_heapptr() != null) {
+                HString* s = (HString*)arg.get_heapptr();
                 pname = s.get_cstr();
                 plen = s.blen;
             } else {
@@ -729,14 +705,11 @@ fn void builtin_function(BuiltinContext* ctx) {
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in Function constructor");
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
             TVal err_tv;
-            err_tv.tag = OBJECT;
-            err_tv.pointer = err;
-            ctx.throw_value.tag = err_tv.tag;
-            ctx.throw_value.pointer = err_tv.pointer;
+            err_tv.set_object(err);
+            ctx.throw_value.set_object(err_tv.get_heapptr());
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -765,8 +738,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     if (try proto = proto_raw) {
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
-        proto_tv.tag = OBJECT;
-        proto_tv.pointer = proto;
+        proto_tv.set_object(proto);
         func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
     }
 
@@ -775,13 +747,11 @@ fn void builtin_function(BuiltinContext* ctx) {
     if (ctx.argc > 0) num_params = (uint)(ctx.argc - 1);
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = (long)num_params;
+    len_tv.set_fastint((long)num_params);
     func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
     // Return the function object
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = func_obj;
+    ctx.result.set_object(func_obj);
 }
 
 // ============================================================================
@@ -799,15 +769,14 @@ fn void builtin_eval(BuiltinContext* ctx) {
     TVal* arg = &ctx.regs[ctx.base_reg];
 
     // If Type(x) is not String, return x unchanged
-    if (arg.tag != STRING) {
-        ctx.result.tag = arg.tag;
-        ctx.result.fastint = arg.fastint;
-        ctx.result.number = arg.number;
-        ctx.result.pointer = arg.pointer;
+    if (!arg.is_string()) {
+        ctx.result.set_fastint(arg.get_fastint());
+        ctx.result.set_number(arg.get_number());
+        ctx.result.set_object(arg.get_heapptr());
         return;
     }
 
-    HString* source = (HString*)arg.pointer;
+    HString* source = (HString*)arg.get_heapptr();
     char* src_cstr = source.get_cstr();
     usz src_len = source.blen;
 
@@ -825,14 +794,11 @@ fn void builtin_eval(BuiltinContext* ctx) {
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in eval code");
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
             TVal err_tv;
-            err_tv.tag = OBJECT;
-            err_tv.pointer = err;
-            ctx.throw_value.tag = err_tv.tag;
-            ctx.throw_value.pointer = err_tv.pointer;
+            err_tv.set_object(err);
+            ctx.throw_value.set_object(err_tv.get_heapptr());
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -857,15 +823,13 @@ fn void builtin_eval(BuiltinContext* ctx) {
 
     // Replace the callee slot with the compiled function HObject
     TVal func_tv;
-    func_tv.tag = OBJECT;
-    func_tv.pointer = func_obj;
+    func_tv.set_object(func_obj);
     ctx.regs[ctx.base_reg - 2] = func_tv;
 
     // Set this binding to the global object (required for indirect eval per §10.4.2)
     if (ctx.global_env != null && ctx.global_env.bindings != null) {
         TVal this_tv;
-        this_tv.tag = OBJECT;
-        this_tv.pointer = ctx.global_env.bindings;
+        this_tv.set_object(ctx.global_env.bindings);
         ctx.regs[ctx.base_reg - 1] = this_tv;
     }
 
@@ -879,18 +843,18 @@ fn void builtin_eval(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool builtin_to_boolean(TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED:
         case NULL_VAL:
             return false;
         case BOOLEAN:
-            return val.boolean;
+            return val.get_boolean();
         case NUMBER:
-            return !math::is_nan(val.number) && val.number != 0.0;
+            return !math::is_nan(val.get_number()) && val.get_number() != 0.0;
         case FASTINT:
-            return val.fastint != 0;
+            return val.get_fastint() != 0;
         case STRING: {
-            HString* s = (HString*)val.pointer;
+            HString* s = (HString*)val.get_heapptr();
             return s != null && s.blen > 0;
         }
         case OBJECT:
@@ -926,23 +890,23 @@ fn HString* builtin_intern_string(Heap* heap, char[] data) {
 // ============================================================================
 
 fn HString* builtin_to_string(Heap* heap, TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case STRING:
-            return (HString*)val.pointer;
+            return (HString*)val.get_heapptr();
         case NUMBER: {
             char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%.17g", val.number);
+            int len = libc::snprintf(&buf, 64, "%.17g", val.get_number());
             if (len < 0 || len >= 64) return null;
             return builtin_intern_string(heap, buf[:len]);
         }
         case FASTINT: {
             char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%ld", (long)val.fastint);
+            int len = libc::snprintf(&buf, 64, "%ld", (long)val.get_fastint());
             if (len < 0 || len >= 64) return null;
             return builtin_intern_string(heap, buf[:len]);
         }
         case BOOLEAN:
-            return builtin_intern_string(heap, val.boolean ? "true" : "false");
+            return builtin_intern_string(heap, val.get_boolean() ? "true" : "false");
         case UNDEFINED:
             return builtin_intern_string(heap, "undefined");
         case NULL_VAL:
@@ -965,8 +929,7 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
 fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch err = err_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* err = err_raw;
@@ -975,21 +938,20 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
     // Set .message if first arg is provided and not undefined
     if (ctx.argc > 0) {
         TVal* msg_arg = &ctx.regs[ctx.base_reg];
-        if (msg_arg.tag != UNDEFINED) {
+        if (!msg_arg.is_undefined()) {
             HString* msg_str = builtin_to_string(ctx.heap, msg_arg);
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.fastint = 0;
-    ctx.result.pointer = err;
+    ctx.result.set_object(null);
+    ctx.result.set_fastint(0);
+    ctx.result.set_object(err);
 }
 
 fn void builtin_error(BuiltinContext* ctx) {
@@ -1032,14 +994,14 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
     HString* name_str = builtin_intern_string(ctx.heap, "Error");
     HString* msg_str  = builtin_intern_string(ctx.heap, "");
 
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
 
         // Read .name property
         HString* name_key = builtin_intern_string(ctx.heap, "name");
         TVal? name_prop = obj.get_prop_proto(name_key);
         if (try nv = name_prop) {
-            io::eprintfn("DEBUG toString: name found tag=%d", nv.tag);
+            io::eprintfn("DEBUG toString: name found tag=%d", nv.get_tag());
             if (!nv.is_undefined()) {
                 HString* tmp = builtin_to_string(ctx.heap, &nv);
                 if (tmp != null) name_str = tmp;
@@ -1059,11 +1021,9 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
         }
     }
     if (name_str.blen == 0) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = msg_str;
+        ctx.result.set_string(msg_str);
     } else if (msg_str.blen == 0) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = name_str;
+        ctx.result.set_string(name_str);
     } else {
         // Format: "name: message"
         usz total = (usz)name_str.blen + 2 + (usz)msg_str.blen;
@@ -1073,11 +1033,9 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
         int len = libc::snprintf(&buf, 256, "%s: %s", name_cstr, msg_cstr);
         if (len > 0 && len < 256) {
             HString* result_str = builtin_intern_string(ctx.heap, buf[:len]);
-            ctx.result.tag = STRING;
-            ctx.result.pointer = result_str;
+            ctx.result.set_string(result_str);
         } else {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
         }
     }
 }
@@ -1099,19 +1057,15 @@ fn void builtin_boolean(BuiltinContext* ctx) {
     if (ctx.is_constructor) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.bool_proto;
-        obj.primitive_value.tag = BOOLEAN;
-        obj.primitive_value.boolean = b;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        obj.primitive_value.set_boolean(b);
+        ctx.result.set_object(obj);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = b;
+        ctx.result.set_boolean(b);
     }
 }
 
@@ -1120,18 +1074,17 @@ fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
     // 'this' is at base_reg - 1
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     bool b = false;
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
-            obj.primitive_value.tag == BOOLEAN) {
-            b = obj.primitive_value.boolean;
+            obj.primitive_value.is_boolean()) {
+            b = obj.primitive_value.get_boolean();
         }
-    } else if (this_val.tag == BOOLEAN) {
-        b = this_val.boolean;
+    } else if (this_val.is_boolean()) {
+        b = this_val.get_boolean();
     }
     HString* s = builtin_intern_string(ctx.heap, b ? "true" : "false");
-    ctx.result.tag = STRING;
-    ctx.result.pointer = s;
+    ctx.result.set_string(s);
 }
 
 /// Boolean.prototype.valueOf — returns the wrapped boolean value
@@ -1152,19 +1105,15 @@ fn void builtin_string(BuiltinContext* ctx) {
     if (ctx.is_constructor) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.string_proto;
-        obj.primitive_value.tag = STRING;
-        obj.primitive_value.pointer = s;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        obj.primitive_value.set_string(s);
+        ctx.result.set_object(obj);
     } else {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
     }
 }
 
@@ -1173,10 +1122,10 @@ fn uint to_uint16(TVal* val) {
     TVal num;
     builtin_to_number(val, &num);
     double n;
-    if (num.tag == FASTINT) {
-        n = (double)num.fastint;
-    } else if (num.tag == NUMBER) {
-        n = num.number;
+    if (num.is_fastint()) {
+        n = (double)num.get_fastint();
+    } else if (num.is_number()) {
+        n = num.get_number();
     } else {
         return 0;
     }
@@ -1191,8 +1140,7 @@ fn uint to_uint16(TVal* val) {
 fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
     if (ctx.argc == 0) {
         HString* empty = builtin_intern_string(ctx.heap, "");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = empty;
+        ctx.result.set_string(empty);
         return;
     }
     // Build string from code units (max ~256 args, cap at 512 bytes)
@@ -1213,16 +1161,14 @@ fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.fromCodePoint(...codePoints) — ES6 §21.1.2.2
 fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
     if (ctx.argc == 0) {
         HString* empty = builtin_intern_string(ctx.heap, "");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = empty;
+        ctx.result.set_string(empty);
         return;
     }
     // Build string from code points (supporting supplementary plane via UTF-8)
@@ -1232,13 +1178,13 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
     for (ushort i = 0; i < max_args && offset < 1020; i++) {
         TVal* arg = &ctx.regs[ctx.base_reg + i];
         double d;
-        if (arg.tag == FASTINT) {
-            d = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            d = arg.number;
-        } else if (arg.tag == BOOLEAN) {
-            d = arg.boolean ? 1.0 : 0.0;
-        } else if (arg.tag == UNDEFINED || arg.tag == NULL_VAL) {
+        if (arg.is_fastint()) {
+            d = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            d = arg.get_number();
+        } else if (arg.is_boolean()) {
+            d = arg.get_boolean() ? 1.0 : 0.0;
+        } else if (arg.is_undefined() || arg.is_null()) {
             d = 0.0;
         } else {
             d = builtin_to_number_getdouble(ctx, arg);
@@ -1250,12 +1196,11 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
             if (try err = err_raw) {
                 err.prototype = ctx.heap.range_err_proto;
                 HString* msg = builtin_intern_string(ctx.heap, "Invalid code point value");
-                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             }
             return;
         }
@@ -1278,8 +1223,7 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         }
     }
     HString* result_str = builtin_intern_string(ctx.heap, buf[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result_str;
+    ctx.result.set_string(result_str);
 }
 
 // ============================================================================
@@ -1313,14 +1257,12 @@ fn int hex_digit_val(char c) {
 /// encodeURI (ES5 §15.1.3.1)
 fn void builtin_encode_uri(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, "undefined"));
         return;
     }
     HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
     if (str == null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     char[] data = str.get_data();
@@ -1379,21 +1321,18 @@ fn void builtin_encode_uri(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, out[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// encodeURIComponent (ES5 §15.1.3.2)
 fn void builtin_encode_uri_component(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, "undefined"));
         return;
     }
     HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
     if (str == null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     char[] data = str.get_data();
@@ -1442,21 +1381,18 @@ fn void builtin_encode_uri_component(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, out[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// decodeURI (ES5 §15.1.3.3)
 fn void builtin_decode_uri(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, "undefined"));
         return;
     }
     HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
     if (str == null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     char[] data = str.get_data();
@@ -1499,12 +1435,11 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                             if (try err = err_raw) {
                                 err.prototype = ctx.heap.uri_err_proto;
                                 HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                                TVal msg_tv; msg_tv.set_string(msg);
                                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                                 ctx.should_throw = true;
-                                ctx.throw_value.tag = OBJECT;
-                                ctx.throw_value.pointer = err;
+                                ctx.throw_value.set_object(err);
                             }
                             return;
                         }
@@ -1525,12 +1460,11 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                             if (try err = err_raw) {
                                 err.prototype = ctx.heap.uri_err_proto;
                                 HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                                TVal msg_tv; msg_tv.set_string(msg);
                                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                                 ctx.should_throw = true;
-                                ctx.throw_value.tag = OBJECT;
-                                ctx.throw_value.pointer = err;
+                                ctx.throw_value.set_object(err);
                             }
                             return;
                         }
@@ -1544,12 +1478,11 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                         if (try err = err_raw) {
                             err.prototype = ctx.heap.uri_err_proto;
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
                             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                             ctx.should_throw = true;
-                            ctx.throw_value.tag = OBJECT;
-                            ctx.throw_value.pointer = err;
+                            ctx.throw_value.set_object(err);
                         }
                         return;
                     }
@@ -1559,12 +1492,11 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                     if (try err = err_raw) {
                         err.prototype = ctx.heap.uri_err_proto;
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         ctx.should_throw = true;
-                        ctx.throw_value.tag = OBJECT;
-                        ctx.throw_value.pointer = err;
+                        ctx.throw_value.set_object(err);
                     }
                     return;
                 }
@@ -1574,12 +1506,11 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                 if (try err = err_raw) {
                     err.prototype = ctx.heap.uri_err_proto;
                     HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                    TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                    TVal msg_tv; msg_tv.set_string(msg);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     ctx.should_throw = true;
-                    ctx.throw_value.tag = OBJECT;
-                    ctx.throw_value.pointer = err;
+                    ctx.throw_value.set_object(err);
                 }
                 return;
             }
@@ -1589,21 +1520,18 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, out[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// decodeURIComponent (ES5 §15.1.3.4)
 fn void builtin_decode_uri_component(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, "undefined"));
         return;
     }
     HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
     if (str == null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     char[] data = str.get_data();
@@ -1621,12 +1549,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                     if (try err = err_raw) {
                         err.prototype = ctx.heap.uri_err_proto;
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         ctx.should_throw = true;
-                        ctx.throw_value.tag = OBJECT;
-                        ctx.throw_value.pointer = err;
+                        ctx.throw_value.set_object(err);
                     }
                     return;
                 }
@@ -1644,12 +1571,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                         if (try err = err_raw) {
                             err.prototype = ctx.heap.uri_err_proto;
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
                             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                             ctx.should_throw = true;
-                            ctx.throw_value.tag = OBJECT;
-                            ctx.throw_value.pointer = err;
+                            ctx.throw_value.set_object(err);
                         }
                         return;
                     }
@@ -1670,12 +1596,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                         if (try err = err_raw) {
                             err.prototype = ctx.heap.uri_err_proto;
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
                             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                             ctx.should_throw = true;
-                            ctx.throw_value.tag = OBJECT;
-                            ctx.throw_value.pointer = err;
+                            ctx.throw_value.set_object(err);
                         }
                         return;
                     }
@@ -1688,12 +1613,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                     if (try err = err_raw) {
                         err.prototype = ctx.heap.uri_err_proto;
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         ctx.should_throw = true;
-                        ctx.throw_value.tag = OBJECT;
-                        ctx.throw_value.pointer = err;
+                        ctx.throw_value.set_object(err);
                     }
                     return;
                 }
@@ -1702,12 +1626,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                 if (try err = err_raw) {
                     err.prototype = ctx.heap.uri_err_proto;
                     HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                    TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                    TVal msg_tv; msg_tv.set_string(msg);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     ctx.should_throw = true;
-                    ctx.throw_value.tag = OBJECT;
-                    ctx.throw_value.pointer = err;
+                    ctx.throw_value.set_object(err);
                 }
                 return;
             }
@@ -1717,67 +1640,57 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, out[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.toString — returns the wrapped string value
 fn void builtin_string_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.primitive_value.tag == STRING) {
-            ctx.result.tag = STRING;
-            ctx.result.pointer = obj.primitive_value.pointer;
+            obj.primitive_value.is_string()) {
+            ctx.result.set_string(obj.primitive_value.get_heapptr());
             return;
         }
-    } else if (this_val.tag == STRING) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = this_val.pointer;
+    } else if (this_val.is_string()) {
+        ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 /// String.prototype.valueOf — returns the wrapped string primitive
 fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.primitive_value.tag == STRING) {
-            ctx.result.tag = STRING;
-            ctx.result.pointer = obj.primitive_value.pointer;
+            obj.primitive_value.is_string()) {
+            ctx.result.set_string(obj.primitive_value.get_heapptr());
             return;
         }
-    } else if (this_val.tag == STRING) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = this_val.pointer;
+    } else if (this_val.is_string()) {
+        ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
-            obj.primitive_value.tag == BOOLEAN) {
-            ctx.result.tag = BOOLEAN;
-            ctx.result.boolean = obj.primitive_value.boolean;
+            obj.primitive_value.is_boolean()) {
+            ctx.result.set_boolean(obj.primitive_value.get_boolean());
             return;
         }
-    } else if (this_val.tag == BOOLEAN) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = this_val.boolean;
+    } else if (this_val.is_boolean()) {
+        ctx.result.set_boolean(this_val.get_boolean());
         return;
     }
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -1788,14 +1701,14 @@ fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
 /// primitive strings and String wrapper objects. Returns null on failure.
 fn HString* string_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == STRING) {
-        return (HString*)this_val.pointer;
+    if (this_val.is_string()) {
+        return (HString*)this_val.get_heapptr();
     }
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.primitive_value.tag == STRING) {
-            return (HString*)obj.primitive_value.pointer;
+            obj.primitive_value.is_string()) {
+            return (HString*)obj.primitive_value.get_heapptr();
         }
     }
     // TypeError: String.prototype method called on incompatible value
@@ -1805,8 +1718,7 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         err.prototype = ctx.heap.type_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
         TVal msg_val;
-        msg_val.tag = STRING;
-        msg_val.pointer = msg_str;
+        msg_val.set_string(msg_str);
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         // Store the error for bubbling — but for now just return null
@@ -1816,29 +1728,29 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
 
 /// Helper: convert TVal to integer (ES5 §9.4 ToInteger).
 fn double builtin_to_integer(TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED:
             return 0.0;
         case NULL_VAL:
             return 0.0;
         case BOOLEAN:
-            return val.boolean ? 1.0 : 0.0;
+            return val.get_boolean() ? 1.0 : 0.0;
         case NUMBER:
-            double d = val.number;
+            double d = val.get_number();
             if (math::is_nan(d)) return 0.0;
             if (math::is_inf(d) || d == 0.0) return d;
             return math::trunc(d);
         case FASTINT:
-            return (double)val.fastint;
+            return (double)val.get_fastint();
         case STRING: {
-            double d = builtin_string_to_number((HString*)val.pointer);
+            double d = builtin_string_to_number((HString*)val.get_heapptr());
             if (math::is_nan(d)) return 0.0;
             if (math::is_inf(d) || d == 0.0) return d;
             return math::trunc(d);
         }
         case OBJECT: {
             TVal prim = to_primitive_value_local(val);
-            if (prim.tag != OBJECT) {
+            if (!prim.is_object()) {
                 return builtin_to_integer(&prim);
             }
             return 0.0;
@@ -1860,8 +1772,7 @@ fn uint clamp_index(double d, uint len) {
 fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -1869,8 +1780,7 @@ fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
     double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
     if (pos < 0 || pos >= (double)len) {
         // Return empty string
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     uint idx = (uint)(long)pos;
@@ -1878,37 +1788,32 @@ fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
     buf[0] = data[idx];
     buf[1] = 0;
     HString* result = builtin_intern_string(ctx.heap, buf[:1]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.charCodeAt(pos) — ES5 §15.5.4.5
 fn void builtin_string_proto_charCodeAt(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
     double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
     if (pos < 0 || pos >= (double)len) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     uint idx = (uint)(long)pos;
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)(data[idx] & 0xFF);
+    ctx.result.set_fastint((long)(data[idx] & 0xFF));
 }
 
 /// String.prototype.indexOf(searchString, position) — ES5 §15.5.4.7
 fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -1922,8 +1827,7 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
     if (search_hstr == null) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = -1;
+        ctx.result.set_fastint(-1);
         return;
     }
 
@@ -1943,8 +1847,7 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
 
     // Search for occurrence
     if (search_len == 0) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = (long)pos;
+        ctx.result.set_fastint((long)pos);
         return;
     }
 
@@ -1962,16 +1865,14 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
             break;
         }
     }
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)result;
+    ctx.result.set_fastint((long)result);
 }
 
 /// String.prototype.slice(start, end) — ES5 §15.5.4.13
 fn void builtin_string_proto_slice(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -2005,8 +1906,7 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
     }
 
     if (start_i >= end_i) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
@@ -2017,16 +1917,14 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
         buf[i] = data[(uint)start_i + i];
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.substring(start, end) — ES5 §15.5.4.15
 fn void builtin_string_proto_substring(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     uint len = s_hstr.blen;
@@ -2041,8 +1939,7 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
     uint to = start < end ? end : start;
 
     if (from >= to) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
@@ -2054,16 +1951,14 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
         buf[i] = cstr[from + i];
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.substr(start, length) — ES5 §B.2.3
 fn void builtin_string_proto_substr(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     uint len = s_hstr.blen;
@@ -2090,8 +1985,7 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
 
     int length_i;
     if (math::is_nan(length_d) || length_d <= 0) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     length_i = (int)(long)length_d;
@@ -2099,8 +1993,7 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
         length_i = (int)len - start_i;
     }
     if (length_i <= 0) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
@@ -2111,16 +2004,14 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
         buf[i] = cstr[(uint)start_i + i];
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.toLowerCase() — ES5 §15.5.4.17 (ASCII-only)
 fn void builtin_string_proto_toLowerCase(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -2137,16 +2028,14 @@ fn void builtin_string_proto_toLowerCase(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.toUpperCase() — ES5 §15.5.4.18 (ASCII-only)
 fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -2163,16 +2052,14 @@ fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.trim() — ES5 §15.5.4.20
 fn void builtin_string_proto_trim(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -2186,8 +2073,7 @@ fn void builtin_string_proto_trim(BuiltinContext* ctx) {
 
     // All whitespace
     if (start == len) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
@@ -2204,16 +2090,14 @@ fn void builtin_string_proto_trim(BuiltinContext* ctx) {
         buf[i] = data[start + i];
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.split(separator, limit) — ES5 §15.5.4.14 (string-only separator)
 fn void builtin_string_proto_split(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     char* data = s_hstr.get_cstr();
@@ -2222,35 +2106,30 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     // Create result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
     // If separator is undefined, return [string]
-    if (ctx.argc == 0 || ctx.regs[ctx.base_reg].tag == UNDEFINED) {
+    if (ctx.argc == 0 || ctx.regs[ctx.base_reg].is_undefined()) {
         TVal elem;
-        elem.tag = STRING;
-        elem.pointer = s_hstr;
+        elem.set_string(s_hstr);
         HString* zero_key = builtin_intern_string(ctx.heap, "0");
         arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
         TVal len_val;
-        len_val.tag = FASTINT;
-        len_val.fastint = 1;
+        len_val.set_fastint(1);
         HString* len_key = builtin_intern_string(ctx.heap, "length");
         arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = arr;
+        ctx.result.set_object(arr);
         return;
     }
 
     // Get separator string
     HString* sep_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
     if (sep_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -2271,8 +2150,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         uint count = len < limit ? len : limit;
         HString* len_key = builtin_intern_string(ctx.heap, "length");
         TVal len_val;
-        len_val.tag = FASTINT;
-        len_val.fastint = (long)count;
+        len_val.set_fastint((long)count);
         arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
         for (uint i = 0; i < count; i++) {
             char[2] buf;
@@ -2280,15 +2158,13 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             buf[1] = 0;
             HString* ch_str = builtin_intern_string(ctx.heap, buf[:1]);
             TVal elem;
-            elem.tag = STRING;
-            elem.pointer = ch_str;
+            elem.set_string(ch_str);
             char[16] idx_buf;
             int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
             HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
             arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
         }
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = arr;
+        ctx.result.set_object(arr);
         return;
     }
 
@@ -2332,8 +2208,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
 
         // Add to array
         TVal elem;
-        elem.tag = STRING;
-        elem.pointer = substr;
+        elem.set_string(substr);
         char[16] idx_buf;
         int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
         HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
@@ -2358,8 +2233,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             substr = builtin_intern_string(ctx.heap, buf[:copy_len]);
         }
         TVal elem;
-        elem.tag = STRING;
-        elem.pointer = substr;
+        elem.set_string(substr);
         char[16] idx_buf;
         int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
         HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
@@ -2368,20 +2242,17 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     }
 
     TVal len_val;
-    len_val.tag = FASTINT;
-    len_val.fastint = (long)arr_idx;
+    len_val.set_fastint((long)arr_idx);
     arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 /// String.prototype.concat(...args) — ES5 §15.5.4.6
 fn void builtin_string_proto_concat(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -2422,39 +2293,34 @@ fn void builtin_string_proto_concat(BuiltinContext* ctx) {
     }
 
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.replace(searchValue, replaceValue) — ES5 §15.5.4.11 (string-only)
 fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     // If not enough args or searchValue is RegExp-like (object), return string as-is
     if (ctx.argc < 1) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s_hstr;
+        ctx.result.set_string(s_hstr);
         return;
     }
 
     TVal* search_val = &ctx.regs[ctx.base_reg];
 
     // If searchValue is an object (RegExp), return original string for now
-    if (search_val.tag == OBJECT) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s_hstr;
+    if (search_val.is_object()) {
+        ctx.result.set_string(s_hstr);
         return;
     }
 
     HString* search_hstr = builtin_to_string(ctx.heap, search_val);
     if (search_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -2466,8 +2332,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         replace_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
     if (replace_hstr == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -2494,8 +2359,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
 
     if (found_pos < 0) {
         // Not found: return original string
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s_hstr;
+        ctx.result.set_string(s_hstr);
         return;
     }
 
@@ -2526,8 +2390,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     }
 
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 // ============================================================================
@@ -2662,10 +2525,10 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
         if (try err = err_raw) {
             err.prototype = ctx.heap.range_err_proto;
             HString* msg = builtin_intern_string(ctx.heap, "Invalid count value");
-            TVal msg_val; msg_val.tag = STRING; msg_val.pointer = msg;
+            TVal msg_val; msg_val.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-            TVal err_val; err_val.tag = OBJECT; err_val.pointer = err;
+            TVal err_val; err_val.set_object(err);
             ctx.heap.curr_thread = err;
         }
         ctx.result.set_undefined();
@@ -2675,7 +2538,7 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
 
     if (count == 0 || s_hstr.blen == 0) {
         HString* empty = builtin_intern_string(ctx.heap, "");
-        ctx.result.tag = STRING; ctx.result.pointer = empty;
+        ctx.result.set_string(empty);
         return;
     }
 
@@ -2692,7 +2555,7 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
     HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf[:total], ctx.heap.hash_string(buf[:total]));
     if (try result = result_raw) {
         ctx.heap.str_table_insert(result);
-        ctx.result.tag = STRING; ctx.result.pointer = result;
+        ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf);
 }
@@ -2706,12 +2569,12 @@ fn void builtin_string_proto_trimStart(BuiltinContext* ctx) {
     uint start = 0;
     while (start < len && is_ecma_whitespace(data[start])) { start++; }
     if (start == 0) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
     HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[start..len], ctx.heap.hash_string(data[start..len]));
     if (try result = result_raw) {
         ctx.heap.str_table_insert(result);
-        ctx.result.tag = STRING; ctx.result.pointer = result;
+        ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
 }
 
@@ -2724,12 +2587,12 @@ fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
     uint end = len;
     while (end > 0 && is_ecma_whitespace(data[end - 1])) { end--; }
     if (end == len) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
     HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[0..end], ctx.heap.hash_string(data[0..end]));
     if (try result = result_raw) {
         ctx.heap.str_table_insert(result);
-        ctx.result.tag = STRING; ctx.result.pointer = result;
+        ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
 }
 
@@ -2743,14 +2606,13 @@ fn void builtin_string_proto_codePointAt(BuiltinContext* ctx) {
     double pos_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
     uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     pos = (uint)(long)pos_d;
-    if (pos >= len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (pos >= len) { ctx.result.set_undefined(); return; }
 
     // Simple ASCII fallback (most test262 tests use ASCII)
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)(data[pos] & 0xFF);
+    ctx.result.set_fastint((long)(data[pos] & 0xFF));
 }
 
 /// String.prototype.at(index) — ES2022 §21.1.3.1
@@ -2761,14 +2623,13 @@ fn void builtin_string_proto_at(BuiltinContext* ctx) {
     uint len = s_hstr.blen;
 
     double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (math::is_nan(idx_d)) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
     if (idx < 0) { idx = (long)len + idx; }
-    if (idx < 0 || idx >= (long)len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (idx < 0 || idx >= (long)len) { ctx.result.set_undefined(); return; }
 
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)data[idx] & 0xFF;
+    ctx.result.set_fastint((long)data[idx] & 0xFF);
 }
 
 /// String.prototype.padStart(maxLength, fillString) — ES2017 §21.1.3.13
@@ -2782,7 +2643,7 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
 
     uint str_len = s_hstr.blen;
     if (str_len >= max_len) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
 
     HString* fill_hstr;
@@ -2792,7 +2653,7 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
         fill_hstr = builtin_intern_string(ctx.heap, " ");
     }
     if (fill_hstr == null || fill_hstr.blen == 0) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
 
     uint pad_len = max_len - str_len;
@@ -2814,7 +2675,7 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
     if (try result = result_raw) {
         ctx.heap.str_table_insert(result);
-        ctx.result.tag = STRING; ctx.result.pointer = result;
+        ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
 }
@@ -2830,7 +2691,7 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
 
     uint str_len = s_hstr.blen;
     if (str_len >= max_len) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
 
     HString* fill_hstr;
@@ -2840,7 +2701,7 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
         fill_hstr = builtin_intern_string(ctx.heap, " ");
     }
     if (fill_hstr == null || fill_hstr.blen == 0) {
-        ctx.result.tag = STRING; ctx.result.pointer = s_hstr; return;
+        ctx.result.set_string(s_hstr); return;
     }
 
     uint pad_len = max_len - str_len;
@@ -2862,7 +2723,7 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
     if (try result = result_raw) {
         ctx.heap.str_table_insert(result);
-        ctx.result.tag = STRING; ctx.result.pointer = result;
+        ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
 }
@@ -2880,7 +2741,7 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
-    if (search_hstr == null) { ctx.result.tag = FASTINT; ctx.result.fastint = -1; return; }
+    if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
 
     double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)len;
     if (math::is_nan(pos_d) || pos_d < 0) { pos_d = 0; }
@@ -2892,7 +2753,7 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
-    if (search_len == 0) { ctx.result.tag = FASTINT; ctx.result.fastint = (long)(start < 0 ? 0 : (long)start); return; }
+    if (search_len == 0) { ctx.result.set_fastint((long)(start < 0 ? 0 : (long)start)); return; }
 
     int result = -1;
     for (int i = start; i >= 0 && i + (int)search_len <= (int)len; i--) {
@@ -2902,14 +2763,13 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
         }
         if (found) { result = i; break; }
     }
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)result;
+    ctx.result.set_fastint((long)result);
 }
 
 /// Helper: check if a TVal is a RegExp object
 fn bool is_regexp_object(TVal* val) {
-    if (val.tag != OBJECT || val.pointer == null) return false;
-    HObject* obj = (HObject*)val.pointer;
+    if (!val.is_object() || val.get_heapptr() == null) return false;
+    HObject* obj = (HObject*)val.get_heapptr();
     return obj.get_class() == hobject::ObjClass.REGEXP && obj.regexp_data != null;
 }
 
@@ -2931,13 +2791,13 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
 
     // If arg is a RegExp object, use it directly
     if (is_regexp_object(regexp_arg)) {
-        HObject* rx = (HObject*)regexp_arg.pointer;
+        HObject* rx = (HObject*)regexp_arg.get_heapptr();
 
         // Get global flag
         HString* global_key = builtin_intern_string(ctx.heap, "global");
         bool global_flag = false;
         if (try gv = rx.get_prop(global_key)) {
-            if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+            if (gv.is_boolean()) global_flag = gv.get_boolean();
         }
 
         if (!global_flag) {
@@ -2954,8 +2814,8 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
             HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
             int start_pos = 0;
             if (try liv = rx.get_prop(li_key)) {
-                if (liv.tag == FASTINT) { start_pos = (int)liv.fastint; }
-                else if (liv.tag == NUMBER) { start_pos = (int)liv.number; }
+                if (liv.is_fastint()) { start_pos = (int)liv.get_fastint(); }
+                else if (liv.is_number()) { start_pos = (int)liv.get_number(); }
             }
 
             int result = re_bindings::re_exec(
@@ -2983,33 +2843,28 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                 match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
             }
             TVal elem;
-            elem.tag = STRING;
-            elem.pointer = match_str;
+            elem.set_string(match_str);
             HString* zero_key = builtin_intern_string(ctx.heap, "0");
             arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
 
             // Set index property
             TVal idx_tv;
-            idx_tv.tag = FASTINT;
-            idx_tv.fastint = (long)out_start;
+            idx_tv.set_fastint((long)out_start);
             HString* idx_key = builtin_intern_string(ctx.heap, "index");
             arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
 
             // Set input property
             TVal input_tv;
-            input_tv.tag = STRING;
-            input_tv.pointer = s_hstr;
+            input_tv.set_string(s_hstr);
             HString* input_key = builtin_intern_string(ctx.heap, "input");
             arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
 
             TVal len_tv;
-            len_tv.tag = FASTINT;
-            len_tv.fastint = 1;
+            len_tv.set_fastint(1);
             HString* len_key = builtin_intern_string(ctx.heap, "length");
             arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = arr;
+            ctx.result.set_object(arr);
             return;
         } else {
             // Global: collect all matches
@@ -3017,8 +2872,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
 
             // Reset lastIndex to 0
             TVal zero_tv;
-            zero_tv.tag = FASTINT;
-            zero_tv.fastint = 0;
+            zero_tv.set_fastint(0);
             rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
 
             HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -3055,8 +2909,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                     match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
                 }
                 TVal elem;
-                elem.tag = STRING;
-                elem.pointer = match_str;
+                elem.set_string(match_str);
                 char[16] idx_buf;
                 int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
                 HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
@@ -3081,18 +2934,15 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
 
             // Update lastIndex on the regexp
             TVal li_tv;
-            li_tv.tag = FASTINT;
-            li_tv.fastint = 0;
+            li_tv.set_fastint(0);
             rx.put_prop(li_key, li_tv, hobject::PROP_FLAGS_WEC);
 
             TVal len_tv;
-            len_tv.tag = FASTINT;
-            len_tv.fastint = (long)arr_idx;
+            len_tv.set_fastint((long)arr_idx);
             HString* len_key = builtin_intern_string(ctx.heap, "length");
             arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = arr;
+            ctx.result.set_object(arr);
             return;
         }
     }
@@ -3125,19 +2975,16 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     arr.prototype = ctx.heap.array_proto;
 
     TVal elem;
-    elem.tag = STRING;
-    elem.pointer = search_hstr;
+    elem.set_string(search_hstr);
     HString* zero_key = builtin_intern_string(ctx.heap, "0");
     arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
 
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = 1;
+    len_tv.set_fastint(1);
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 /// String.prototype.search(regexp) — ES5 §15.5.4.12
@@ -3148,8 +2995,7 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
     int input_len = (int)s_hstr.blen;
 
     if (ctx.argc == 0) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = -1;
+        ctx.result.set_fastint(-1);
         return;
     }
 
@@ -3157,7 +3003,7 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
 
     // If arg is a RegExp object, use it directly
     if (is_regexp_object(regexp_arg)) {
-        HObject* rx = (HObject*)regexp_arg.pointer;
+        HObject* rx = (HObject*)regexp_arg.get_heapptr();
 
         int out_start = 0;
         int out_end = 0;
@@ -3173,14 +3019,13 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
             &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
         );
 
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = (result == re_bindings::RE_MATCH) ? (long)out_start : -1;
+        ctx.result.set_fastint((result == re_bindings::RE_MATCH) ? (long)out_start : -1);
         return;
     }
 
     // Non-RegExp arg: convert to string and do literal search
     HString* search_hstr = builtin_to_string(ctx.heap, regexp_arg);
-    if (search_hstr == null) { ctx.result.tag = FASTINT; ctx.result.fastint = -1; return; }
+    if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
@@ -3190,13 +3035,11 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
             if (input[i + j] != search_data[j]) { match = false; break; }
         }
         if (match) {
-            ctx.result.tag = FASTINT;
-            ctx.result.fastint = (long)i;
+            ctx.result.set_fastint((long)i);
             return;
         }
     }
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = -1;
+    ctx.result.set_fastint(-1);
 }
 
 // ============================================================================
@@ -3205,12 +3048,12 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
 
 /// Helper: get numeric property value from TVal
 fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
-    if (val.tag == FASTINT) return (double)val.fastint;
-    if (val.tag == NUMBER) return val.number;
+    if (val.is_fastint()) return (double)val.get_fastint();
+    if (val.is_number()) return val.get_number();
     TVal num;
     builtin_to_number(val, &num);
-    if (num.tag == FASTINT) return (double)num.fastint;
-    return num.number;
+    if (num.is_fastint()) return (double)num.get_fastint();
+    return num.get_number();
 }
 
 /// Array.of(...items) — ES6 §22.1.2.3
@@ -3222,7 +3065,7 @@ fn void builtin_array_of(BuiltinContext* ctx) {
 
     uint len = (uint)ctx.argc;
     HString* len_key = builtin_intern_string(ctx.heap, "length");
-    TVal len_val; len_val.tag = FASTINT; len_val.fastint = (long)len;
+    TVal len_val; len_val.set_fastint((long)len);
     arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
     for (uint i = 0; i < len; i++) {
@@ -3234,7 +3077,7 @@ fn void builtin_array_of(BuiltinContext* ctx) {
             arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
         }
     }
-    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 /// Array.prototype.fill(value, start, end) — ES6 §22.1.3.6
@@ -3269,7 +3112,7 @@ fn void builtin_array_proto_fill(BuiltinContext* ctx) {
     for (int i = start_i; i < end_i; i++) {
         array_set_elem(obj, (uint)i, fill_val, ctx.heap);
     }
-    ctx.result.tag = OBJECT; ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 /// Array.prototype.at(index) — ES2022 §22.1.3.1
@@ -3279,11 +3122,11 @@ fn void builtin_array_proto_at(BuiltinContext* ctx) {
 
     uint len = array_get_length(obj, ctx.heap);
     double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (math::is_nan(idx_d)) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
     if (idx < 0) idx = (long)len + idx;
-    if (idx < 0 || idx >= (long)len) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (idx < 0 || idx >= (long)len) { ctx.result.set_undefined(); return; }
 
     *ctx.result = array_get_elem(obj, (uint)idx, ctx.heap);
 }
@@ -3318,7 +3161,7 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
 
     int count = end_i - start_i;
     if (count > (int)len - target_i) count = (int)len - target_i;
-    if (count <= 0) { ctx.result.tag = OBJECT; ctx.result.pointer = obj; return; }
+    if (count <= 0) { ctx.result.set_object(obj); return; }
 
     // Forward copy is safe when target < start; otherwise copy backwards
     if (target_i < start_i) {
@@ -3330,7 +3173,7 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
             array_set_elem(obj, (uint)(target_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
         }
     }
-    ctx.result.tag = OBJECT; ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 /// Array.prototype.find(predicate, thisArg) — ES6 §22.1.3.8
@@ -3340,21 +3183,20 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
 
     uint len = array_get_length(obj, ctx.heap);
 
-    if (ctx.argc < 1 || !(ctx.regs[ctx.base_reg].tag == OBJECT && ctx.regs[ctx.base_reg].pointer != null &&
-                          ((HObject*)ctx.regs[ctx.base_reg].pointer).is_callable())) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    if (ctx.argc < 1 || !(ctx.regs[ctx.base_reg].is_object() && ctx.regs[ctx.base_reg].get_heapptr() != null &&
+                          ((HObject*)ctx.regs[ctx.base_reg].get_heapptr()).is_callable())) {
+        ctx.result.set_undefined(); return;
     }
 
     for (uint i = 0; i < len; i++) {
         TVal elem = array_get_elem(obj, i, ctx.heap);
         // Simple stub: just return first element for now — real callback needs VM
-        ctx.result.tag = elem.tag;
-        ctx.result.fastint = elem.fastint;
-        ctx.result.number = elem.number;
-        ctx.result.pointer = elem.pointer;
+        ctx.result.set_fastint(elem.get_fastint());
+        ctx.result.set_number(elem.get_number());
+        ctx.result.set_object(elem.get_heapptr());
         return;
     }
-    ctx.result.tag = UNDEFINED; ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 /// Array.prototype.findIndex(predicate, thisArg) — ES6 §22.1.3.9
@@ -3362,7 +3204,7 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    ctx.result.tag = FASTINT; ctx.result.fastint = -1;
+    ctx.result.set_fastint(-1);
 }
 
 /// Array.prototype.includes(searchElement, fromIndex) — ES7 §22.1.3.13
@@ -3402,9 +3244,9 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
 fn uint flatten_into(HObject* target, HObject* source, uint source_len, uint target_idx, double depth, Heap* heap) {
     for (uint i = 0; i < source_len; i++) {
         TVal elem = array_get_elem(source, i, heap);
-        if (elem.tag == OBJECT && elem.pointer != null &&
-            ((HObject*)elem.pointer).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
-            HObject* inner = (HObject*)elem.pointer;
+        if (elem.is_object() && elem.get_heapptr() != null &&
+            ((HObject*)elem.get_heapptr()).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
+            HObject* inner = (HObject*)elem.get_heapptr();
             uint inner_len = array_get_length(inner, heap);
             target_idx = flatten_into(target, inner, inner_len, target_idx, depth - 1, heap);
         } else {
@@ -3423,12 +3265,11 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flat requires 'this' to be an object");
-            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         }
         return;
     }
@@ -3438,7 +3279,7 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
     double depth_num = 1.0;
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.tag != UNDEFINED) {
+        if (!arg.is_undefined()) {
             depth_num = builtin_to_integer(arg);
         }
     }
@@ -3446,7 +3287,7 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
 
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -3454,8 +3295,7 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
     uint n = flatten_into(result, obj, len, 0, depth_num, ctx.heap);
     array_set_length(result, n, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 /// Array.prototype.flatMap(mapFn, thisArg) — ES2019 §22.1.3.11
@@ -3466,12 +3306,11 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flatMap requires 'this' to be an object");
-            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         }
         return;
     }
@@ -3479,17 +3318,16 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
     // Validate callbackfn is callable (if provided)
     if (ctx.argc >= 1) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.tag != OBJECT || arg.pointer == null || !((HObject*)arg.pointer).is_callable()) {
+        if (!arg.is_object() || arg.get_heapptr() == null || !((HObject*)arg.get_heapptr()).is_callable()) {
             HObject*? err_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err2 = err_raw2) {
                 err2.prototype = ctx.heap.type_err_proto;
                 HString* msg2 = builtin_intern_string(ctx.heap, "Array.prototype.flatMap callback is not callable");
-                TVal msg_tv2; msg_tv2.tag = STRING; msg_tv2.pointer = msg2;
+                TVal msg_tv2; msg_tv2.set_string(msg2);
                 HString* msg_key2 = builtin_intern_string(ctx.heap, "message");
                 err2.put_prop(msg_key2, msg_tv2, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err2;
+                ctx.throw_value.set_object(err2);
             }
             return;
         }
@@ -3500,7 +3338,7 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
 
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -3508,8 +3346,7 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
     uint n = flatten_into(result, obj, len, 0, 1.0, ctx.heap);
     array_set_length(result, n, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -3520,16 +3357,16 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
 /// Returns NaN on incompatible 'this' (caller checks via isnan).
 fn double number_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
             return obj.primitive_value.get_number_or_fastint();
         }
-    } else if (this_val.tag == NUMBER) {
-        return this_val.number;
-    } else if (this_val.tag == FASTINT) {
-        return (double)this_val.fastint;
+    } else if (this_val.is_number()) {
+        return this_val.get_number();
+    } else if (this_val.is_fastint()) {
+        return (double)this_val.get_fastint();
     }
     return double::nan;
 }
@@ -3574,29 +3411,24 @@ fn void builtin_number(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         builtin_to_number(&ctx.regs[ctx.base_reg], &num);
     } else {
-        num.tag = FASTINT;
-        num.fastint = 0;
+        num.set_fastint(0);
     }
 
     if (ctx.is_constructor) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
         obj.primitive_value = num;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
     } else {
-        if (num.tag == FASTINT) {
-            ctx.result.tag = FASTINT;
-            ctx.result.fastint = num.fastint;
+        if (num.is_fastint()) {
+            ctx.result.set_fastint(num.get_fastint());
         } else {
-            ctx.result.tag = NUMBER;
-            ctx.result.number = num.number;
+            ctx.result.set_number(num.get_number());
         }
     }
 }
@@ -3607,8 +3439,7 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
     double d = number_proto_get_this(ctx);
     if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3616,17 +3447,16 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
     int radix = 10;
     if (ctx.argc > 0) {
         TVal* rad_arg = &ctx.regs[ctx.base_reg];
-        if (rad_arg.tag == FASTINT) {
-            radix = (int)rad_arg.fastint;
-        } else if (rad_arg.tag == NUMBER) {
-            radix = (int)(long)rad_arg.number;
+        if (rad_arg.is_fastint()) {
+            radix = (int)rad_arg.get_fastint();
+        } else if (rad_arg.is_number()) {
+            radix = (int)(long)rad_arg.get_number();
         } else {
             radix = 10;
         }
         if (radix < 2 || radix > 36) {
             // RangeError
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
     }
@@ -3634,20 +3464,17 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
     // Handle special values
     if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     if (d == 0.0) {
         HString* s = builtin_intern_string(ctx.heap, "0");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3656,13 +3483,11 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
         char[64] buf;
         int len = libc::snprintf(&buf, 64, "%.17g", d);
         if (len < 0 || len >= 64) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3710,12 +3535,10 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
 
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
     if (result == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// Number.prototype.toFixed(fractionDigits) — ES5 §15.7.4.5
@@ -3733,14 +3556,12 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
     d = number_proto_get_this(ctx);
     if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3748,8 +3569,7 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
         if (f_d < 0 || f_d > 20) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         f = (int)(long)f_d;
@@ -3758,13 +3578,11 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
     char[64] buf;
     int len = libc::snprintf(&buf, 64, "%.*f", f, d);
     if (len < 0 || len >= 64) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = s;
+    ctx.result.set_string(s);
 }
 
 /// Number.prototype.toExponential(fractionDigits) — ES5 §15.7.4.6
@@ -3772,14 +3590,12 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
     double d = number_proto_get_this(ctx);
     if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3788,20 +3604,17 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
         char[64] buf;
         int len = libc::snprintf(&buf, 64, "%.17g", d);
         if (len < 0 || len >= 64) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
     double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
     if (f_d < 0 || f_d > 20) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     int f = (int)(long)f_d;
@@ -3809,13 +3622,11 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
     char[64] buf;
     int len = libc::snprintf(&buf, 64, "%.*e", f, d);
     if (len < 0 || len >= 64) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = s;
+    ctx.result.set_string(s);
 }
 
 /// Number.prototype.toPrecision(precision) — ES5 §15.7.4.7
@@ -3823,14 +3634,12 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     double d = number_proto_get_this(ctx);
     if (math::is_nan(d) && !is_neg_zero(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
@@ -3839,20 +3648,17 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
         char[64] buf;
         int len = libc::snprintf(&buf, 64, "%.17g", d);
         if (len < 0 || len >= 64) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
 
     double p_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
     if (p_d < 1 || p_d > 21) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     int p = (int)(long)p_d;
@@ -3860,37 +3666,31 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     char[64] buf;
     int len = libc::snprintf(&buf, 64, "%.*g", p, d);
     if (len < 0 || len >= 64) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = s;
+    ctx.result.set_string(s);
 }
 
 /// Number.prototype.valueOf — returns the wrapped number primitive
 fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
-            ctx.result.tag = obj.primitive_value.tag;
-            ctx.result.number = obj.primitive_value.number;
+            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
+            ctx.result.set_number(obj.primitive_value.get_number());
             return;
         }
-    } else if (this_val.tag == NUMBER) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = this_val.number;
+    } else if (this_val.is_number()) {
+        ctx.result.set_number(this_val.get_number());
         return;
-    } else if (this_val.tag == FASTINT) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = this_val.fastint;
+    } else if (this_val.is_fastint()) {
+        ctx.result.set_fastint(this_val.get_fastint());
         return;
     }
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -3900,95 +3700,85 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
 /// Number.isNaN(number) — ES6 §20.1.2.4
 /// Returns true only if the argument is the NaN number value (no coercion).
 fn void builtin_number_isNaN(BuiltinContext* ctx) {
-    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+    if (ctx.argc < 1 || (!ctx.regs[ctx.base_reg].is_number() && !ctx.regs[ctx.base_reg].is_fastint())) {
+        ctx.result.set_boolean(false);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
-    ctx.result.tag = BOOLEAN;
-    if (arg.tag == NUMBER) {
-        ctx.result.boolean = math::is_nan(arg.number);
+    ctx.result.set_boolean(false);
+    if (arg.is_number()) {
+        ctx.result.set_boolean(math::is_nan(arg.get_number()));
     } else {
         // FASTINT is never NaN
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
 /// Number.isFinite(number) — ES6 §20.1.2.2
 /// Returns true only if the argument is a finite number value (no coercion).
 fn void builtin_number_isFinite(BuiltinContext* ctx) {
-    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+    if (ctx.argc < 1 || (!ctx.regs[ctx.base_reg].is_number() && !ctx.regs[ctx.base_reg].is_fastint())) {
+        ctx.result.set_boolean(false);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
-    ctx.result.tag = BOOLEAN;
-    if (arg.tag == NUMBER) {
-        ctx.result.boolean = !math::is_nan(arg.number) && !math::is_inf(arg.number);
+    ctx.result.set_boolean(false);
+    if (arg.is_number()) {
+        ctx.result.set_boolean(!math::is_nan(arg.get_number()) && !math::is_inf(arg.get_number()));
     } else {
         // FASTINT is always finite
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     }
 }
 
 /// Number.isInteger(number) — ES6 §20.1.2.3
 /// Returns true only if the argument is an integer number value (no coercion).
 fn void builtin_number_isInteger(BuiltinContext* ctx) {
-    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+    if (ctx.argc < 1 || (!ctx.regs[ctx.base_reg].is_number() && !ctx.regs[ctx.base_reg].is_fastint())) {
+        ctx.result.set_boolean(false);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
     double d;
-    if (arg.tag == FASTINT) {
+    if (arg.is_fastint()) {
         // FASTINT is always an integer
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
         return;
     }
-    d = arg.number;
+    d = arg.get_number();
     // NaN, Infinity, -Infinity are not integers
     if (math::is_nan(d) || math::is_inf(d)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     // Check: floor(abs(d)) == abs(d) — i.e. no fractional part
     double abs_d = d < 0 ? -d : d;
     double fl = math::floor(abs_d);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (fl == abs_d);
+    ctx.result.set_boolean((fl == abs_d));
 }
 
 /// Number.isSafeInteger(number) — ES6 §20.1.2.5
 /// Returns true only if the argument is a safe integer (±(2^53 - 1)).
 fn void builtin_number_isSafeInteger(BuiltinContext* ctx) {
-    if (ctx.argc < 1 || (ctx.regs[ctx.base_reg].tag != NUMBER && ctx.regs[ctx.base_reg].tag != FASTINT)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+    if (ctx.argc < 1 || (!ctx.regs[ctx.base_reg].is_number() && !ctx.regs[ctx.base_reg].is_fastint())) {
+        ctx.result.set_boolean(false);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
-    if (arg.tag == FASTINT) {
+    if (arg.is_fastint()) {
         // FASTINT values are always safe integers
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
         return;
     }
-    double d = arg.number;
+    double d = arg.get_number();
     if (math::is_nan(d) || math::is_inf(d)) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     double abs_d = d < 0 ? -d : d;
     double fl = math::floor(abs_d);
     // Must be integer AND within safe range (2^53 - 1 = 9007199254740991)
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (fl == abs_d) && (abs_d <= 9007199254740991.0);
+    ctx.result.set_boolean((fl == abs_d) && (abs_d <= 9007199254740991.0));
 }
 
 // ============================================================================
@@ -4005,14 +3795,12 @@ fn void builtin_object(BuiltinContext* ctx) {
         // Object() with no args — create and return new empty object
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.object_proto;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
         return;
     }
 
@@ -4020,112 +3808,96 @@ fn void builtin_object(BuiltinContext* ctx) {
     TVal arg = ctx.regs[ctx.base_reg];
 
     // null/undefined/not supplied → new empty object
-    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+    if (arg.is_null() || arg.is_undefined()) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.object_proto;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
         return;
     }
 
     // Already an object → return as-is
-    if (arg.tag == OBJECT) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = arg.pointer;
+    if (arg.is_object()) {
+        ctx.result.set_object(arg.get_heapptr());
         return;
     }
 
     // Primitive → create wrapper object (ToObject per ES5 §9.9)
-    if (arg.tag == BOOLEAN) {
+    if (arg.is_boolean()) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.bool_proto;
-        obj.primitive_value.tag = BOOLEAN;
-        obj.primitive_value.boolean = arg.boolean;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        obj.primitive_value.set_boolean(arg.get_boolean());
+        ctx.result.set_object(obj);
         return;
     }
 
-    if (arg.tag == NUMBER || arg.tag == FASTINT) {
+    if (arg.is_number() || arg.is_fastint()) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
         obj.primitive_value = arg;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
         return;
     }
 
-    if (arg.tag == STRING) {
+    if (arg.is_string()) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.string_proto;
-        obj.primitive_value.tag = STRING;
-        obj.primitive_value.pointer = arg.pointer;
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        obj.primitive_value.set_string(arg.get_heapptr());
+        ctx.result.set_object(obj);
         return;
     }
 
     // Fallback — new empty object
     HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = obj_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* obj = obj_raw;
     obj.prototype = ctx.heap.object_proto;
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 /// Object.keys(obj) — ES5 §15.2.3.14
 /// Returns an array of an object's own enumerable property names.
 fn void builtin_object_keys(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
     // TypeError if argument is null or undefined
-    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (arg.is_null() || arg.is_undefined()) {
+        ctx.result.set_undefined();
         return;
     }
     HObject* obj;
-    if (arg.tag == OBJECT) {
-        obj = (HObject*)arg.pointer;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
     } else {
         // ToObject wrapper for primitives
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = wrapped) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         obj = wrapped;
@@ -4140,15 +3912,14 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     }
     // Count dense array indices as enumerable own properties
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             count++;
         }
     }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* arr = arr_raw;
@@ -4159,8 +3930,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
             HString* key = (HString*)obj.props[i].key;
             TVal key_tv;
-            key_tv.tag = STRING;
-            key_tv.pointer = key;
+            key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
             idx++;
         }
@@ -4168,36 +3938,31 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // Dense array indices (as strings)
     char[32] buf;
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             int len = libc::snprintf(&buf, 32, "%u", i);
             if (len < 0) {
-                ctx.result.tag = UNDEFINED;
-                ctx.result.pointer = null;
+                ctx.result.set_undefined();
                 return;
             }
             uint hash = ctx.heap.hash_string(buf[..len]);
             HString*? key = hstring::hstring_alloc(ctx.heap, buf[..len], hash);
             if (catch err = key) {
-                ctx.result.tag = UNDEFINED;
-                ctx.result.pointer = null;
+                ctx.result.set_undefined();
                 return;
             }
             ctx.heap.str_table_insert(key);
             TVal key_tv;
-            key_tv.tag = STRING;
-            key_tv.pointer = key;
+            key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
             idx++;
         }
     }
     // Set .length
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = (long)idx;
+    len_tv.set_fastint((long)idx);
     HString* length_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -4207,26 +3972,23 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
 /// of the given object. Equivalent to Object.keys but without the enumerable filter.
 fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
     // TypeError if argument is null or undefined
-    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (arg.is_null() || arg.is_undefined()) {
+        ctx.result.set_undefined();
         return;
     }
     HObject* obj;
-    if (arg.tag == OBJECT) {
-        obj = (HObject*)arg.pointer;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
     } else {
         // ToObject wrapper for primitives
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = wrapped) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         obj = wrapped;
@@ -4241,15 +4003,14 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     }
     // Count dense array indices as own properties
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             count++;
         }
     }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* arr = arr_raw;
@@ -4260,8 +4021,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         if (obj.props[i].key != null) {
             HString* key = (HString*)obj.props[i].key;
             TVal key_tv;
-            key_tv.tag = STRING;
-            key_tv.pointer = key;
+            key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
             idx++;
         }
@@ -4269,36 +4029,31 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // Dense array indices (as strings)
     char[32] buf;
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             int len = libc::snprintf(&buf, 32, "%u", i);
             if (len < 0) {
-                ctx.result.tag = UNDEFINED;
-                ctx.result.pointer = null;
+                ctx.result.set_undefined();
                 return;
             }
             uint hash = ctx.heap.hash_string(buf[..len]);
             HString*? key = hstring::hstring_alloc(ctx.heap, buf[..len], hash);
             if (catch err = key) {
-                ctx.result.tag = UNDEFINED;
-                ctx.result.pointer = null;
+                ctx.result.set_undefined();
                 return;
             }
             ctx.heap.str_table_insert(key);
             TVal key_tv;
-            key_tv.tag = STRING;
-            key_tv.pointer = key;
+            key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
             idx++;
         }
     }
     // Set .length
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = (long)idx;
+    len_tv.set_fastint((long)idx);
     HString* length_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -4319,16 +4074,14 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf requires a value");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         // Throw TypeError for null/undefined/primitives
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err2 = err_raw) {
@@ -4340,22 +4093,19 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf called on non-object");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
     HObject* proto = obj.prototype;
     if (proto == null) {
         ctx.result.set_null();
         return;
     }
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = proto;
+    ctx.result.set_object(proto);
 }
 
 // ============================================================================
@@ -4365,12 +4115,11 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
 /// Throws TypeError if argument is not an object.
 fn void builtin_object_isExtensible(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         // Throw TypeError
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) {
@@ -4382,17 +4131,14 @@ fn void builtin_object_isExtensible(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.isExtensible called on non-object");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = obj.is_extensible();
+    HObject* obj = (HObject*)arg.get_heapptr();
+    ctx.result.set_boolean(obj.is_extensible());
 }
 
 // ============================================================================
@@ -4413,16 +4159,14 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions requires a value");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         // Throw TypeError
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err2 = err_raw) {
@@ -4434,18 +4178,15 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions called on non-object");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
     obj.flags.extensible = false;
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -4459,7 +4200,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         return;
     }
     TVal arg0 = ctx.regs[ctx.base_reg];
-    if (arg0.tag != OBJECT) {
+    if (!arg0.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) {
             ctx.result.set_undefined();
@@ -4470,15 +4211,13 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyDescriptor called on non-object");
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg0.pointer;
+    HObject* obj = (HObject*)arg0.get_heapptr();
 
     // Resolve the property key (second argument)
     if (ctx.argc < 2) {
@@ -4488,10 +4227,10 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     TVal key_val = ctx.regs[ctx.base_reg + 1];
     void* key = null;
     char[64] key_buf;
-    if (key_val.tag == STRING) {
-        key = key_val.pointer;
-    } else if (key_val.tag == FASTINT) {
-        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.fastint);
+    if (key_val.is_string()) {
+        key = key_val.get_heapptr();
+    } else if (key_val.is_fastint()) {
+        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.get_fastint());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
@@ -4503,8 +4242,8 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         }
         ctx.heap.str_table_insert(key_str);
         key = key_str;
-    } else if (key_val.tag == NUMBER) {
-        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.number);
+    } else if (key_val.is_number()) {
+        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
@@ -4540,7 +4279,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         }
         if (is_numeric && kd.len > 0 && kd.len <= 10 && arr_idx < obj.array_size) {
             TVal av = obj.array_part[arr_idx];
-            if (av.tag == UNDEFINED) {
+            if (av.is_undefined()) {
                 ctx.result.set_undefined();
                 return;
             }
@@ -4555,32 +4294,27 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
             HString* value_key = builtin_intern_string(ctx.heap, "value");
             TVal vt;
-            vt.tag = STRING;
-            vt.pointer = key_str;
+            vt.set_string(key_str);
             // Actually set the array element value as the descriptor value
             TVal array_val = obj.array_part[arr_idx];
             desc.put_prop(value_key, array_val, hobject::PROP_FLAGS_WEC);
 
             HString* writable_key = builtin_intern_string(ctx.heap, "writable");
             TVal w_tv;
-            w_tv.tag = BOOLEAN;
-            w_tv.boolean = true;
+            w_tv.set_boolean(true);
             desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
 
             HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
             TVal e_tv;
-            e_tv.tag = BOOLEAN;
-            e_tv.boolean = true;
+            e_tv.set_boolean(true);
             desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
 
             HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
             TVal c_tv;
-            c_tv.tag = BOOLEAN;
-            c_tv.boolean = true;
+            c_tv.set_boolean(true);
             desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
 
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = desc;
+            ctx.result.set_object(desc);
             return;
         }
         ctx.result.set_undefined();
@@ -4608,14 +4342,12 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
         HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
         TVal e_tv;
-        e_tv.tag = BOOLEAN;
-        e_tv.boolean = entry.flags.enumerable;
+        e_tv.set_boolean(entry.flags.enumerable);
         desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
 
         HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
         TVal c_tv;
-        c_tv.tag = BOOLEAN;
-        c_tv.boolean = entry.flags.configurable;
+        c_tv.set_boolean(entry.flags.configurable);
         desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
     } else {
         // Data descriptor: { value, writable, enumerable, configurable }
@@ -4624,25 +4356,21 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
         HString* writable_key = builtin_intern_string(ctx.heap, "writable");
         TVal w_tv;
-        w_tv.tag = BOOLEAN;
-        w_tv.boolean = entry.flags.writable;
+        w_tv.set_boolean(entry.flags.writable);
         desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
 
         HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
         TVal e_tv;
-        e_tv.tag = BOOLEAN;
-        e_tv.boolean = entry.flags.enumerable;
+        e_tv.set_boolean(entry.flags.enumerable);
         desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
 
         HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
         TVal c_tv;
-        c_tv.tag = BOOLEAN;
-        c_tv.boolean = entry.flags.configurable;
+        c_tv.set_boolean(entry.flags.configurable);
         desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = desc;
+    ctx.result.set_object(desc);
 }
 
 /// ToPropertyDescriptor — ES5 §8.10.5
@@ -4699,18 +4427,16 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
         HString* msg_str = builtin_intern_string(ctx.heap, "Invalid property descriptor — cannot have both data and accessor fields");
         if (msg_key == null || msg_str == null) return false;
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return false;
     }
 
     // Validate getter/setter are callable or undefined
-    if (has_get && get_val.tag != UNDEFINED) {
-        if (get_val.tag != OBJECT && get_val.tag != LIGHTFUNC) {
+    if (has_get && !get_val.is_undefined()) {
+        if (!get_val.is_object() && !get_val.is_lightfunc()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (catch err2 = err_raw) return false;
             HObject* err = err_raw;
@@ -4719,15 +4445,13 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
             HString* msg_str2 = builtin_intern_string(ctx.heap, "Getter must be callable or undefined");
             if (msg_key2 == null || msg_str2 == null) return false;
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str2;
+            msg_tv.set_string(msg_str2);
             err.put_prop(msg_key2, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
             return false;
         }
-        HObject* fn_obj = (HObject*)get_val.pointer;
+        HObject* fn_obj = (HObject*)get_val.get_heapptr();
         if (!fn_obj.is_callable()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (catch err3 = err_raw) return false;
@@ -4737,17 +4461,15 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
             HString* msg_str3 = builtin_intern_string(ctx.heap, "Getter must be callable");
             if (msg_key3 == null || msg_str3 == null) return false;
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str3;
+            msg_tv.set_string(msg_str3);
             err.put_prop(msg_key3, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
             return false;
         }
     }
-    if (has_set && set_val.tag != UNDEFINED) {
-        if (set_val.tag != OBJECT && set_val.tag != LIGHTFUNC) {
+    if (has_set && !set_val.is_undefined()) {
+        if (!set_val.is_object() && !set_val.is_lightfunc()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (catch err4 = err_raw) return false;
             HObject* err = err_raw;
@@ -4756,15 +4478,13 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
             HString* msg_str4 = builtin_intern_string(ctx.heap, "Setter must be callable or undefined");
             if (msg_key4 == null || msg_str4 == null) return false;
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str4;
+            msg_tv.set_string(msg_str4);
             err.put_prop(msg_key4, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
             return false;
         }
-        HObject* fn_obj = (HObject*)set_val.pointer;
+        HObject* fn_obj = (HObject*)set_val.get_heapptr();
         if (!fn_obj.is_callable()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (catch err5 = err_raw) return false;
@@ -4774,12 +4494,10 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
             HString* msg_str5 = builtin_intern_string(ctx.heap, "Setter must be callable");
             if (msg_key5 == null || msg_str5 == null) return false;
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str5;
+            msg_tv.set_string(msg_str5);
             err.put_prop(msg_key5, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
             return false;
         }
     }
@@ -4845,7 +4563,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
     TVal arg0 = ctx.regs[ctx.base_reg];
-    if (arg0.tag != OBJECT) {
+    if (!arg0.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) {
             ctx.result.set_undefined();
@@ -4857,15 +4575,13 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.defineProperty called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg0.pointer;
+    HObject* obj = (HObject*)arg0.get_heapptr();
 
     // Step 2: Convert property key to string
     if (ctx.argc < 2) {
@@ -4875,10 +4591,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     TVal key_val = ctx.regs[ctx.base_reg + 1];
     void* key = null;
     char[64] key_buf;
-    if (key_val.tag == STRING) {
-        key = key_val.pointer;
-    } else if (key_val.tag == FASTINT) {
-        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.fastint);
+    if (key_val.is_string()) {
+        key = key_val.get_heapptr();
+    } else if (key_val.is_fastint()) {
+        int len = libc::snprintf(&key_buf, 64, "%ld", key_val.get_fastint());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
@@ -4890,8 +4606,8 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         }
         ctx.heap.str_table_insert(key_str);
         key = key_str;
-    } else if (key_val.tag == NUMBER) {
-        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.number);
+    } else if (key_val.is_number()) {
+        int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
@@ -4915,12 +4631,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         HString* msg_str2 = builtin_intern_string(ctx.heap, "Object.defineProperty property key must be a string or number");
         if (msg_key2 == null || msg_str2 == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str2;
+        msg_tv.set_string(msg_str2);
         err.put_prop(msg_key2, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
 
@@ -4930,7 +4644,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
     TVal attr_val = ctx.regs[ctx.base_reg + 2];
-    if (attr_val.tag != OBJECT) {
+    if (!attr_val.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err5 = err_raw) {
             ctx.result.set_undefined();
@@ -4942,15 +4656,13 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         HString* msg_str3 = builtin_intern_string(ctx.heap, "Object.defineProperty called with non-object descriptor");
         if (msg_key3 == null || msg_str3 == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str3;
+        msg_tv.set_string(msg_str3);
         err.put_prop(msg_key3, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* desc_obj = (HObject*)attr_val.pointer;
+    HObject* desc_obj = (HObject*)attr_val.get_heapptr();
 
     // Step 4: ToPropertyDescriptor
     hobject::PropFlags desc_flags;
@@ -4979,12 +4691,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             HString* msg_str4 = builtin_intern_string(ctx.heap, "Cannot define property on a non-extensible object");
             if (msg_key4 == null || msg_str4 == null) { ctx.result.set_undefined(); return; }
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str4;
+            msg_tv.set_string(msg_str4);
             err.put_prop(msg_key4, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
             return;
         }
         // Create new property
@@ -5006,7 +4716,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         TVal cur_value = current.value;
 
         // Check if descriptor is empty (generic, no fields)
-        bool has_value_field   = (ctx.regs[ctx.base_reg + 2].tag == OBJECT); // already validated
+        bool has_value_field   = (ctx.regs[ctx.base_reg + 2].is_object()); // already validated
         // We've already extracted descriptor fields above, so check what was present
 
         // Check configurable constraint
@@ -5026,12 +4736,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 HString* msg_str5 = builtin_intern_string(ctx.heap, "Cannot redefine non-configurable property");
                 if (msg_key5 == null || msg_str5 == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
-                msg_tv.tag = STRING;
-                msg_tv.pointer = msg_str5;
+                msg_tv.set_string(msg_str5);
                 err.put_prop(msg_key5, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
                 return;
             }
         }
@@ -5051,12 +4759,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 HString* msg_str6 = builtin_intern_string(ctx.heap, "Cannot change property type from data to accessor or vice versa on non-configurable property");
                 if (msg_key6 == null || msg_str6 == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
-                msg_tv.tag = STRING;
-                msg_tv.pointer = msg_str6;
+                msg_tv.set_string(msg_str6);
                 err.put_prop(msg_key6, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
                 return;
             }
             // Type change allowed only if configurable
@@ -5108,12 +4814,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 HString* msg_str7 = builtin_intern_string(ctx.heap, "Cannot change writable attribute of non-configurable property from false to true");
                 if (msg_key7 == null || msg_str7 == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
-                msg_tv.tag = STRING;
-                msg_tv.pointer = msg_str7;
+                msg_tv.set_string(msg_str7);
                 err.put_prop(msg_key7, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
                 return;
             }
 
@@ -5131,12 +4835,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                     HString* msg_str8 = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
                     if (msg_key8 == null || msg_str8 == null) { ctx.result.set_undefined(); return; }
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_str8;
+                    msg_tv.set_string(msg_str8);
                     err.put_prop(msg_key8, msg_tv, hobject::PROP_FLAGS_WEC);
                     ctx.should_throw = true;
-                    ctx.throw_value.tag = OBJECT;
-                    ctx.throw_value.pointer = err;
+                    ctx.throw_value.set_object(err);
                     return;
                 }
                 current.value = desc_vals[0];
@@ -5149,8 +4851,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     }
 
     // Step 6: Return O
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -5164,7 +4865,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
         return;
     }
     TVal arg0 = ctx.regs[ctx.base_reg];
-    if (arg0.tag != OBJECT) {
+    if (!arg0.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5173,29 +4874,25 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.defineProperties called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg0.pointer;
+    HObject* obj = (HObject*)arg0.get_heapptr();
 
     // Step 2: Check Properties argument is present and is an object
     if (ctx.argc < 2) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
         return;
     }
     TVal props_val = ctx.regs[ctx.base_reg + 1];
-    if (props_val.tag != OBJECT) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+    if (!props_val.is_object()) {
+        ctx.result.set_object(obj);
         return;
     }
-    HObject* props = (HObject*)props_val.pointer;
+    HObject* props = (HObject*)props_val.get_heapptr();
 
     // Step 4: For each key, get descriptor and call DefinePropertyOrThrow
     // Collect keys first in case properties are modified during iteration
@@ -5216,7 +4913,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             TVal desc_obj_val = pe.value;
 
             // ToPropertyDescriptor(desc_obj)
-            if (desc_obj_val.tag != OBJECT) {
+            if (!desc_obj_val.is_object()) {
                 // TypeError — property descriptor must be an object
                 HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (catch err2 = err_raw) { ctx.result.set_undefined(); return; }
@@ -5228,15 +4925,13 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                 if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
-                msg_tv.tag = STRING;
-                msg_tv.pointer = msg_str;
+                msg_tv.set_string(msg_str);
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
                 return;
             }
-            HObject* desc_obj = (HObject*)desc_obj_val.pointer;
+            HObject* desc_obj = (HObject*)desc_obj_val.get_heapptr();
 
             // Convert to property descriptor
             hobject::PropFlags desc_flags;
@@ -5260,12 +4955,10 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     HString* msg_str = builtin_intern_string(ctx.heap, "Cannot define property on a non-extensible object");
                     if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_str;
+                    msg_tv.set_string(msg_str);
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     ctx.should_throw = true;
-                    ctx.throw_value.tag = OBJECT;
-                    ctx.throw_value.pointer = err;
+                    ctx.throw_value.set_object(err);
                     return;
                 }
                 if (is_accessor) {
@@ -5293,12 +4986,10 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot redefine non-configurable property");
                         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                         TVal msg_tv;
-                        msg_tv.tag = STRING;
-                        msg_tv.pointer = msg_str;
+                        msg_tv.set_string(msg_str);
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         ctx.should_throw = true;
-                        ctx.throw_value.tag = OBJECT;
-                        ctx.throw_value.pointer = err;
+                        ctx.throw_value.set_object(err);
                         return;
                     }
                 }
@@ -5321,12 +5012,10 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                             HString* msg_str = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
                             if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                             TVal msg_tv;
-                            msg_tv.tag = STRING;
-                            msg_tv.pointer = msg_str;
+                            msg_tv.set_string(msg_str);
                             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                             ctx.should_throw = true;
-                            ctx.throw_value.tag = OBJECT;
-                            ctx.throw_value.pointer = err;
+                            ctx.throw_value.set_object(err);
                             return;
                         }
                         current.value = desc_vals[0];
@@ -5340,8 +5029,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     }
 
     // Step 5: Return obj
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 /// Helper: check if descriptor object has "get" property
@@ -5390,20 +5078,18 @@ fn void builtin_object_create(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.create requires at least 1 argument");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     TVal proto_val = ctx.regs[ctx.base_reg];
 
     // If O is not Object or Null, throw TypeError
-    if (proto_val.tag == NULL_VAL) {
+    if (proto_val.is_null()) {
         // null prototype is valid
-    } else if (proto_val.tag == OBJECT) {
+    } else if (proto_val.is_object()) {
         // valid
     } else {
         // Throw TypeError
@@ -5415,17 +5101,15 @@ fn void builtin_object_create(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object prototype may only be an Object or null");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject*? proto_obj_raw = null;
-    if (proto_val.tag == OBJECT) {
-        proto_obj_raw = (HObject*)proto_val.pointer;
+    if (proto_val.is_object()) {
+        proto_obj_raw = (HObject*)proto_val.get_heapptr();
     }
 
     // Step 3: Create a new object with [[Prototype]] = O
@@ -5442,11 +5126,11 @@ fn void builtin_object_create(BuiltinContext* ctx) {
     // Step 4: If Properties is not undefined, call defineProperties
     if (ctx.argc >= 2) {
         TVal props_val = ctx.regs[ctx.base_reg + 1];
-        if (props_val.tag != UNDEFINED && props_val.tag != NULL_VAL) {
+        if (!props_val.is_undefined() && !props_val.is_null()) {
             // Create a mini-BuiltinContext for the defineProperties call
             // We reuse the same approach: inline defineProperties logic
-            if (props_val.tag == OBJECT) {
-                HObject* props = (HObject*)props_val.pointer;
+            if (props_val.is_object()) {
+                HObject* props = (HObject*)props_val.get_heapptr();
 
                 // Collect own property keys
                 HString*[256] keys_arr;
@@ -5463,7 +5147,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                     PropEntry*? prop_entry = props.find_prop(pk_key);
                     if (try pe = prop_entry) {
                         TVal desc_obj_val = pe.value;
-                        if (desc_obj_val.tag != OBJECT) {
+                        if (!desc_obj_val.is_object()) {
                             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (catch err4 = err_raw) { ctx.result.set_undefined(); return; }
                             HObject* err = err_raw;
@@ -5474,15 +5158,13 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                             HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                             if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                             TVal msg_tv;
-                            msg_tv.tag = STRING;
-                            msg_tv.pointer = msg_str;
+                            msg_tv.set_string(msg_str);
                             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                             ctx.should_throw = true;
-                            ctx.throw_value.tag = OBJECT;
-                            ctx.throw_value.pointer = err;
+                            ctx.throw_value.set_object(err);
                             return;
                         }
-                        HObject* desc_obj = (HObject*)desc_obj_val.pointer;
+                        HObject* desc_obj = (HObject*)desc_obj_val.get_heapptr();
 
                         hobject::PropFlags desc_flags;
                         TVal[2] desc_vals;
@@ -5510,8 +5192,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
     }
 
     // Step 5: Return obj
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -5524,7 +5205,7 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5533,18 +5214,15 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.seal called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
     obj.seal();
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -5557,7 +5235,7 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5566,18 +5244,15 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.freeze called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
     obj.freeze();
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -5586,12 +5261,11 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
 /// Check if an object is sealed.
 fn void builtin_object_isSealed(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5600,34 +5274,29 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.isSealed called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
 
     // Check if any own property is configurable
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.props[i].key != null && obj.props[i].flags.configurable) {
-            ctx.result.tag = BOOLEAN;
-            ctx.result.boolean = false;
+            ctx.result.set_boolean(false);
             return;
         }
     }
 
     // Check if extensible
     if (obj.flags.extensible) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
 
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = true;
+    ctx.result.set_boolean(true);
 }
 
 // ============================================================================
@@ -5636,12 +5305,11 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
 /// Check if an object is frozen.
 fn void builtin_object_isFrozen(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT) {
+    if (!arg.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5650,27 +5318,23 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.isFrozen called on non-object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
 
     // Check if any own property is configurable or data property writable
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.props[i].key != null) {
             if (obj.props[i].flags.configurable) {
-                ctx.result.tag = BOOLEAN;
-                ctx.result.boolean = false;
+                ctx.result.set_boolean(false);
                 return;
             }
             if (!obj.props[i].flags.is_accessor && obj.props[i].flags.writable) {
-                ctx.result.tag = BOOLEAN;
-                ctx.result.boolean = false;
+                ctx.result.set_boolean(false);
                 return;
             }
         }
@@ -5678,13 +5342,11 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
 
     // Check if extensible
     if (obj.flags.extensible) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
 
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = true;
+    ctx.result.set_boolean(true);
 }
 
 // ============================================================================
@@ -5699,7 +5361,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     }
     TVal arg = ctx.regs[ctx.base_reg];
     // TypeError if argument is null or undefined
-    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+    if (arg.is_null() || arg.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5707,15 +5369,15 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject* obj;
-    if (arg.tag == OBJECT) {
-        obj = (HObject*)arg.pointer;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
     } else {
         // ToObject wrapper for primitives
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -5729,7 +5391,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) count++;
+        if (!obj.array_part[i].is_undefined()) count++;
     }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -5746,13 +5408,13 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
             if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
             HObject* pair = pair_raw;
             pair.prototype = ctx.heap.array_proto;
-            TVal key_tv; key_tv.tag = STRING; key_tv.pointer = key;
+            TVal key_tv; key_tv.set_string(key);
             array_set_elem(pair, 0, key_tv, ctx.heap);
             array_set_elem(pair, 1, obj.props[i].value, ctx.heap);
-            TVal len_tv; len_tv.tag = FASTINT; len_tv.fastint = 2;
+            TVal len_tv; len_tv.set_fastint(2);
             HString* len_key = builtin_intern_string(ctx.heap, "length");
             pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-            TVal pair_tv; pair_tv.tag = OBJECT; pair_tv.pointer = pair;
+            TVal pair_tv; pair_tv.set_object(pair);
             array_set_elem(arr, idx, pair_tv, ctx.heap);
             idx++;
         }
@@ -5760,7 +5422,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Dense array indices → [key, value] pairs
     char[32] buf;
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             int slen = libc::snprintf(&buf, 32, "%u", i);
             if (slen < 0) continue;
             uint hash = ctx.heap.hash_string(buf[..slen]);
@@ -5771,22 +5433,22 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
             if (catch err6 = pair_raw2) continue;
             HObject* pair2 = pair_raw2;
             pair2.prototype = ctx.heap.array_proto;
-            TVal key_tv2; key_tv2.tag = STRING; key_tv2.pointer = key_s;
+            TVal key_tv2; key_tv2.set_string(key_s);
             array_set_elem(pair2, 0, key_tv2, ctx.heap);
             array_set_elem(pair2, 1, obj.array_part[i], ctx.heap);
-            TVal len_tv2; len_tv2.tag = FASTINT; len_tv2.fastint = 2;
+            TVal len_tv2; len_tv2.set_fastint(2);
             HString* len_key2 = builtin_intern_string(ctx.heap, "length");
             pair2.put_prop(len_key2, len_tv2, hobject::PROP_FLAGS_WEC);
-            TVal pair_tv2; pair_tv2.tag = OBJECT; pair_tv2.pointer = pair2;
+            TVal pair_tv2; pair_tv2.set_object(pair2);
             array_set_elem(arr, idx, pair_tv2, ctx.heap);
             idx++;
         }
     }
     // Set .length on result array
-    TVal rlen_tv; rlen_tv.tag = FASTINT; rlen_tv.fastint = (long)idx;
+    TVal rlen_tv; rlen_tv.set_fastint((long)idx);
     HString* rlen_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
-    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -5800,7 +5462,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     }
     TVal arg = ctx.regs[ctx.base_reg];
     // TypeError if argument is null or undefined
-    if (arg.tag == NULL_VAL || arg.tag == UNDEFINED) {
+    if (arg.is_null() || arg.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5808,15 +5470,15 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject* obj;
-    if (arg.tag == OBJECT) {
-        obj = (HObject*)arg.pointer;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
     } else {
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
@@ -5829,7 +5491,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) count++;
+        if (!obj.array_part[i].is_undefined()) count++;
     }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -5846,16 +5508,16 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     }
     // Dense array indices
     for (uint i = 0; i < obj.array_size; i++) {
-        if (obj.array_part[i].tag != UNDEFINED) {
+        if (!obj.array_part[i].is_undefined()) {
             array_set_elem(arr, idx, obj.array_part[i], ctx.heap);
             idx++;
         }
     }
     // Set .length
-    TVal rlen_tv; rlen_tv.tag = FASTINT; rlen_tv.fastint = (long)idx;
+    TVal rlen_tv; rlen_tv.set_fastint((long)idx);
     HString* rlen_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
-    ctx.result.tag = OBJECT; ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -5869,7 +5531,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
     }
     TVal target_val = ctx.regs[ctx.base_reg];
     // TypeError if target is null or undefined
-    if (target_val.tag == NULL_VAL || target_val.tag == UNDEFINED) {
+    if (target_val.is_null() || target_val.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5877,16 +5539,16 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     // ToObject on target
     HObject* target;
-    if (target_val.tag == OBJECT) {
-        target = (HObject*)target_val.pointer;
+    if (target_val.is_object()) {
+        target = (HObject*)target_val.get_heapptr();
     } else {
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
@@ -5897,9 +5559,9 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
     for (uint s = 1; s < ctx.argc; s++) {
         TVal source = ctx.regs[ctx.base_reg + s];
         // Skip null, undefined, and non-objects
-        if (source.tag == NULL_VAL || source.tag == UNDEFINED) continue;
-        if (source.tag != OBJECT) continue;
-        HObject* src_obj = (HObject*)source.pointer;
+        if (source.is_null() || source.is_undefined()) continue;
+        if (!source.is_object()) continue;
+        HObject* src_obj = (HObject*)source.get_heapptr();
         // Copy enumerable own named properties
         for (uint i = 0; i < src_obj.prop_count; i++) {
             if (src_obj.props[i].flags.enumerable && src_obj.props[i].key != null) {
@@ -5908,12 +5570,12 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         }
         // Copy enumerable own dense array indices
         for (uint i = 0; i < src_obj.array_size; i++) {
-            if (src_obj.array_part[i].tag != UNDEFINED) {
+            if (!src_obj.array_part[i].is_undefined()) {
                 array_set_elem(target, i, src_obj.array_part[i], ctx.heap);
             }
         }
     }
-    ctx.result.tag = OBJECT; ctx.result.pointer = target;
+    ctx.result.set_object(target);
 }
 
 // ============================================================================
@@ -5927,14 +5589,12 @@ fn void builtin_object_is(BuiltinContext* ctx) {
         TVal undef; undef.set_undefined();
         TVal undef2; undef2.set_undefined();
         // With < 2 args, default is undefined === undefined → true
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = (ctx.argc == 0) ? true : same_value(ctx.regs[ctx.base_reg], undef2);
+        ctx.result.set_boolean((ctx.argc == 0) ? true : same_value(ctx.regs[ctx.base_reg], undef2));
         return;
     }
     TVal x = ctx.regs[ctx.base_reg];
     TVal y = ctx.regs[ctx.base_reg + 1];
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = same_value(x, y);
+    ctx.result.set_boolean(same_value(x, y));
 }
 
 // ============================================================================
@@ -5951,16 +5611,16 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.hasOwn requires 2 arguments");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     TVal obj_val = ctx.regs[ctx.base_reg];
     TVal prop_val = ctx.regs[ctx.base_reg + 1];
     // ToObject on first argument — throw TypeError for null/undefined
-    if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+    if (obj_val.is_null() || obj_val.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err2 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5968,34 +5628,30 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject* obj;
-    if (obj_val.tag == OBJECT) {
-        obj = (HObject*)obj_val.pointer;
+    if (obj_val.is_object()) {
+        obj = (HObject*)obj_val.get_heapptr();
     } else {
         // Primitive — wrap via ToObject (for now, return false)
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     HString* key = builtin_to_string(ctx.heap, &prop_val);
     if (key == null) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     PropEntry*? entry = obj.find_prop(key);
     if (try e = entry) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -6011,7 +5667,7 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
     TVal obj_val = ctx.regs[ctx.base_reg];
     TVal proto_val = ctx.regs[ctx.base_reg + 1];
     // TypeError if obj is not an object (null/undefined/primitive)
-    if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+    if (obj_val.is_null() || obj_val.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -6019,14 +5675,14 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     // TypeError if proto is not an object or null
-    if (proto_val.tag != NULL_VAL && proto_val.tag != OBJECT) {
+    if (!proto_val.is_null() && !proto_val.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err2 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -6034,31 +5690,29 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object or null");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg_str;
+        TVal msg_tv; msg_tv.set_string(msg_str);
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
         ctx.should_throw = true;
-        ctx.throw_value.tag = OBJECT; ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
         return;
     }
     // Only set prototype on objects (not primitives)
-    if (obj_val.tag != OBJECT) {
-        ctx.result.tag = obj_val.tag;
-        ctx.result.fastint = obj_val.fastint;
+    if (!obj_val.is_object()) {
+        ctx.result.set_fastint(obj_val.get_fastint());
         return;
     }
-    HObject* obj = (HObject*)obj_val.pointer;
-    if (proto_val.tag == NULL_VAL) {
+    HObject* obj = (HObject*)obj_val.get_heapptr();
+    if (proto_val.is_null()) {
         obj.prototype = null;
     } else {
-        obj.prototype = (HObject*)proto_val.pointer;
+        obj.prototype = (HObject*)proto_val.get_heapptr();
     }
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         char[64] buf;
         char* class_name = "Object";
         switch (obj.get_class()) {
@@ -6084,24 +5738,20 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
         if (len > 0 && len < 64) {
             HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-            ctx.result.tag = STRING;
-            ctx.result.pointer = s;
+            ctx.result.set_string(s);
             return;
         }
-    } else if (this_val.tag == UNDEFINED) {
+    } else if (this_val.is_undefined()) {
         HString* s = builtin_intern_string(ctx.heap, "[object Undefined]");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
-    } else if (this_val.tag == NULL_VAL) {
+    } else if (this_val.is_null()) {
         HString* s = builtin_intern_string(ctx.heap, "[object Null]");
-        ctx.result.tag = STRING;
-        ctx.result.pointer = s;
+        ctx.result.set_string(s);
         return;
     }
     HString* s = builtin_intern_string(ctx.heap, "[object Object]");
-    ctx.result.tag = STRING;
-    ctx.result.pointer = s;
+    ctx.result.set_string(s);
 }
 
 /// Object.prototype.hasOwnProperty — ES5 §15.2.4.5
@@ -6115,29 +5765,25 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     }
     HString* key = builtin_to_string(ctx.heap, &arg);
     if (key == null) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     // O = ToObject(this value)
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* obj;
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        obj = (HObject*)this_val.get_heapptr();
     } else {
         // Primitive this value — return false (no own properties)
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     // Check own property
     PropEntry*? entry = obj.find_prop(key);
     if (try e = entry) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -6152,67 +5798,61 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     }
     HString* key = builtin_to_string(ctx.heap, &arg);
     if (key == null) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     // O = ToObject(this value)
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* obj;
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        obj = (HObject*)this_val.get_heapptr();
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
         return;
     }
     // Find own property descriptor
     PropEntry*? entry = obj.find_prop(key);
     if (try e = entry) {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = e.flags.enumerable;
+        ctx.result.set_boolean(e.flags.enumerable);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
 /// Object.prototype.valueOf — returns 'this'
 fn void builtin_object_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    ctx.result.tag = this_val.tag;
-    ctx.result.fastint = this_val.fastint;
-    ctx.result.number = this_val.number;
-    ctx.result.pointer = this_val.pointer;
+    ctx.result.set_fastint(this_val.get_fastint());
+    ctx.result.set_number(this_val.get_number());
+    ctx.result.set_object(this_val.get_heapptr());
 }
 
 /// Object.prototype.isPrototypeOf(V) — ES5 §15.2.4.6
 /// Returns true if the object is in the prototype chain of V.
 fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = false;
+    ctx.result.set_boolean(false);
 
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag != OBJECT || this_val.pointer == null) {
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
         return;
     }
-    HObject* proto = (HObject*)this_val.pointer;
+    HObject* proto = (HObject*)this_val.get_heapptr();
 
     // Get argument V — must be an object
     if (ctx.argc == 0) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT || arg.pointer == null) {
+    if (!arg.is_object() || arg.get_heapptr() == null) {
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
 
     // Walk the prototype chain of obj looking for proto
     HObject* cur = obj.prototype;
     while (cur != null) {
         if (cur == proto) {
-            ctx.result.boolean = true;
+            ctx.result.set_boolean(true);
             return;
         }
         cur = cur.prototype;
@@ -6223,27 +5863,26 @@ fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
 /// Calls the toString method and returns the result.
 fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag != OBJECT || this_val.pointer == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        ctx.result.set_undefined();
         return;
     }
-    HObject* obj = (HObject*)this_val.pointer;
+    HObject* obj = (HObject*)this_val.get_heapptr();
 
     // Call toString() on the object
     HString* ts_key = builtin_intern_string(ctx.heap, "toString");
     PropEntry*? entry = obj.find_prop(ts_key);
     if (try e = entry) {
         TVal fn_val = e.value;
-        if (fn_val.tag == LIGHTFUNC) {
+        if (fn_val.is_lightfunc()) {
             // Re-dispatch to toString
             ctx.needs_re_dispatch = true;
             ctx.regs[ctx.base_reg - 1] = fn_val;  // replace callee with toString
             ctx.re_nargs = 0;
             return;
         }
-        if (fn_val.tag == OBJECT && fn_val.pointer != null) {
-            HObject* fn_obj = (HObject*)fn_val.pointer;
+        if (fn_val.is_object() && fn_val.get_heapptr() != null) {
+            HObject* fn_obj = (HObject*)fn_val.get_heapptr();
             if (fn_obj.is_callable()) {
                 ctx.needs_re_dispatch = true;
                 ctx.regs[ctx.base_reg - 1] = fn_val;
@@ -6253,8 +5892,7 @@ fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -6266,8 +5904,7 @@ fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
 fn void builtin_array(BuiltinContext* ctx) {
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* arr = arr_raw;
@@ -6278,59 +5915,52 @@ fn void builtin_array(BuiltinContext* ctx) {
     if (ctx.argc == 0) {
         // No args: empty array with length 0
         TVal len_val;
-        len_val.tag = FASTINT;
-        len_val.fastint = 0;
+        len_val.set_fastint(0);
         arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = arr;
+        ctx.result.set_object(arr);
         return;
     }
 
     if (ctx.argc == 1) {
         // Single arg: check if it's a number
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.tag == NUMBER || arg.tag == FASTINT) {
+        if (arg.is_number() || arg.is_fastint()) {
             // Single numeric arg: set array length
             double d;
-            if (arg.tag == FASTINT) {
-                d = (double)arg.fastint;
+            if (arg.is_fastint()) {
+                d = (double)arg.get_fastint();
             } else {
-                d = arg.number;
+                d = arg.get_number();
             }
             // ToUint32 check per ES5
             uint n = (uint)(long)d;
             if ((double)n != d) {
                 // Invalid array length — create empty array as fallback
                 TVal len_val;
-                len_val.tag = FASTINT;
-                len_val.fastint = 0;
+                len_val.set_fastint(0);
                 arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
             } else {
                 TVal len_val;
-                len_val.tag = FASTINT;
-                len_val.fastint = (long)n;
+                len_val.set_fastint((long)n);
                 arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
             }
         } else {
             // Single non-numeric arg: array with one element
             TVal len_val;
-            len_val.tag = FASTINT;
-            len_val.fastint = 1;
+            len_val.set_fastint(1);
             arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
             // Set element at index 0
             HString* zero_key = builtin_intern_string(ctx.heap, "0");
             arr.put_prop(zero_key, arg, hobject::PROP_FLAGS_WEC);
         }
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = arr;
+        ctx.result.set_object(arr);
         return;
     }
 
     // Multiple args: create array with given elements
     TVal len_val;
-    len_val.tag = FASTINT;
-    len_val.fastint = (long)ctx.argc;
+    len_val.set_fastint((long)ctx.argc);
     arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
     // Set each element
@@ -6344,8 +5974,7 @@ fn void builtin_array(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -6355,8 +5984,8 @@ fn void builtin_array(BuiltinContext* ctx) {
 /// Helper: get the 'this' value as an object for Array.prototype methods.
 fn HObject* array_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        return (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        return (HObject*)this_val.get_heapptr();
     }
     // TypeError: Array.prototype method called on non-object
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -6366,8 +5995,7 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
             "Array.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
@@ -6381,8 +6009,8 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
     if (len_key == null) return 0;
     TVal? len_val = obj.get_prop_proto(len_key);
     if (try v = len_val) {
-        if (v.tag == FASTINT) return (uint)(long)v.fastint;
-        if (v.tag == NUMBER) return (uint)(long)v.number;
+        if (v.is_fastint()) return (uint)(long)v.get_fastint();
+        if (v.is_number()) return (uint)(long)v.get_number();
     }
     return 0;
 }
@@ -6392,8 +6020,7 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
     HString* len_key = builtin_intern_string(heap, "length");
     if (len_key == null) return;
     TVal tv;
-    tv.tag = FASTINT;
-    tv.fastint = (long)len_val;
+    tv.set_fastint((long)len_val);
     obj.put_prop(len_key, tv, hobject::PROP_FLAGS_WEC);
 }
 
@@ -6401,12 +6028,12 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
 fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
     char[16] buf;
     int len = libc::snprintf(&buf, 16, "%d", idx);
-    if (len <= 0 || len >= 16) { TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef; }
+    if (len <= 0 || len >= 16) { TVal undef; undef.set_undefined(); return undef; }
     HString* key = builtin_intern_string(heap, buf[:len]);
-    if (key == null) { TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef; }
+    if (key == null) { TVal undef; undef.set_undefined(); return undef; }
     TVal? result = obj.get_prop_proto(key);
     if (try v = result) return v;
-    TVal undef; undef.tag = UNDEFINED; undef.pointer = null; return undef;
+    TVal undef; undef.set_undefined(); return undef;
 }
 
 /// Set array element at numeric index.
@@ -6431,22 +6058,22 @@ fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
 
 /// Strict equality comparison for Array.prototype.indexOf / lastIndexOf.
 fn bool array_strict_equals(TVal a, TVal b) {
-    if (a.tag == b.tag) {
-        switch (a.tag) {
+    if (a.get_tag() == b.get_tag()) {
+        switch (a.get_tag()) {
             case UNDEFINED: return true;
             case NULL_VAL:  return true;
-            case BOOLEAN:   return a.boolean == b.boolean;
+            case BOOLEAN:   return a.get_boolean() == b.get_boolean();
             case NUMBER:
-                if (math::is_nan(a.number) || math::is_nan(b.number)) return false;
-                return a.number == b.number;
-            case FASTINT:   return a.fastint == b.fastint;
-            case STRING:    return a.pointer == b.pointer;
+                if (math::is_nan(a.get_number()) || math::is_nan(b.get_number())) return false;
+                return a.get_number() == b.get_number();
+            case FASTINT:   return a.get_fastint() == b.get_fastint();
+            case STRING:    return a.get_heapptr() == b.get_heapptr();
             default: return false;
         }
     }
-    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
-        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
-        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+    if ((a.is_number() && b.is_fastint()) || (a.is_fastint() && b.is_number())) {
+        double av = a.is_fastint() ? (double)a.get_fastint() : a.get_number();
+        double bv = b.is_fastint() ? (double)b.get_fastint() : b.get_number();
         return av == bv;
     }
     return false;
@@ -6466,8 +6093,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
         key = new_key;
     }
     TVal tv;
-    tv.tag = LIGHTFUNC;
-    tv.fastint = (long)fn_index;
+    tv.set_lightfunc((void*)(usz)fn_index);
     proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -6498,8 +6124,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
         HString* fname = builtin_intern_string(heap, name);
         if (fname != null) {
             TVal name_tv;
-            name_tv.tag = STRING;
-            name_tv.pointer = fname;
+            name_tv.set_string(fname);
             func_obj.put_prop(name_str, name_tv, hobject::PROP_FLAGS_WEC);
         }
     }
@@ -6515,8 +6140,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
         key = new_key;
     }
     TVal tv;
-    tv.tag = OBJECT;
-    tv.pointer = func_obj;
+    tv.set_object(func_obj);
     proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -6528,7 +6152,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
 // Join all elements with comma separator.
 fn void builtin_array_proto_toString(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     char[4096] buf;
@@ -6539,7 +6163,7 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
             if (offset < 4095) buf[offset++] = ',';
         }
         TVal elem = array_get_elem(obj, i, ctx.heap);
-        if (elem.tag != UNDEFINED && elem.tag != NULL_VAL) {
+        if (!elem.is_undefined() && !elem.is_null()) {
             HString* elem_str = builtin_to_string(ctx.heap, &elem);
             if (elem_str != null) {
                 char* data = elem_str.get_cstr();
@@ -6554,9 +6178,8 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
     }
 
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    if (result == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_string(result);
 }
 
 // ============================================================================
@@ -6564,7 +6187,7 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_join(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     // Get separator (default ",")
     char[] sep = ",";
@@ -6581,9 +6204,8 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     // Empty array returns ""
     if (len == 0) {
         HString* result = builtin_intern_string(ctx.heap, "");
-        if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-        ctx.result.tag = STRING;
-        ctx.result.pointer = result;
+        if (result == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_string(result);
         return;
     }
 
@@ -6597,7 +6219,7 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
             }
         }
         TVal elem = array_get_elem(obj, i, ctx.heap);
-        if (elem.tag != UNDEFINED && elem.tag != NULL_VAL) {
+        if (!elem.is_undefined() && !elem.is_null()) {
             HString* elem_str = builtin_to_string(ctx.heap, &elem);
             if (elem_str != null) {
                 char* data = elem_str.get_cstr();
@@ -6612,9 +6234,8 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     }
 
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    if (result == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    if (result == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_string(result);
 }
 
 // ============================================================================
@@ -6622,13 +6243,12 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_pop(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     if (len == 0) {
         array_set_length(obj, 0, ctx.heap);
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -6638,11 +6258,10 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
     array_set_length(obj, idx, ctx.heap);
 
     // Return the popped element
-    ctx.result.tag = elem.tag;
-    ctx.result.fastint = elem.fastint;
-    ctx.result.boolean = elem.boolean;
-    ctx.result.pointer = elem.pointer;
-    ctx.result.number = elem.number;
+    ctx.result.set_fastint(elem.get_fastint());
+    ctx.result.set_boolean(elem.get_boolean());
+    ctx.result.set_object(elem.get_heapptr());
+    ctx.result.set_number(elem.get_number());
 }
 
 // ============================================================================
@@ -6650,7 +6269,7 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_push(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
@@ -6662,8 +6281,7 @@ fn void builtin_array_proto_push(BuiltinContext* ctx) {
     uint new_len = len + (uint)ctx.argc;
     array_set_length(obj, new_len, ctx.heap);
 
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)new_len;
+    ctx.result.set_fastint((long)new_len);
 }
 
 // ============================================================================
@@ -6671,7 +6289,7 @@ fn void builtin_array_proto_push(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_reverse(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     uint middle = len / 2;
@@ -6684,8 +6302,7 @@ fn void builtin_array_proto_reverse(BuiltinContext* ctx) {
         array_set_elem(obj, upper, lower_val, ctx.heap);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -6693,13 +6310,12 @@ fn void builtin_array_proto_reverse(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_shift(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     if (len == 0) {
         array_set_length(obj, 0, ctx.heap);
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -6714,11 +6330,10 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
     array_set_length(obj, len - 1, ctx.heap);
 
     // Return the first element
-    ctx.result.tag = first.tag;
-    ctx.result.fastint = first.fastint;
-    ctx.result.boolean = first.boolean;
-    ctx.result.pointer = first.pointer;
-    ctx.result.number = first.number;
+    ctx.result.set_fastint(first.get_fastint());
+    ctx.result.set_boolean(first.get_boolean());
+    ctx.result.set_object(first.get_heapptr());
+    ctx.result.set_number(first.get_number());
 }
 
 // ============================================================================
@@ -6726,7 +6341,7 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
@@ -6734,10 +6349,10 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     double relative_start = 0.0;
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.tag == FASTINT) {
-            relative_start = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_start = arg.number;
+        if (arg.is_fastint()) {
+            relative_start = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_start = arg.get_number();
         }
     }
 
@@ -6753,10 +6368,10 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     double relative_end = (double)len;
     if (ctx.argc > 1) {
         TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.tag == FASTINT) {
-            relative_end = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_end = arg.number;
+        if (arg.is_fastint()) {
+            relative_end = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_end = arg.get_number();
         }
     }
 
@@ -6771,8 +6386,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // Create result array
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* result_arr = new_arr;
@@ -6786,8 +6400,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     }
     array_set_length(result_arr, n, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result_arr;
+    ctx.result.set_object(result_arr);
 }
 
 // ============================================================================
@@ -6795,12 +6408,11 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_sort(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     if (len <= 1) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
         return;
     }
 
@@ -6808,7 +6420,7 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
     uint def_count = 0;
     for (uint i = 0; i < len; i++) {
         TVal elem = array_get_elem(obj, i, ctx.heap);
-        if (elem.tag != UNDEFINED) {
+        if (!elem.is_undefined()) {
             array_set_elem(obj, def_count, elem, ctx.heap);
             def_count++;
         }
@@ -6843,8 +6455,7 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
         array_delete_elem(obj, i, ctx.heap);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 // ============================================================================
@@ -6852,7 +6463,7 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
@@ -6860,10 +6471,10 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     double relative_start = 0.0;
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.tag == FASTINT) {
-            relative_start = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_start = arg.number;
+        if (arg.is_fastint()) {
+            relative_start = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_start = arg.get_number();
         }
     }
 
@@ -6882,10 +6493,10 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     } else {
         TVal* arg = &ctx.regs[ctx.base_reg + 1];
         double delete_count;
-        if (arg.tag == FASTINT) {
-            delete_count = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            delete_count = arg.number;
+        if (arg.is_fastint()) {
+            delete_count = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            delete_count = arg.get_number();
         } else {
             delete_count = 0;
         }
@@ -6898,8 +6509,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     // Create result array with deleted items
     HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = result_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* result = result_raw;
@@ -6946,8 +6556,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         array_set_elem(obj, actual_start + i, item, ctx.heap);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -6957,17 +6566,16 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) {
         TVal this_val = ctx.regs[ctx.base_reg - 1];
-        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+        if (this_val.is_undefined() || this_val.is_null()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toReversed called on null or undefined");
-                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             }
         }
         return;
@@ -6977,7 +6585,7 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
 
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -6988,8 +6596,7 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
     }
     array_set_length(result, len, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -6999,17 +6606,16 @@ fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) {
         TVal this_val = ctx.regs[ctx.base_reg - 1];
-        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+        if (this_val.is_undefined() || this_val.is_null()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSorted called on null or undefined");
-                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             }
         }
         return;
@@ -7020,7 +6626,7 @@ fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
     // Create a copy
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -7035,7 +6641,7 @@ fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
     uint def_count = 0;
     for (uint i = 0; i < len; i++) {
         TVal elem = array_get_elem(result, i, ctx.heap);
-        if (elem.tag != UNDEFINED) {
+        if (!elem.is_undefined()) {
             array_set_elem(result, def_count, elem, ctx.heap);
             def_count++;
         }
@@ -7065,8 +6671,7 @@ fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -7076,17 +6681,16 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) {
         TVal this_val = ctx.regs[ctx.base_reg - 1];
-        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+        if (this_val.is_undefined() || this_val.is_null()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSpliced called on null or undefined");
-                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             }
         }
         return;
@@ -7098,10 +6702,10 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
     double relative_start = 0.0;
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.tag == FASTINT) {
-            relative_start = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_start = arg.number;
+        if (arg.is_fastint()) {
+            relative_start = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_start = arg.get_number();
         }
     }
 
@@ -7120,10 +6724,10 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
     } else {
         TVal* arg = &ctx.regs[ctx.base_reg + 1];
         double delete_count;
-        if (arg.tag == FASTINT) {
-            delete_count = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            delete_count = arg.number;
+        if (arg.is_fastint()) {
+            delete_count = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            delete_count = arg.get_number();
         } else {
             delete_count = 0;
         }
@@ -7142,7 +6746,7 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
     // Create new array: prefix + items + suffix
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -7168,8 +6772,7 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
     }
     array_set_length(result, n, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -7179,17 +6782,16 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) {
         TVal this_val = ctx.regs[ctx.base_reg - 1];
-        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+        if (this_val.is_undefined() || this_val.is_null()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.with called on null or undefined");
-                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 ctx.should_throw = true;
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             }
         }
         return;
@@ -7223,12 +6825,11 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
         if (try err = err_raw) {
             err.prototype = ctx.heap.range_err_proto;
             HString* msg = builtin_intern_string(ctx.heap, "Invalid array index");
-            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
             ctx.should_throw = true;
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         }
         return;
     }
@@ -7238,14 +6839,13 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
     if (ctx.argc > 1) {
         new_val = ctx.regs[ctx.base_reg + 1];
     } else {
-        new_val.tag = UNDEFINED;
-        new_val.pointer = null;
+        new_val.set_undefined();
     }
 
     // Create new array
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+        ctx.result.set_undefined(); return;
     }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
@@ -7260,8 +6860,7 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
     }
     array_set_length(result, len, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -7269,7 +6868,7 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_unshift(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
     ushort arg_count = ctx.argc;
@@ -7291,8 +6890,7 @@ fn void builtin_array_proto_unshift(BuiltinContext* ctx) {
     uint new_len = len + (uint)arg_count;
     array_set_length(obj, new_len, ctx.heap);
 
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)new_len;
+    ctx.result.set_fastint((long)new_len);
 }
 
 // ============================================================================
@@ -7300,13 +6898,12 @@ fn void builtin_array_proto_unshift(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
     if (ctx.argc == 0) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = -1;
+        ctx.result.set_fastint(-1);
         return;
     }
 
@@ -7316,10 +6913,10 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     double relative_start = 0.0;
     if (ctx.argc > 1) {
         TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.tag == FASTINT) {
-            relative_start = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_start = arg.number;
+        if (arg.is_fastint()) {
+            relative_start = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_start = arg.get_number();
         }
     }
 
@@ -7334,14 +6931,12 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     for (; k < len; k++) {
         TVal elem = array_get_elem(obj, k, ctx.heap);
         if (array_strict_equals(elem, search_elem)) {
-            ctx.result.tag = FASTINT;
-            ctx.result.fastint = (long)k;
+            ctx.result.set_fastint((long)k);
             return;
         }
     }
 
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = -1;
+    ctx.result.set_fastint(-1);
 }
 
 // ============================================================================
@@ -7349,13 +6944,12 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
     if (ctx.argc == 0) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = -1;
+        ctx.result.set_fastint(-1);
         return;
     }
 
@@ -7365,10 +6959,10 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     double relative_start = (double)(len - 1);
     if (ctx.argc > 1) {
         TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.tag == FASTINT) {
-            relative_start = (double)arg.fastint;
-        } else if (arg.tag == NUMBER) {
-            relative_start = arg.number;
+        if (arg.is_fastint()) {
+            relative_start = (double)arg.get_fastint();
+        } else if (arg.is_number()) {
+            relative_start = arg.get_number();
         }
     }
 
@@ -7383,14 +6977,12 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     for (; k >= 0; k--) {
         TVal elem = array_get_elem(obj, (uint)k, ctx.heap);
         if (array_strict_equals(elem, search_elem)) {
-            ctx.result.tag = FASTINT;
-            ctx.result.fastint = (long)k;
+            ctx.result.set_fastint((long)k);
             return;
         }
     }
 
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = -1;
+    ctx.result.set_fastint(-1);
 }
 
 // ============================================================================
@@ -7398,13 +6990,12 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (obj == null) { ctx.result.set_undefined(); return; }
 
     // Create result array
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* result = new_arr;
@@ -7424,9 +7015,9 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     for (ushort arg_i = 0; arg_i < ctx.argc; arg_i++) {
         TVal arg = ctx.regs[ctx.base_reg + arg_i];
 
-        if (arg.tag == OBJECT && ((HObject*)arg.pointer).get_class() == hobject::ObjClass.ARRAY) {
+        if (arg.is_object() && ((HObject*)arg.get_heapptr()).get_class() == hobject::ObjClass.ARRAY) {
             // If argument is an Array, copy its elements
-            HObject* arg_arr = (HObject*)arg.pointer;
+            HObject* arg_arr = (HObject*)arg.get_heapptr();
             uint arg_len = array_get_length(arg_arr, ctx.heap);
             for (uint i = 0; i < arg_len; i++) {
                 TVal elem = array_get_elem(arg_arr, i, ctx.heap);
@@ -7442,8 +7033,7 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
 
     array_set_length(result, n, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = result;
+    ctx.result.set_object(result);
 }
 
 // ============================================================================
@@ -7454,58 +7044,54 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
 fn double math_arg(BuiltinContext* ctx, ushort i) {
     if (i >= ctx.argc) return double::nan;
     TVal* arg = &ctx.regs[ctx.base_reg + i];
-    if (arg.tag == FASTINT) return (double)arg.fastint;
-    if (arg.tag == NUMBER) return arg.number;
+    if (arg.is_fastint()) return (double)arg.get_fastint();
+    if (arg.is_number()) return arg.get_number();
     // Non-numeric — need ToNumber
     TVal num;
     builtin_to_number(arg, &num);
-    return num.tag == FASTINT ? (double)num.fastint : num.number;
+    return num.is_fastint() ? (double)num.get_fastint() : num.get_number();
 }
 
 fn void builtin_math_abs(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math::abs(x);
+    ctx.result.set_number(math::abs(x));
 }
 
 fn void builtin_math_floor(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math::floor(x);
+    ctx.result.set_number(math::floor(x));
 }
 
 fn void builtin_math_ceil(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math::ceil(x);
+    ctx.result.set_number(math::ceil(x));
 }
 
 fn void builtin_math_round(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
+    ctx.result.set_number(0.0);
     // ES5 §15.8.2.15: round half away from zero
     if (math::is_nan(x)) {
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
     } else if (math::is_inf(x) || x == 0.0) {
-        ctx.result.number = x;
+        ctx.result.set_number(x);
     } else {
         // round half up (away from zero)
         double frac = x - math::floor(x);
         if (frac < 0.5) {
-            ctx.result.number = math::floor(x);
+            ctx.result.set_number(math::floor(x));
         } else if (frac > 0.5) {
-            ctx.result.number = math::ceil(x);
+            ctx.result.set_number(math::ceil(x));
         } else {
             // exactly 0.5 — round away from zero
-            ctx.result.number = math::floor(x) + 1.0;
+            ctx.result.set_number(math::floor(x) + 1.0);
         }
     }
 }
 
 fn void builtin_math_max(BuiltinContext* ctx) {
     if (ctx.argc == 0) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = -double::inf;
+        ctx.result.set_number(-double::inf);
         return;
     }
     double max = math_arg(ctx, 0);
@@ -7517,14 +7103,12 @@ fn void builtin_math_max(BuiltinContext* ctx) {
             max = v;
         }
     }
-    ctx.result.tag = NUMBER;
-    ctx.result.number = max;
+    ctx.result.set_number(max);
 }
 
 fn void builtin_math_min(BuiltinContext* ctx) {
     if (ctx.argc == 0) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::inf;
+        ctx.result.set_number(double::inf);
         return;
     }
     double min = math_arg(ctx, 0);
@@ -7536,55 +7120,48 @@ fn void builtin_math_min(BuiltinContext* ctx) {
             min = v;
         }
     }
-    ctx.result.tag = NUMBER;
-    ctx.result.number = min;
+    ctx.result.set_number(min);
 }
 
 fn void builtin_math_pow(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
     double y = math_arg(ctx, 1);
-    ctx.result.tag = NUMBER;
+    ctx.result.set_number(0.0);
     if (math::is_nan(y) && x != 1.0) {
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
     } else {
-        ctx.result.number = math_pow(x, y);
+        ctx.result.set_number(math_pow(x, y));
     }
 }
 
 fn void builtin_math_sqrt(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_sqrt(x);
+    ctx.result.set_number(math_sqrt(x));
 }
 
 fn void builtin_math_exp(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_exp(x);
+    ctx.result.set_number(math_exp(x));
 }
 
 fn void builtin_math_log(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_log(x);
+    ctx.result.set_number(math_log(x));
 }
 
 fn void builtin_math_sin(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_sin(x);
+    ctx.result.set_number(math_sin(x));
 }
 
 fn void builtin_math_cos(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_cos(x);
+    ctx.result.set_number(math_cos(x));
 }
 
 fn void builtin_math_tan(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_tan(x);
+    ctx.result.set_number(math_tan(x));
 }
 
 /// Math.random() — uses the heap's PRNG state (xorshift32).
@@ -7594,99 +7171,83 @@ fn void builtin_math_random(BuiltinContext* ctx) {
     state ^= state >> 17;
     state ^= state << 5;
     ctx.heap.rnd_state = state;
-    ctx.result.tag = NUMBER;
-    ctx.result.number = (double)state / 4294967296.0;
+    ctx.result.set_number((double)state / 4294967296.0);
 }
 
 fn void builtin_math_acos(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_acos(x);
+    ctx.result.set_number(math_acos(x));
 }
 
 fn void builtin_math_asin(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_asin(x);
+    ctx.result.set_number(math_asin(x));
 }
 
 fn void builtin_math_atan(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_atan(x);
+    ctx.result.set_number(math_atan(x));
 }
 
 fn void builtin_math_atan2(BuiltinContext* ctx) {
     double y = math_arg(ctx, 0);
     double x = math_arg(ctx, 1);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_atan2(y, x);
+    ctx.result.set_number(math_atan2(y, x));
 }
 
 fn void builtin_math_cosh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_cosh(x);
+    ctx.result.set_number(math_cosh(x));
 }
 
 fn void builtin_math_sinh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_sinh(x);
+    ctx.result.set_number(math_sinh(x));
 }
 
 fn void builtin_math_tanh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_tanh(x);
+    ctx.result.set_number(math_tanh(x));
 }
 
 fn void builtin_math_acosh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_acosh(x);
+    ctx.result.set_number(math_acosh(x));
 }
 
 fn void builtin_math_asinh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_asinh(x);
+    ctx.result.set_number(math_asinh(x));
 }
 
 fn void builtin_math_atanh(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_atanh(x);
+    ctx.result.set_number(math_atanh(x));
 }
 
 fn void builtin_math_log2(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_log2(x);
+    ctx.result.set_number(math_log2(x));
 }
 
 fn void builtin_math_log10(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_log10(x);
+    ctx.result.set_number(math_log10(x));
 }
 
 fn void builtin_math_log1p(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_log1p(x);
+    ctx.result.set_number(math_log1p(x));
 }
 
 fn void builtin_math_expm1(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_expm1(x);
+    ctx.result.set_number(math_expm1(x));
 }
 
 fn void builtin_math_cbrt(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_cbrt(x);
+    ctx.result.set_number(math_cbrt(x));
 }
 
 fn void builtin_math_hypot(BuiltinContext* ctx) {
@@ -7696,41 +7257,40 @@ fn void builtin_math_hypot(BuiltinContext* ctx) {
         if (math::is_nan(v)) { result = double::nan; break; }
         result = result + v * v;
     }
-    ctx.result.tag = NUMBER;
-    ctx.result.number = math_sqrt(result);
+    ctx.result.set_number(math_sqrt(result));
 }
 
 fn void builtin_math_trunc(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
+    ctx.result.set_number(0.0);
     if (x >= 0) {
-        ctx.result.number = math::floor(x);
+        ctx.result.set_number(math::floor(x));
     } else {
-        ctx.result.number = math::ceil(x);
+        ctx.result.set_number(math::ceil(x));
     }
 }
 
 fn void builtin_math_sign(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
+    ctx.result.set_number(0.0);
     if (math::is_nan(x) || x == 0.0) {
-        ctx.result.number = x;
+        ctx.result.set_number(x);
     } else if (x > 0.0) {
-        ctx.result.number = 1.0;
+        ctx.result.set_number(1.0);
     } else {
-        ctx.result.number = -1.0;
+        ctx.result.set_number(-1.0);
     }
 }
 
 fn void builtin_math_fround(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    ctx.result.tag = NUMBER;
+    ctx.result.set_number(0.0);
     if (math::is_nan(x) || math::is_inf(x) || x == 0.0) {
-        ctx.result.number = x;
+        ctx.result.set_number(x);
     } else {
         // Round to nearest float32
         float f = (float)x;
-        ctx.result.number = (double)f;
+        ctx.result.set_number((double)f);
     }
 }
 
@@ -7738,16 +7298,14 @@ fn void builtin_math_clz32(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
     uint val = (uint)x;
     if (val == 0) {
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = 32;
+        ctx.result.set_fastint(32);
     } else {
         uint count = 0;
         while ((val & 0x80000000) == 0) {
             count++;
             val <<= 1;
         }
-        ctx.result.tag = FASTINT;
-        ctx.result.fastint = (long)count;
+        ctx.result.set_fastint((long)count);
     }
 }
 
@@ -7756,8 +7314,7 @@ fn void builtin_math_imul(BuiltinContext* ctx) {
     double y = math_arg(ctx, 1);
     int a = (int)(uint)x;
     int b = (int)(uint)y;
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = (long)(a * b);
+    ctx.result.set_fastint((long)(a * b));
 }
 
 /// Array.isArray(arg) — ES6 §22.1.2.2
@@ -7767,11 +7324,11 @@ fn void builtin_array_isArray(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (arg.tag != OBJECT || arg.pointer == null) {
+    if (!arg.is_object() || arg.get_heapptr() == null) {
         ctx.result.set_boolean(false);
         return;
     }
-    HObject* obj = (HObject*)arg.pointer;
+    HObject* obj = (HObject*)arg.get_heapptr();
     ctx.result.set_boolean(obj.get_class() == hobject::ObjClass.ARRAY);
 }
 
@@ -7785,8 +7342,7 @@ fn TVal builtin_arg(BuiltinContext* ctx, uint idx) {
         return ctx.regs[ctx.base_reg + idx];
     }
     TVal undef;
-    undef.tag = UNDEFINED;
-    undef.pointer = null;
+    undef.set_undefined();
     return undef;
 }
 
@@ -7801,10 +7357,10 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
 
     // Validate target is callable
     bool callable = false;
-    if (target.tag == LIGHTFUNC) {
+    if (target.is_lightfunc()) {
         callable = true;
-    } else if (target.tag == OBJECT) {
-        HObject* hobj = (HObject*)target.pointer;
+    } else if (target.is_object()) {
+        HObject* hobj = (HObject*)target.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
@@ -7817,8 +7373,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
             err.prototype = ctx.heap.type_err_proto;
             // Cannot easily throw from here — set needs_throw or similar
         }
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -7827,16 +7382,15 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
-        new_this.tag = UNDEFINED;
-        new_this.pointer = null;
+        new_this.set_undefined();
     }
 
     // Number of remaining args after thisArg
     ushort remaining = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
 
     // For LIGHTFUNC targets, dispatch directly after shifting args
-    if (target.tag == LIGHTFUNC) {
-        uint fn_idx = (uint)target.fastint;
+    if (target.is_lightfunc()) {
+        uint fn_idx = (uint)target.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -7858,7 +7412,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     }
 
     // For OBJECT targets, use re-dispatch mechanism
-    if (target.tag == OBJECT) {
+    if (target.is_object()) {
         // Replace the function slot with target
         ctx.regs[ctx.base_reg - 2] = target;
         // Replace the this slot with new_this
@@ -7871,8 +7425,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         ctx.needs_re_dispatch = true;
         ctx.re_nargs = remaining;
     } else {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
     }
 }
 
@@ -7887,18 +7440,17 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
 
     // Validate target is callable
     bool callable = false;
-    if (target.tag == LIGHTFUNC) {
+    if (target.is_lightfunc()) {
         callable = true;
-    } else if (target.tag == OBJECT) {
-        HObject* hobj = (HObject*)target.pointer;
+    } else if (target.is_object()) {
+        HObject* hobj = (HObject*)target.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
     }
 
     if (!callable) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -7907,8 +7459,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
-        new_this.tag = UNDEFINED;
-        new_this.pointer = null;
+        new_this.set_undefined();
     }
 
     // If argArray is undefined or null, call with no args
@@ -7916,15 +7467,15 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     bool has_array = ctx.argc > 1;
     if (has_array) {
         arg_array = builtin_arg(ctx, 1);
-        if (arg_array.tag == UNDEFINED || arg_array.tag == NULL_VAL) {
+        if (arg_array.is_undefined() || arg_array.is_null()) {
             has_array = false;
         }
     }
 
     if (!has_array) {
         // Call with no args
-        if (target.tag == LIGHTFUNC) {
-            uint fn_idx = (uint)target.fastint;
+        if (target.is_lightfunc()) {
+            uint fn_idx = (uint)target.get_fastint();
             builtins::BuiltinContext inner_ctx;
             inner_ctx.vm = ctx.vm;
             inner_ctx.regs = ctx.regs;
@@ -7940,35 +7491,33 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
             return;
         }
-        if (target.tag == OBJECT) {
+        if (target.is_object()) {
             ctx.regs[ctx.base_reg - 2] = target;
             ctx.regs[ctx.base_reg - 1] = new_this;
             ctx.needs_re_dispatch = true;
             ctx.re_nargs = 0;
         } else {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
         }
         return;
     }
 
     // argArray must be an object (array-like)
-    if (arg_array.tag != OBJECT || arg_array.pointer == null) {
+    if (!arg_array.is_object() || arg_array.get_heapptr() == null) {
         // TypeError
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
-    HObject* arr_obj = (HObject*)arg_array.pointer;
+    HObject* arr_obj = (HObject*)arg_array.get_heapptr();
 
     // Get length via property lookup (arrays store length as a named property)
     uint len = 0;
     HString* length_key = builtin_intern_string(ctx.heap, "length");
     TVal? len_val = arr_obj.get_prop_proto(length_key);
     if (try lv = len_val) {
-        if (lv.tag == NUMBER || lv.tag == FASTINT) {
-            double d = lv.tag == FASTINT ? (double)lv.fastint : lv.number;
+        if (lv.is_number() || lv.is_fastint()) {
+            double d = lv.is_fastint() ? (double)lv.get_fastint() : lv.get_number();
             if (d < 0) d = 0;
             if (math::is_nan(d)) d = 0;
             if (d > 4294967295.0) d = 4294967295.0;
@@ -7988,7 +7537,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         TVal elem;
         if (is_dense_array && i < arr_obj.array_size) {
             elem = arr_obj.array_part[i];
-            if (elem.tag == UNDEFINED) {
+            if (elem.is_undefined()) {
                 char[20] buf;
                 int n = libc::snprintf(&buf, 20, "%d", i);
                 if (n <= 0 || n >= 20) break;
@@ -8008,15 +7557,14 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             if (try p = prop) {
                 elem = p;
             } else {
-                elem.tag = UNDEFINED;
-                elem.pointer = null;
+                elem.set_undefined();
             }
         }
         if (actual_count < max_extract) extracted_args[actual_count++] = elem;
     }
 
-    if (target.tag == LIGHTFUNC) {
-        uint fn_idx = (uint)target.fastint;
+    if (target.is_lightfunc()) {
+        uint fn_idx = (uint)target.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -8040,7 +7588,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         return;
     }
 
-    if (target.tag == OBJECT) {
+    if (target.is_object()) {
         ctx.regs[ctx.base_reg - 2] = target;
         ctx.regs[ctx.base_reg - 1] = new_this;
         for (uint i = 0; i < actual_count; i++) {
@@ -8051,8 +7599,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         ctx.re_nargs = (ushort)actual_count;
     } else {
         if (extracted_args != null) libc::free(extracted_args);
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
     }
 }
 
@@ -8082,18 +7629,17 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 
     // Validate target is callable
     bool callable = false;
-    if (target.tag == LIGHTFUNC) {
+    if (target.is_lightfunc()) {
         callable = true;
-    } else if (target.tag == OBJECT) {
-        HObject* hobj = (HObject*)target.pointer;
+    } else if (target.is_object()) {
+        HObject* hobj = (HObject*)target.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
     }
 
     if (!callable) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -8102,8 +7648,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         bound_this = builtin_arg(ctx, 0);
     } else {
-        bound_this.tag = UNDEFINED;
-        bound_this.pointer = null;
+        bound_this.set_undefined();
     }
 
     // Collect bound args
@@ -8113,8 +7658,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     if (bound_argc > 0) {
         bound_args_arr = (TVal*)libc::malloc(TVal::size * bound_argc);
         if (bound_args_arr == null) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         for (ushort i = 0; i < bound_argc; i++) {
@@ -8126,8 +7670,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     HObject*? bound_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = bound_raw) {
         if (bound_args_arr != null) libc::free(bound_args_arr);
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* bound_obj = bound_raw;
@@ -8140,8 +7683,8 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 
     // Also maintain constructable flag if target is constructable
     bool target_constructable = false;
-    if (target.tag == OBJECT) {
-        HObject* tobj = (HObject*)target.pointer;
+    if (target.is_object()) {
+        HObject* tobj = (HObject*)target.get_heapptr();
         if (tobj != null) target_constructable = tobj.flags.constructable;
     }
     bound_obj.flags.constructable = target_constructable;
@@ -8170,8 +7713,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
         // Set length
         HString* len_key = builtin_intern_string(ctx.heap, "length");
         TVal len_tv;
-        len_tv.tag = FASTINT;
-        len_tv.fastint = bound_argc;
+        len_tv.set_fastint(bound_argc);
         args_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
         // Set elements
         for (ushort i = 0; i < bound_argc; i++) {
@@ -8188,19 +7730,17 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 
     TVal args_tv;
     if (args_arr != null) {
-        args_tv.tag = OBJECT;
-        args_tv.pointer = args_arr;
+        args_tv.set_object(args_arr);
     } else {
-        args_tv.tag = UNDEFINED;
-        args_tv.pointer = null;
+        args_tv.set_undefined();
     }
     bound_obj.put_prop(key_args, args_tv, internal_flags);
 
     // Set .length on the bound function
     // Length = max(0, target.length - bound_argc)
     int target_len = 0;
-    if (target.tag == OBJECT) {
-        HObject* tobj = (HObject*)target.pointer;
+    if (target.is_object()) {
+        HObject* tobj = (HObject*)target.get_heapptr();
         if (tobj != null && tobj.comp_func != null) {
             target_len = (int)tobj.comp_func.num_formals;
         }
@@ -8211,14 +7751,12 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = (long)bound_len;
+    len_tv.set_fastint((long)bound_len);
     PropFlags wec = hobject::PROP_FLAGS_WEC;
     bound_obj.put_prop(len_key, len_tv, wec);
 
     // Result
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = bound_obj;
+    ctx.result.set_object(bound_obj);
 }
 
 /// Bound function [[Call]] handler.
@@ -8226,15 +7764,13 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 /// prepends bound args to the call args, and re-dispatches.
 fn void builtin_bound_call(BuiltinContext* ctx) {
     TVal func_val = ctx.regs[ctx.base_reg - 2];
-    if (func_val.tag != OBJECT) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (!func_val.is_object()) {
+        ctx.result.set_undefined();
         return;
     }
-    HObject* bound_obj = (HObject*)func_val.pointer;
+    HObject* bound_obj = (HObject*)func_val.get_heapptr();
     if (bound_obj == null || !bound_obj.flags.is_bound) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -8250,23 +7786,23 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     TVal target;
     TVal bound_this;
     if (try tv = target_val) { target = tv; }
-    else { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    else { ctx.result.set_undefined(); return; }
     if (try tv = this_val) { bound_this = tv; }
-    else { bound_this.tag = UNDEFINED; bound_this.pointer = null; }
+    else { bound_this.set_undefined(); }
 
     // Extract bound args array
     uint bound_argc = 0;
     if (try av = args_val) {
-        if (av.tag == OBJECT) {
-            HObject* arr = (HObject*)av.pointer;
+        if (av.is_object()) {
+            HObject* arr = (HObject*)av.get_heapptr();
             if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
                 HString* len_key = builtin_intern_string(ctx.heap, "length");
                 TVal? lv = arr.get_prop_proto(len_key);
                 if (try l = lv) {
-                    if (l.tag == FASTINT) {
-                        bound_argc = (uint)l.fastint;
-                    } else if (l.tag == NUMBER) {
-                        bound_argc = (uint)l.number;
+                    if (l.is_fastint()) {
+                        bound_argc = (uint)l.get_fastint();
+                    } else if (l.is_number()) {
+                        bound_argc = (uint)l.get_number();
                     }
                 }
             }
@@ -8277,14 +7813,14 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     uint max_total = bound_argc + ctx.argc;
     if (max_total > 0) {
         all_args = (TVal*)libc::malloc(TVal::size * max_total);
-        if (all_args == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+        if (all_args == null) { ctx.result.set_undefined(); return; }
     }
     uint actual_total = 0;
 
     // Copy bound args from stored array
     if (try av = args_val) {
-        if (av.tag == OBJECT) {
-            HObject* arr = (HObject*)av.pointer;
+        if (av.is_object()) {
+            HObject* arr = (HObject*)av.get_heapptr();
             if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
                 for (uint i = 0; i < bound_argc && actual_total < max_total; i++) {
                     char[20] buf;
@@ -8306,8 +7842,8 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     }
 
     // Determine if target is LIGHTFUNC or OBJECT
-    if (target.tag == LIGHTFUNC) {
-        uint fn_idx = (uint)target.fastint;
+    if (target.is_lightfunc()) {
+        uint fn_idx = (uint)target.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -8328,8 +7864,8 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         return;
     }
 
-    if (target.tag == OBJECT) {
-        HObject* tobj = (HObject*)target.pointer;
+    if (target.is_object()) {
+        HObject* tobj = (HObject*)target.get_heapptr();
         if (tobj != null && tobj.is_callable()) {
             ctx.regs[ctx.base_reg - 2] = target;
             ctx.regs[ctx.base_reg - 1] = bound_this;
@@ -8342,8 +7878,7 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -8469,7 +8004,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
 
     // Integer part
     if (jctx.pos >= jctx.len) {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
     if (jctx.src[jctx.pos] == '0') {
         jctx.pos++;
@@ -8479,14 +8014,14 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
             jctx.pos++;
         }
     } else {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
 
     // Fractional part
     if (jctx.pos < jctx.len && jctx.src[jctx.pos] == '.') {
         jctx.pos++;
         if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
-            TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            TVal r; r.set_undefined(); return r;
         }
         while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
             jctx.pos++;
@@ -8500,7 +8035,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
             jctx.pos++;
         }
         if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
-            TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+            TVal r; r.set_undefined(); return r;
         }
         while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
             jctx.pos++;
@@ -8518,9 +8053,9 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
     // Try fastint preservation
     long fi = (long)d;
     if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
-        TVal r; r.tag = FASTINT; r.fastint = fi; return r;
+        TVal r; r.set_fastint(fi); return r;
     }
-    TVal r; r.tag = NUMBER; r.number = d; return r;
+    TVal r; r.set_number(d); return r;
 }
 
 /// Parse a JSON array: [value, ...]
@@ -8534,7 +8069,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
         arr = a;
         arr.prototype = null; // will be set by caller
     } else {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
 
     HString* len_key = builtin_intern_string(jctx.heap, "length");
@@ -8544,8 +8079,8 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
         while (true) {
             json_skip_ws(jctx);
             TVal elem = json_parse_value(jctx);
-            if (elem.tag == UNDEFINED && elem.pointer == null && jctx.pos < jctx.len) {
-                TVal r; r.tag = UNDEFINED; r.pointer = null; return r; // parse error
+            if (elem.is_undefined() && elem.get_heapptr() == null && jctx.pos < jctx.len) {
+                TVal r; r.set_undefined(); return r; // parse error
             }
             json_skip_ws(jctx);
 
@@ -8556,7 +8091,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
             idx++;
 
             if (jctx.pos >= jctx.len) {
-                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                TVal r; r.set_undefined(); return r;
             }
             if (jctx.src[jctx.pos] == ',') {
                 jctx.pos++;
@@ -8567,18 +8102,16 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
     }
 
     if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ']') {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
     jctx.pos++; // skip ']'
 
     TVal len_val;
-    len_val.tag = FASTINT;
-    len_val.fastint = (long)idx;
+    len_val.set_fastint((long)idx);
     arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
     TVal result;
-    result.tag = OBJECT;
-    result.pointer = arr;
+    result.set_object(arr);
     return result;
 }
 
@@ -8592,31 +8125,31 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
     if (try o = obj_raw) {
         obj = o;
     } else {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
 
     if (jctx.pos < jctx.len && jctx.src[jctx.pos] != '}') {
         while (true) {
             json_skip_ws(jctx);
             if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '\"') {
-                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                TVal r; r.set_undefined(); return r;
             }
             HString*? key_str = json_parse_string(jctx);
             if (try k = key_str) {
                 json_skip_ws(jctx);
                 if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ':') {
-                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                    TVal r; r.set_undefined(); return r;
                 }
                 jctx.pos++; // skip ':'
                 json_skip_ws(jctx);
                 TVal val = json_parse_value(jctx);
-                if (val.tag == UNDEFINED && val.pointer == null && jctx.pos < jctx.len) {
-                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                if (val.is_undefined() && val.get_heapptr() == null && jctx.pos < jctx.len) {
+                    TVal r; r.set_undefined(); return r;
                 }
                 obj.put_prop(k, val, hobject::PROP_FLAGS_WEC);
                 json_skip_ws(jctx);
                 if (jctx.pos >= jctx.len) {
-                    TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                    TVal r; r.set_undefined(); return r;
                 }
                 if (jctx.src[jctx.pos] == ',') {
                     jctx.pos++;
@@ -8624,19 +8157,18 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
                     break;
                 }
             } else {
-                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                TVal r; r.set_undefined(); return r;
             }
         }
     }
 
     if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '}') {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
     jctx.pos++; // skip '}'
 
     TVal result;
-    result.tag = OBJECT;
-    result.pointer = obj;
+    result.set_object(obj);
     return result;
 }
 
@@ -8644,7 +8176,7 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
 fn TVal json_parse_value(JsonParseCtx* jctx) {
     json_skip_ws(jctx);
     if (jctx.pos >= jctx.len) {
-        TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+        TVal r; r.set_undefined(); return r;
     }
 
     char c = jctx.src[jctx.pos];
@@ -8654,9 +8186,9 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
             {
                 HString*? s = json_parse_string(jctx);
                 if (try str = s) {
-                    TVal r; r.tag = STRING; r.pointer = str; return r;
+                    TVal r; r.set_string(str); return r;
                 }
-                TVal r; r.tag = UNDEFINED; r.pointer = null; return r;
+                TVal r; r.set_undefined(); return r;
             }
         case '{':
             return json_parse_object(jctx);
@@ -8669,9 +8201,9 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.src[jctx.pos + 2] == 'u' &&
                 jctx.src[jctx.pos + 3] == 'e') {
                 jctx.pos += 4;
-                TVal r; r.tag = BOOLEAN; r.boolean = true; return r;
+                TVal r; r.set_boolean(true); return r;
             }
-            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+            { TVal r; r.set_undefined(); return r; }
         case 'f':
             // false
             if (jctx.pos + 5 <= jctx.len &&
@@ -8680,9 +8212,9 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.src[jctx.pos + 3] == 's' &&
                 jctx.src[jctx.pos + 4] == 'e') {
                 jctx.pos += 5;
-                TVal r; r.tag = BOOLEAN; r.boolean = false; return r;
+                TVal r; r.set_boolean(false); return r;
             }
-            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+            { TVal r; r.set_undefined(); return r; }
         case 'n':
             // null
             if (jctx.pos + 4 <= jctx.len &&
@@ -8690,49 +8222,47 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.src[jctx.pos + 2] == 'l' &&
                 jctx.src[jctx.pos + 3] == 'l') {
                 jctx.pos += 4;
-                TVal r; r.tag = NULL_VAL; r.pointer = null; return r;
+                TVal r; r.set_null(); return r;
             }
-            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+            { TVal r; r.set_undefined(); return r; }
         case '-':
         case '0'..'9':
             return json_parse_number(jctx);
         default:
-            { TVal r; r.tag = UNDEFINED; r.pointer = null; return r; }
+            { TVal r; r.set_undefined(); return r; }
     }
 }
 
 /// Walk helper for reviver (ES5 §15.12.2, step 4 — internalize properties).
 fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
     TVal val;
-    if (holder.tag == OBJECT && holder.pointer != null) {
-        HObject* obj = (HObject*)holder.pointer;
+    if (holder.is_object() && holder.get_heapptr() != null) {
+        HObject* obj = (HObject*)holder.get_heapptr();
         TVal? prop = obj.get_prop_proto(name);
         if (try p = prop) {
             val = p;
         } else {
-            val.tag = UNDEFINED;
-            val.pointer = null;
+            val.set_undefined();
         }
     } else {
-        val.tag = UNDEFINED;
-        val.pointer = null;
+        val.set_undefined();
     }
 
-    if (val.tag == OBJECT && val.pointer != null) {
-        HObject* obj = (HObject*)val.pointer;
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == ObjClass.ARRAY) {
             HString* len_key = builtin_intern_string(heap, "length");
             TVal? len_prop = obj.get_prop_proto(len_key);
             uint len = 0;
             if (try l = len_prop) {
-                if (l.tag == FASTINT) len = (uint)l.fastint;
+                if (l.is_fastint()) len = (uint)l.get_fastint();
             }
             for (uint i = 0; i < len; i++) {
                 char[16] idx_buf;
                 int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
                 HString* idx_key = builtin_intern_string(heap, idx_buf[:idx_len]);
                 TVal new_elem = json_walk(heap, reviver, val, idx_key);
-                if (new_elem.tag == UNDEFINED) {
+                if (new_elem.is_undefined()) {
                     obj.delete_prop(idx_key);
                 } else {
                     obj.put_prop(idx_key, new_elem, hobject::PROP_FLAGS_WEC);
@@ -8744,7 +8274,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
                 HString* key_str = obj.props[i].key;
                 if (key_str != null) {
                     TVal new_val = json_walk(heap, reviver, val, key_str);
-                    if (new_val.tag == UNDEFINED) {
+                    if (new_val.is_undefined()) {
                         obj.delete_prop(key_str);
                     } else {
                         obj.put_prop(key_str, new_val, hobject::PROP_FLAGS_WEC);
@@ -8756,8 +8286,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
 
     // Call reviver(this=holder, name, val)
     TVal name_str;
-    name_str.tag = STRING;
-    name_str.pointer = name;
+    name_str.set_string(name);
 
     // For the reviver call, we need to invoke it via the calling convention
     // Since we're in a builtin context, we need to set up the stack
@@ -8774,12 +8303,10 @@ fn void json_throw_syntax_error(BuiltinContext* ctx, char[] msg) {
         err.prototype = ctx.heap.syntax_err_proto;
         HString* msg_str = builtin_intern_string(ctx.heap, msg);
         TVal msg_tv;
-        msg_tv.tag = STRING;
-        msg_tv.pointer = msg_str;
+        msg_tv.set_string(msg_str);
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
     } else {
         ctx.throw_value.set_undefined();
     }
@@ -8797,8 +8324,8 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     TVal* text_arg = &ctx.regs[ctx.base_reg];
     HString* text_str;
 
-    if (text_arg.tag == STRING) {
-        text_str = (HString*)text_arg.pointer;
+    if (text_arg.is_string()) {
+        text_str = (HString*)text_arg.get_heapptr();
     } else {
         text_str = builtin_to_string(ctx.heap, text_arg);
         if (text_str == null) {
@@ -8819,7 +8346,7 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     TVal result = json_parse_value(&jctx);
 
     // Check parse error (undefined == error)
-    if (result.tag == UNDEFINED && result.pointer == null) {
+    if (result.is_undefined() && result.get_heapptr() == null) {
         json_throw_syntax_error(ctx, "Unexpected token in JSON");
         return;
     }
@@ -8833,8 +8360,8 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     }
 
     // Set prototype on the result object if it's an object
-    if (result.tag == OBJECT && result.pointer != null) {
-        HObject* obj = (HObject*)result.pointer;
+    if (result.is_object() && result.get_heapptr() != null) {
+        HObject* obj = (HObject*)result.get_heapptr();
         if (obj.prototype == null) {
             obj.prototype = ctx.heap.object_proto;
         }
@@ -8843,9 +8370,9 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     // Reviver support (ES5 §15.12.2 step 4)
     if (ctx.argc > 1) {
         TVal* reviver_arg = &ctx.regs[ctx.base_reg + 1];
-        if (reviver_arg.tag == LIGHTFUNC || (reviver_arg.tag == OBJECT &&
-            ((HObject*)reviver_arg.pointer) != null &&
-            ((HObject*)reviver_arg.pointer).is_callable())) {
+        if (reviver_arg.is_lightfunc() || (reviver_arg.is_object() &&
+            ((HObject*)reviver_arg.get_heapptr()) != null &&
+            ((HObject*)reviver_arg.get_heapptr()).is_callable())) {
             // Create holder object { "": result }
             HObject*? holder_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (try holder = holder_raw) {
@@ -8853,8 +8380,7 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
                 holder.put_prop(empty_key, result, hobject::PROP_FLAGS_WEC);
 
                 TVal holder_tv;
-                holder_tv.tag = OBJECT;
-                holder_tv.pointer = holder;
+                holder_tv.set_object(holder);
 
                 // For now, skip the full walk and just return result without reviver
                 // Full reviver support requires VM re-dispatch which is complex
@@ -8963,10 +8489,10 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             TVal val = obj.props[i].value;
 
             // Skip undefined and function values
-            if (val.tag == UNDEFINED) continue;
-            if (val.tag == LIGHTFUNC) continue;
-            if (val.tag == OBJECT && val.pointer != null) {
-                HObject* vobj = (HObject*)val.pointer;
+            if (val.is_undefined()) continue;
+            if (val.is_lightfunc()) continue;
+            if (val.is_object() && val.get_heapptr() != null) {
+                HObject* vobj = (HObject*)val.get_heapptr();
                 if (vobj.get_class() == ObjClass.FUNCTION) continue;
             }
 
@@ -9036,7 +8562,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     TVal? len_prop = arr.get_prop_proto(len_key);
     uint len = 0;
     if (try l = len_prop) {
-        if (l.tag == FASTINT) len = (uint)l.fastint;
+        if (l.is_fastint()) len = (uint)l.get_fastint();
     }
 
     if (len == 0) {
@@ -9055,8 +8581,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         if (try e = elem_prop) {
             elem = e;
         } else {
-            elem.tag = UNDEFINED;
-            elem.pointer = null;
+            elem.set_undefined();
         }
 
         if (!first) {
@@ -9075,16 +8600,16 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         }
 
         // null for undefined elements
-        if (elem.tag == UNDEFINED) {
+        if (elem.is_undefined()) {
             if (jctx.offset + 5 > jctx.buf_size) return -1;
             libc::memcpy(jctx.buf + jctx.offset, "null", 4);
             jctx.offset += 4;
-        } else if (elem.tag == LIGHTFUNC) {
+        } else if (elem.is_lightfunc()) {
             if (jctx.offset + 5 > jctx.buf_size) return -1;
             libc::memcpy(jctx.buf + jctx.offset, "null", 4);
             jctx.offset += 4;
-        } else if (elem.tag == OBJECT && elem.pointer != null) {
-            HObject* vobj = (HObject*)elem.pointer;
+        } else if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* vobj = (HObject*)elem.get_heapptr();
             if (vobj.get_class() == ObjClass.FUNCTION) {
                 if (jctx.offset + 5 > jctx.buf_size) return -1;
                 libc::memcpy(jctx.buf + jctx.offset, "null", 4);
@@ -9126,7 +8651,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
 
 /// Serialize a value to JSON
 fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case NULL_VAL: {
             if (jctx.offset + 5 > jctx.buf_size) return -1;
             jctx.buf[jctx.offset++] = 'n';
@@ -9136,7 +8661,7 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
             return 0;
         }
         case BOOLEAN: {
-            if (val.boolean) {
+            if (val.get_boolean()) {
                 if (jctx.offset + 5 > jctx.buf_size) return -1;
                 libc::memcpy(jctx.buf + jctx.offset, "true", 4);
                 jctx.offset += 4;
@@ -9148,7 +8673,7 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
             return 0;
         }
         case NUMBER: {
-            double d = val.number;
+            double d = val.get_number();
             if (math::is_nan(d) || math::is_inf(d)) {
                 if (jctx.offset + 5 > jctx.buf_size) return -1;
                 libc::memcpy(jctx.buf + jctx.offset, "null", 4);
@@ -9166,7 +8691,7 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
         }
         case FASTINT: {
             char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%ld", val.fastint);
+            int len = libc::snprintf(&buf, 64, "%ld", val.get_fastint());
             if (len < 0 || len >= 64) return -1;
             if (jctx.offset + (usz)len > jctx.buf_size) return -1;
             for (int i = 0; i < len; i++) {
@@ -9175,7 +8700,7 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
             return 0;
         }
         case STRING: {
-            HString* s = (HString*)val.pointer;
+            HString* s = (HString*)val.get_heapptr();
             char* data = s.get_cstr();
             uint slen = s.blen;
             usz max_out = (usz)(slen * 6 + 3);
@@ -9189,13 +8714,13 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
             return 0;
         }
         case OBJECT: {
-            if (val.pointer == null) {
+            if (val.get_heapptr() == null) {
                 if (jctx.offset + 5 > jctx.buf_size) return -1;
                 libc::memcpy(jctx.buf + jctx.offset, "null", 4);
                 jctx.offset += 4;
                 return 0;
             }
-            HObject* obj = (HObject*)val.pointer;
+            HObject* obj = (HObject*)val.get_heapptr();
             if (obj.get_class() == ObjClass.ARRAY) {
                 return json_serialize_array(jctx, obj);
             } else if (obj.get_class() == ObjClass.FUNCTION) {
@@ -9244,14 +8769,14 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
 
     if (ctx.argc > 2) {
         TVal* space_arg = &ctx.regs[ctx.base_reg + 2];
-        if (space_arg.tag == FASTINT) {
-            space_num = (uint)space_arg.fastint;
+        if (space_arg.is_fastint()) {
+            space_num = (uint)space_arg.get_fastint();
             if (space_num > 10) space_num = 10;
-        } else if (space_arg.tag == NUMBER) {
-            space_num = (uint)(long)space_arg.number;
+        } else if (space_arg.is_number()) {
+            space_num = (uint)(long)space_arg.get_number();
             if (space_num > 10) space_num = 10;
-        } else if (space_arg.tag == STRING) {
-            HString* s = (HString*)space_arg.pointer;
+        } else if (space_arg.is_string()) {
+            HString* s = (HString*)space_arg.get_heapptr();
             char* data = s.get_cstr();
             uint slen = s.blen;
             if (slen > 10) slen = 10;
@@ -9292,8 +8817,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     }
 
     HString* result_str = builtin_intern_string(ctx.heap, buf[:jctx.offset]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result_str;
+    ctx.result.set_string(result_str);
 }
 
 // ============================================================================
@@ -9311,10 +8835,10 @@ fn double date_now_ms() {
 
 /// Helper: get the time value from a Date object, or NaN if not a Date.
 fn double date_get_time_value(TVal* val) {
-    if (val.tag == OBJECT && val.pointer != null) {
-        HObject* obj = (HObject*)val.pointer;
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.DATE &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
             return obj.primitive_value.get_number_or_fastint();
         }
     }
@@ -9454,8 +8978,7 @@ fn void builtin_date(BuiltinContext* ctx) {
         // new Date(...) — create Date object
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.DATE);
         if (catch err = obj_raw) {
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
             return;
         }
         HObject* obj = obj_raw;
@@ -9466,9 +8989,9 @@ fn void builtin_date(BuiltinContext* ctx) {
             time_val = now;
         } else if (ctx.argc == 1) {
             TVal* arg = &ctx.regs[ctx.base_reg];
-            if (arg.tag == STRING) {
+            if (arg.is_string()) {
                 // Parse string (simplified — try as number first)
-                HString* s = (HString*)arg.pointer;
+                HString* s = (HString*)arg.get_heapptr();
                 double num_val = builtin_string_to_number(s);
                 if (math::is_nan(num_val)) {
                     // Non-numeric string — try basic parsing
@@ -9477,9 +9000,9 @@ fn void builtin_date(BuiltinContext* ctx) {
                 } else {
                     time_val = num_val;
                 }
-            } else if (arg.tag == NUMBER || arg.tag == FASTINT) {
+            } else if (arg.is_number() || arg.is_fastint()) {
                 time_val = arg.get_number_or_fastint();
-            } else if (arg.tag == UNDEFINED || arg.tag == NULL_VAL) {
+            } else if (arg.is_undefined() || arg.is_null()) {
                 time_val = now;
             } else {
                 time_val = now;
@@ -9503,32 +9026,27 @@ fn void builtin_date(BuiltinContext* ctx) {
                                         (long)hour, (long)min, (long)sec, (long)ms);
         }
 
-        obj.primitive_value.tag = NUMBER;
-        obj.primitive_value.number = time_val;
+        obj.primitive_value.set_number(time_val);
 
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = obj;
+        ctx.result.set_object(obj);
     } else {
         // Date() as function — return string of current time
         char[128] buf;
         usz len = date_format_to_string(now, &buf, 128);
         HString* result = builtin_intern_string(ctx.heap, buf[:len]);
-        ctx.result.tag = STRING;
-        ctx.result.pointer = result;
+        ctx.result.set_string(result);
     }
 }
 
 /// Date.now() — ES5 §15.9.4.4
 fn void builtin_date_now(BuiltinContext* ctx) {
-    ctx.result.tag = NUMBER;
-    ctx.result.number = date_now_ms();
+    ctx.result.set_number(date_now_ms());
 }
 
 /// Date.UTC(year, month[, day, hour, minute, second, ms]) — ES5 §15.9.4.3
 fn void builtin_date_utc(BuiltinContext* ctx) {
     if (ctx.argc < 2) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     TVal* year_arg  = &ctx.regs[ctx.base_reg];
@@ -9557,41 +9075,36 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
     long epoch_day = (era * 146097 + (long)doe - 719468);
     double t = (double)epoch_day * 86400000.0;
     t += (double)hour * 3600000.0 + (double)min * 60000.0 + (double)sec * 1000.0 + (double)ms;
-    ctx.result.tag = NUMBER;
-    ctx.result.number = t;
+    ctx.result.set_number(t);
 }
 
 /// Date.parse(string) — ES5 §15.9.4.2 (simplified)
 fn void builtin_date_parse(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
     HString* s;
-    if (arg.tag == STRING) {
-        s = (HString*)arg.pointer;
+    if (arg.is_string()) {
+        s = (HString*)arg.get_heapptr();
     } else {
         s = builtin_to_string(ctx.heap, arg);
     }
     if (s == null || s.blen == 0) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = double::nan;
+        ctx.result.set_number(double::nan);
         return;
     }
     // Try numeric parsing first (milliseconds)
     double num_val = builtin_string_to_number(s);
     if (!math::is_nan(num_val)) {
-        ctx.result.tag = NUMBER;
-        ctx.result.number = num_val;
+        ctx.result.set_number(num_val);
         return;
     }
     // For non-numeric strings, try parsing as date string via libc
     // For now, return NaN (Date.parse is notoriously complex)
     // Full implementation would use a proper date parser
-    ctx.result.tag = NUMBER;
-    ctx.result.number = double::nan;
+    ctx.result.set_number(double::nan);
 }
 
 /// Date.prototype.toString() — ES5 §15.9.5.2
@@ -9601,8 +9114,7 @@ fn void builtin_date_proto_toString(BuiltinContext* ctx) {
     char[128] buf;
     usz len = date_format_to_string(time_val, &buf, 128);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// Date.prototype.toJSON(key) — ES5 §15.9.5.44
@@ -9610,31 +9122,27 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double time_val = date_get_time_value(&this_val);
     if (math::is_nan(time_val)) {
-        ctx.result.tag = NULL_VAL;
-        ctx.result.pointer = null;
+        ctx.result.set_null();
         return;
     }
     char[128] buf;
     usz len = date_format_iso(time_val, &buf, 128);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 /// Date.prototype.valueOf() — ES5 §15.9.5.8
 fn void builtin_date_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double time_val = date_get_time_value(&this_val);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = time_val;
+    ctx.result.set_number(time_val);
 }
 
 /// Date.prototype.getTime() — ES5 §15.9.5.9
 fn void builtin_date_proto_getTime(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double time_val = date_get_time_value(&this_val);
-    ctx.result.tag = NUMBER;
-    ctx.result.number = time_val;
+    ctx.result.set_number(time_val);
 }
 
 /// Helper: break a time value into local time components via localtime_r.
@@ -9660,88 +9168,80 @@ fn void date_break_time(double time_val, long* year, long* month, long* day,
 fn void builtin_date_proto_getFullYear(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = year;
+    ctx.result.set_fastint(year);
 }
 
 /// Date.prototype.getMonth() — ES5 §15.9.5.12
 fn void builtin_date_proto_getMonth(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = month;
+    ctx.result.set_fastint(month);
 }
 
 /// Date.prototype.getDate() — ES5 §15.9.5.14
 fn void builtin_date_proto_getDate(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = day;
+    ctx.result.set_fastint(day);
 }
 
 /// Date.prototype.getDay() — ES5 §15.9.5.16
 fn void builtin_date_proto_getDay(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = wday;
+    ctx.result.set_fastint(wday);
 }
 
 /// Date.prototype.getHours() — ES5 §15.9.5.18
 fn void builtin_date_proto_getHours(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = hour;
+    ctx.result.set_fastint(hour);
 }
 
 /// Date.prototype.getMinutes() — ES5 §15.9.5.20
 fn void builtin_date_proto_getMinutes(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = min;
+    ctx.result.set_fastint(min);
 }
 
 /// Date.prototype.getSeconds() — ES5 §15.9.5.22
 fn void builtin_date_proto_getSeconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = sec;
+    ctx.result.set_fastint(sec);
 }
 
 /// Date.prototype.getMilliseconds() — ES5 §15.9.5.24
 fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.tag = NUMBER; ctx.result.number = double::nan; return; }
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long ms = (long)tv % 1000;
     if (ms < 0) ms += 1000;
-    ctx.result.tag = FASTINT;
-    ctx.result.fastint = ms;
+    ctx.result.set_fastint(ms);
 }
 
 // ============================================================================
@@ -9752,8 +9252,8 @@ fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
 /// Returns null if 'this' is not a REGEXP-class object.
 fn HObject* regexp_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag != OBJECT || this_val.pointer == null) return null;
-    HObject* obj = (HObject*)this_val.pointer;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) return null;
+    HObject* obj = (HObject*)this_val.get_heapptr();
     if (obj.get_class() != hobject::ObjClass.REGEXP) return null;
     return obj;
 }
@@ -9772,13 +9272,13 @@ fn void builtin_regexp(BuiltinContext* ctx) {
 
     if (ctx.argc > 0) {
         TVal* pattern_arg = &ctx.regs[ctx.base_reg];
-        if (pattern_arg.tag == OBJECT && pattern_arg.pointer != null) {
-            HObject* obj = (HObject*)pattern_arg.pointer;
+        if (pattern_arg.is_object() && pattern_arg.get_heapptr() != null) {
+            HObject* obj = (HObject*)pattern_arg.get_heapptr();
             if (obj.get_class() == hobject::ObjClass.REGEXP && obj.regexp_data != null) {
                 // Pattern is a RegExp object — extract its pattern
                 is_regexp = true;
-                if (obj.primitive_value.tag == STRING) {
-                    HString* phs = (HString*)obj.primitive_value.pointer;
+                if (obj.primitive_value.is_string()) {
+                    HString* phs = (HString*)obj.primitive_value.get_heapptr();
                     pattern_str = phs.get_cstr();
                     pattern_len = phs.blen;
                 }
@@ -9790,8 +9290,8 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                     pattern_len = phs.blen;
                 }
             }
-        } else if (pattern_arg.tag == STRING && pattern_arg.pointer != null) {
-            HString* phs = (HString*)pattern_arg.pointer;
+        } else if (pattern_arg.is_string() && pattern_arg.get_heapptr() != null) {
+            HString* phs = (HString*)pattern_arg.get_heapptr();
             pattern_str = phs.get_cstr();
             pattern_len = phs.blen;
         } else {
@@ -9807,11 +9307,11 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     // Get flags from second argument
     if (ctx.argc > 1) {
         TVal* flags_arg = &ctx.regs[ctx.base_reg + 1];
-        if (flags_arg.tag == STRING && flags_arg.pointer != null) {
-            HString* fhs = (HString*)flags_arg.pointer;
+        if (flags_arg.is_string() && flags_arg.get_heapptr() != null) {
+            HString* fhs = (HString*)flags_arg.get_heapptr();
             flags_str = fhs.get_cstr();
             flags_len = fhs.blen;
-        } else if (flags_arg.tag != UNDEFINED) {
+        } else if (!flags_arg.is_undefined()) {
             HString* fhs = builtin_to_string(ctx.heap, flags_arg);
             if (fhs != null) {
                 flags_str = fhs.get_cstr();
@@ -9843,13 +9343,11 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                 if (len > 0 && len < 80) {
                     HString* msg_str = builtin_intern_string(ctx.heap, buf[:len]);
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_str;
+                    msg_tv.set_string(msg_str);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                 }
-                ctx.throw_value.tag = OBJECT;
-                ctx.throw_value.pointer = err;
+                ctx.throw_value.set_object(err);
             } else {
                 ctx.throw_value.set_undefined();
             }
@@ -9872,12 +9370,10 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             err.prototype = ctx.heap.syntax_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, error_buf[:128]);
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -9897,42 +9393,35 @@ fn void builtin_regexp(BuiltinContext* ctx) {
 
     // Store pattern string as primitive_value
     HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
-    obj.primitive_value.tag = STRING;
-    obj.primitive_value.pointer = pattern_hs;
+    obj.primitive_value.set_string(pattern_hs);
 
     // Set RegExp instance properties (ES5 §15.10.7)
     HString* source_key = builtin_intern_string(ctx.heap, "source");
     TVal source_tv;
-    source_tv.tag = STRING;
-    source_tv.pointer = pattern_hs;
+    source_tv.set_string(pattern_hs);
     obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
 
     HString* global_key = builtin_intern_string(ctx.heap, "global");
     TVal global_tv;
-    global_tv.tag = BOOLEAN;
-    global_tv.boolean = (js_flags & 1) != 0;
+    global_tv.set_boolean((js_flags & 1) != 0);
     obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
 
     HString* ignorecase_key = builtin_intern_string(ctx.heap, "ignoreCase");
     TVal ignorecase_tv;
-    ignorecase_tv.tag = BOOLEAN;
-    ignorecase_tv.boolean = (js_flags & 2) != 0;
+    ignorecase_tv.set_boolean((js_flags & 2) != 0);
     obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
 
     HString* multiline_key = builtin_intern_string(ctx.heap, "multiline");
     TVal multiline_tv;
-    multiline_tv.tag = BOOLEAN;
-    multiline_tv.boolean = (js_flags & 4) != 0;
+    multiline_tv.set_boolean((js_flags & 4) != 0);
     obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
 
     HString* lastindex_key = builtin_intern_string(ctx.heap, "lastIndex");
     TVal lastindex_tv;
-    lastindex_tv.tag = FASTINT;
-    lastindex_tv.fastint = 0;
+    lastindex_tv.set_fastint(0);
     obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = obj;
+    ctx.result.set_object(obj);
 }
 
 /// RegExp.prototype.test(string) — ES5 §15.10.6.3
@@ -9945,12 +9434,10 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.test called on incompatible receiver");
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -9964,8 +9451,8 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
         HString* hs;
-        if (arg.tag == STRING) {
-            hs = (HString*)arg.pointer;
+        if (arg.is_string()) {
+            hs = (HString*)arg.get_heapptr();
         } else {
             hs = builtin_to_string(ctx.heap, arg);
         }
@@ -9979,7 +9466,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     HString* global_key = builtin_intern_string(ctx.heap, "global");
     bool global_flag = false;
     if (try gv = obj.get_prop(global_key)) {
-        if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+        if (gv.is_boolean()) global_flag = gv.get_boolean();
     }
 
     // Get lastIndex (if global)
@@ -9987,20 +9474,18 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     int start_pos = 0;
     if (global_flag) {
         if (try liv = obj.get_prop(li_key)) {
-            if (liv.tag == FASTINT) {
-                start_pos = (int)liv.fastint;
-            } else if (liv.tag == NUMBER) {
-                start_pos = (int)liv.number;
+            if (liv.is_fastint()) {
+                start_pos = (int)liv.get_fastint();
+            } else if (liv.is_number()) {
+                start_pos = (int)liv.get_number();
             }
         }
         // If lastIndex is out of bounds, reset to 0 and return false
         if (start_pos < 0 || start_pos > input_len) {
             TVal zero_tv;
-            zero_tv.tag = FASTINT;
-            zero_tv.fastint = 0;
+            zero_tv.set_fastint(0);
             obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
-            ctx.result.tag = BOOLEAN;
-            ctx.result.boolean = false;
+            ctx.result.set_boolean(false);
             return;
         }
     }
@@ -10019,19 +9504,16 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     if (global_flag) {
         if (result == re_bindings::RE_MATCH) {
             TVal end_tv;
-            end_tv.tag = FASTINT;
-            end_tv.fastint = (long)out_end;
+            end_tv.set_fastint((long)out_end);
             obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
         } else {
             TVal zero_tv;
-            zero_tv.tag = FASTINT;
-            zero_tv.fastint = 0;
+            zero_tv.set_fastint(0);
             obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
         }
     }
 
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (result == re_bindings::RE_MATCH);
+    ctx.result.set_boolean((result == re_bindings::RE_MATCH));
 }
 
 /// RegExp.prototype.exec(string) — ES5 §15.10.6.2
@@ -10044,12 +9526,10 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.exec called on incompatible receiver");
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -10063,8 +9543,8 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
         HString* hs;
-        if (arg.tag == STRING) {
-            hs = (HString*)arg.pointer;
+        if (arg.is_string()) {
+            hs = (HString*)arg.get_heapptr();
         } else {
             hs = builtin_to_string(ctx.heap, arg);
         }
@@ -10078,7 +9558,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     HString* global_key = builtin_intern_string(ctx.heap, "global");
     bool global_flag = false;
     if (try gv = obj.get_prop(global_key)) {
-        if (gv.tag == BOOLEAN) global_flag = gv.boolean;
+        if (gv.is_boolean()) global_flag = gv.get_boolean();
     }
 
     // Get lastIndex (steps 4-5)
@@ -10086,17 +9566,16 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     int start_pos = 0;
     if (global_flag) {
         if (try liv = obj.get_prop(li_key)) {
-            if (liv.tag == FASTINT) {
-                start_pos = (int)liv.fastint;
-            } else if (liv.tag == NUMBER) {
-                start_pos = (int)liv.number;
+            if (liv.is_fastint()) {
+                start_pos = (int)liv.get_fastint();
+            } else if (liv.is_number()) {
+                start_pos = (int)liv.get_number();
             }
         }
         // Step 7: if i < 0 or i > length, set lastIndex to 0 and return null
         if (start_pos < 0 || start_pos > input_len) {
             TVal zero_tv;
-            zero_tv.tag = FASTINT;
-            zero_tv.fastint = 0;
+            zero_tv.set_fastint(0);
             obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
             ctx.result.set_null();
             return;
@@ -10122,8 +9601,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         // Step 9: no match — reset lastIndex to 0 if global
         if (global_flag) {
             TVal zero_tv;
-            zero_tv.tag = FASTINT;
-            zero_tv.fastint = 0;
+            zero_tv.set_fastint(0);
             obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
         }
         ctx.result.set_null();
@@ -10133,8 +9611,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     // Step 10: if global, update lastIndex to end of match
     if (global_flag) {
         TVal end_tv;
-        end_tv.tag = FASTINT;
-        end_tv.fastint = (long)out_end;
+        end_tv.set_fastint((long)out_end);
         obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
     }
 
@@ -10156,8 +9633,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     }
     HString* match_str = builtin_intern_string(ctx.heap, buf[:copy_len]);
     TVal elem;
-    elem.tag = STRING;
-    elem.pointer = match_str;
+    elem.set_string(match_str);
     HString* zero_key = builtin_intern_string(ctx.heap, "0");
     arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
 
@@ -10174,8 +9650,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
             }
             HString* cap_str = builtin_intern_string(ctx.heap, cap_buf[:cap_copy]);
             TVal cap_elem;
-            cap_elem.tag = STRING;
-            cap_elem.pointer = cap_str;
+            cap_elem.set_string(cap_str);
             char[16] idx_buf;
             int idx_len = libc::snprintf(&idx_buf, 16, "%d", i + 1);
             HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
@@ -10184,8 +9659,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
             // Unmatched capture group -> undefined
             HString* empty_key = builtin_intern_string(ctx.heap, "undefined");
             TVal undef;
-            undef.tag = UNDEFINED;
-            undef.pointer = null;
+            undef.set_undefined();
             char[16] idx_buf;
             int idx_len = libc::snprintf(&idx_buf, 16, "%d", i + 1);
             HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
@@ -10196,43 +9670,38 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     // Set index property
     HString* index_key = builtin_intern_string(ctx.heap, "index");
     TVal index_val;
-    index_val.tag = FASTINT;
-    index_val.fastint = (long)out_start;
+    index_val.set_fastint((long)out_start);
     arr.put_prop(index_key, index_val, hobject::PROP_FLAGS_WEC);
 
     // Set input property
     HString* input_key = builtin_intern_string(ctx.heap, "input");
     TVal input_val;
-    input_val.tag = STRING;
-    input_val.pointer = builtin_intern_string(ctx.heap, input[:input_len]);
+    input_val.set_string(builtin_intern_string(ctx.heap, input[:input_len]));
     arr.put_prop(input_key, input_val, hobject::PROP_FLAGS_WEC);
 
     // Set length
     uint total_elements = 1 + (uint)num_caps;
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_val;
-    len_val.tag = FASTINT;
-    len_val.fastint = (long)total_elements;
+    len_val.set_fastint((long)total_elements);
     arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 /// RegExp.prototype.toString() — ES5 §15.10.6.4
 fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
     // Build "/pattern/flags" string
     char* pattern = "";
     usz plen = 0;
-    if (obj.primitive_value.tag == STRING && obj.primitive_value.pointer != null) {
-        HString* phs = (HString*)obj.primitive_value.pointer;
+    if (obj.primitive_value.is_string() && obj.primitive_value.get_heapptr() != null) {
+        HString* phs = (HString*)obj.primitive_value.get_heapptr();
         pattern = phs.get_cstr();
         plen = phs.blen;
     }
@@ -10249,8 +9718,7 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
     buf[pos] = 0;
 
     HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 // ============================================================================
@@ -10259,23 +9727,23 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
 // Differs from === only in that NaN equals NaN.
 // ============================================================================
 fn bool same_value_zero(TVal a, TVal b) {
-    if (a.tag == b.tag) {
-        switch (a.tag) {
+    if (a.get_tag() == b.get_tag()) {
+        switch (a.get_tag()) {
             case UNDEFINED: return true;
             case NULL_VAL:  return true;
-            case BOOLEAN:   return a.boolean == b.boolean;
+            case BOOLEAN:   return a.get_boolean() == b.get_boolean();
             case NUMBER:
-                if (math::is_nan(a.number) && math::is_nan(b.number)) return true;
-                return a.number == b.number;
-            case FASTINT:   return a.fastint == b.fastint;
-            case STRING:    return a.pointer == b.pointer;
-            case OBJECT:    return a.pointer == b.pointer;
+                if (math::is_nan(a.get_number()) && math::is_nan(b.get_number())) return true;
+                return a.get_number() == b.get_number();
+            case FASTINT:   return a.get_fastint() == b.get_fastint();
+            case STRING:    return a.get_heapptr() == b.get_heapptr();
+            case OBJECT:    return a.get_heapptr() == b.get_heapptr();
             default: return false;
         }
     }
-    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
-        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
-        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+    if ((a.is_number() && b.is_fastint()) || (a.is_fastint() && b.is_number())) {
+        double av = a.is_fastint() ? (double)a.get_fastint() : a.get_number();
+        double bv = b.is_fastint() ? (double)b.get_fastint() : b.get_number();
         return av == bv;
     }
     return false;
@@ -10287,27 +9755,27 @@ fn bool same_value_zero(TVal a, TVal b) {
 // Differs from SameValueZero in that +0 !== -0.
 // ============================================================================
 fn bool same_value(TVal a, TVal b) {
-    if (a.tag == b.tag) {
-        switch (a.tag) {
+    if (a.get_tag() == b.get_tag()) {
+        switch (a.get_tag()) {
             case UNDEFINED: return true;
             case NULL_VAL:  return true;
-            case BOOLEAN:   return a.boolean == b.boolean;
+            case BOOLEAN:   return a.get_boolean() == b.get_boolean();
             case NUMBER:
-                if (math::is_nan(a.number) && math::is_nan(b.number)) return true;
+                if (math::is_nan(a.get_number()) && math::is_nan(b.get_number())) return true;
                 // +0 !== -0: check if both are zero with different signs
-                if (a.number == 0.0 && b.number == 0.0) {
-                    return 1.0 / a.number == 1.0 / b.number;
+                if (a.get_number() == 0.0 && b.get_number() == 0.0) {
+                    return 1.0 / a.get_number() == 1.0 / b.get_number();
                 }
-                return a.number == b.number;
-            case FASTINT:   return a.fastint == b.fastint;
-            case STRING:    return a.pointer == b.pointer;
-            case OBJECT:    return a.pointer == b.pointer;
+                return a.get_number() == b.get_number();
+            case FASTINT:   return a.get_fastint() == b.get_fastint();
+            case STRING:    return a.get_heapptr() == b.get_heapptr();
+            case OBJECT:    return a.get_heapptr() == b.get_heapptr();
             default: return false;
         }
     }
-    if ((a.tag == NUMBER && b.tag == FASTINT) || (a.tag == FASTINT && b.tag == NUMBER)) {
-        double av = a.tag == FASTINT ? (double)a.fastint : a.number;
-        double bv = b.tag == FASTINT ? (double)b.fastint : b.number;
+    if ((a.is_number() && b.is_fastint()) || (a.is_fastint() && b.is_number())) {
+        double av = a.is_fastint() ? (double)a.get_fastint() : a.get_number();
+        double bv = b.is_fastint() ? (double)b.get_fastint() : b.get_number();
         return av == bv;
     }
     return false;
@@ -10319,8 +9787,8 @@ fn bool same_value(TVal a, TVal b) {
 
 fn HObject* check_map(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.MAP) return obj;
     }
     // TypeError
@@ -10331,8 +9799,7 @@ fn HObject* check_map(BuiltinContext* ctx) {
             "Map.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
@@ -10358,8 +9825,7 @@ fn int map_find_key(HObject* map, TVal key) {
 fn void builtin_map(BuiltinContext* ctx) {
     HObject*? map_raw = ctx.heap.alloc_object(hobject::ObjClass.MAP);
     if (catch err = map_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* map = map_raw;
@@ -10368,22 +9834,21 @@ fn void builtin_map(BuiltinContext* ctx) {
     // Set size property
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = 0;
+    size_val.set_fastint(0);
     map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     // If iterable argument, populate map
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.tag == OBJECT && arg.pointer != null) {
-            HObject* iterable = (HObject*)arg.pointer;
+        if (arg.is_object() && arg.get_heapptr() != null) {
+            HObject* iterable = (HObject*)arg.get_heapptr();
             // Simple case: array-like iterable with forEach/pairs
             // We handle the common case of array of [key, value] pairs
             uint len = array_get_length(iterable, ctx.heap);
             for (uint i = 0; i < len; i++) {
                 TVal pair = array_get_elem(iterable, i, ctx.heap);
-                if (pair.tag == OBJECT && pair.pointer != null) {
-                    HObject* pair_obj = (HObject*)pair.pointer;
+                if (pair.is_object() && pair.get_heapptr() != null) {
+                    HObject* pair_obj = (HObject*)pair.get_heapptr();
                     TVal k = array_get_elem(pair_obj, 0, ctx.heap);
                     TVal v = array_get_elem(pair_obj, 1, ctx.heap);
                     // Call builtin_map_proto_set-style logic inline
@@ -10397,15 +9862,14 @@ fn void builtin_map(BuiltinContext* ctx) {
                     }
                     // Update size
                     uint entry_count = map.array_used / 2;
-                    size_val.fastint = (long)entry_count;
+                    size_val.set_fastint((long)entry_count);
                     map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
                 }
             }
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = map;
+    ctx.result.set_object(map);
 }
 
 // ============================================================================
@@ -10413,8 +9877,8 @@ fn void builtin_map(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_set(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     TVal value = ctx.regs[ctx.base_reg + 1];  // undefined if not provided
@@ -10431,13 +9895,11 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
     // Update size property
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = (long)(map.array_used / 2);
+    size_val.set_fastint((long)(map.array_used / 2));
     map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     // Return the map itself
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = map;
+    ctx.result.set_object(map);
 }
 
 // ============================================================================
@@ -10445,16 +9907,15 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_get(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = map_find_key(map, key);
     if (found >= 0) {
         *ctx.result = map.array_part[(uint)found + 1];
     } else {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
     }
 }
 
@@ -10463,13 +9924,12 @@ fn void builtin_map_proto_get(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_has(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = map_find_key(map, key);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (found >= 0);
+    ctx.result.set_boolean((found >= 0));
 }
 
 // ============================================================================
@@ -10477,8 +9937,8 @@ fn void builtin_map_proto_has(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_delete(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = map_find_key(map, key);
@@ -10489,23 +9949,18 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
             map.array_part[i] = map.array_part[i + 2];
         }
         // Clear the last two slots
-        map.array_part[cnt - 2].tag = UNDEFINED;
-        map.array_part[cnt - 2].pointer = null;
-        map.array_part[cnt - 1].tag = UNDEFINED;
-        map.array_part[cnt - 1].pointer = null;
+        map.array_part[cnt - 2].set_undefined();
+        map.array_part[cnt - 1].set_undefined();
         map.array_used = cnt - 2;
 
         HString* size_key = builtin_intern_string(ctx.heap, "size");
         TVal size_val;
-        size_val.tag = FASTINT;
-        size_val.fastint = (long)(map.array_used / 2);
+        size_val.set_fastint((long)(map.array_used / 2));
         map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -10514,25 +9969,22 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_clear(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
 
     // Reset array_part
     uint cnt = map.array_used;
     for (uint i = 0; i < cnt; i++) {
-        map.array_part[i].tag = UNDEFINED;
-        map.array_part[i].pointer = null;
+        map.array_part[i].set_undefined();
     }
     map.array_used = 0;
 
     // Update size
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = 0;
+    size_val.set_fastint(0);
     map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -10541,10 +9993,10 @@ fn void builtin_map_proto_clear(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_keys(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10555,8 +10007,7 @@ fn void builtin_map_proto_keys(BuiltinContext* ctx) {
     }
     array_set_length(arr, key_count, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10565,10 +10016,10 @@ fn void builtin_map_proto_keys(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_values(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10579,8 +10030,7 @@ fn void builtin_map_proto_values(BuiltinContext* ctx) {
     }
     array_set_length(arr, val_count, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10589,10 +10039,10 @@ fn void builtin_map_proto_values(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_entries(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10608,14 +10058,12 @@ fn void builtin_map_proto_entries(BuiltinContext* ctx) {
         array_set_length(pair, 2, ctx.heap);
 
         TVal pair_val;
-        pair_val.tag = OBJECT;
-        pair_val.pointer = pair;
+        pair_val.set_object(pair);
         array_set_elem(arr, i, pair_val, ctx.heap);
     }
     array_set_length(arr, entry_count, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10623,7 +10071,7 @@ fn void builtin_map_proto_entries(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
-    if (map == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (map == null) { ctx.result.set_undefined(); return; }
 
     if (ctx.argc < 1) {
         // Missing callback throws TypeError
@@ -10633,37 +10081,33 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     // forEach with callback requires VM call mechanism (callback invocation).
     // For now, we validate the callback exists but don't invoke it.
     TVal callback = ctx.regs[ctx.base_reg];
-    if (!(callback.tag == OBJECT && callback.pointer != null && ((HObject*)callback.pointer).flags.callable)) {
+    if (!(callback.is_object() && callback.get_heapptr() != null && ((HObject*)callback.get_heapptr()).flags.callable)) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
     }
 
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -10672,8 +10116,8 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
 
 fn HObject* check_set(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.SET) return obj;
     }
     // TypeError
@@ -10684,8 +10128,7 @@ fn HObject* check_set(BuiltinContext* ctx) {
             "Set.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
@@ -10711,8 +10154,7 @@ fn int set_find_value(HObject* set, TVal val) {
 fn void builtin_set(BuiltinContext* ctx) {
     HObject*? set_raw = ctx.heap.alloc_object(hobject::ObjClass.SET);
     if (catch err = set_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* set = set_raw;
@@ -10721,32 +10163,30 @@ fn void builtin_set(BuiltinContext* ctx) {
     // Set size property
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = 0;
+    size_val.set_fastint(0);
     set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     // If iterable argument, populate set
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.tag == OBJECT && arg.pointer != null) {
-            HObject* iterable = (HObject*)arg.pointer;
+        if (arg.is_object() && arg.get_heapptr() != null) {
+            HObject* iterable = (HObject*)arg.get_heapptr();
             uint len = array_get_length(iterable, ctx.heap);
             for (uint i = 0; i < len; i++) {
                 TVal v = array_get_elem(iterable, i, ctx.heap);
-                if (v.tag != UNDEFINED) {
+                if (!v.is_undefined()) {
                     int found = set_find_value(set, v);
                     if (found < 0) {
                         set.set_array_idx(set.array_used, v);
                     }
                 }
             }
-            size_val.fastint = (long)set.array_used;
+            size_val.set_fastint((long)set.array_used);
             set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = set;
+    ctx.result.set_object(set);
 }
 
 // ============================================================================
@@ -10754,8 +10194,8 @@ fn void builtin_set(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_add(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
     int found = set_find_value(set, value);
@@ -10766,13 +10206,11 @@ fn void builtin_set_proto_add(BuiltinContext* ctx) {
     // Update size
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = (long)set.array_used;
+    size_val.set_fastint((long)set.array_used);
     set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     // Return the set
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = set;
+    ctx.result.set_object(set);
 }
 
 // ============================================================================
@@ -10780,13 +10218,12 @@ fn void builtin_set_proto_add(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_has(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
     int found = set_find_value(set, value);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (found >= 0);
+    ctx.result.set_boolean((found >= 0));
 }
 
 // ============================================================================
@@ -10794,8 +10231,8 @@ fn void builtin_set_proto_has(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_delete(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
     int found = set_find_value(set, value);
@@ -10805,21 +10242,17 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
         for (uint i = (uint)found; i + 1 < cnt; i++) {
             set.array_part[i] = set.array_part[i + 1];
         }
-        set.array_part[cnt - 1].tag = UNDEFINED;
-        set.array_part[cnt - 1].pointer = null;
+        set.array_part[cnt - 1].set_undefined();
         set.array_used = cnt - 1;
 
         HString* size_key = builtin_intern_string(ctx.heap, "size");
         TVal size_val;
-        size_val.tag = FASTINT;
-        size_val.fastint = (long)set.array_used;
+        size_val.set_fastint((long)set.array_used);
         set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -10828,23 +10261,20 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_clear(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
 
     uint cnt = set.array_used;
     for (uint i = 0; i < cnt; i++) {
-        set.array_part[i].tag = UNDEFINED;
-        set.array_part[i].pointer = null;
+        set.array_part[i].set_undefined();
     }
     set.array_used = 0;
 
     HString* size_key = builtin_intern_string(ctx.heap, "size");
     TVal size_val;
-    size_val.tag = FASTINT;
-    size_val.fastint = 0;
+    size_val.set_fastint(0);
     set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -10853,10 +10283,10 @@ fn void builtin_set_proto_clear(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_keys(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10866,8 +10296,7 @@ fn void builtin_set_proto_keys(BuiltinContext* ctx) {
     }
     array_set_length(arr, cnt, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10875,10 +10304,10 @@ fn void builtin_set_proto_keys(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_values(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10888,8 +10317,7 @@ fn void builtin_set_proto_values(BuiltinContext* ctx) {
     }
     array_set_length(arr, cnt, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10898,10 +10326,10 @@ fn void builtin_set_proto_values(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_entries(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
@@ -10916,14 +10344,12 @@ fn void builtin_set_proto_entries(BuiltinContext* ctx) {
         array_set_length(pair, 2, ctx.heap);
 
         TVal pair_val;
-        pair_val.tag = OBJECT;
-        pair_val.pointer = pair;
+        pair_val.set_object(pair);
         array_set_elem(arr, i, pair_val, ctx.heap);
     }
     array_set_length(arr, cnt, ctx.heap);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = arr;
+    ctx.result.set_object(arr);
 }
 
 // ============================================================================
@@ -10931,7 +10357,7 @@ fn void builtin_set_proto_entries(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
-    if (set == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (set == null) { ctx.result.set_undefined(); return; }
 
     if (ctx.argc < 1) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -10940,20 +10366,17 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "missing argument 0 when calling function forEach");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     // Basic forEach without VM callback support — just returns undefined
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -10962,8 +10385,8 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
 
 fn HObject* check_weakmap(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.WEAKMAP) return obj;
     }
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -10973,8 +10396,7 @@ fn HObject* check_weakmap(BuiltinContext* ctx) {
             "WeakMap.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
@@ -10998,8 +10420,7 @@ fn int weakmap_find_key(HObject* wm, TVal key) {
 fn void builtin_weakmap(BuiltinContext* ctx) {
     HObject*? wm_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKMAP);
     if (catch err = wm_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* wm = wm_raw;
@@ -11007,18 +10428,17 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
 
     if (ctx.argc >= 1 && ctx.is_constructor) {
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.tag == OBJECT && arg.pointer != null) {
-            HObject* iterable = (HObject*)arg.pointer;
+        if (arg.is_object() && arg.get_heapptr() != null) {
+            HObject* iterable = (HObject*)arg.get_heapptr();
             uint len = array_get_length(iterable, ctx.heap);
             for (uint i = 0; i < len; i++) {
                 TVal pair = array_get_elem(iterable, i, ctx.heap);
-                if (pair.tag == OBJECT && pair.pointer != null) {
-                    HObject* pair_obj = (HObject*)pair.pointer;
+                if (pair.is_object() && pair.get_heapptr() != null) {
+                    HObject* pair_obj = (HObject*)pair.get_heapptr();
                     TVal k = array_get_elem(pair_obj, 0, ctx.heap);
                     TVal v = array_get_elem(pair_obj, 1, ctx.heap);
-                    if (k.tag != OBJECT || k.pointer == null) {
-                        ctx.result.tag = UNDEFINED;
-                        ctx.result.pointer = null;
+                    if (!k.is_object() || k.get_heapptr() == null) {
+                        ctx.result.set_undefined();
                         return;
                     }
                     int found = weakmap_find_key(wm, k);
@@ -11034,8 +10454,7 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = wm;
+    ctx.result.set_object(wm);
 }
 
 // ============================================================================
@@ -11043,25 +10462,23 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
-    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
-    if (key.tag != OBJECT || key.pointer == null) {
+    if (!key.is_object() || key.get_heapptr() == null) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used as weak map key");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -11075,8 +10492,7 @@ fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
         wm.set_array_idx(cnt + 1, value);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = wm;
+    ctx.result.set_object(wm);
 }
 
 // ============================================================================
@@ -11084,16 +10500,15 @@ fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakmap_proto_get(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
-    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = weakmap_find_key(wm, key);
     if (found >= 0) {
         *ctx.result = wm.array_part[(uint)found + 1];
     } else {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
     }
 }
 
@@ -11102,13 +10517,12 @@ fn void builtin_weakmap_proto_get(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakmap_proto_has(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
-    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = weakmap_find_key(wm, key);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (found >= 0);
+    ctx.result.set_boolean((found >= 0));
 }
 
 // ============================================================================
@@ -11116,8 +10530,8 @@ fn void builtin_weakmap_proto_has(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
-    if (wm == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal key = ctx.regs[ctx.base_reg];
     int found = weakmap_find_key(wm, key);
@@ -11126,17 +10540,13 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
         for (uint i = (uint)found; i + 2 < cnt; i++) {
             wm.array_part[i] = wm.array_part[i + 2];
         }
-        wm.array_part[cnt - 2].tag = UNDEFINED;
-        wm.array_part[cnt - 2].pointer = null;
-        wm.array_part[cnt - 1].tag = UNDEFINED;
-        wm.array_part[cnt - 1].pointer = null;
+        wm.array_part[cnt - 2].set_undefined();
+        wm.array_part[cnt - 1].set_undefined();
         wm.array_used = cnt - 2;
 
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -11146,8 +10556,8 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
 
 fn HObject* check_weakset(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.WEAKSET) return obj;
     }
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -11157,8 +10567,7 @@ fn HObject* check_weakset(BuiltinContext* ctx) {
             "WeakSet.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
@@ -11182,8 +10591,7 @@ fn int weakset_find_value(HObject* ws, TVal val) {
 fn void builtin_weakset(BuiltinContext* ctx) {
     HObject*? ws_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKSET);
     if (catch err = ws_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* ws = ws_raw;
@@ -11191,14 +10599,13 @@ fn void builtin_weakset(BuiltinContext* ctx) {
 
     if (ctx.argc >= 1 && ctx.is_constructor) {
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.tag == OBJECT && arg.pointer != null) {
-            HObject* iterable = (HObject*)arg.pointer;
+        if (arg.is_object() && arg.get_heapptr() != null) {
+            HObject* iterable = (HObject*)arg.get_heapptr();
             uint len = array_get_length(iterable, ctx.heap);
             for (uint i = 0; i < len; i++) {
                 TVal v = array_get_elem(iterable, i, ctx.heap);
-                if (v.tag != OBJECT || v.pointer == null) {
-                    ctx.result.tag = UNDEFINED;
-                    ctx.result.pointer = null;
+                if (!v.is_object() || v.get_heapptr() == null) {
+                    ctx.result.set_undefined();
                     return;
                 }
                 int found = weakset_find_value(ws, v);
@@ -11209,8 +10616,7 @@ fn void builtin_weakset(BuiltinContext* ctx) {
         }
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = ws;
+    ctx.result.set_object(ws);
 }
 
 // ============================================================================
@@ -11218,25 +10624,23 @@ fn void builtin_weakset(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
     HObject* ws = check_weakset(ctx);
-    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
+    if (ws == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
-    if (value.tag != OBJECT || value.pointer == null) {
+    if (!value.is_object() || value.get_heapptr() == null) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.type_err_proto;
             HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used in weak set");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
         }
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -11245,8 +10649,7 @@ fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
         ws.set_array_idx(ws.array_used, value);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = ws;
+    ctx.result.set_object(ws);
 }
 
 // ============================================================================
@@ -11254,13 +10657,12 @@ fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakset_proto_has(BuiltinContext* ctx) {
     HObject* ws = check_weakset(ctx);
-    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (ws == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
     int found = weakset_find_value(ws, value);
-    ctx.result.tag = BOOLEAN;
-    ctx.result.boolean = (found >= 0);
+    ctx.result.set_boolean((found >= 0));
 }
 
 // ============================================================================
@@ -11268,8 +10670,8 @@ fn void builtin_weakset_proto_has(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
     HObject* ws = check_weakset(ctx);
-    if (ws == null) { ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return; }
-    if (ctx.argc < 1) { ctx.result.tag = BOOLEAN; ctx.result.boolean = false; return; }
+    if (ws == null) { ctx.result.set_undefined(); return; }
+    if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
 
     TVal value = ctx.regs[ctx.base_reg];
     int found = weakset_find_value(ws, value);
@@ -11278,15 +10680,12 @@ fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
         for (uint i = (uint)found; i + 1 < cnt; i++) {
             ws.array_part[i] = ws.array_part[i + 1];
         }
-        ws.array_part[cnt - 1].tag = UNDEFINED;
-        ws.array_part[cnt - 1].pointer = null;
+        ws.array_part[cnt - 1].set_undefined();
         ws.array_used = cnt - 1;
 
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = true;
+        ctx.result.set_boolean(true);
     } else {
-        ctx.result.tag = BOOLEAN;
-        ctx.result.boolean = false;
+        ctx.result.set_boolean(false);
     }
 }
 
@@ -11327,8 +10726,8 @@ fn HString* create_symbol_string(Heap* heap, char[] desc) {
 
 /// Check if a TVal is a Symbol (STRING tag with is_symbol flag)
 fn bool is_symbol_val(TVal val) {
-    if (val.tag != STRING) return false;
-    HString* s = (HString*)val.pointer;
+    if (!val.is_string()) return false;
+    HString* s = (HString*)val.get_heapptr();
     return s != null && s.is_symbol();
 }
 
@@ -11433,13 +10832,11 @@ fn void builtin_symbol(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol is not a constructor");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -11462,8 +10859,7 @@ fn void builtin_symbol(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    ctx.result.tag = STRING;
-    ctx.result.pointer = sym;
+    ctx.result.set_string(sym);
 }
 
 // ============================================================================
@@ -11487,8 +10883,7 @@ fn void builtin_symbol_for(BuiltinContext* ctx) {
     // Check registry
     HString* existing = symbol_registry_get(ctx.heap, key_bytes);
     if (existing != null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = existing;
+        ctx.result.set_string(existing);
         return;
     }
 
@@ -11501,8 +10896,7 @@ fn void builtin_symbol_for(BuiltinContext* ctx) {
 
     symbol_registry_put(ctx.heap, key_bytes, sym);
 
-    ctx.result.tag = STRING;
-    ctx.result.pointer = sym;
+    ctx.result.set_string(sym);
 }
 
 // ============================================================================
@@ -11522,13 +10916,11 @@ fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.keyFor requires a symbol argument");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -11536,11 +10928,10 @@ fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
         return;
     }
 
-    HString* sym = (HString*)sym_val.pointer;
+    HString* sym = (HString*)sym_val.get_heapptr();
     HString* key = symbol_registry_get_key(ctx.heap, sym);
     if (key != null) {
-        ctx.result.tag = STRING;
-        ctx.result.pointer = key;
+        ctx.result.set_string(key);
     } else {
         ctx.result.set_undefined();
     }
@@ -11554,13 +10945,13 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
 
     // this value must be a Symbol (primitive or wrapper)
     HString* sym = null;
-    if (this_val.tag == STRING) {
-        HString* s = (HString*)this_val.pointer;
+    if (this_val.is_string()) {
+        HString* s = (HString*)this_val.get_heapptr();
         if (s != null && s.is_symbol()) {
             sym = s;
         }
-    } else if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
             // Extract [[SymbolData]] — for now, check if there's a stored symbol
             // We look for the "_symbol" property or just describe as "Symbol()"
@@ -11574,13 +10965,11 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.toString called on non-Symbol");
             if (msg_str != null) {
                 TVal msg_val;
-                msg_val.tag = STRING;
-                msg_val.pointer = msg_str;
+                msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
             }
-            ctx.throw_value.tag = OBJECT;
-            ctx.throw_value.pointer = err;
+            ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
         }
@@ -11608,8 +10997,7 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
     result_buf[pos] = 0;
 
     HString* result = builtin_intern_string(ctx.heap, result_buf[:(uint)pos]);
-    ctx.result.tag = STRING;
-    ctx.result.pointer = result;
+    ctx.result.set_string(result);
 }
 
 // ============================================================================
@@ -11618,14 +11006,14 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
 fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
 
-    if (this_val.tag == STRING) {
-        HString* s = (HString*)this_val.pointer;
+    if (this_val.is_string()) {
+        HString* s = (HString*)this_val.get_heapptr();
         if (s != null && s.is_symbol()) {
             *ctx.result = this_val;
             return;
         }
-    } else if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
             // Return the [[SymbolData]] value
             // For now just return undefined for wrapper objects
@@ -11638,13 +11026,11 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
         if (msg_str != null) {
             TVal msg_val;
-            msg_val.tag = STRING;
-            msg_val.pointer = msg_str;
+            msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
         }
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
     } else {
         ctx.throw_value.set_undefined();
     }
@@ -11662,7 +11048,7 @@ const uint PROMISE_REJECTED  = 2;
 /// Get the promise state from the HObject's array_part[0].
 fn uint promise_get_state(HObject* promise, uint default_state) {
     if (promise.array_part != null && promise.array_size >= 2) {
-        return (uint)promise.array_part[0].fastint;
+        return (uint)promise.array_part[0].get_fastint();
     }
     return default_state;
 }
@@ -11670,12 +11056,10 @@ fn uint promise_get_state(HObject* promise, uint default_state) {
 /// Set the promise state in array_part.
 fn void promise_set_state(HObject* promise, uint state) {
     TVal state_tv;
-    state_tv.tag = FASTINT;
-    state_tv.fastint = (long)state;
+    state_tv.set_fastint((long)state);
     promise.set_array_idx(0, state_tv);
     TVal undef;
-    undef.tag = UNDEFINED;
-    undef.pointer = null;
+    undef.set_undefined();
     promise.set_array_idx(1, undef);
 }
 
@@ -11687,8 +11071,8 @@ fn void promise_set_result(HObject* promise, TVal* val) {
 /// Check that `this` is a Promise object.
 fn HObject* check_promise(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.tag == OBJECT && this_val.pointer != null) {
-        HObject* obj = (HObject*)this_val.pointer;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return obj;
     }
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -11698,12 +11082,10 @@ fn HObject* check_promise(BuiltinContext* ctx) {
             "Promise.prototype method called on incompatible value");
         if (msg_str != null) {
             TVal msg_tv;
-            msg_tv.tag = STRING;
-            msg_tv.pointer = msg_str;
+            msg_tv.set_string(msg_str);
             err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WEC);
         }
-        ctx.throw_value.tag = OBJECT;
-        ctx.throw_value.pointer = err;
+        ctx.throw_value.set_object(err);
     } else {
         ctx.throw_value.set_undefined();
     }
@@ -11727,8 +11109,8 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
 
     for (uint i = 0; i < num_reactions; i++) {
         TVal reaction_val = promise.array_part[2 + i];
-        if (reaction_val.tag != OBJECT || reaction_val.pointer == null) continue;
-        HObject* reaction = (HObject*)reaction_val.pointer;
+        if (!reaction_val.is_object() || reaction_val.get_heapptr() == null) continue;
+        HObject* reaction = (HObject*)reaction_val.get_heapptr();
 
         // Get handler: onFulfilled for fulfilled, onRejected for rejected
         char[] handler_prop = (state == PROMISE_FULFILLED) ? "onFulfilled" : "onRejected";
@@ -11738,8 +11120,7 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
         if (try h = handler_opt) {
             handler = h;
         } else {
-            handler.tag = UNDEFINED;
-            handler.pointer = null;
+            handler.set_undefined();
         }
 
         // Get capability resolve/reject
@@ -11751,19 +11132,17 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
         if (try cr = cap_resolve_opt) {
             cap_resolve = cr;
         } else {
-            cap_resolve.tag = UNDEFINED;
-            cap_resolve.pointer = null;
+            cap_resolve.set_undefined();
         }
         TVal cap_reject;
         if (try cj = cap_reject_opt) {
             cap_reject = cj;
         } else {
-            cap_reject.tag = UNDEFINED;
-            cap_reject.pointer = null;
+            cap_reject.set_undefined();
         }
 
         if (state == PROMISE_FULFILLED) {
-            if (handler.tag == UNDEFINED) {
+            if (handler.is_undefined()) {
                 // No onFulfilled — pass through
                 call_capability(cap_resolve, cap_reject, &result, heap, true);
             } else {
@@ -11772,7 +11151,7 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
                 call_capability(cap_resolve, cap_reject, &ret, heap, true);
             }
         } else {
-            if (handler.tag == UNDEFINED) {
+            if (handler.is_undefined()) {
                 // No onRejected — pass through
                 call_capability(cap_resolve, cap_reject, &result, heap, false);
             } else {
@@ -11786,11 +11165,10 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
 /// Call a handler function with one argument.
 fn TVal call_handler(TVal handler, TVal* arg, Heap* heap) {
     TVal result;
-    result.tag = UNDEFINED;
-    result.pointer = null;
+    result.set_undefined();
 
-    if (handler.tag == OBJECT && handler.pointer != null) {
-        HObject* func = (HObject*)handler.pointer;
+    if (handler.is_object() && handler.get_heapptr() != null) {
+        HObject* func = (HObject*)handler.get_heapptr();
         if (func.comp_func != null) {
             // We need a VM to execute. Call via the heap's thread if available.
             // For now, return undefined if we can't execute.
@@ -11798,7 +11176,7 @@ fn TVal call_handler(TVal handler, TVal* arg, Heap* heap) {
             return result;
         }
     }
-    if (handler.tag == LIGHTFUNC) {
+    if (handler.is_lightfunc()) {
         // Call builtin — but we need the VM. Stub for now.
         return result;
     }
@@ -11808,11 +11186,11 @@ fn TVal call_handler(TVal handler, TVal* arg, Heap* heap) {
 /// Resolve or reject a capability.
 fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool is_resolve) {
     TVal callee = is_resolve ? resolve : reject;
-    if (callee.tag == UNDEFINED) return;
+    if (callee.is_undefined()) return;
 
     // For now, direct synchronous handling of chained promises
-    if (callee.tag == OBJECT && callee.pointer != null) {
-        HObject* cap = (HObject*)callee.pointer;
+    if (callee.is_object() && callee.get_heapptr() != null) {
+        HObject* cap = (HObject*)callee.get_heapptr();
         if (cap.flags.obj_class == hobject::ObjClass.PROMISE) {
             promise_set_state(cap, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
             promise_set_result(cap, val);
@@ -11841,8 +11219,7 @@ fn HObject*? promise_create_capability(Heap* heap, HObject* promise) {
     // Store a reference to the promise this capability controls
     HString* promise_key = builtin_intern_string(heap, "promise");
     TVal promise_val;
-    promise_val.tag = OBJECT;
-    promise_val.pointer = promise;
+    promise_val.set_object(promise);
     cap.put_prop(promise_key, promise_val, hobject::PROP_FLAGS_WEC);
 
     return cap;
@@ -11861,8 +11238,7 @@ fn void promise_add_reaction(HObject* promise, TVal reaction_val) {
 fn void builtin_promise(BuiltinContext* ctx) {
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
@@ -11872,51 +11248,44 @@ fn void builtin_promise(BuiltinContext* ctx) {
 
     if (ctx.argc < 1) {
         // No executor — return pending promise
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
     TVal executor = ctx.regs[ctx.base_reg];
-    if (executor.tag != OBJECT || executor.pointer == null) {
+    if (!executor.is_object() || executor.get_heapptr() == null) {
         // Type error: executor must be callable
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
-    HObject* exec_func = (HObject*)executor.pointer;
+    HObject* exec_func = (HObject*)executor.get_heapptr();
     if (exec_func.comp_func == null && exec_func.builtin_fn_index < 0) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
     // Create resolve/reject callbacks
     HObject*? cap_raw = promise_create_capability(ctx.heap, promise);
     if (catch err = cap_raw) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
     // Call executor(resolve, reject)
     // Store params on value stack and call
     TVal resolve_tv;
-    resolve_tv.tag = OBJECT;
-    resolve_tv.pointer = cap_raw;
+    resolve_tv.set_object(cap_raw);
 
     TVal reject_tv;
-    reject_tv.tag = OBJECT;
-    reject_tv.pointer = cap_raw;
+    reject_tv.set_object(cap_raw);
 
     // We need the VM to call the executor. For now, mark the promise
     // and let the capability handle resolution later.
     // Store the capability in array_part after state/result
     promise.set_array_idx(2, resolve_tv);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = promise;
+    ctx.result.set_object(promise);
 }
 
 // ============================================================================
@@ -11928,19 +11297,16 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     if (promise == null) return;
 
     TVal on_fulfilled;
-    on_fulfilled.tag = UNDEFINED;
-    on_fulfilled.pointer = null;
+    on_fulfilled.set_undefined();
     TVal on_rejected;
-    on_rejected.tag = UNDEFINED;
-    on_rejected.pointer = null;
+    on_rejected.set_undefined();
     if (ctx.argc >= 1) on_fulfilled = ctx.regs[ctx.base_reg];
     if (ctx.argc >= 2) on_rejected  = ctx.regs[ctx.base_reg + 1];
 
     // Create a new promise for the chain
     HObject*? new_prom_raw = promise_create(ctx.heap);
     if (catch err = new_prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* new_promise = new_prom_raw;
@@ -11948,8 +11314,7 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     // Create capability for new promise
     HObject*? cap_raw = promise_create_capability(ctx.heap, new_promise);
     if (catch err = cap_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* cap = cap_raw;
@@ -11957,8 +11322,7 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     // Build reaction object
     HObject*? reaction_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = reaction_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* reaction = reaction_raw;
@@ -11975,15 +11339,13 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     HString* cap_rej_key = builtin_intern_string(ctx.heap, "capReject");
 
     TVal cap_val;
-    cap_val.tag = OBJECT;
-    cap_val.pointer = cap;
+    cap_val.set_object(cap);
     reaction.put_prop(cap_res_key, cap_val, hobject::PROP_FLAGS_WEC);
     reaction.put_prop(cap_rej_key, cap_val, hobject::PROP_FLAGS_WEC);
 
     // Add reaction to the original promise
     TVal reaction_val;
-    reaction_val.tag = OBJECT;
-    reaction_val.pointer = reaction;
+    reaction_val.set_object(reaction);
 
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state == PROMISE_PENDING) {
@@ -11995,8 +11357,7 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
         // In a real implementation, this would be scheduled as a microtask
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = new_promise;
+    ctx.result.set_object(new_promise);
 }
 
 // ============================================================================
@@ -12022,8 +11383,7 @@ fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
     if (promise == null) return;
 
     TVal on_finally;
-    on_finally.tag = UNDEFINED;
-    on_finally.pointer = null;
+    on_finally.set_undefined();
     if (ctx.argc >= 1) on_finally = ctx.regs[ctx.base_reg];
 
     // finally just chains .then with the same handler for both branches
@@ -12039,13 +11399,12 @@ fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
 
 fn void builtin_promise_resolve(BuiltinContext* ctx) {
     TVal val;
-    val.tag = UNDEFINED;
-    val.pointer = null;
+    val.set_undefined();
     if (ctx.argc >= 1) val = ctx.regs[ctx.base_reg];
 
     // If already a Promise, return it
-    if (val.tag == OBJECT && val.pointer != null) {
-        HObject* obj = (HObject*)val.pointer;
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
             *ctx.result = val;
             return;
@@ -12055,16 +11414,14 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
     // Create a new fulfilled promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
     promise_set_state(promise, PROMISE_FULFILLED);
     promise_set_result(promise, &val);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = promise;
+    ctx.result.set_object(promise);
 }
 
 // ============================================================================
@@ -12073,22 +11430,19 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
 
 fn void builtin_promise_reject(BuiltinContext* ctx) {
     TVal reason;
-    reason.tag = UNDEFINED;
-    reason.pointer = null;
+    reason.set_undefined();
     if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
 
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
     promise_set_state(promise, PROMISE_REJECTED);
     promise_set_result(promise, &reason);
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = promise;
+    ctx.result.set_object(promise);
 }
 
 // ============================================================================
@@ -12114,12 +11468,12 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     bool has_len = false;
     HObject* obj = null;
 
-    if (iterable.tag == OBJECT && iterable.pointer != null) {
-        obj = (HObject*)iterable.pointer;
+    if (iterable.is_object() && iterable.get_heapptr() != null) {
+        obj = (HObject*)iterable.get_heapptr();
         HString* length_key = builtin_intern_string(ctx.heap, "length");
         if (try len_tv = obj.get_prop(length_key)) {
-            if (len_tv.tag == FASTINT && len_tv.fastint >= 0) {
-                len = (usz)len_tv.fastint;
+            if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+                len = (usz)len_tv.get_fastint();
                 has_len = true;
             }
         }
@@ -12132,21 +11486,18 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         arr_val.set_undefined();
         if (try arr = arr_raw) {
             arr.prototype = ctx.heap.array_proto;
-            arr_val.tag = OBJECT;
-            arr_val.pointer = arr;
+            arr_val.set_object(arr);
         }
         promise_set_state(promise, PROMISE_FULFILLED);
         promise_set_result(promise, &arr_val);
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
     // Allocate results array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
     HObject* arr = arr_raw;
@@ -12159,8 +11510,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         if (rejected) break;
 
         TVal idx_tv;
-        idx_tv.tag = FASTINT;
-        idx_tv.fastint = (long)i;
+        idx_tv.set_fastint((long)i);
 
         TVal elem;
         if (try e = obj.get_prop(&idx_tv)) {
@@ -12170,8 +11520,8 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         }
 
         // Check if element is a Promise
-        if (elem.tag == OBJECT && elem.pointer != null) {
-            HObject* elem_obj = (HObject*)elem.pointer;
+        if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
                 if (state == PROMISE_FULFILLED) {
@@ -12198,15 +11548,13 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
 
     if (!rejected && remaining == 0) {
         TVal arr_val;
-        arr_val.tag = OBJECT;
-        arr_val.pointer = arr;
+        arr_val.set_object(arr);
         promise_set_state(promise, PROMISE_FULFILLED);
         promise_set_result(promise, &arr_val);
         promise_trigger_reactions(promise, ctx.heap);
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = promise;
+    ctx.result.set_object(promise);
 }
 
 // ============================================================================
@@ -12226,26 +11574,24 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     }
     HObject* promise = prom_raw;
 
-    if (iterable.tag != OBJECT || iterable.pointer == null) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+    if (!iterable.is_object() || iterable.get_heapptr() == null) {
+        ctx.result.set_object(promise);
         return;
     }
 
-    HObject* obj = (HObject*)iterable.pointer;
+    HObject* obj = (HObject*)iterable.get_heapptr();
     HString* length_key = builtin_intern_string(ctx.heap, "length");
     usz len = 0;
     bool has_len = false;
     if (try len_tv = obj.get_prop(length_key)) {
-        if (len_tv.tag == FASTINT && len_tv.fastint >= 0) {
-            len = (usz)len_tv.fastint;
+        if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+            len = (usz)len_tv.get_fastint();
             has_len = true;
         }
     }
 
     if (!has_len) {
-        ctx.result.tag = OBJECT;
-        ctx.result.pointer = promise;
+        ctx.result.set_object(promise);
         return;
     }
 
@@ -12253,8 +11599,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
 
     for (usz i = 0; i < len && !settled; i++) {
         TVal idx_tv;
-        idx_tv.tag = FASTINT;
-        idx_tv.fastint = (long)i;
+        idx_tv.set_fastint((long)i);
 
         TVal elem;
         if (try e = obj.get_prop(&idx_tv)) {
@@ -12264,8 +11609,8 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         }
 
         // If element is a Promise, check its state
-        if (elem.tag == OBJECT && elem.pointer != null) {
-            HObject* elem_obj = (HObject*)elem.pointer;
+        if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
                 if (state == PROMISE_FULFILLED) {
@@ -12294,8 +11639,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         break;
     }
 
-    ctx.result.tag = OBJECT;
-    ctx.result.pointer = promise;
+    ctx.result.set_object(promise);
 }
 
 // ============================================================================
@@ -12324,15 +11668,13 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     // Wire prototype.constructor → ctor
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -12343,33 +11685,28 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     // Promise.length = 1
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 1;
+    length_tv.set_fastint(1);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     // Register static methods on Promise
     HString* resolve_key = builtin_intern_string(heap, "resolve");
     TVal resolve_tv;
-    resolve_tv.tag = LIGHTFUNC;
-    resolve_tv.fastint = (long)BUILTIN_PROMISE_RESOLVE;
+    resolve_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RESOLVE);
     ctor.put_prop(resolve_key, resolve_tv, hobject::PROP_FLAGS_WEC);
 
     HString* reject_key = builtin_intern_string(heap, "reject");
     TVal reject_tv;
-    reject_tv.tag = LIGHTFUNC;
-    reject_tv.fastint = (long)BUILTIN_PROMISE_REJECT;
+    reject_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_REJECT);
     ctor.put_prop(reject_key, reject_tv, hobject::PROP_FLAGS_WEC);
 
     HString* all_key = builtin_intern_string(heap, "all");
     TVal all_tv;
-    all_tv.tag = LIGHTFUNC;
-    all_tv.fastint = (long)BUILTIN_PROMISE_ALL;
+    all_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ALL);
     ctor.put_prop(all_key, all_tv, hobject::PROP_FLAGS_WEC);
 
     HString* race_key = builtin_intern_string(heap, "race");
     TVal race_tv;
-    race_tv.tag = LIGHTFUNC;
-    race_tv.fastint = (long)BUILTIN_PROMISE_RACE;
+    race_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RACE);
     ctor.put_prop(race_key, race_tv, hobject::PROP_FLAGS_WEC);
 
     // Register "Promise" in global environment
@@ -12385,8 +11722,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
         promise_key = new_key;
     }
     TVal promise_val;
-    promise_val.tag = OBJECT;
-    promise_val.pointer = ctor;
+    promise_val.set_object(ctor);
     env::env_declare(global_env, promise_key, promise_val);
 
     return true;
@@ -12401,8 +11737,7 @@ fn void builtin_generator_function(BuiltinContext* ctx) {
     // The user creates generator functions via function* syntax.
     // This builtin exists as the GeneratorFunction constructor object
     // but doesn't actually compile generator functions from strings.
-    ctx.result.tag = UNDEFINED;
-    ctx.result.pointer = null;
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -12410,29 +11745,25 @@ fn void builtin_generator_function(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_generator_proto_next(BuiltinContext* ctx) {
-    if (ctx.this_val.tag != OBJECT) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (!ctx.this_val.is_object()) {
+        ctx.result.set_undefined();
         return;
     }
-    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    HObject* gen_obj = (HObject*)ctx.this_val.get_heapptr();
     if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     Heap* vm_heap = ctx.heap;
     GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
     if (gs == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     if (gs.state == GEN_EXECUTING) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -12442,18 +11773,15 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
             r.prototype = ctx.heap.object_proto;
             HString* value_key = builtin_intern_string(ctx.heap, "value");
             TVal undef_val;
-            undef_val.tag = UNDEFINED;
-            undef_val.pointer = null;
+            undef_val.set_undefined();
             r.put_prop(value_key, undef_val, hobject::PROP_FLAGS_WEC);
 
             HString* done_key = builtin_intern_string(ctx.heap, "done");
             TVal done_val;
-            done_val.tag = BOOLEAN;
-            done_val.boolean = true;
+            done_val.set_boolean(true);
             r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
 
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = r;
+            ctx.result.set_object(r);
         }
         return;
     }
@@ -12462,8 +11790,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     if (ctx.argc >= 1) {
         gs.resume_value = ctx.regs[ctx.base_reg];
     } else {
-        gs.resume_value.tag = UNDEFINED;
-        gs.resume_value.pointer = null;
+        gs.resume_value.set_undefined();
     }
 
     // Set heap.resume_gen so the CALL handler knows to resume
@@ -12475,8 +11802,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* func_obj = func_obj_raw;
@@ -12486,8 +11812,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     func_obj.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
-    func_tv.tag = OBJECT;
-    func_tv.pointer = func_obj;
+    func_tv.set_object(func_obj);
 
     // Replace callee slot (base_reg - 2) and this slot (base_reg - 1)
     ctx.regs[ctx.base_reg - 2] = func_tv;
@@ -12503,23 +11828,20 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
-    if (ctx.this_val.tag != OBJECT) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (!ctx.this_val.is_object()) {
+        ctx.result.set_undefined();
         return;
     }
-    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    HObject* gen_obj = (HObject*)ctx.this_val.get_heapptr();
     if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     Heap* vm_heap = ctx.heap;
     GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
     if (gs == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -12529,16 +11851,14 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
         if (ctx.argc >= 1) {
             ctx.throw_value = ctx.regs[ctx.base_reg];
         } else {
-            ctx.throw_value.tag = UNDEFINED;
-            ctx.throw_value.pointer = null;
+            ctx.throw_value.set_undefined();
         }
         return;
     }
 
     if (gs.state == GEN_EXECUTING) {
         // Cannot throw into an executing generator (ES6 §25.3.1.4.b)
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -12546,8 +11866,7 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     if (ctx.argc >= 1) {
         gs.throw_value = ctx.regs[ctx.base_reg];
     } else {
-        gs.throw_value.tag = UNDEFINED;
-        gs.throw_value.pointer = null;
+        gs.throw_value.set_undefined();
     }
     gs.resume_kind = THROW;
 
@@ -12560,8 +11879,7 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
         gs.resume_kind = NEXT;
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* func_obj = func_obj_raw;
@@ -12571,8 +11889,7 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     func_obj.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
-    func_tv.tag = OBJECT;
-    func_tv.pointer = func_obj;
+    func_tv.set_object(func_obj);
 
     // Replace callee slot and this slot
     ctx.regs[ctx.base_reg - 2] = func_tv;
@@ -12588,23 +11905,20 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_generator_proto_return(BuiltinContext* ctx) {
-    if (ctx.this_val.tag != OBJECT) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+    if (!ctx.this_val.is_object()) {
+        ctx.result.set_undefined();
         return;
     }
-    HObject* gen_obj = (HObject*)ctx.this_val.pointer;
+    HObject* gen_obj = (HObject*)ctx.this_val.get_heapptr();
     if (gen_obj == null || gen_obj.flags.obj_class != hobject::ObjClass.GENERATOR) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
     Heap* vm_heap = ctx.heap;
     GeneratorState* gs = (GeneratorState*)gen_obj.generator_data;
     if (gs == null) {
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -12618,27 +11932,23 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
             if (ctx.argc >= 1) {
                 arg_val = ctx.regs[ctx.base_reg];
             } else {
-                arg_val.tag = UNDEFINED;
-                arg_val.pointer = null;
+                arg_val.set_undefined();
             }
             r.put_prop(value_key, arg_val, hobject::PROP_FLAGS_WEC);
 
             HString* done_key = builtin_intern_string(ctx.heap, "done");
             TVal done_val;
-            done_val.tag = BOOLEAN;
-            done_val.boolean = true;
+            done_val.set_boolean(true);
             r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
 
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = r;
+            ctx.result.set_object(r);
         }
         return;
     }
 
     if (gs.state == GEN_EXECUTING) {
         // Cannot return into an executing generator
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
 
@@ -12650,8 +11960,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
         if (ctx.argc >= 1) {
             arg_val = ctx.regs[ctx.base_reg];
         } else {
-            arg_val.tag = UNDEFINED;
-            arg_val.pointer = null;
+            arg_val.set_undefined();
         }
         HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try r = result_raw) {
@@ -12660,11 +11969,9 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
             r.put_prop(value_key, arg_val, hobject::PROP_FLAGS_WEC);
             HString* done_key = builtin_intern_string(ctx.heap, "done");
             TVal done_val;
-            done_val.tag = BOOLEAN;
-            done_val.boolean = true;
+            done_val.set_boolean(true);
             r.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-            ctx.result.tag = OBJECT;
-            ctx.result.pointer = r;
+            ctx.result.set_object(r);
         }
         return;
     }
@@ -12673,8 +11980,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     if (ctx.argc >= 1) {
         gs.return_value = ctx.regs[ctx.base_reg];
     } else {
-        gs.return_value.tag = UNDEFINED;
-        gs.return_value.pointer = null;
+        gs.return_value.set_undefined();
     }
     gs.resume_kind = RETURN;
 
@@ -12687,8 +11993,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     if (catch err = func_obj_raw) {
         vm_heap.resume_gen = null;
         gs.resume_kind = NEXT;
-        ctx.result.tag = UNDEFINED;
-        ctx.result.pointer = null;
+        ctx.result.set_undefined();
         return;
     }
     HObject* func_obj = func_obj_raw;
@@ -12698,8 +12003,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     func_obj.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
-    func_tv.tag = OBJECT;
-    func_tv.pointer = func_obj;
+    func_tv.set_object(func_obj);
 
     // Replace callee slot and this slot
     ctx.regs[ctx.base_reg - 2] = func_tv;
@@ -13184,8 +12488,7 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
         case BUILTIN_DECODE_URI_COMPONENT:
             builtin_decode_uri_component(ctx);
         default:
-            ctx.result.tag = UNDEFINED;
-            ctx.result.pointer = null;
+            ctx.result.set_undefined();
     }
 }
 
@@ -13262,8 +12565,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     heap.str_table_insert(print_key);
 
     TVal print_val;
-    print_val.tag = LIGHTFUNC;
-    print_val.fastint = (long)BUILTIN_PRINT;
+    print_val.set_lightfunc((void*)(usz)BUILTIN_PRINT);
     env::env_declare(global_env, print_key, print_val);
 
     char[] console_name = "console";
@@ -13280,8 +12582,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     }
 
     TVal console_val;
-    console_val.tag = OBJECT;
-    console_val.pointer = console_obj;
+    console_val.set_object(console_obj);
 
     char[] log_name = "log";
     uint log_hash = heap.hash_string(log_name);
@@ -13292,8 +12593,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     heap.str_table_insert(log_key);
 
     TVal log_val;
-    log_val.tag = LIGHTFUNC;
-    log_val.fastint = (long)BUILTIN_CONSOLE_LOG;
+    log_val.set_lightfunc((void*)(usz)BUILTIN_CONSOLE_LOG);
     console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_WEC);
 
     env::env_declare(global_env, console_key, console_val);
@@ -13415,8 +12715,8 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {
-                if (tv.tag == OBJECT && tv.pointer != null) {
-                    HObject* ctor = (HObject*)tv.pointer;
+                if (tv.is_object() && tv.get_heapptr() != null) {
+                    HObject* ctor = (HObject*)tv.get_heapptr();
                     ctor.prototype = heap.function_proto;
                 }
             }
@@ -13437,43 +12737,37 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method to Object.prototype
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.tag = LIGHTFUNC;
-    tostring_tv.fastint = (long)BUILTIN_OBJECT_PROTO_TOSTRING;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .hasOwnProperty() method to Object.prototype
     HString* hasown_key = builtin_intern_string(heap, "hasOwnProperty");
     TVal hasown_tv;
-    hasown_tv.tag = LIGHTFUNC;
-    hasown_tv.fastint = (long)BUILTIN_OBJECT_PROTO_HASOWNPROPERTY;
+    hasown_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_HASOWNPROPERTY);
     proto.put_prop(hasown_key, hasown_tv, hobject::PROP_FLAGS_WC);
 
     // Add .propertyIsEnumerable() method to Object.prototype (non-enumerable per ES5 §15.2.4.7)
     HString* propisenum_key = builtin_intern_string(heap, "propertyIsEnumerable");
     TVal propisenum_tv;
-    propisenum_tv.tag = LIGHTFUNC;
-    propisenum_tv.fastint = (long)BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE;
+    propisenum_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE);
     proto.put_prop(propisenum_key, propisenum_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method to Object.prototype (returns 'this')
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
-    valueof_tv.tag = LIGHTFUNC;
-    valueof_tv.fastint = (long)BUILTIN_OBJECT_PROTO_VALUEOF;
+    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .isPrototypeOf() method to Object.prototype
     HString* isproto_key = builtin_intern_string(heap, "isPrototypeOf");
     TVal isproto_tv;
-    isproto_tv.tag = LIGHTFUNC;
-    isproto_tv.fastint = (long)BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF;
+    isproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF);
     proto.put_prop(isproto_key, isproto_tv, hobject::PROP_FLAGS_WC);
 
     // Add .toLocaleString() method to Object.prototype (ES5 §15.2.4.3)
     HString* tolocalestring_key = builtin_intern_string(heap, "toLocaleString");
     TVal tolocalestring_tv;
-    tolocalestring_tv.tag = LIGHTFUNC;
-    tolocalestring_tv.fastint = (long)BUILTIN_OBJECT_PROTO_TOLOCALESTRING;
+    tolocalestring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOLOCALESTRING);
     proto.put_prop(tolocalestring_key, tolocalestring_tv, hobject::PROP_FLAGS_WC);
 
     // Create Object constructor as a proper HObject (not LIGHTFUNC)
@@ -13486,15 +12780,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on Object.prototype to point to the actual Object constructor object
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = obj;
+    constructor_tv.set_object(obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Object.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -13505,160 +12797,140 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     // Set Object.length (ES5 §15.2.1)
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 1;
+    length_tv.set_fastint(1);
     obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     // Add static methods to Object constructor
     HString* keys_key = builtin_intern_string(heap, "keys");
     if (keys_key == null) return false;
     TVal keys_tv;
-    keys_tv.tag = LIGHTFUNC;
-    keys_tv.fastint = (long)BUILTIN_OBJECT_KEYS;
+    keys_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_KEYS);
     obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WEC);
 
     // Object.getPrototypeOf — ES5 §15.2.3.2
     HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
     if (getproto_key == null) return false;
     TVal getproto_tv;
-    getproto_tv.tag = LIGHTFUNC;
-    getproto_tv.fastint = (long)BUILTIN_OBJECT_GETPROTOTYPEOF;
+    getproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETPROTOTYPEOF);
     obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isExtensible — ES5 §15.2.3.13
     HString* isext_key = builtin_intern_string(heap, "isExtensible");
     if (isext_key == null) return false;
     TVal isext_tv;
-    isext_tv.tag = LIGHTFUNC;
-    isext_tv.fastint = (long)BUILTIN_OBJECT_ISEXTENSIBLE;
+    isext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISEXTENSIBLE);
     obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_WC);
 
     // Object.preventExtensions — ES5 §15.2.3.10
     HString* prevext_key = builtin_intern_string(heap, "preventExtensions");
     if (prevext_key == null) return false;
     TVal prevext_tv;
-    prevext_tv.tag = LIGHTFUNC;
-    prevext_tv.fastint = (long)BUILTIN_OBJECT_PREVENTEXTENSIONS;
+    prevext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PREVENTEXTENSIONS);
     obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getOwnPropertyDescriptor — ES5 §15.2.3.3
     HString* getownpropdesc_key = builtin_intern_string(heap, "getOwnPropertyDescriptor");
     if (getownpropdesc_key == null) return false;
     TVal getownpropdesc_tv;
-    getownpropdesc_tv.tag = LIGHTFUNC;
-    getownpropdesc_tv.fastint = (long)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR;
+    getownpropdesc_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR);
     obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperty — ES5 §15.2.3.6
     HString* defineprop_key = builtin_intern_string(heap, "defineProperty");
     if (defineprop_key == null) return false;
     TVal defineprop_tv;
-    defineprop_tv.tag = LIGHTFUNC;
-    defineprop_tv.fastint = (long)BUILTIN_OBJECT_DEFINEPROPERTY;
+    defineprop_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTY);
     obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getOwnPropertyNames — ES5 §15.2.3.4
     HString* getownpropnames_key = builtin_intern_string(heap, "getOwnPropertyNames");
     if (getownpropnames_key == null) return false;
     TVal getownpropnames_tv;
-    getownpropnames_tv.tag = LIGHTFUNC;
-    getownpropnames_tv.fastint = (long)BUILTIN_OBJECT_GETOWNPROPERTYNAMES;
+    getownpropnames_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYNAMES);
     obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperties — ES5 §15.2.3.7
     HString* defineprops_key = builtin_intern_string(heap, "defineProperties");
     if (defineprops_key == null) return false;
     TVal defineprops_tv;
-    defineprops_tv.tag = LIGHTFUNC;
-    defineprops_tv.fastint = (long)BUILTIN_OBJECT_DEFINEPROPERTIES;
+    defineprops_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTIES);
     obj.put_prop(defineprops_key, defineprops_tv, hobject::PROP_FLAGS_WC);
 
     // Object.create — ES5 §15.2.3.5
     HString* create_key = builtin_intern_string(heap, "create");
     if (create_key == null) return false;
     TVal create_tv;
-    create_tv.tag = LIGHTFUNC;
-    create_tv.fastint = (long)BUILTIN_OBJECT_CREATE;
+    create_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_CREATE);
     obj.put_prop(create_key, create_tv, hobject::PROP_FLAGS_WC);
 
     // Object.seal — ES5 §15.2.3.8
     HString* seal_key = builtin_intern_string(heap, "seal");
     if (seal_key == null) return false;
     TVal seal_tv;
-    seal_tv.tag = LIGHTFUNC;
-    seal_tv.fastint = (long)BUILTIN_OBJECT_SEAL;
+    seal_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SEAL);
     obj.put_prop(seal_key, seal_tv, hobject::PROP_FLAGS_WC);
 
     // Object.freeze — ES5 §15.2.3.9
     HString* freeze_key = builtin_intern_string(heap, "freeze");
     if (freeze_key == null) return false;
     TVal freeze_tv;
-    freeze_tv.tag = LIGHTFUNC;
-    freeze_tv.fastint = (long)BUILTIN_OBJECT_FREEZE;
+    freeze_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FREEZE);
     obj.put_prop(freeze_key, freeze_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isSealed — ES5 §15.2.3.11
     HString* issealed_key = builtin_intern_string(heap, "isSealed");
     if (issealed_key == null) return false;
     TVal issealed_tv;
-    issealed_tv.tag = LIGHTFUNC;
-    issealed_tv.fastint = (long)BUILTIN_OBJECT_ISSEALED;
+    issealed_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISSEALED);
     obj.put_prop(issealed_key, issealed_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isFrozen — ES5 §15.2.3.12
     HString* isfrozen_key = builtin_intern_string(heap, "isFrozen");
     if (isfrozen_key == null) return false;
     TVal isfrozen_tv;
-    isfrozen_tv.tag = LIGHTFUNC;
-    isfrozen_tv.fastint = (long)BUILTIN_OBJECT_ISFROZEN;
+    isfrozen_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISFROZEN);
     obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_WC);
 
     // Object.entries — ES2017 §19.1.2.21
     HString* entries_key = builtin_intern_string(heap, "entries");
     if (entries_key == null) return false;
     TVal entries_tv;
-    entries_tv.tag = LIGHTFUNC;
-    entries_tv.fastint = (long)BUILTIN_OBJECT_ENTRIES;
+    entries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ENTRIES);
     obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_WC);
 
     // Object.values — ES2017 §19.1.2.22
     HString* values_key = builtin_intern_string(heap, "values");
     if (values_key == null) return false;
     TVal values_tv;
-    values_tv.tag = LIGHTFUNC;
-    values_tv.fastint = (long)BUILTIN_OBJECT_VALUES;
+    values_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_VALUES);
     obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_WC);
 
     // Object.assign — ES2015 §19.1.2.2
     HString* assign_key = builtin_intern_string(heap, "assign");
     if (assign_key == null) return false;
     TVal assign_tv;
-    assign_tv.tag = LIGHTFUNC;
-    assign_tv.fastint = (long)BUILTIN_OBJECT_ASSIGN;
+    assign_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ASSIGN);
     obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_WC);
 
     // Object.is — ES6 §19.1.2.10
     HString* is_key = builtin_intern_string(heap, "is");
     if (is_key == null) return false;
     TVal is_tv;
-    is_tv.tag = LIGHTFUNC;
-    is_tv.fastint = (long)BUILTIN_OBJECT_IS;
+    is_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_IS);
     obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_WC);
 
     // Object.hasOwn — ES2022 §19.1.2.10
     HString* hasown_static_key = builtin_intern_string(heap, "hasOwn");
     if (hasown_static_key == null) return false;
     TVal hasown_static_tv;
-    hasown_static_tv.tag = LIGHTFUNC;
-    hasown_static_tv.fastint = (long)BUILTIN_OBJECT_HASOWN;
+    hasown_static_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_HASOWN);
     obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_WC);
 
     // Object.setPrototypeOf — ES2015 §19.1.2.19
     HString* setproto_key = builtin_intern_string(heap, "setPrototypeOf");
     if (setproto_key == null) return false;
     TVal setproto_tv;
-    setproto_tv.tag = LIGHTFUNC;
-    setproto_tv.fastint = (long)BUILTIN_OBJECT_SETPROTOTYPEOF;
+    setproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SETPROTOTYPEOF);
     obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
@@ -13674,8 +12946,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
         obj_key = new_key;
     }
     TVal obj_val;
-    obj_val.tag = OBJECT;
-    obj_val.pointer = obj;
+    obj_val.set_object(obj);
     env::env_declare(global_env, obj_key, obj_val);
 
     return true;
@@ -13732,9 +13003,9 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(math, heap, "imul",   BUILTIN_MATH_IMUL))   return false;
 
     TVal math_tv;
-    math_tv.tag = OBJECT;
-    math_tv.fastint = 0;
-    math_tv.pointer = math;
+    math_tv.set_object(null);
+    math_tv.set_fastint(0);
+    math_tv.set_object(math);
     return register_named_value(global_env, heap, "Math", math_tv);
 }
 
@@ -13752,8 +13023,7 @@ fn bool register_math_method(HObject* math, Heap* heap, char[] name, uint fn_ind
         key = new_key;
     }
     TVal tv;
-    tv.tag = LIGHTFUNC;
-    tv.fastint = (long)fn_index;
+    tv.set_lightfunc((void*)(usz)fn_index);
     math.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -13769,8 +13039,7 @@ fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
         key = new_key;
     }
     TVal tv;
-    tv.tag = NUMBER;
-    tv.number = val;
+    tv.set_number(val);
     obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -13791,9 +13060,9 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(json, heap, "stringify", BUILTIN_JSON_STRINGIFY)) return false;
 
     TVal json_tv;
-    json_tv.tag = OBJECT;
-    json_tv.fastint = 0;
-    json_tv.pointer = json;
+    json_tv.set_object(null);
+    json_tv.set_fastint(0);
+    json_tv.set_object(json);
     return register_named_value(global_env, heap, "JSON", json_tv);
 }
 
@@ -13813,15 +13082,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.tag = LIGHTFUNC;
-    tostring_tv.fastint = (long)BUILTIN_NUMBER_PROTO_TOSTRING;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
-    valueof_tv.tag = LIGHTFUNC;
-    valueof_tv.fastint = (long)BUILTIN_NUMBER_PROTO_VALUEOF;
+    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .toFixed() method (Phase 6d)
@@ -13841,15 +13108,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on Number.prototype to point to the actual Number object
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = num;
+    constructor_tv.set_object(num);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Number.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -13901,8 +13166,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
         num_key = new_key;
     }
     TVal num_val;
-    num_val.tag = OBJECT;
-    num_val.pointer = num;
+    num_val.set_object(num);
     env::env_declare(global_env, num_key, num_val);
 
     return true;
@@ -13922,8 +13186,7 @@ fn bool set_num_static_prop(HObject* obj, Heap* heap, char[] name, double val) {
         key = new_key;
     }
     TVal tv;
-    tv.tag = NUMBER;
-    tv.number = val;
+    tv.set_number(val);
     PropFlags pflags;
     pflags.writable = false;
     pflags.enumerable = false;
@@ -13947,8 +13210,7 @@ fn bool set_num_prop(HObject* obj, Heap* heap, char[] name, double val) {
         key = new_key;
     }
     TVal tv;
-    tv.tag = NUMBER;
-    tv.number = val;
+    tv.set_number(val);
     obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -13984,16 +13246,12 @@ fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
         key = new_key;
     }
     TVal val;
-    val.tag = tag;
     if (tag == FASTINT) {
-        val.fastint = fastint_val;
-        val.pointer = null;
+        val.set_fastint(fastint_val);
     } else if (tag == STRING || tag == OBJECT) {
-        val.number = 0.0;
-        val.pointer = null;  // caller must set pointer
+        val.set_string(null);  // caller must set pointer
     } else {
-        val.number = number_val;
-        // Don't touch pointer — it shares union with number
+        val.set_number(number_val);
     }
     env::env_declare(global_env, key, val);
     return true;
@@ -14015,8 +13273,7 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
     }
 
     TVal val;
-    val.tag = LIGHTFUNC;
-    val.fastint = (long)fn_index;
+    val.set_lightfunc((void*)(usz)fn_index);
     env::env_declare(global_env, key, val);
     return true;
 }
@@ -14037,16 +13294,14 @@ fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] n
     HString* name_key = builtin_intern_string(heap, "name");
     HString* name_hstr = builtin_intern_string(heap, name_str);
     TVal name_tv;
-    name_tv.tag = STRING;
-    name_tv.pointer = name_hstr;
+    name_tv.set_string(name_hstr);
     proto.put_prop(name_key, name_tv, hobject::PROP_FLAGS_WEC);
 
     // Set .message property (empty string)
     HString* msg_key = builtin_intern_string(heap, "message");
     HString* msg_hstr = builtin_intern_string(heap, "");
     TVal msg_tv;
-    msg_tv.tag = STRING;
-    msg_tv.pointer = msg_hstr;
+    msg_tv.set_string(msg_hstr);
     proto.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
 
     return proto;
@@ -14062,15 +13317,13 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method to Error.prototype
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.tag = LIGHTFUNC;
-    tostring_tv.fastint = (long)BUILTIN_ERROR_PROTO_TOSTRING;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .constructor to Error.prototype pointing to Error builtin
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_ERROR;
+    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR);
     err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // --- Create TypeError.prototype ---
@@ -14112,33 +13365,27 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on each error sub-prototype to point to its own builtin
     // (type_err_proto already done above — fix it now with correct index)
     TVal type_err_constr;
-    type_err_constr.tag = LIGHTFUNC;
-    type_err_constr.fastint = (long)BUILTIN_TYPE_ERROR;
+    type_err_constr.set_lightfunc((void*)(usz)BUILTIN_TYPE_ERROR);
     type_err_proto.put_prop(constructor_key, type_err_constr, hobject::PROP_FLAGS_WEC);
 
     TVal range_err_constr;
-    range_err_constr.tag = LIGHTFUNC;
-    range_err_constr.fastint = (long)BUILTIN_RANGE_ERROR;
+    range_err_constr.set_lightfunc((void*)(usz)BUILTIN_RANGE_ERROR);
     range_err_proto.put_prop(constructor_key, range_err_constr, hobject::PROP_FLAGS_WEC);
 
     TVal ref_err_constr;
-    ref_err_constr.tag = LIGHTFUNC;
-    ref_err_constr.fastint = (long)BUILTIN_REFERENCE_ERROR;
+    ref_err_constr.set_lightfunc((void*)(usz)BUILTIN_REFERENCE_ERROR);
     ref_err_proto.put_prop(constructor_key, ref_err_constr, hobject::PROP_FLAGS_WEC);
 
     TVal syntax_err_constr;
-    syntax_err_constr.tag = LIGHTFUNC;
-    syntax_err_constr.fastint = (long)BUILTIN_SYNTAX_ERROR;
+    syntax_err_constr.set_lightfunc((void*)(usz)BUILTIN_SYNTAX_ERROR);
     syntax_err_proto.put_prop(constructor_key, syntax_err_constr, hobject::PROP_FLAGS_WEC);
 
     TVal eval_err_constr;
-    eval_err_constr.tag = LIGHTFUNC;
-    eval_err_constr.fastint = (long)BUILTIN_EVAL_ERROR;
+    eval_err_constr.set_lightfunc((void*)(usz)BUILTIN_EVAL_ERROR);
     eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WEC);
 
     TVal uri_err_constr;
-    uri_err_constr.tag = LIGHTFUNC;
-    uri_err_constr.fastint = (long)BUILTIN_URI_ERROR;
+    uri_err_constr.set_lightfunc((void*)(usz)BUILTIN_URI_ERROR);
     uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WEC);
 
     // --- Register Error global constructor ---
@@ -14181,22 +13428,19 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor to Boolean lightfunc
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_BOOLEAN;
+    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.tag = LIGHTFUNC;
-    tostring_tv.fastint = (long)BUILTIN_BOOLEAN_PROTO_TOSTRING;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
-    valueof_tv.tag = LIGHTFUNC;
-    valueof_tv.fastint = (long)BUILTIN_BOOLEAN_PROTO_VALUEOF;
+    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Boolean as a global constructor
@@ -14221,15 +13465,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.tag = LIGHTFUNC;
-    tostring_tv.fastint = (long)BUILTIN_STRING_PROTO_TOSTRING;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
-    valueof_tv.tag = LIGHTFUNC;
-    valueof_tv.fastint = (long)BUILTIN_STRING_PROTO_VALUEOF;
+    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
 
     // Add String.prototype methods (Phase 6b)
@@ -14269,15 +13511,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on String.prototype to point to the actual String object
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = str_obj;
+    constructor_tv.set_object(str_obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set String.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14302,8 +13542,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
         str_key = new_key;
     }
     TVal str_val;
-    str_val.tag = OBJECT;
-    str_val.pointer = str_obj;
+    str_val.set_object(str_obj);
     env::env_declare(global_env, str_key, str_val);
 
     return true;
@@ -14323,8 +13562,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
         key = new_key;
     }
     TVal tv;
-    tv.tag = LIGHTFUNC;
-    tv.fastint = (long)fn_index;
+    tv.set_lightfunc((void*)(usz)fn_index);
     proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
     return true;
 }
@@ -14352,15 +13590,13 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on Array.prototype to point to the actual Array constructor object
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = arr;
+    constructor_tv.set_object(arr);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Array.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14418,16 +13654,14 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     HString* isarray_key = builtin_intern_string(heap, "isArray");
     if (isarray_key == null) return false;
     TVal isarray_tv;
-    isarray_tv.tag = LIGHTFUNC;
-    isarray_tv.fastint = (long)BUILTIN_ARRAY_ISARRAY;
+    isarray_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_ISARRAY);
     arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WEC);
 
     // Add Array.of (ES6 §22.1.2.3) as static method on the constructor
     HString* of_key = builtin_intern_string(heap, "of");
     if (of_key == null) return false;
     TVal of_tv;
-    of_tv.tag = LIGHTFUNC;
-    of_tv.fastint = (long)BUILTIN_ARRAY_OF;
+    of_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_OF);
     arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
@@ -14443,8 +13677,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
         arr_key = new_key;
     }
     TVal arr_val;
-    arr_val.tag = OBJECT;
-    arr_val.pointer = arr;
+    arr_val.set_object(arr);
     env::env_declare(global_env, arr_key, arr_val);
 
     return true;
@@ -14473,36 +13706,31 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .call method
     HString* call_key = builtin_intern_string(heap, "call");
     TVal call_tv;
-    call_tv.tag = LIGHTFUNC;
-    call_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_CALL;
+    call_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_CALL);
     proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .apply method
     HString* apply_key = builtin_intern_string(heap, "apply");
     TVal apply_tv;
-    apply_tv.tag = LIGHTFUNC;
-    apply_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_APPLY;
+    apply_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_APPLY);
     proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WEC);
 
     // Add .bind method
     HString* bind_key = builtin_intern_string(heap, "bind");
     TVal bind_tv;
-    bind_tv.tag = LIGHTFUNC;
-    bind_tv.fastint = (long)BUILTIN_FUNCTION_PROTO_BIND;
+    bind_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_BIND);
     proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WEC);
 
     // Set .constructor to the Function constructor object itself
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = func_obj;
+    constructor_tv.set_object(func_obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14513,8 +13741,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     // Set Function.length (ES5 §15.3.3)
     HString* len_key = builtin_intern_string(heap, "length");
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = 1;
+    len_tv.set_fastint(1);
     func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Function constructor globally as an OBJECT
@@ -14530,8 +13757,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
         func_key = new_key;
     }
     TVal func_val;
-    func_val.tag = OBJECT;
-    func_val.pointer = func_obj;
+    func_val.set_object(func_obj);
     env::env_declare(global_env, func_key, func_val);
 
     return true;
@@ -14553,8 +13779,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor to Date lightfunc
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_DATE;
+    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_DATE);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Add Date.prototype.toString()
@@ -14602,8 +13827,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // Set Date.prototype on the constructor
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14633,8 +13857,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
         date_key = new_key;
     }
     TVal date_val;
-    date_val.tag = OBJECT;
-    date_val.pointer = date_obj;
+    date_val.set_object(date_obj);
     env::env_declare(global_env, date_key, date_val);
 
     return true;
@@ -14657,8 +13880,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor to RegExp lightfunc
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = LIGHTFUNC;
-    constructor_tv.fastint = (long)BUILTIN_REGEXP;
+    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_REGEXP);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Add RegExp.prototype.test()
@@ -14679,8 +13901,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     // Set RegExp.prototype on the constructor
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14691,8 +13912,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     // Set RegExp.length (ES5 15.10.5)
     HString* len_key = builtin_intern_string(heap, "length");
     TVal len_tv;
-    len_tv.tag = FASTINT;
-    len_tv.fastint = 2;
+    len_tv.set_fastint(2);
     regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
 
     // Register RegExp constructor globally as an OBJECT
@@ -14708,8 +13928,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         regexp_key = new_key;
     }
     TVal regexp_val;
-    regexp_val.tag = OBJECT;
-    regexp_val.pointer = regexp_obj;
+    regexp_val.set_object(regexp_obj);
     env::env_declare(global_env, regexp_key, regexp_val);
 
     return true;
@@ -14749,8 +13968,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
-    size_tv.tag = FASTINT;
-    size_tv.fastint = 0;
+    size_tv.set_fastint(0);
     proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Map constructor as a proper function object
@@ -14762,15 +13980,13 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on Map.prototype
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Map.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14781,8 +13997,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     // Set Map.length
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 0;
+    length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     // Map.prototype's [[Prototype]] is set later (to Object.prototype)
@@ -14800,8 +14015,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
         map_key = new_key;
     }
     TVal map_val;
-    map_val.tag = OBJECT;
-    map_val.pointer = ctor;
+    map_val.set_object(ctor);
     env::env_declare(global_env, map_key, map_val);
 
     return true;
@@ -14839,8 +14053,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
-    size_tv.tag = FASTINT;
-    size_tv.fastint = 0;
+    size_tv.set_fastint(0);
     proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Set constructor as a proper function object
@@ -14852,15 +14065,13 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     // Set .constructor on Set.prototype
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Set Set.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14871,8 +14082,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     // Set Set.length
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 0;
+    length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Set constructor globally
@@ -14888,8 +14098,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
         set_key = new_key;
     }
     TVal set_val;
-    set_val.tag = OBJECT;
-    set_val.pointer = ctor;
+    set_val.set_object(ctor);
     env::env_declare(global_env, set_key, set_val);
 
     return true;
@@ -14914,8 +14123,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     // Set @@toStringTag
     HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
     TVal tag_tv;
-    tag_tv.tag = STRING;
-    tag_tv.pointer = builtin_intern_string(heap, "WeakMap");
+    tag_tv.set_string(builtin_intern_string(heap, "WeakMap"));
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -14925,14 +14133,12 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
 
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -14942,8 +14148,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
 
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 0;
+    length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     uint hash = heap.hash_string("WeakMap");
@@ -14958,8 +14163,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
         wm_key = new_key;
     }
     TVal wm_val;
-    wm_val.tag = OBJECT;
-    wm_val.pointer = ctor;
+    wm_val.set_object(ctor);
     env::env_declare(global_env, wm_key, wm_val);
 
     return true;
@@ -14983,8 +14187,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     // Set @@toStringTag
     HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
     TVal tag_tv;
-    tag_tv.tag = STRING;
-    tag_tv.pointer = builtin_intern_string(heap, "WeakSet");
+    tag_tv.set_string(builtin_intern_string(heap, "WeakSet"));
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -14994,14 +14197,12 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
 
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -15011,8 +14212,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
 
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 0;
+    length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     uint hash = heap.hash_string("WeakSet");
@@ -15027,8 +14227,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
         ws_key = new_key;
     }
     TVal ws_val;
-    ws_val.tag = OBJECT;
-    ws_val.pointer = ctor;
+    ws_val.set_object(ctor);
     env::env_declare(global_env, ws_key, ws_val);
 
     return true;
@@ -15053,8 +14252,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Set @@toStringTag on prototype
     HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
     TVal tag_tv;
-    tag_tv.tag = STRING;
-    tag_tv.pointer = builtin_intern_string(heap, "Symbol");
+    tag_tv.set_string(builtin_intern_string(heap, "Symbol"));
     proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
 
     // Create Symbol function object
@@ -15066,15 +14264,13 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Wire prototype.constructor → ctor
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
-    constructor_tv.tag = OBJECT;
-    constructor_tv.pointer = ctor;
+    constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
-    proto_tv.tag = OBJECT;
-    proto_tv.pointer = proto;
+    proto_tv.set_object(proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;
@@ -15085,22 +14281,19 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Symbol.length = 0
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
-    length_tv.tag = FASTINT;
-    length_tv.fastint = 0;
+    length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Symbol.for as a property of the Symbol function
     HString* for_key = builtin_intern_string(heap, "for");
     TVal for_tv;
-    for_tv.tag = LIGHTFUNC;
-    for_tv.fastint = (long)BUILTIN_SYMBOL_FOR;
+    for_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_FOR);
     ctor.put_prop(for_key, for_tv, hobject::PROP_FLAGS_WEC);
 
     // Register Symbol.keyFor as a property of the Symbol function
     HString* keyfor_key = builtin_intern_string(heap, "keyFor");
     TVal keyfor_tv;
-    keyfor_tv.tag = LIGHTFUNC;
-    keyfor_tv.fastint = (long)BUILTIN_SYMBOL_KEYFOR;
+    keyfor_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_KEYFOR);
     ctor.put_prop(keyfor_key, keyfor_tv, hobject::PROP_FLAGS_WEC);
 
     // Register "Symbol" in global environment
@@ -15116,8 +14309,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
         sym_key = new_key;
     }
     TVal sym_val;
-    sym_val.tag = OBJECT;
-    sym_val.pointer = ctor;
+    sym_val.set_object(ctor);
     env::env_declare(global_env, sym_key, sym_val);
 
     return true;

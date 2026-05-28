@@ -599,13 +599,13 @@ fn uint CompilerContext.emit_simple(&self, Opcode op) {
 fn uint CompilerContext.add_constant(&self, TVal val) {
     // Check for duplicates (number and fastint)
     for (uint i = 0; i < self.const_count; i++) {
-        if (self.constants[i].tag == val.tag) {
-            if (val.tag == TValTag.NUMBER) {
-                if (self.constants[i].number == val.number) {
+        if (self.constants[i].get_tag() == val.get_tag()) {
+            if (val.is_number()) {
+                if (self.constants[i].get_number() == val.get_number()) {
                     return i;
                 }
-            } else if (val.tag == TValTag.FASTINT) {
-                if (self.constants[i].fastint == val.fastint) {
+            } else if (val.is_fastint()) {
+                if (self.constants[i].get_fastint() == val.get_fastint()) {
                     return i;
                 }
             }
@@ -625,8 +625,8 @@ fn uint CompilerContext.add_constant(&self, TVal val) {
 fn uint CompilerContext.add_string_constant(&self, char[] str) {
     // Check for duplicate string constants by scanning existing entries
     for (uint i = 0; i < self.const_count; i++) {
-        if (self.constants[i].tag == TValTag.STRING) {
-            HString* existing = (HString*)self.constants[i].pointer;
+        if (self.constants[i].is_string()) {
+            HString* existing = (HString*)self.constants[i].get_heapptr();
             if (existing != null && existing.equals(str)) {
                 return i;
             }
@@ -649,12 +649,10 @@ fn uint CompilerContext.add_string_constant(&self, char[] str) {
 
     TVal tv;
     if (hstr != null) {
-        tv.tag = TValTag.STRING;
-        tv.pointer = hstr;
+        tv.set_string(hstr);
     } else {
         // Fallback: store as pointer with null
-        tv.tag = TValTag.STRING;
-        tv.pointer = null;
+        tv.set_string(null);
     }
 
     if (self.const_count >= MAX_CONSTANTS) {
@@ -669,8 +667,7 @@ fn uint CompilerContext.add_string_constant(&self, char[] str) {
 /// Add a number constant and return its index.
 fn uint CompilerContext.add_number_constant(&self, double val) {
     TVal tv;
-    tv.tag = TValTag.NUMBER;
-    tv.number = val;
+    tv.set_number(val);
     return self.add_constant(tv);
 }
 

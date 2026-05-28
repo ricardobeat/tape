@@ -208,14 +208,27 @@ fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
 /// for temporal dead zone access.
 fn TVal tdz_sentinel() {
     TVal tv;
+$if types::USE_NANBOX:
+    // Encode as UNDEFINED with payload=1 — distinguishable from real
+    // undefined (which has payload=0) and from any tagged value (which
+    // uses a non-zero tag field).
+    tv.bits = types::nanbox_encode_tagged(types::TAG_UNDEFINED, 1);
+$else
     tv.tag     = UNDEFINED;
-    tv.pointer = (void*)(usz)1;  // Non-null pointer distinguishes from real undefined
+    tv.pointer = (void*)(usz)1;  // TDZ sentinel: non-null marker
+$endif
     return tv;
 }
 
 /// Returns true if the value is the TDZ sentinel.
 fn bool is_tdz_sentinel(TVal* tv) @inline {
-    return tv.tag == UNDEFINED && tv.pointer != null;
+$if types::USE_NANBOX:
+    return !types::nanbox_is_double(tv.bits)
+        && types::nanbox_get_tag(tv.bits) == types::TAG_UNDEFINED
+        && types::nanbox_get_payload(tv.bits) != 0;
+$else
+    return tv.get_tag() == UNDEFINED && tv.get_heapptr() != null;
+$endif
 }
 
 // ============================================================================

@@ -239,21 +239,21 @@ fn TVal* ptr_from_byteoff(TVal* base, uint byteoff) @inline {
 
 /// Extract a numeric double from a TVal (promoting FASTINT if needed).
 fn double num_val(TVal* val) @inline {
-    if (val.tag == FASTINT) {
-        return (double)val.fastint;
+    if (val.is_fastint()) {
+        return (double)val.get_fastint();
     }
-    return val.number;
+    return val.get_number();
 }
 
 /// ECMAScript truthiness.
 fn bool is_truthy(TVal* val) @inline {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED: return false;
         case NULL_VAL:  return false;
-        case BOOLEAN:   return val.boolean;
-        case NUMBER:    return val.number != 0.0 && !math::is_nan(val.number);
-        case FASTINT:   return val.fastint != 0;
-        case STRING:    return ((HString*)val.pointer).blen > 0;
+        case BOOLEAN:   return val.get_boolean();
+        case NUMBER:    return val.get_number() != 0.0 && !math::is_nan(val.get_number());
+        case FASTINT:   return val.get_fastint() != 0;
+        case STRING:    return ((HString*)val.get_heapptr()).blen > 0;
         case OBJECT:    return true;
         case LIGHTFUNC: return true;
         default:        return true;
@@ -302,8 +302,8 @@ fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
 
 /// Convert a TVal to an interned string key for property access.
 fn void* get_prop_key(Vm* vm, TVal* val) {
-    if (val.tag == STRING) {
-        return val.pointer;
+    if (val.is_string()) {
+        return val.get_heapptr();
     }
     HString*? s = vm_to_string(vm, val);
     if (try h = s) {
@@ -319,8 +319,7 @@ fn TVal get_prop_with_proto(HObject* obj, void* key) {
         return v;
     }
     TVal undef;
-    undef.tag = UNDEFINED;
-    undef.pointer = null;
+    undef.set_undefined();
     return undef;
 }
 
@@ -345,7 +344,7 @@ fn HString* intern_string(Vm* vm, char[] data) {
 
 /// Return the interned typeof string for a TVal per ES spec.
 fn HString* typeof_string(Vm* vm, TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case UNDEFINED: return intern_string(vm, "undefined");
         case NULL_VAL:  return intern_string(vm, "object");
         case BOOLEAN:   return intern_string(vm, "boolean");
@@ -353,7 +352,7 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
         case FASTINT:   return intern_string(vm, "number");
         case STRING:    return intern_string(vm, "string");
         case OBJECT:
-            HObject* hobj = (HObject*)val.pointer;
+            HObject* hobj = (HObject*)val.get_heapptr();
             if (hobj != null && hobj.is_callable()) {
                 return intern_string(vm, "function");
             }
@@ -436,15 +435,15 @@ fn HString*? vm_fastint_to_string(Vm* vm, long val) {
 
 /// Convert a TVal to an interned HString*.
 fn HString*? vm_to_string(Vm* vm, TVal* val) {
-    switch (val.tag) {
+    switch (val.get_tag()) {
         case STRING:
-            return (HString*)val.pointer;
+            return (HString*)val.get_heapptr();
         case NUMBER:
-            return vm_number_to_string(vm, val.number);
+            return vm_number_to_string(vm, val.get_number());
         case FASTINT:
-            return vm_fastint_to_string(vm, val.fastint);
+            return vm_fastint_to_string(vm, val.get_fastint());
         case BOOLEAN:
-            if (val.boolean) {
+            if (val.get_boolean()) {
                 return intern_string(vm, "true");
             }
             return intern_string(vm, "false");
@@ -542,28 +541,25 @@ fn double hstring_to_number(HString* hstr) {
 /// Extract [[PrimitiveValue]] from Boolean/Number/String wrapper objects.
 /// For non-wrapper objects, returns the value unchanged.
 fn TVal to_primitive_value(TVal* val) {
-    if (val.tag == OBJECT && val.pointer != null) {
-        HObject* obj = (HObject*)val.pointer;
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
         if (cls == hobject::ObjClass.BOOLEAN &&
-            obj.primitive_value.tag == BOOLEAN) {
+            obj.primitive_value.is_boolean()) {
             TVal result;
-            result.tag = BOOLEAN;
-            result.boolean = obj.primitive_value.boolean;
+            result.set_boolean(obj.primitive_value.get_boolean());
             return result;
         }
         if (cls == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.tag == NUMBER || obj.primitive_value.tag == FASTINT)) {
+            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
             TVal result;
-            result.tag = obj.primitive_value.tag;
-            result.number = obj.primitive_value.number;
+            result.set_number(obj.primitive_value.get_number());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
-            obj.primitive_value.tag == STRING) {
+            obj.primitive_value.is_string()) {
             TVal result;
-            result.tag = STRING;
-            result.pointer = obj.primitive_value.pointer;
+            result.set_string(obj.primitive_value.get_heapptr());
             return result;
         }
     }
@@ -667,61 +663,59 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 /// ECMAScript Abstract Equality Comparison (§7.2.14).
 fn bool abstract_eq(TVal* a, TVal* b) {
     // Same type -> strict equality
-    if (a.tag == b.tag) {
+    if (a.get_tag() == b.get_tag()) {
         return strict_eq(a, b);
     }
 
     // null/undefined pair
-    if ((a.tag == NULL_VAL && b.tag == UNDEFINED) ||
-        (a.tag == UNDEFINED && b.tag == NULL_VAL)) {
+    if ((a.is_null() && b.is_undefined()) ||
+        (a.is_undefined() && b.is_null())) {
         return true;
     }
 
     // NUMBER/FASTINT: treat as same "numeric" type
-    if (a.tag == NUMBER && b.tag == FASTINT) {
-        return a.number == (double)b.fastint;
+    if (a.is_number() && b.is_fastint()) {
+        return a.get_number() == (double)b.get_fastint();
     }
-    if (a.tag == FASTINT && b.tag == NUMBER) {
-        return (double)a.fastint == b.number;
+    if (a.is_fastint() && b.is_number()) {
+        return (double)a.get_fastint() == b.get_number();
     }
 
     // Boolean -> ToNumber
-    if (a.tag == BOOLEAN) {
+    if (a.is_boolean()) {
         TVal a_num;
-        a_num.tag = NUMBER;
-        a_num.number = a.boolean ? 1.0 : 0.0;
+        a_num.set_number(a.get_boolean() ? 1.0 : 0.0);
         return abstract_eq(&a_num, b);
     }
-    if (b.tag == BOOLEAN) {
+    if (b.is_boolean()) {
         TVal b_num;
-        b_num.tag = NUMBER;
-        b_num.number = b.boolean ? 1.0 : 0.0;
+        b_num.set_number(b.get_boolean() ? 1.0 : 0.0);
         return abstract_eq(a, &b_num);
     }
 
     // String + Number -> ToNumber(string)
-    if (a.tag == STRING && (b.tag == NUMBER || b.tag == FASTINT)) {
-        double num = hstring_to_number((HString*)a.pointer);
-        if (b.tag == FASTINT) return num == (double)b.fastint;
-        return num == b.number;
+    if (a.is_string() && (b.is_number() || b.is_fastint())) {
+        double num = hstring_to_number((HString*)a.get_heapptr());
+        if (b.is_fastint()) return num == (double)b.get_fastint();
+        return num == b.get_number();
     }
-    if (b.tag == STRING && (a.tag == NUMBER || a.tag == FASTINT)) {
-        double num = hstring_to_number((HString*)b.pointer);
-        if (a.tag == FASTINT) return (double)a.fastint == num;
-        return a.number == num;
+    if (b.is_string() && (a.is_number() || a.is_fastint())) {
+        double num = hstring_to_number((HString*)b.get_heapptr());
+        if (a.is_fastint()) return (double)a.get_fastint() == num;
+        return a.get_number() == num;
     }
 
     // Object + Boolean/Number/String -> ToPrimitive
-    if (a.tag == OBJECT && (b.tag == BOOLEAN || b.tag == NUMBER || b.tag == FASTINT || b.tag == STRING)) {
+    if (a.is_object() && (b.is_boolean() || b.is_number() || b.is_fastint() || b.is_string())) {
         TVal prim = to_primitive_value(a);
-        if (prim.tag != OBJECT) {
+        if (!prim.is_object()) {
             return abstract_eq(&prim, b);
         }
         return false;
     }
-    if (b.tag == OBJECT && (a.tag == BOOLEAN || a.tag == NUMBER || a.tag == FASTINT || a.tag == STRING)) {
+    if (b.is_object() && (a.is_boolean() || a.is_number() || a.is_fastint() || a.is_string())) {
         TVal prim = to_primitive_value(b);
-        if (prim.tag != OBJECT) {
+        if (!prim.is_object()) {
             return abstract_eq(a, &prim);
         }
         return false;
@@ -732,23 +726,23 @@ fn bool abstract_eq(TVal* a, TVal* b) {
 
 /// Strict equality check (same as SEQ).
 fn bool strict_eq(TVal* a, TVal* b) @inline {
-    if (a.tag == b.tag) {
-        switch (a.tag) {
+    if (a.get_tag() == b.get_tag()) {
+        switch (a.get_tag()) {
             case UNDEFINED: return true;
             case NULL_VAL:  return true;
-            case BOOLEAN:   return a.boolean == b.boolean;
+            case BOOLEAN:   return a.get_boolean() == b.get_boolean();
             case NUMBER:
-                if (math::is_nan(a.number) && math::is_nan(b.number)) return false;
-                return a.number == b.number;
-            case FASTINT:   return a.fastint == b.fastint;
-            case STRING:    return a.pointer == b.pointer;
-            case OBJECT:    return a.pointer == b.pointer;
+                if (math::is_nan(a.get_number()) && math::is_nan(b.get_number())) return false;
+                return a.get_number() == b.get_number();
+            case FASTINT:   return a.get_fastint() == b.get_fastint();
+            case STRING:    return a.get_heapptr() == b.get_heapptr();
+            case OBJECT:    return a.get_heapptr() == b.get_heapptr();
             default:        return false;
         }
     }
     // NUMBER and FASTINT are the same ES type
-    if ((a.tag == NUMBER && b.tag == FASTINT) ||
-        (a.tag == FASTINT && b.tag == NUMBER)) {
+    if ((a.is_number() && b.is_fastint()) ||
+        (a.is_fastint() && b.is_number())) {
         return num_val(a) == num_val(b);
     }
     return false;
@@ -777,11 +771,11 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     EnvRecord* var_env = null;
     EnvRecord* lex_env = null;
 
-    if (func_val.tag == LIGHTFUNC) {
+    if (func_val.is_lightfunc()) {
         // Lightfunc: always strict, just call directly
         // Nothing special needed for var_env/lex_env
-    } else if (func_val.tag == OBJECT) {
-        HObject* hobj = (HObject*)func_val.pointer;
+    } else if (func_val.is_object()) {
+        HObject* hobj = (HObject*)func_val.get_heapptr();
         if (hobj != null && hobj.is_callable() && hobj.comp_func != null) {
             target_func = hobj.comp_func;
             var_env = hobj.var_env;
@@ -840,14 +834,13 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     TVal getter_fn = acc.accessor_fn;
 
     // If getter is undefined/null, return undefined (no-op)
-    if (getter_fn.tag == UNDEFINED || getter_fn.tag == NULL_VAL) {
-        regs_base[result_reg].tag = UNDEFINED;
-        regs_base[result_reg].pointer = null;
+    if (getter_fn.is_undefined() || getter_fn.is_null()) {
+        regs_base[result_reg].set_undefined();
         return false;
     }
 
-    if (getter_fn.tag != OBJECT) return false;
-    HObject* func_obj = (HObject*)getter_fn.pointer;
+    if (!getter_fn.is_object()) return false;
+    HObject* func_obj = (HObject*)getter_fn.get_heapptr();
     if (func_obj == null || !func_obj.is_callable()) return false;
 
     CompiledFunction* target = func_obj.comp_func;
@@ -860,8 +853,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     uint needed = new_bottom_idx + target.num_regs;
 
     if (!ensure_valstack(vm, needed)) {
-        regs_base[result_reg].tag = UNDEFINED;
-        regs_base[result_reg].pointer = null;
+        regs_base[result_reg].set_undefined();
         return false;
     }
 
@@ -871,8 +863,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     caller_regs[callee_reg + 1] = *this_val;
 
     if (vm.activation_count >= MAX_CALLS) {
-        caller_regs[result_reg].tag = UNDEFINED;
-        caller_regs[result_reg].pointer = null;
+        caller_regs[result_reg].set_undefined();
         return false;
     }
 
@@ -936,9 +927,9 @@ fn TVal handle_return(Vm* vm, TVal val) {
         // For construct calls: if return value is not an object, use this_binding
         TVal final_val = val;
         if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
-            if (final_val.tag != OBJECT || final_val.pointer == null) {
+            if (!final_val.is_object() || final_val.get_heapptr() == null) {
                 // Return the instance (this) instead of the constructor's return value
-                if (callee_act.this_binding.tag == OBJECT && callee_act.this_binding.pointer != null) {
+                if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
                     final_val = callee_act.this_binding;
                 }
             }
@@ -1048,8 +1039,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.flags = ACT_FLAG_STRICT;
 
     TVal this_val;
-    this_val.tag = UNDEFINED;
-    this_val.pointer = null;
+    this_val.set_undefined();
     entry_act.this_binding = this_val;
 
     // Allocate value stack slots for the function (nregs = total register count)
@@ -1060,8 +1050,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
     // Initialize registers to undefined
     for (uint i = 0; i < nregs; i++) {
-        vm.valstack[i].tag = UNDEFINED;
-        vm.valstack[i].pointer = null;
+        vm.valstack[i].set_undefined();
     }
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
     vm.valstack_bottom = 0;
@@ -1099,8 +1088,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         for (; !needs_restart; ) {
             if (curr_pc >= code_end) {
                 TVal undef_val;
-                undef_val.tag = UNDEFINED;
-                undef_val.pointer = null;
+                undef_val.set_undefined();
                 handle_return(vm, undef_val);
                 if (vm.activation_count == 0) {
                     return vm.return_val;
@@ -1131,41 +1119,35 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (bc < vm.current_func.const_count) {
                 *ra = constants[bc];
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
 
         case Opcode.LDINT:
-            ra.tag = FASTINT;
-            ra.fastint = (long)insn.get_sbc();
+            ra.set_fastint((long)insn.get_sbc());
             break;
 
         case Opcode.LDINTX: {
-            long ix_high = ra.fastint;
-            ra.fastint = (ix_high << 16) | (long)insn.get_bc();
+            long ix_high = ra.get_fastint();
+            ra.set_fastint((ix_high << 16) | (long)insn.get_bc());
             break;
         }
 
         case Opcode.LDUNDEF:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+            ra.set_undefined();
             break;
 
         case Opcode.LDNULL:
-            ra.tag = NULL_VAL;
-            ra.pointer = null;
+            ra.set_null();
             break;
 
         case Opcode.LDTRUE:
-            ra.tag = BOOLEAN;
-            ra.boolean = true;
+            ra.set_boolean(true);
             break;
 
         case Opcode.LDFALSE:
-            ra.tag = BOOLEAN;
-            ra.boolean = false;
+            ra.set_boolean(false);
             break;
 
         case Opcode.LDTHIS:
@@ -1176,7 +1158,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.ADD:
             // String concatenation check
-            if (rb.tag == STRING || rc.tag == STRING) {
+            if (rb.is_string() || rc.is_string()) {
                 HString*? left_str = vm_to_string(vm, rb);
                 HString*? right_str = vm_to_string(vm, rc);
                 if (try ls = left_str && try rs = right_str) {
@@ -1187,151 +1169,127 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* interned = intern_string(vm, cd);
                         // Free the raw concat result (not tracked by heap)
                         hstring::hstring_free(cs);
-                        ra.tag = STRING;
-                        ra.pointer = interned;
+                        ra.set_string(interned);
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
-            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
+            } else if (rb.is_fastint() && rc.is_fastint()) {
                 // Both operands are fast integers — keep as fastint if result fits
-                long sum = rb.fastint + rc.fastint;
+                long sum = rb.get_fastint() + rc.get_fastint();
                 if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
-                    ra.tag = FASTINT;
-                    ra.fastint = sum;
+                    ra.set_fastint(sum);
                 } else {
-                    ra.tag = NUMBER;
-                    ra.number = (double)sum;
+                    ra.set_number((double)sum);
                 }
             } else {
                 double add_b = num_val(rb);
                 double add_c = num_val(rc);
-                ra.tag = NUMBER;
-                ra.number = add_b + add_c;
+                ra.set_number(add_b + add_c);
             }
             break;
 
         case Opcode.SUB:
-            if (rb.tag == FASTINT && rc.tag == FASTINT) {
-                long diff = rb.fastint - rc.fastint;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                long diff = rb.get_fastint() - rc.get_fastint();
                 if (diff >= types::FASTINT_MIN && diff <= types::FASTINT_MAX) {
-                    ra.tag = FASTINT;
-                    ra.fastint = diff;
+                    ra.set_fastint(diff);
                 } else {
-                    ra.tag = NUMBER;
-                    ra.number = (double)diff;
+                    ra.set_number((double)diff);
                 }
             } else {
                 double sub_b = num_val(rb);
                 double sub_c = num_val(rc);
-                ra.tag = NUMBER;
-                ra.number = sub_b - sub_c;
+                ra.set_number(sub_b - sub_c);
             }
             break;
 
         case Opcode.MUL:
-            if (rb.tag == FASTINT && rc.tag == FASTINT) {
+            if (rb.is_fastint() && rc.is_fastint()) {
                 // Use 64-bit multiply and check overflow
-                long mul_result = rb.fastint * rc.fastint;
+                long mul_result = rb.get_fastint() * rc.get_fastint();
                 if (mul_result >= types::FASTINT_MIN && mul_result <= types::FASTINT_MAX) {
-                    ra.tag = FASTINT;
-                    ra.fastint = mul_result;
+                    ra.set_fastint(mul_result);
                 } else {
-                    ra.tag = NUMBER;
-                    ra.number = (double)mul_result;
+                    ra.set_number((double)mul_result);
                 }
             } else {
                 double mul_b = num_val(rb);
                 double mul_c = num_val(rc);
-                ra.tag = NUMBER;
-                ra.number = mul_b * mul_c;
+                ra.set_number(mul_b * mul_c);
             }
             break;
 
         case Opcode.DIV: {
             double div_b = num_val(rb);
             double div_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = div_b / div_c;
+            ra.set_number(div_b / div_c);
             break;
         }
 
         case Opcode.MOD:
-            if (rb.tag == FASTINT && rc.tag == FASTINT && rc.fastint != 0) {
-                long mod_result = rb.fastint % rc.fastint;
+            if (rb.is_fastint() && rc.is_fastint() && rc.get_fastint() != 0) {
+                long mod_result = rb.get_fastint() % rc.get_fastint();
                 // Result always fits in FASTINT range
-                ra.tag = FASTINT;
-                ra.fastint = mod_result;
+                ra.set_fastint(mod_result);
             } else {
                 double mod_b = num_val(rb);
                 double mod_c = num_val(rc);
-                ra.tag = NUMBER;
-                ra.number = (mod_b % mod_c);
+                ra.set_number((mod_b % mod_c));
             }
             break;
 
         case Opcode.EXP: {
             double exp_b = num_val(rb);
             double exp_c = num_val(rc);
-            ra.tag = NUMBER;
-            ra.number = math::pow(exp_b, exp_c);
+            ra.set_number(math::pow(exp_b, exp_c));
             break;
         }
 
         // === UNARY ===
 
         case Opcode.UNP:
-            if (rb.tag == FASTINT) {
+            if (rb.is_fastint()) {
                 // Unary + on FASTINT stays FASTINT
-                ra.tag = FASTINT;
-                ra.fastint = rb.fastint;
+                ra.set_fastint(rb.get_fastint());
             } else {
                 double unp_b = num_val(rb);
-                ra.tag = NUMBER;
-                ra.number = unp_b;
+                ra.set_number(unp_b);
             }
             break;
 
         case Opcode.UNM:
-            if (rb.tag == FASTINT) {
+            if (rb.is_fastint()) {
                 // Unary - on FASTINT stays FASTINT (negation always fits)
-                ra.tag = FASTINT;
-                ra.fastint = -rb.fastint;
+                ra.set_fastint(-rb.get_fastint());
             } else {
                 double unm_b = num_val(rb);
-                ra.tag = NUMBER;
-                ra.number = -unm_b;
+                ra.set_number(-unm_b);
             }
             break;
 
         case Opcode.BNOT:
             // Bitwise NOT always produces Int32, always fits in FASTINT
         {
-            int bnot_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(~bnot_b);
+            int bnot_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            ra.set_fastint((long)(~bnot_b));
             break;
         }
 
         case Opcode.LNOT:
-            ra.tag = BOOLEAN;
-            ra.boolean = !is_truthy(rb);
+            ra.set_boolean(!is_truthy(rb));
             break;
 
         case Opcode.TYPEOF: {
             HString* ts = typeof_string(vm, rb);
-            ra.tag = STRING;
-            ra.pointer = ts;
+            ra.set_string(ts);
             break;
         }
 
         case Opcode.VOID:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+            ra.set_undefined();
             break;
 
         // === BITWISE ===
@@ -1339,176 +1297,166 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.BAND:
             // Bitwise ops always produce Int32, always fit in FASTINT
         {
-            int band_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            int band_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(band_b & band_c);
+            int band_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            int band_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(band_b & band_c));
             break;
         }
 
         case Opcode.BOR:
         {
-            int bor_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            int bor_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(bor_b | bor_c);
+            int bor_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            int bor_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(bor_b | bor_c));
             break;
         }
 
         case Opcode.BXOR:
         {
-            int bxor_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            int bxor_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(bxor_b ^ bxor_c);
+            int bxor_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            int bxor_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(bxor_b ^ bxor_c));
             break;
         }
 
         case Opcode.SHL:
         {
-            int shl_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            int shl_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(shl_b << (shl_c & 0x1F));
+            int shl_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            int shl_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             break;
         }
 
         case Opcode.SHR:
         {
-            int shr_b = (rb.tag == FASTINT) ? (int)rb.fastint : (int)rb.number;
-            int shr_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(shr_b >> (shr_c & 0x1F));
+            int shr_b = (rb.is_fastint()) ? (int)rb.get_fastint() : (int)rb.get_number();
+            int shr_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             break;
         }
 
         case Opcode.USHR:
         {
-            uint ushr_b = (rb.tag == FASTINT) ? (uint)rb.fastint : (uint)(int)rb.number;
-            int  ushr_c = (rc.tag == FASTINT) ? (int)rc.fastint : (int)rc.number;
-            ra.tag = FASTINT;
-            ra.fastint = (long)(ushr_b >> (ushr_c & 0x1F));
+            uint ushr_b = (rb.is_fastint()) ? (uint)rb.get_fastint() : (uint)(int)rb.get_number();
+            int  ushr_c = (rc.is_fastint()) ? (int)rc.get_fastint() : (int)rc.get_number();
+            ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             break;
         }
 
         // === COMPARISON ===
 
         case Opcode.EQ:
-            ra.tag = BOOLEAN;
-            ra.boolean = abstract_eq(rb, rc);
+            ra.set_boolean(abstract_eq(rb, rc));
             break;
 
         case Opcode.NEQ:
-            ra.tag = BOOLEAN;
-            ra.boolean = !abstract_eq(rb, rc);
+            ra.set_boolean(!abstract_eq(rb, rc));
             break;
 
         case Opcode.SEQ: {
             bool seq_r = false;
-            if (rb.tag == rc.tag) {
-                switch (rb.tag) {
+            if (rb.get_tag() == rc.get_tag()) {
+                switch (rb.get_tag()) {
                     case UNDEFINED: seq_r = true; break;
                     case NULL_VAL:  seq_r = true; break;
-                    case BOOLEAN:   seq_r = (rb.boolean == rc.boolean); break;
+                    case BOOLEAN:   seq_r = (rb.get_boolean() == rc.get_boolean()); break;
                     case NUMBER:
                         // NaN !== NaN per IEEE 754 / ES spec
-                        if (math::is_nan(rb.number) || math::is_nan(rc.number)) {
+                        if (math::is_nan(rb.get_number()) || math::is_nan(rc.get_number())) {
                             seq_r = false;
                         } else {
-                            seq_r = (rb.number == rc.number);
+                            seq_r = (rb.get_number() == rc.get_number());
                         }
                         break;
-                    case FASTINT:   seq_r = (rb.fastint == rc.fastint); break;
-                    case STRING:    seq_r = (rb.pointer == rc.pointer); break;
-                    case OBJECT:    seq_r = (rb.pointer == rc.pointer); break;
-                    case LIGHTFUNC: seq_r = (rb.pointer == rc.pointer); break;
-                    case POINTER:   seq_r = (rb.pointer == rc.pointer); break;
-                    case BUFFER:    seq_r = (rb.pointer == rc.pointer); break;
+                    case FASTINT:   seq_r = (rb.get_fastint() == rc.get_fastint()); break;
+                    case STRING:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case OBJECT:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case LIGHTFUNC: seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case POINTER:   seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case BUFFER:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
                     default: break;
                 }
-            } else if ((rb.tag == NUMBER && rc.tag == FASTINT) ||
-                       (rb.tag == FASTINT && rc.tag == NUMBER)) {
+            } else if ((rb.is_number() && rc.is_fastint()) ||
+                       (rb.is_fastint() && rc.is_number())) {
                 // NUMBER and FASTINT are the same ES type — compare by value
                 seq_r = (num_val(rb) == num_val(rc));
             }
-            ra.tag = BOOLEAN;
-            ra.boolean = seq_r;
+            ra.set_boolean(seq_r);
             break;
         }
 
         case Opcode.SNEQ: {
             bool sneq_r = true;
-            if (rb.tag == rc.tag) {
-                switch (rb.tag) {
+            if (rb.get_tag() == rc.get_tag()) {
+                switch (rb.get_tag()) {
                     case UNDEFINED: sneq_r = false; break;
                     case NULL_VAL:  sneq_r = false; break;
-                    case BOOLEAN:   sneq_r = (rb.boolean != rc.boolean); break;
+                    case BOOLEAN:   sneq_r = (rb.get_boolean() != rc.get_boolean()); break;
                     case NUMBER:
                         // NaN !== NaN per IEEE 754
-                        if (math::is_nan(rb.number) && math::is_nan(rc.number)) {
+                        if (math::is_nan(rb.get_number()) && math::is_nan(rc.get_number())) {
                             sneq_r = true;  // NaN !== NaN
                         } else {
-                            sneq_r = (rb.number != rc.number);
+                            sneq_r = (rb.get_number() != rc.get_number());
                         }
                         break;
-                    case FASTINT:   sneq_r = (rb.fastint != rc.fastint); break;
-                    case STRING:    sneq_r = (rb.pointer != rc.pointer); break;
-                    case OBJECT:    sneq_r = (rb.pointer != rc.pointer); break;
-                    case LIGHTFUNC: sneq_r = (rb.pointer != rc.pointer); break;
-                    case POINTER:   sneq_r = (rb.pointer != rc.pointer); break;
-                    case BUFFER:    sneq_r = (rb.pointer != rc.pointer); break;
+                    case FASTINT:   sneq_r = (rb.get_fastint() != rc.get_fastint()); break;
+                    case STRING:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case OBJECT:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case LIGHTFUNC: sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case POINTER:   sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case BUFFER:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
                     default: sneq_r = true; break;
                 }
-            } else if ((rb.tag == NUMBER && rc.tag == FASTINT) ||
-                       (rb.tag == FASTINT && rc.tag == NUMBER)) {
+            } else if ((rb.is_number() && rc.is_fastint()) ||
+                       (rb.is_fastint() && rc.is_number())) {
                 sneq_r = (num_val(rb) != num_val(rc));
             }
-            ra.tag = BOOLEAN;
-            ra.boolean = sneq_r;
+            ra.set_boolean(sneq_r);
             break;
         }
 
         case Opcode.LT:
-            ra.tag = BOOLEAN;
-            if (rb.tag == STRING && rc.tag == STRING) {
-                ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) < 0);
-            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
-                ra.boolean = (rb.fastint < rc.fastint);
+            ra.set_boolean(false);
+            if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0));
+            } else if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean((rb.get_fastint() < rc.get_fastint()));
             } else {
-                ra.boolean = (num_val(rb) < num_val(rc));
+                ra.set_boolean((num_val(rb) < num_val(rc)));
             }
             break;
 
         case Opcode.LE:
-            ra.tag = BOOLEAN;
-            if (rb.tag == STRING && rc.tag == STRING) {
-                ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) <= 0);
-            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
-                ra.boolean = (rb.fastint <= rc.fastint);
+            ra.set_boolean(false);
+            if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0));
+            } else if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean((rb.get_fastint() <= rc.get_fastint()));
             } else {
-                ra.boolean = (num_val(rb) <= num_val(rc));
+                ra.set_boolean((num_val(rb) <= num_val(rc)));
             }
             break;
 
         case Opcode.GT:
-            ra.tag = BOOLEAN;
-            if (rb.tag == STRING && rc.tag == STRING) {
-                ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) > 0);
-            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
-                ra.boolean = (rb.fastint > rc.fastint);
+            ra.set_boolean(false);
+            if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0));
+            } else if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean((rb.get_fastint() > rc.get_fastint()));
             } else {
-                ra.boolean = (num_val(rb) > num_val(rc));
+                ra.set_boolean((num_val(rb) > num_val(rc)));
             }
             break;
 
         case Opcode.GE:
-            ra.tag = BOOLEAN;
-            if (rb.tag == STRING && rc.tag == STRING) {
-                ra.boolean = (hstring::hstring_compare((HString*)rb.pointer, (HString*)rc.pointer) >= 0);
-            } else if (rb.tag == FASTINT && rc.tag == FASTINT) {
-                ra.boolean = (rb.fastint >= rc.fastint);
+            ra.set_boolean(false);
+            if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0));
+            } else if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean((rb.get_fastint() >= rc.get_fastint()));
             } else {
-                ra.boolean = (num_val(rb) >= num_val(rc));
+                ra.set_boolean((num_val(rb) >= num_val(rc)));
             }
             break;
 
@@ -1518,13 +1466,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Right side must be callable (has [[HasInstance]])
             // [[HasInstance]] §15.3.5.3: if Type(lval) is not Object → false
             //   Get rval.prototype, walk lval's prototype chain
-            ra.tag = BOOLEAN;
-            ra.boolean = false;
+            ra.set_boolean(false);
 
             TVal rval = *rc;
-            if (rval.tag == LIGHTFUNC) {
+            if (rval.is_lightfunc()) {
                 // LIGHTFUNC builtins are callable; look up their prototype
-                uint fn_idx = (uint)rval.fastint;
+                uint fn_idx = (uint)(usz)rval.get_heapptr();
                 HObject* proto_obj = null;
                 switch (fn_idx) {
                     case 6:  proto_obj = vm.heap.err_proto;         break; // BUILTIN_ERROR
@@ -1539,13 +1486,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     case 25: proto_obj = vm.heap.array_proto;       break; // BUILTIN_ARRAY
                     default: break;
                 }
-                if (proto_obj != null && rb.tag == OBJECT) {
-                    HObject* cur = (HObject*)rb.pointer;
+                if (proto_obj != null && rb.is_object()) {
+                    HObject* cur = (HObject*)rb.get_heapptr();
                     const uint MAX_PROTO_DEPTH = 256;
                     uint depth = 0;
                     while (cur != null && depth < MAX_PROTO_DEPTH) {
                         if (cur == proto_obj) {
-                            ra.boolean = true;
+                            ra.set_boolean(true);
                             break;
                         }
                         cur = cur.prototype;
@@ -1555,7 +1502,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            if (rval.tag != OBJECT) {
+            if (!rval.is_object()) {
                 // TypeError: right-hand side must be an object
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
@@ -1563,12 +1510,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     HString* msg_key = intern_string(vm, "message");
                     HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not an object");
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_val;
+                    msg_tv.set_string(msg_val);
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -1578,7 +1523,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            HObject* rfunc = (HObject*)rval.pointer;
+            HObject* rfunc = (HObject*)rval.get_heapptr();
             if (rfunc == null || !rfunc.is_callable()) {
                 // TypeError: right-hand side must be callable
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -1587,12 +1532,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     HString* msg_key = intern_string(vm, "message");
                     HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not callable");
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_val;
+                    msg_tv.set_string(msg_val);
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -1603,27 +1546,27 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             // §15.3.5.3 step 1: If Type(lval) is not Object → false
-            if (rb.tag != OBJECT) {
+            if (!rb.is_object()) {
                 break;
             }
 
             // Get rval.prototype
             HString* proto_key_str = intern_string(vm, "prototype");
             TVal proto_val = get_prop_with_proto(rfunc, proto_key_str);
-            if (proto_val.tag != OBJECT) {
+            if (!proto_val.is_object()) {
                 // ES5 §15.3.5.3 step 3: If Type(O) is not Object, throw a TypeError.
                 // But gracefully handle missing .prototype by returning false.
-                ra.boolean = false;
+                ra.set_boolean(false);
                 break;
             }
 
-            HObject* proto_obj = (HObject*)proto_val.pointer;
-            HObject* cur = (HObject*)rb.pointer;
+            HObject* proto_obj = (HObject*)proto_val.get_heapptr();
+            HObject* cur = (HObject*)rb.get_heapptr();
             const uint MAX_PROTO_DEPTH = 256;
             uint depth = 0;
             while (cur != null && depth < MAX_PROTO_DEPTH) {
                 if (cur == proto_obj) {
-                    ra.boolean = true;
+                    ra.set_boolean(true);
                     break;
                 }
                 cur = cur.prototype;
@@ -1637,22 +1580,19 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Right side must be an object; TypeError otherwise.
             // Returns true if the object has a property with the given name
             // (own or inherited — check via [[HasProperty]]).
-            ra.tag = BOOLEAN;
-            ra.boolean = false;
+            ra.set_boolean(false);
 
-            if (rc.tag != OBJECT) {
+            if (!rc.is_object()) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
                     HString* msg_key = intern_string(vm, "message");
                     HString* msg_val = intern_string(vm, "in requires an object");
                     TVal msg_tv;
-                    msg_tv.tag = STRING;
-                    msg_tv.pointer = msg_val;
+                    msg_tv.set_string(msg_val);
                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -1662,10 +1602,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            HObject* obj = (HObject*)rc.pointer;
+            HObject* obj = (HObject*)rc.get_heapptr();
             void* key = get_prop_key(vm, rb);
             if (key != null) {
-                ra.boolean = obj.has_prop_proto(key);
+                ra.set_boolean(obj.has_prop_proto(key));
             }
             break;
         }
@@ -1701,8 +1641,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         // === PROPERTY ACCESS ===
 
         case Opcode.GETPROP:
-            if (rb.tag == OBJECT) {
-                HObject* hobj = (HObject*)rb.pointer;
+            if (rb.is_object()) {
+                HObject* hobj = (HObject*)rb.get_heapptr();
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
                     // Single-pass: check accessor and data property in one chain walk
@@ -1711,8 +1651,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     hobject::PropLookupKind kind = hobj.get_prop_or_accessor_proto(key, true, &acc, &data_val);
                     if (kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                         TVal obj_val;
-                        obj_val.tag = OBJECT;
-                        obj_val.pointer = hobj;
+                        obj_val.set_object(hobj);
                         if (invoke_getter(vm, &acc, &obj_val, (uint)insn.a,
                                           act, &curr_pc, &needs_restart, regs_base)) {
                             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
@@ -1723,18 +1662,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     } else if (kind == hobject::PropLookupKind.PROP_DATA) {
                         *ra = data_val;
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
-            } else if (rb.tag == NULL_VAL || rb.tag == UNDEFINED) {
+            } else if (rb.is_null() || rb.is_undefined()) {
                 // TypeError: Cannot read properties of null/undefined
                 HString* name_hstr = null;
-                if (rc.tag == STRING) {
-                    name_hstr = (HString*)rc.pointer;
+                if (rc.is_string()) {
+                    name_hstr = (HString*)rc.get_heapptr();
                 }
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
@@ -1742,29 +1679,27 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     char[160] buf;
                     if (name_hstr != null) {
                         int len = libc::snprintf(&buf, 160, "Cannot read properties of %s (reading '%s')",
-                                                 (rb.tag == NULL_VAL ? "null" : "undefined"),
+                                                 (rb.is_null() ? "null" : "undefined"),
                                                  name_hstr.get_cstr());
                         if (len > 0 && len < 160) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
-                            msg_val.tag = STRING;
-                            msg_val.pointer = msg_str;
+                            msg_val.set_string(msg_str);
                             HString* msg_key = intern_string(vm, "message");
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
                 } else {
                     return VM_ERROR~;
                 }
-            } else if (rb.tag == STRING) {
+            } else if (rb.is_string()) {
                 // Check if this is a Symbol (0xFF-prefixed string)
-                HString* h_str = (HString*)rb.pointer;
+                HString* h_str = (HString*)rb.get_heapptr();
                 if (h_str != null && h_str.is_symbol() && vm.heap.symbol_proto != null) {
                     // Auto-box symbol primitive: walk Symbol.prototype chain
                     HString* key = get_prop_key(vm, rc);
@@ -1773,12 +1708,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (try v = result) {
                             *ra = v;
                         } else {
-                            ra.tag = UNDEFINED;
-                            ra.pointer = null;
+                            ra.set_undefined();
                         }
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
                     // Auto-box string primitive: walk String.prototype chain
@@ -1788,15 +1721,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (try v = result) {
                             *ra = v;
                         } else {
-                            ra.tag = UNDEFINED;
-                            ra.pointer = null;
+                            ra.set_undefined();
                         }
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 }
-            } else if (rb.tag == NUMBER || rb.tag == FASTINT) {
+            } else if (rb.is_number() || rb.is_fastint()) {
                 // Auto-box number primitive: walk Number.prototype chain
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.number_proto != null) {
@@ -1804,14 +1735,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (try v = result) {
                         *ra = v;
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
-            } else if (rb.tag == BOOLEAN) {
+            } else if (rb.is_boolean()) {
                 // Auto-box boolean primitive: walk Boolean.prototype chain
                 HString* key = get_prop_key(vm, rc);
                 if (key != null && vm.heap.bool_proto != null) {
@@ -1819,22 +1748,19 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (try v = result) {
                         *ra = v;
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
 
         case Opcode.PUTPROP:
-            if (ra.tag == OBJECT) {
-                HObject* hobj = (HObject*)ra.pointer;
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
                 if (key != null) {
                     // Save the value before ensure_valstack may reallocate
@@ -1842,9 +1768,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                     // Check for setter on prototype chain
                     hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
-                    if (acc.found && acc.accessor_fn.tag == OBJECT && acc.accessor_fn.pointer != null) {
+                    if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
                         // Invoke setter: this=obj, arg=value
-                        HObject* setter_obj = (HObject*)acc.accessor_fn.pointer;
+                        HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
                         if (setter_obj.is_callable() && setter_obj.comp_func != null) {
                             CompiledFunction* target = setter_obj.comp_func;
 
@@ -1858,8 +1784,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                                 caller_regs[callee_reg] = acc.accessor_fn;
                                 TVal obj_tv;
-                                obj_tv.tag = OBJECT;
-                                obj_tv.pointer = acc.this_obj;
+                                obj_tv.set_object(acc.this_obj);
                                 caller_regs[callee_reg + 1] = obj_tv;
                                 caller_regs[callee_reg + 2] = put_val;
 
@@ -1906,12 +1831,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                     HString* msg_key = intern_string(vm, "message");
                                     HString* msg_val = intern_string(vm, "Cannot assign to read only property");
                                     TVal msg_tv;
-                                    msg_tv.tag = STRING;
-                                    msg_tv.pointer = msg_val;
+                                    msg_tv.set_string(msg_val);
                                     err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                                     TVal err_val;
-                                    err_val.tag = OBJECT;
-                                    err_val.pointer = err;
+                                    err_val.set_object(err);
                                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                         return VM_ERROR~;
                                     }
@@ -1932,11 +1855,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                     }
                 }
-            } else if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
+            } else if (ra.is_null() || ra.is_undefined()) {
                 // TypeError: Cannot set properties of null/undefined
                 HString* name_hstr = null;
-                if (rb.tag == STRING) {
-                    name_hstr = (HString*)rb.pointer;
+                if (rb.is_string()) {
+                    name_hstr = (HString*)rb.get_heapptr();
                 }
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
@@ -1944,20 +1867,18 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     char[160] buf;
                     if (name_hstr != null) {
                         int len = libc::snprintf(&buf, 160, "Cannot set properties of %s (setting '%s')",
-                                                 (ra.tag == NULL_VAL ? "null" : "undefined"),
+                                                 (ra.is_null() ? "null" : "undefined"),
                                                  name_hstr.get_cstr());
                         if (len > 0 && len < 160) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
-                            msg_val.tag = STRING;
-                            msg_val.pointer = msg_str;
+                            msg_val.set_string(msg_str);
                             HString* msg_key = intern_string(vm, "message");
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -1972,14 +1893,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // A = delete B[C], where B = object, C = property key
             // Returns boolean: true if deleted or not found,
             // false if the property exists and is non-configurable.
-            ra.tag = BOOLEAN;
-            ra.boolean = true;
+            ra.set_boolean(true);
 
-            if (rb.tag == OBJECT) {
-                HObject* hobj = (HObject*)rb.pointer;
+            if (rb.is_object()) {
+                HObject* hobj = (HObject*)rb.get_heapptr();
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    ra.boolean = hobj.es_delete_prop(key);
+                    ra.set_boolean(hobj.es_delete_prop(key));
                 }
             }
             // For null, undefined, and other primitives:
@@ -1993,11 +1913,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             HObject*? new_obj = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (try o = new_obj) {
                 o.prototype = vm.heap.object_proto;
-                ra.tag = OBJECT;
-                ra.pointer = o;
+                ra.set_object(o);
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -2006,11 +1924,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             HObject*? new_arr = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (try a = new_arr) {
                 a.prototype = vm.heap.array_proto;
-                ra.tag = OBJECT;
-                ra.pointer = a;
+                ra.set_object(a);
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -2020,8 +1936,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal raw_tv = constants[bc];
-                if (raw_tv.tag == STRING) {
-                    HString* raw_hs = (HString*)raw_tv.pointer;
+                if (raw_tv.is_string()) {
+                    HString* raw_hs = (HString*)raw_tv.get_heapptr();
                     char[] raw = raw_hs.get_data();
                     usz len = raw.len;
 
@@ -2078,41 +1994,33 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 obj.regexp_data = compiled;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.primitive_value.tag = STRING;
-                                obj.primitive_value.pointer = pattern_hs;
+                                obj.primitive_value.set_string(pattern_hs);
                                 // Set instance properties (ES5 §15.10.7)
                                 HString* source_key = intern_string(vm, "source");
                                 TVal source_tv;
-                                source_tv.tag = STRING;
-                                source_tv.pointer = pattern_hs;
+                                source_tv.set_string(pattern_hs);
                                 obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
                                 HString* global_key = intern_string(vm, "global");
                                 TVal global_tv;
-                                global_tv.tag = BOOLEAN;
-                                global_tv.boolean = (js_flags & 1) != 0;
+                                global_tv.set_boolean((js_flags & 1) != 0);
                                 obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
                                 HString* ignorecase_key = intern_string(vm, "ignoreCase");
                                 TVal ignorecase_tv;
-                                ignorecase_tv.tag = BOOLEAN;
-                                ignorecase_tv.boolean = (js_flags & 2) != 0;
+                                ignorecase_tv.set_boolean((js_flags & 2) != 0);
                                 obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
                                 HString* multiline_key = intern_string(vm, "multiline");
                                 TVal multiline_tv;
-                                multiline_tv.tag = BOOLEAN;
-                                multiline_tv.boolean = (js_flags & 4) != 0;
+                                multiline_tv.set_boolean((js_flags & 4) != 0);
                                 obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
                                 HString* lastindex_key = intern_string(vm, "lastIndex");
                                 TVal lastindex_tv;
-                                lastindex_tv.tag = FASTINT;
-                                lastindex_tv.fastint = 0;
+                                lastindex_tv.set_fastint(0);
                                 obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
-                                ra.tag = OBJECT;
-                                ra.pointer = obj;
+                                ra.set_object(obj);
                             } else {
                                 // If alloc failed, free the compiled regexp
                                 re_bindings::re_free(compiled);
-                                ra.tag = UNDEFINED;
-                                ra.pointer = null;
+                                ra.set_undefined();
                             }
                         } else {
                             // re_compile failed — still create an empty regexp object
@@ -2122,39 +2030,32 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 obj.prototype = vm.heap.regexp_proto;
                                 obj.regexp_data = null;
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.primitive_value.tag = STRING;
-                                obj.primitive_value.pointer = pattern_hs;
-                                ra.tag = OBJECT;
-                                ra.pointer = obj;
+                                obj.primitive_value.set_string(pattern_hs);
+                                ra.set_object(obj);
                             } else {
-                                ra.tag = UNDEFINED;
-                                ra.pointer = null;
+                                ra.set_undefined();
                             }
                         }
                     } else {
-                        ra.tag = UNDEFINED;
-                        ra.pointer = null;
+                        ra.set_undefined();
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
 
         case Opcode.SETALEN: {
             // A = array register, BC = element count (high-water mark)
-            if (ra.tag == OBJECT) {
-                HObject* hobj = (HObject*)ra.pointer;
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
                 uint count = insn.get_bc();
                 HString* len_str = intern_string(vm, "length");
                 TVal len_val;
-                len_val.tag = FASTINT;
-                len_val.fastint = (long)count;
+                len_val.set_fastint((long)count);
                 hobj.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
             }
             break;
@@ -2162,26 +2063,26 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.ARRSPRD: {
             // A = target array reg, B = index reg (in/out), C = source array reg
-            if (ra.tag == OBJECT && rc.tag == OBJECT) {
-                HObject* target = (HObject*)ra.pointer;
-                HObject* source = (HObject*)rc.pointer;
+            if (ra.is_object() && rc.is_object()) {
+                HObject* target = (HObject*)ra.get_heapptr();
+                HObject* source = (HObject*)rc.get_heapptr();
                 if (source != null) {
                     // Get source .length
                     HString* len_key = intern_string(vm, "length");
                     TVal len_tv = get_prop_with_proto(source, len_key);
                     long src_len = 0;
-                    if (len_tv.tag == FASTINT) {
-                        src_len = len_tv.fastint;
-                    } else if (len_tv.tag == NUMBER) {
-                        src_len = (long)len_tv.number;
+                    if (len_tv.is_fastint()) {
+                        src_len = len_tv.get_fastint();
+                    } else if (len_tv.is_number()) {
+                        src_len = (long)len_tv.get_number();
                     }
 
                     // Get current index
                     long idx = 0;
-                    if (rb.tag == FASTINT) {
-                        idx = rb.fastint;
-                    } else if (rb.tag == NUMBER) {
-                        idx = (long)rb.number;
+                    if (rb.is_fastint()) {
+                        idx = rb.get_fastint();
+                    } else if (rb.is_number()) {
+                        idx = (long)rb.get_number();
                     }
 
                     // Copy elements
@@ -2205,8 +2106,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     }
 
                     // Update index register
-                    rb.tag = FASTINT;
-                    rb.fastint = idx + src_len;
+                    rb.set_fastint(idx + src_len);
                 }
             }
             break;
@@ -2214,17 +2114,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.SPREAD_ARG: {
             // A = dest start reg, B = count out reg, C = source array reg
-            if (rc.tag == OBJECT) {
-                HObject* source = (HObject*)rc.pointer;
+            if (rc.is_object()) {
+                HObject* source = (HObject*)rc.get_heapptr();
                 if (source != null) {
                     // Get source .length
                     HString* len_key = intern_string(vm, "length");
                     TVal len_tv = get_prop_with_proto(source, len_key);
                     long src_len = 0;
-                    if (len_tv.tag == FASTINT) {
-                        src_len = len_tv.fastint;
-                    } else if (len_tv.tag == NUMBER) {
-                        src_len = (long)len_tv.number;
+                    if (len_tv.is_fastint()) {
+                        src_len = len_tv.get_fastint();
+                    } else if (len_tv.is_number()) {
+                        src_len = (long)len_tv.get_number();
                     }
 
                     uint dest_start = insn.a;
@@ -2239,27 +2139,23 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             HString* src_key = intern_string(vm, jbuf[:jlen]);
                             if (src_key != null) {
                                 TVal elem = get_prop_with_proto(source, src_key);
-                                dest_slot.tag = elem.tag;
-                                dest_slot.fastint = elem.fastint;
-                                dest_slot.number = elem.number;
-                                dest_slot.pointer = elem.pointer;
+                                dest_slot.set_fastint(elem.get_fastint());
+                                dest_slot.set_number(elem.get_number());
+                                dest_slot.set_object(elem.get_heapptr());
                             } else {
-                                dest_slot.tag = UNDEFINED;
-                                dest_slot.pointer = null;
+                                dest_slot.set_undefined();
                             }
                         }
                     }
 
                     // Store count in output register
                     TVal* count_slot = regs_base + count_reg;
-                    count_slot.tag = FASTINT;
-                    count_slot.fastint = src_len;
+                    count_slot.set_fastint(src_len);
                 }
             } else {
                 // Non-object: spread 0 elements, store 0
                 TVal* count_slot = regs_base + insn.b;
-                count_slot.tag = FASTINT;
-                count_slot.fastint = 0;
+                count_slot.set_fastint(0);
             }
             break;
         }
@@ -2279,10 +2175,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (op == Opcode.CALL_S) {
                 // Read nargs from the register at index C
                 TVal* nargs_slot = regs_base + insn.c;
-                if (nargs_slot.tag == FASTINT) {
-                    nargs = (uint)nargs_slot.fastint;
-                } else if (nargs_slot.tag == NUMBER) {
-                    nargs = (uint)nargs_slot.number;
+                if (nargs_slot.is_fastint()) {
+                    nargs = (uint)nargs_slot.get_fastint();
+                } else if (nargs_slot.is_number()) {
+                    nargs = (uint)nargs_slot.get_number();
                 } else {
                     nargs = 0;
                 }
@@ -2293,8 +2189,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal* func_slot = regs_base + callee_reg;
             TVal func_val = *func_slot;
 
-            if (func_val.tag == LIGHTFUNC) {
-                uint fn_idx = (uint)func_val.fastint;
+            if (func_val.is_lightfunc()) {
+                uint fn_idx = (uint)(usz)func_val.get_heapptr();
 
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
@@ -2329,7 +2225,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
             }
 
-            if (func_val.tag != OBJECT) {
+            if (!func_val.is_object()) {
                 // TypeError: value is not a function
                 HString* type_str = typeof_string(vm, &func_val);
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -2341,14 +2237,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -2359,7 +2253,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             // === OBJECT CALL HANDLING ===
-            HObject* hobj = (HObject*)func_val.pointer;
+            HObject* hobj = (HObject*)func_val.get_heapptr();
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not callable (e.g., a non-function object)
                 HString* type_str = typeof_string(vm, &func_val);
@@ -2372,14 +2266,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
-                    err_val2.tag = OBJECT;
-                    err_val2.pointer = err2;
+                    err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -2418,7 +2310,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (ctx.needs_re_dispatch) {
                         // Re-dispatch from bound function: re-read target from stack
                         func_val = regs_base[callee_reg];
-                        hobj = (HObject*)func_val.pointer;
+                        hobj = (HObject*)func_val.get_heapptr();
                         nargs = ctx.re_nargs;
                         // Only support re-dispatch to compiled functions from here;
                         // if the target is another builtin, just break
@@ -2442,14 +2334,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (len > 0 && len < 160) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
-                            msg_val.tag = STRING;
-                            msg_val.pointer = msg_str;
+                            msg_val.set_string(msg_str);
                             HString* msg_key = intern_string(vm, "message");
                             err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                         TVal err_val2;
-                        err_val2.tag = OBJECT;
-                        err_val2.pointer = err2;
+                        err_val2.set_object(err2);
                         if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
                             return VM_ERROR~;
                         }
@@ -2470,8 +2360,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                     if (gs.state == GEN_COMPLETED) {
                         vm.heap.resume_gen = null;
-                        regs_base[result_reg].tag = UNDEFINED;
-                        regs_base[result_reg].pointer = null;
+                        regs_base[result_reg].set_undefined();
                         break;
                     }
 
@@ -2485,8 +2374,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                     if (!ensure_valstack(vm, needed_r)) {
                         gs.state = GEN_SUSPENDED_YIELD;
-                        regs_base[result_reg].tag = UNDEFINED;
-                        regs_base[result_reg].pointer = null;
+                        regs_base[result_reg].set_undefined();
                         break;
                     }
 
@@ -2494,8 +2382,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                     if (vm.activation_count >= MAX_CALLS) {
                         gs.state = GEN_SUSPENDED_YIELD;
-                        regs_base[result_reg].tag = UNDEFINED;
-                        regs_base[result_reg].pointer = null;
+                        regs_base[result_reg].set_undefined();
                         break;
                     }
 
@@ -2536,8 +2423,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 uint needed = new_bottom_idx + target.num_regs;
 
                 if (!ensure_valstack(vm, needed)) {
-                    regs_base[result_reg].tag = UNDEFINED;
-                    regs_base[result_reg].pointer = null;
+                    regs_base[result_reg].set_undefined();
                     break;
                 }
 
@@ -2546,8 +2432,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 // Allocate GeneratorState
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
                 if (gs_raw == null) {
-                    regs_base[result_reg].tag = UNDEFINED;
-                    regs_base[result_reg].pointer = null;
+                    regs_base[result_reg].set_undefined();
                     break;
                 }
                 GeneratorState* gs = (GeneratorState*)gs_raw;
@@ -2566,8 +2451,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 void* regs_raw = vm.heap.alloc_func(vm.heap.heap_udata, regs_bytes);
                 if (regs_raw == null) {
                     vm.heap.free_func(vm.heap.heap_udata, gs_raw);
-                    regs_base[result_reg].tag = UNDEFINED;
-                    regs_base[result_reg].pointer = null;
+                    regs_base[result_reg].set_undefined();
                     break;
                 }
                 gs.saved_regs = (TVal*)regs_raw;
@@ -2584,8 +2468,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
                 for (uint i = copy_count; i < target.num_regs; i++) {
                     base[i].set_undefined();
-                    gs.saved_regs[i].tag = UNDEFINED;
-                    gs.saved_regs[i].pointer = null;
+                    gs.saved_regs[i].set_undefined();
                 }
 
                 // Handle rest parameter: build rest array and store in saved_regs
@@ -2608,14 +2491,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                         HString* len_str = intern_string(vm, "length");
                         TVal len_val;
-                        len_val.tag = FASTINT;
-                        len_val.fastint = (long)overflow;
+                        len_val.set_fastint((long)overflow);
                         a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
 
-                        base[rest_idx].tag = OBJECT;
-                        base[rest_idx].pointer = a;
-                        gs.saved_regs[rest_idx].tag = OBJECT;
-                        gs.saved_regs[rest_idx].pointer = a;
+                        base[rest_idx].set_object(a);
+                        gs.saved_regs[rest_idx].set_object(a);
                     }
                 }
 
@@ -2627,8 +2507,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 } else {
                     vm.heap.free_func(vm.heap.heap_udata, gs.saved_regs);
                     vm.heap.free_func(vm.heap.heap_udata, gs_raw);
-                    regs_base[result_reg].tag = UNDEFINED;
-                    regs_base[result_reg].pointer = null;
+                    regs_base[result_reg].set_undefined();
                     break;
                 }
                 gen_obj.prototype = vm.heap.generator_proto;
@@ -2636,8 +2515,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                 // Return generator object as the call result
                 TVal* result_slot = regs_base + result_reg;
-                result_slot.tag = OBJECT;
-                result_slot.pointer = gen_obj;
+                result_slot.set_object(gen_obj);
                 break;
             }
 
@@ -2648,16 +2526,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint needed = new_bottom_idx + target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
+                regs_base[result_reg].set_undefined();
                 break;
             }
 
             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
 
             if (vm.activation_count >= MAX_CALLS) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
+                regs_base[result_reg].set_undefined();
                 break;
             }
 
@@ -2715,15 +2591,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Set .length
                     HString* len_str = intern_string(vm, "length");
                     TVal len_val;
-                    len_val.tag = FASTINT;
-                    len_val.fastint = (long)overflow;
+                    len_val.set_fastint((long)overflow);
                     a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
 
-                    new_regs[rest_idx].tag = OBJECT;
-                    new_regs[rest_idx].pointer = a;
+                    new_regs[rest_idx].set_object(a);
                 } else {
-                    new_regs[rest_idx].tag = UNDEFINED;
-                    new_regs[rest_idx].pointer = null;
+                    new_regs[rest_idx].set_undefined();
                 }
 
                 // Fill remaining registers with UNDEFINED (after the rest param)
@@ -2761,19 +2634,18 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         }
 
         case Opcode.CALL_PROP:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+            ra.set_undefined();
             break;
 
         case Opcode.SETPROTO: {
             // A.[[Prototype]] = B
             // ABC format: A=obj_reg, B=proto_reg
-            if (ra.tag != OBJECT || rb.tag != OBJECT) {
+            if (!ra.is_object() || !rb.is_object()) {
                 // Non-object operands — silently ignore or error
                 break;
             }
-            HObject* obj = (HObject*)ra.pointer;
-            HObject* proto = (HObject*)rb.pointer;
+            HObject* obj = (HObject*)ra.get_heapptr();
+            HObject* proto = (HObject*)rb.get_heapptr();
             if (obj != null && proto != null) {
                 obj.prototype = proto;
             }
@@ -2790,7 +2662,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal* super_slot = regs_base + callee_reg;
             TVal super_val = *super_slot;
 
-            if (super_val.tag != OBJECT) {
+            if (!super_val.is_object()) {
                 // TypeError: superclass is not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -2802,14 +2674,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -2817,7 +2687,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            HObject* super_hobj = (HObject*)super_val.pointer;
+            HObject* super_hobj = (HObject*)super_val.get_heapptr();
             if (super_hobj == null || !super_hobj.is_callable()) {
                 // TypeError: not callable
                 HString* type_str = typeof_string(vm, &super_val);
@@ -2830,14 +2700,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len2 > 0 && len2 < 160) {
                         HString* msg_str = intern_string(vm, buf[:len2]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
-                    err_val2.tag = OBJECT;
-                    err_val2.pointer = err2;
+                    err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -2851,8 +2719,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 // Not in a constructor — new.target is undefined
                 // Fall back to simple call behavior
                 // This shouldn't normally happen since super() is only valid in constructors
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
                 break;
             }
 
@@ -2887,16 +2754,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint needed = new_bottom_idx + super_target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
                 break;
             }
 
             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
 
             if (vm.activation_count >= MAX_CALLS) {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
                 break;
             }
 
@@ -2946,16 +2811,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Set .length
                     HString* len_key = intern_string(vm, "length");
                     TVal len_val;
-                    len_val.tag = FASTINT;
-                    new_regs[rest_idx].tag = OBJECT;
-                    new_regs[rest_idx].pointer = rest_obj;
+                    len_val.set_fastint(0);
+                    new_regs[rest_idx].set_object(rest_obj);
                 } else {
-                    new_regs[rest_idx].tag = UNDEFINED;
-                    new_regs[rest_idx].pointer = null;
+                    new_regs[rest_idx].set_undefined();
                 }
                 for (uint i = copy_count + 1; i < new_nregs; i++) {
-                    new_regs[i].tag = UNDEFINED;
-                    new_regs[i].pointer = null;
+                    new_regs[i].set_undefined();
                 }
             } else {
                 for (uint i = 0; i < nargs && i < new_nregs; i++) {
@@ -2977,11 +2839,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // A = new.target
             HObject* nt = act.new_target;
             if (nt != null) {
-                ra.tag = OBJECT;
-                ra.pointer = nt;
+                ra.set_object(nt);
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -2996,8 +2856,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal func_val = *func_slot;
 
             // Handle lightfunc built-in constructors (Error, TypeError, etc.)
-            if (func_val.tag == LIGHTFUNC) {
-                uint fn_idx = (uint)func_val.fastint;
+            if (func_val.is_lightfunc()) {
+                uint fn_idx = (uint)(usz)func_val.get_heapptr();
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
@@ -3021,7 +2881,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            if (func_val.tag != OBJECT) {
+            if (!func_val.is_object()) {
                 // TypeError: value is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -3033,14 +2893,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -3050,7 +2908,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 break;
             }
 
-            HObject* hobj = (HObject*)func_val.pointer;
+            HObject* hobj = (HObject*)func_val.get_heapptr();
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
@@ -3063,14 +2921,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
-                    err_val2.tag = OBJECT;
-                    err_val2.pointer = err2;
+                    err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -3118,14 +2974,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
-                    err_val2.tag = OBJECT;
-                    err_val2.pointer = err2;
+                    err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -3149,14 +3003,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (len > 0 && len < 160) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         HString* msg_key = intern_string(vm, "message");
                         err3.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val3;
-                    err_val3.tag = OBJECT;
-                    err_val3.pointer = err3;
+                    err_val3.set_object(err3);
                     if (!vm_throw_value(vm, err_val3, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -3169,8 +3021,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Step 1: Create new object
             HObject*? new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (catch err = new_obj_raw) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
+                regs_base[result_reg].set_undefined();
                 break;
             }
             HObject* new_obj = new_obj_raw;
@@ -3179,23 +3030,21 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             HString* proto_key = intern_string(vm, "prototype");
             TVal? proto_val = hobj.get_prop_proto(proto_key);
             if (try pv = proto_val) {
-                if (pv.tag == OBJECT && pv.pointer != null) {
-                    new_obj.prototype = (HObject*)pv.pointer;
+                if (pv.is_object() && pv.get_heapptr() != null) {
+                    new_obj.prototype = (HObject*)pv.get_heapptr();
                 }
             }
 
             // Step 3: Place new object in this-slot
             TVal this_tval;
-            this_tval.tag = OBJECT;
-            this_tval.pointer = new_obj;
+            this_tval.set_object(new_obj);
             regs_base[callee_reg + 1] = this_tval;
             uint frame_start = callee_reg + 2;
             uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
             uint needed = new_bottom_idx + target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
+                regs_base[result_reg].set_undefined();
                 break;
             }
 
@@ -3203,8 +3052,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             func_slot = regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
-                regs_base[result_reg].tag = UNDEFINED;
-                regs_base[result_reg].pointer = null;
+                regs_base[result_reg].set_undefined();
                 break;
             }
 
@@ -3254,15 +3102,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     }
                     HString* len_str2 = intern_string(vm, "length");
                     TVal len_val2;
-                    len_val2.tag = FASTINT;
-                    len_val2.fastint = (long)overflow;
+                    len_val2.set_fastint((long)overflow);
                     a2.put_prop(len_str2, len_val2, hobject::PROP_FLAGS_WEC);
 
-                    new_regs2[rest_idx].tag = OBJECT;
-                    new_regs2[rest_idx].pointer = a2;
+                    new_regs2[rest_idx].set_object(a2);
                 } else {
-                    new_regs2[rest_idx].tag = UNDEFINED;
-                    new_regs2[rest_idx].pointer = null;
+                    new_regs2[rest_idx].set_undefined();
                 }
 
                 if (rest_idx + 1 < new_nregs2) {
@@ -3446,11 +3291,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (val_key != null) robj.put_prop(val_key, gs.return_value, hobject::PROP_FLAGS_WEC);
                         HString* done_key = intern_string(vm, "done");
                         TVal done_val;
-                        done_val.tag = BOOLEAN;
-                        done_val.boolean = true;
+                        done_val.set_boolean(true);
                         if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-                        wrapped_val.tag = OBJECT;
-                        wrapped_val.pointer = robj;
+                        wrapped_val.set_object(robj);
                     } else {
                         wrapped_val = gs.return_value;
                     }
@@ -3497,11 +3340,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (val_key != null) robj.put_prop(val_key, vm.heap.yield_value, hobject::PROP_FLAGS_WEC);
                     HString* done_key = intern_string(vm, "done");
                     TVal done_val;
-                    done_val.tag = BOOLEAN;
-                    done_val.boolean = false;
+                    done_val.set_boolean(false);
                     if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-                    wrapped_val.tag = OBJECT;
-                    wrapped_val.pointer = robj;
+                    wrapped_val.set_object(robj);
                 } else {
                     wrapped_val = vm.heap.yield_value;
                 }
@@ -3554,11 +3395,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     if (val_key != null) robj.put_prop(val_key, ra[0], hobject::PROP_FLAGS_WEC);
                     HString* done_key = intern_string(vm, "done");
                     TVal done_val;
-                    done_val.tag = BOOLEAN;
-                    done_val.boolean = true;
+                    done_val.set_boolean(true);
                     if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-                    wrapped_val.tag = OBJECT;
-                    wrapped_val.pointer = robj;
+                    wrapped_val.set_object(robj);
                 } else {
                     wrapped_val = ra[0];
                 }
@@ -3601,8 +3440,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.RETUNDEF: {
             TVal undef_val;
-            undef_val.tag = UNDEFINED;
-            undef_val.pointer = null;
+            undef_val.set_undefined();
 
             // If we're in a generator, mark as completed
             if (vm.heap.resume_gen != null) {
@@ -3655,8 +3493,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
                     bool found = false;
 
                     // Search lexical environment first (for let/const bindings)
@@ -3674,14 +3512,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 if (len > 0 && len < 160) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
-                                    msg_val.tag = STRING;
-                                    msg_val.pointer = msg_str;
+                                    msg_val.set_string(msg_str);
                                     HString* msg_key = intern_string(vm, "message");
                                     err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                                 }
                                 TVal err_val;
-                                err_val.tag = OBJECT;
-                                err_val.pointer = err;
+                                err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                     return VM_ERROR~;
                                 }
@@ -3714,14 +3550,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             if (len > 0 && len < 160) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
-                                msg_val.tag = STRING;
-                                msg_val.pointer = msg_str;
+                                msg_val.set_string(msg_str);
                                 HString* msg_key = intern_string(vm, "message");
                                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                             }
                             TVal err_val;
-                            err_val.tag = OBJECT;
-                            err_val.pointer = err;
+                            err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -3730,12 +3564,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -3747,8 +3579,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
 
                     // Search lexical environment first (for let/const bindings)
                     TVal? result = env::env_get_lex(act.lex_env, key);
@@ -3766,14 +3598,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 if (len > 0 && len < 160) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
-                                    msg_val.tag = STRING;
-                                    msg_val.pointer = msg_str;
+                                    msg_val.set_string(msg_str);
                                     HString* msg_key = intern_string(vm, "message");
                                     err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                                 }
                                 TVal err_val;
-                                err_val.tag = OBJECT;
-                                err_val.pointer = err;
+                                err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                     return VM_ERROR~;
                                 }
@@ -3782,30 +3612,25 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             }
                         } else {
                             HString* ts = typeof_string(vm, &v);
-                            ra.tag = STRING;
-                            ra.pointer = ts;
+                            ra.set_string(ts);
                         }
                     } else {
                         // Not in lex_env — search var_env
                         result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
                             HString* ts = typeof_string(vm, &v2);
-                            ra.tag = STRING;
-                            ra.pointer = ts;
+                            ra.set_string(ts);
                         } else {
                             // Unresolvable reference → "undefined" (no error)
                             HString* ts = intern_string(vm, "undefined");
-                            ra.tag = STRING;
-                            ra.pointer = ts;
+                            ra.set_string(ts);
                         }
                     }
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -3814,8 +3639,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
                     // Combined single-walk: check lex_env, writability, and update in one pass
                     int put_result = env::env_try_put_lex(act.lex_env, key, *ra);
                     if (put_result == -1) {
@@ -3830,14 +3655,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             if (len > 0 && len < 160) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
-                                msg_val.tag = STRING;
-                                msg_val.pointer = msg_str;
+                                msg_val.set_string(msg_str);
                                 HString* msg_key = intern_string(vm, "message");
                                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                             }
                             TVal err_val;
-                            err_val.tag = OBJECT;
-                            err_val.pointer = err;
+                            err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -3859,8 +3682,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
                     env::env_declare_lex(act.lex_env, key, *ra);
                 }
             }
@@ -3871,8 +3694,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
                     act.lex_env.bindings.put_prop(key, *ra, hobject::PROP_FLAGS_EC);
                 }
             }
@@ -3887,8 +3710,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
                 TVal name_val = constants[bc];
-                if (name_val.tag == STRING) {
-                    void* key = name_val.pointer;
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
                     TVal tdz = env::tdz_sentinel();
                     act.lex_env.bindings.put_prop(key, tdz, hobject::PROP_FLAGS_WEC);
                 }
@@ -3897,8 +3720,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         }
 
         case Opcode.DELVAR:
-            ra.tag = BOOLEAN;
-            ra.boolean = true;
+            ra.set_boolean(true);
             break;
 
         // === CLOSURES ===
@@ -3920,8 +3742,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     // Set .length property (ES5 §15.3.5.1)
                     HString* len_key = intern_string(vm, "length");
                     TVal len_val;
-                    len_val.tag = FASTINT;
-                    len_val.fastint = (long)template.num_formals;
+                    len_val.set_fastint((long)template.num_formals);
                     func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
 
                     // Arrow functions don't get a .prototype property (ES6 §14.2.16)
@@ -3933,34 +3754,28 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             // Set .constructor on the prototype object
                             HString* constr_key = intern_string(vm, "constructor");
                             TVal constr_val;
-                            constr_val.tag = OBJECT;
-                            constr_val.pointer = func_obj;
+                            constr_val.set_object(func_obj);
                             proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
                             // Set .prototype on the function
                             HString* proto_key = intern_string(vm, "prototype");
                             TVal proto_tv;
-                            proto_tv.tag = OBJECT;
-                            proto_tv.pointer = proto_obj;
+                            proto_tv.set_object(proto_obj);
                             func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
                         }
                     }
 
-                    ra.tag = OBJECT;
-                    ra.pointer = func_obj;
+                    ra.set_object(func_obj);
                 } else {
-                    ra.tag = UNDEFINED;
-                    ra.pointer = null;
+                    ra.set_undefined();
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
 
         case Opcode.GETBOUND:
-            ra.tag = UNDEFINED;
-            ra.pointer = null;
+            ra.set_undefined();
             break;
 
         // === ITEraTOR ===
@@ -3968,30 +3783,28 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.INITFOR: {
             // ra = object to enumerate, rb = iter_state (output)
             // null/undefined → skip loop (rb = null marker)
-            if (ra.tag == NULL_VAL || ra.tag == UNDEFINED) {
+            if (ra.is_null() || ra.is_undefined()) {
                 rb.set_null();
                 break;
             }
 
             // Get the object (ToObject for primitives)
             HObject* obj;
-            if (ra.tag == OBJECT) {
-                obj = (HObject*)ra.pointer;
-            } else if (ra.tag == BOOLEAN) {
+            if (ra.is_object()) {
+                obj = (HObject*)ra.get_heapptr();
+            } else if (ra.is_boolean()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.primitive_value.tag = BOOLEAN;
-                obj.primitive_value.boolean = ra.boolean;
-            } else if (ra.tag == STRING) {
+                obj.primitive_value.set_boolean(ra.get_boolean());
+            } else if (ra.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
-                obj.primitive_value.tag = STRING;
-                obj.primitive_value.pointer = ra.pointer;
-            } else if (ra.tag == NUMBER || ra.tag == FASTINT) {
+                obj.primitive_value.set_string(ra.get_heapptr());
+            } else if (ra.is_number() || ra.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
@@ -4008,33 +3821,29 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 rb.set_null();
                 break;
             }
-            rb.tag = POINTER;
-            rb.pointer = state;
+            rb.set_pointer(state);
             break;
         }
 
         case Opcode.NEXTFOR: {
             // ra = iter_var (output key), rb = has_next (output bool)
             // rc = iter_state (input ForInState*)
-            ForInState* state = (ForInState*)rc.pointer;
+            ForInState* state = (ForInState*)rc.get_heapptr();
             if (state == null || state.index >= state.count) {
                 // No more keys — clean up and signal done
                 if (state != null) {
                     libc::free(state.keys);
                     libc::free(state);
                 }
-                rb.tag = BOOLEAN;
-                rb.boolean = false;
+                rb.set_boolean(false);
                 ra.set_undefined();
                 break;
             }
 
             // Return the next key
-            ra.tag = STRING;
-            ra.pointer = state.keys[state.index];
+            ra.set_string(state.keys[state.index]);
             state.index++;
-            rb.tag = BOOLEAN;
-            rb.boolean = true;
+            rb.set_boolean(true);
             break;
         }
 
@@ -4068,8 +3877,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
             cat.parent = (Catcher*)act.cat;
             cat.flags = flags;
-            cat.thrown_val.tag = UNDEFINED;
-            cat.thrown_val.pointer = null;
+            cat.thrown_val.set_undefined();
             cat.catch_pc = catch_pc;
             cat.finally_pc = finally_pc;
 
@@ -4102,8 +3910,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 *ra = cat.thrown_val;
 
                 // Clear thrown value
-                cat.thrown_val.tag = UNDEFINED;
-                cat.thrown_val.pointer = null;
+                cat.thrown_val.set_undefined();
 
                 // If no finally handler, pop the catcher now.
                 // If there IS a finally, keep the catcher on the chain so that
@@ -4113,8 +3920,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     libc::free(cat);
                 }
             } else {
-                ra.tag = UNDEFINED;
-                ra.pointer = null;
+                ra.set_undefined();
             }
             break;
         }
@@ -4130,7 +3936,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             // Look for a catcher with FINALLY_ENABLED that has a pending thrown_val.
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null && (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
-                bool has_pending = (cat.thrown_val.tag != UNDEFINED);
+                bool has_pending = (!cat.thrown_val.is_undefined());
                 TVal pending_val = cat.thrown_val;
 
                 // Pop the finally catcher
@@ -4166,8 +3972,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.INITGET: {
             // A=object, B=key, C=getter_function
             // Define a getter accessor property on object A with key B.
-            if (ra.tag == OBJECT) {
-                HObject* hobj = (HObject*)ra.pointer;
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
                 TVal getter_val = *rc;
                 if (key != null && hobj != null) {
@@ -4179,8 +3985,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     } else {
                         // Create new accessor property
                         TVal undef;
-                        undef.tag = UNDEFINED;
-                        undef.pointer = null;
+                        undef.set_undefined();
                         hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
@@ -4197,8 +4002,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.INITSET: {
             // A=object, B=key, C=setter_function
             // Define a setter accessor property on object A with key B.
-            if (ra.tag == OBJECT) {
-                HObject* hobj = (HObject*)ra.pointer;
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
                 TVal setter_val = *rc;
                 if (key != null && hobj != null) {
@@ -4210,8 +4015,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     } else {
                         // Create new accessor property
                         TVal undef;
-                        undef.tag = UNDEFINED;
-                        undef.pointer = null;
+                        undef.set_undefined();
                         hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
@@ -4240,9 +4044,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal obj_val = *ra;
             HObject* obj;
 
-            if (obj_val.tag == OBJECT) {
-                obj = (HObject*)obj_val.pointer;
-            } else if (obj_val.tag == NULL_VAL || obj_val.tag == UNDEFINED) {
+            if (obj_val.is_object()) {
+                obj = (HObject*)obj_val.get_heapptr();
+            } else if (obj_val.is_null() || obj_val.is_undefined()) {
                 // TypeError: with cannot be applied to null/undefined
                 HString* msg_key = intern_string(vm, "message");
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -4251,17 +4055,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     char[80] buf;
                     int len = libc::snprintf(&buf, 80,
                         "Cannot use 'with' on %s",
-                        (obj_val.tag == NULL_VAL ? "null" : "undefined"));
+                        (obj_val.is_null() ? "null" : "undefined"));
                     if (len > 0 && len < 80) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
-                        msg_val.tag = STRING;
-                        msg_val.pointer = msg_str;
+                        msg_val.set_string(msg_str);
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
-                    err_val.tag = OBJECT;
-                    err_val.pointer = err;
+                    err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
@@ -4269,21 +4071,19 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     return VM_ERROR~;
                 }
                 break;
-            } else if (obj_val.tag == BOOLEAN) {
+            } else if (obj_val.is_boolean()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.primitive_value.tag = BOOLEAN;
-                obj.primitive_value.boolean = obj_val.boolean;
-            } else if (obj_val.tag == STRING) {
+                obj.primitive_value.set_boolean(obj_val.get_boolean());
+            } else if (obj_val.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
-                obj.primitive_value.tag = STRING;
-                obj.primitive_value.pointer = obj_val.pointer;
-            } else if (obj_val.tag == NUMBER || obj_val.tag == FASTINT) {
+                obj.primitive_value.set_string(obj_val.get_heapptr());
+            } else if (obj_val.is_number() || obj_val.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;

@@ -94,16 +94,58 @@ enum TValTag : char {
     LIGHTFUNC,
 }
 
-/// A tagged value – the universal currency of the value stack.
-///
-/// Uses an explicit tag + union rather than NaN-boxing so that the
-/// representation is clear and the compiler can optimise discriminated
-/// access.
 /// FASTINT uses 52-bit signed integer range (fits in double mantissa exactly).
 const long FASTINT_MIN = -2251799813685248L;  // -2^51
 const long FASTINT_MAX =  2251799813685247L;  //  2^51 - 1
 
-struct TVal {
+/// Toggle for NaN-boxing representation. When true, TVal is an 8-byte
+/// NaN-boxed ulong. When false, TVal is the 16-byte tagged union.
+const bool USE_NANBOX = true;
+
+// ============================================================================
+// NaN-boxing constants and helpers (used when USE_NANBOX = true)
+// ============================================================================
+
+const ulong NANBOX_BASE     = 0xFFF8000000000000;
+const ulong NANBOX_TAG_MASK = 0x0000FF0000000000;  // bits 47-40
+const ulong NANBOX_PAYLOAD_MASK = 0x000000FFFFFFFFFF;  // bits 39-0
+const int   NANBOX_TAG_SHIFT = 40;
+
+/// Tag values for NaN-boxed representation. Ordinals match TValTag.
+const ulong TAG_UNDEFINED  = 0;
+const ulong TAG_NULL_VAL   = 1;
+const ulong TAG_BOOLEAN    = 2;
+const ulong TAG_FASTINT    = 3;  // same ordinal as TValTag.FASTINT
+const ulong TAG_STRING     = 4;
+const ulong TAG_OBJECT     = 5;  // same ordinal as TValTag.OBJECT
+const ulong TAG_BUFFER     = 6;
+const ulong TAG_POINTER    = 7;
+const ulong TAG_LIGHTFUNC  = 8;
+
+fn ulong nanbox_encode_tagged(ulong tag, ulong payload) @inline {
+    return NANBOX_BASE | (tag << NANBOX_TAG_SHIFT) | (payload & NANBOX_PAYLOAD_MASK);
+}
+
+fn bool nanbox_is_double(ulong v) @inline {
+    return ((v >> 52) & 0x7FF) != 0x7FF;
+}
+
+fn ulong nanbox_get_tag(ulong v) @inline {
+    return (v & NANBOX_TAG_MASK) >> NANBOX_TAG_SHIFT;
+}
+
+fn ulong nanbox_get_payload(ulong v) @inline {
+    return v & NANBOX_PAYLOAD_MASK;
+}
+
+/// A tagged value – the universal currency of the value stack.
+struct TVal @if(USE_NANBOX) {
+    /// NaN-boxed: 8-byte representation.
+    ulong bits;
+}
+
+struct TVal @if(!USE_NANBOX) {
+    /// Explicit tag + union: 16-byte representation.
     TValTag tag;
     union {
         bool    boolean;
@@ -114,208 +156,399 @@ struct TVal {
 }
 
 // ---------------------------------------------------------------------------
+// TVal — tag query (for switch statements)
+// ---------------------------------------------------------------------------
+
+/// Returns the TValTag discriminator. In the NaN-box path, this decodes
+/// from the NaN-box tag bits.
+fn TValTag TVal.get_tag(&self) @inline {
+$if USE_NANBOX:
+    if (nanbox_is_double(self.bits)) return NUMBER;
+    switch (nanbox_get_tag(self.bits)) {
+        case TAG_UNDEFINED:  return UNDEFINED;
+        case TAG_NULL_VAL:   return NULL_VAL;
+        case TAG_BOOLEAN:    return BOOLEAN;
+        case TAG_FASTINT:    return FASTINT;
+        case TAG_STRING:     return STRING;
+        case TAG_OBJECT:     return OBJECT;
+        case TAG_BUFFER:     return BUFFER;
+        case TAG_POINTER:    return POINTER;
+        case TAG_LIGHTFUNC:  return LIGHTFUNC;
+        default:             return UNDEFINED;
+    }
+$else
+    return self.tag;
+$endif
+}
+
+// ---------------------------------------------------------------------------
 // TVal — type predicates
 // ---------------------------------------------------------------------------
 
-/// Returns true when the value is ECMAScript undefined.
-fn bool TVal.is_undefined(&self)      { return self.tag == UNDEFINED; }
-/// Returns true when the value is ECMAScript null.
-fn bool TVal.is_null(&self)           { return self.tag == NULL_VAL; }
-/// Returns true when the value is a boolean.
-fn bool TVal.is_boolean(&self)        { return self.tag == BOOLEAN; }
-/// Returns true when the value is a double-precision number.
-fn bool TVal.is_number(&self)         { return self.tag == NUMBER; }
-/// Returns true when the value is a fast integer.
-fn bool TVal.is_fastint(&self)        { return self.tag == FASTINT; }
-/// Returns true when the value is a heap-allocated string.
-fn bool TVal.is_string(&self)         { return self.tag == STRING; }
-/// Returns true when the value is a heap-allocated object.
-fn bool TVal.is_object(&self)         { return self.tag == OBJECT; }
-/// Returns true when the value is a heap-allocated buffer.
-fn bool TVal.is_buffer(&self)         { return self.tag == BUFFER; }
-/// Returns true when the value is a raw pointer.
-fn bool TVal.is_pointer(&self)        { return self.tag == POINTER; }
-/// Returns true when the value is a lightweight function.
-fn bool TVal.is_lightfunc(&self)      { return self.tag == LIGHTFUNC; }
+fn bool TVal.is_undefined(&self) @inline {
+$if USE_NANBOX:
+    return self.bits == NANBOX_BASE;
+$else
+    return self.tag == UNDEFINED;
+$endif
+}
 
-/// Returns true when the value is either undefined or null
-/// (the two "nullish" values in ECMAScript).
-fn bool TVal.is_nullish(&self) {
+fn bool TVal.is_null(&self) @inline {
+$if USE_NANBOX:
+    return self.bits == nanbox_encode_tagged(TAG_NULL_VAL, 0);
+$else
+    return self.tag == NULL_VAL;
+$endif
+}
+
+fn bool TVal.is_boolean(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_BOOLEAN;
+$else
+    return self.tag == BOOLEAN;
+$endif
+}
+
+fn bool TVal.is_number(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_is_double(self.bits);
+$else
+    return self.tag == NUMBER;
+$endif
+}
+
+fn bool TVal.is_fastint(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_FASTINT;
+$else
+    return self.tag == FASTINT;
+$endif
+}
+
+fn bool TVal.is_string(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_STRING;
+$else
+    return self.tag == STRING;
+$endif
+}
+
+fn bool TVal.is_object(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_OBJECT;
+$else
+    return self.tag == OBJECT;
+$endif
+}
+
+fn bool TVal.is_buffer(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_BUFFER;
+$else
+    return self.tag == BUFFER;
+$endif
+}
+
+fn bool TVal.is_pointer(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_POINTER;
+$else
+    return self.tag == POINTER;
+$endif
+}
+
+fn bool TVal.is_lightfunc(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_LIGHTFUNC;
+$else
+    return self.tag == LIGHTFUNC;
+$endif
+}
+
+fn bool TVal.is_nullish(&self) @inline {
+$if USE_NANBOX:
+    return self.is_undefined() || self.is_null();
+$else
     return self.tag == UNDEFINED || self.tag == NULL_VAL;
+$endif
 }
 
-/// Returns true when the value is any numeric type (double or fastint).
-fn bool TVal.is_numeric(&self) {
+fn bool TVal.is_numeric(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_is_double(self.bits) || nanbox_get_tag(self.bits) == TAG_FASTINT;
+$else
     return self.tag == NUMBER || self.tag == FASTINT;
+$endif
 }
 
-/// Returns true when the value holds a GC-managed heap pointer
-/// (string, object, or buffer).
-fn bool TVal.is_heap_allocated(&self) {
+fn bool TVal.is_heap_allocated(&self) @inline {
+$if USE_NANBOX:
+    ulong tag = nanbox_get_tag(self.bits);
+    return tag == TAG_STRING || tag == TAG_OBJECT || tag == TAG_BUFFER;
+$else
     return self.tag == STRING || self.tag == OBJECT || self.tag == BUFFER;
+$endif
 }
 
 // ---------------------------------------------------------------------------
 // TVal — getters
 // ---------------------------------------------------------------------------
 
-/// Retrieves the boolean payload.  Undefined behaviour when tag != BOOLEAN.
-fn bool   TVal.get_boolean(&self)  { return self.boolean; }
-/// Retrieves the double payload.  Undefined behaviour when tag != NUMBER.
-fn double TVal.get_number(&self)   { return self.number; }
-/// Retrieves the fast-integer payload.  Undefined behaviour when tag != FASTINT.
-fn long   TVal.get_fastint(&self)  { return self.fastint; }
-/// Retrieves the pointer payload (valid for STRING, OBJECT, BUFFER,
-/// POINTER, and LIGHTFUNC tags).
-fn void*  TVal.get_heapptr(&self)  { return self.pointer; }
+fn bool TVal.get_boolean(&self) @inline {
+$if USE_NANBOX:
+    return nanbox_get_payload(self.bits) != 0;
+$else
+    return self.boolean;
+$endif
+}
 
-/// Returns the numeric value as a double, promoting a fastint if necessary.
-fn double TVal.get_number_or_fastint(&self) {
+fn double TVal.get_number(&self) @inline {
+$if USE_NANBOX:
+    return bitcast(self.bits, double);
+$else
+    return self.number;
+$endif
+}
+
+fn long TVal.get_fastint(&self) @inline {
+$if USE_NANBOX:
+    ulong payload = nanbox_get_payload(self.bits);
+    if (payload & (1L << 39) != 0) {
+        // Negative: sign-extend from 40-bit two's complement
+        return (long)(payload | 0xFFFFFF0000000000);
+    }
+    return (long)payload;
+$else
+    return self.fastint;
+$endif
+}
+
+fn void* TVal.get_heapptr(&self) @inline {
+$if USE_NANBOX:
+    return (void*)nanbox_get_payload(self.bits);
+$else
+    return self.pointer;
+$endif
+}
+
+fn double TVal.get_number_or_fastint(&self) @inline {
+$if USE_NANBOX:
+    if (nanbox_get_tag(self.bits) == TAG_FASTINT) {
+        return (double)self.get_fastint();
+    }
+    return bitcast(self.bits, double);
+$else
     if (self.tag == FASTINT) {
         return (double)self.fastint;
     }
     return self.number;
+$endif
 }
 
 // ---------------------------------------------------------------------------
 // TVal — mutating setters
 // ---------------------------------------------------------------------------
 
-/// Overwrites the slot with undefined.
 fn void TVal.set_undefined(&self) @inline {
+$if USE_NANBOX:
+    self.bits = NANBOX_BASE;
+$else
     self.tag     = UNDEFINED;
     self.pointer = null;
+$endif
 }
 
-/// Overwrites the slot with null.
 fn void TVal.set_null(&self) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_NULL_VAL, 0);
+$else
     self.tag     = NULL_VAL;
     self.pointer = null;
+$endif
 }
 
-/// Overwrites the slot with a boolean.
 fn void TVal.set_boolean(&self, bool val) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_BOOLEAN, val ? 1 : 0);
+$else
     self.tag     = BOOLEAN;
     self.boolean = val;
+$endif
 }
 
-/// Overwrites the slot with a double-precision number.
 fn void TVal.set_number(&self, double val) @inline {
+$if USE_NANBOX:
+    self.bits = bitcast(val, ulong);
+$else
     self.tag    = NUMBER;
     self.number = val;
+$endif
 }
 
-/// Overwrites the slot with a fast integer.
 fn void TVal.set_fastint(&self, long val) @inline {
+$if USE_NANBOX:
+    // Two's complement in 40-bit payload: negative values wrap naturally
+    self.bits = nanbox_encode_tagged(TAG_FASTINT, (ulong)val);
+$else
     self.tag     = FASTINT;
     self.fastint = val;
+$endif
 }
 
-/// Overwrites the slot with a heap string pointer.
-fn void TVal.set_string(&self, void* ptr) {
+fn void TVal.set_string(&self, void* ptr) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_STRING, (usz)ptr);
+$else
     self.tag     = STRING;
     self.pointer = ptr;
+$endif
 }
 
-/// Overwrites the slot with a heap object pointer.
-fn void TVal.set_object(&self, void* ptr) {
+fn void TVal.set_object(&self, void* ptr) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_OBJECT, (usz)ptr);
+$else
     self.tag     = OBJECT;
     self.pointer = ptr;
+$endif
 }
 
-/// Overwrites the slot with a heap buffer pointer.
-fn void TVal.set_buffer(&self, void* ptr) {
+fn void TVal.set_buffer(&self, void* ptr) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_BUFFER, (usz)ptr);
+$else
     self.tag     = BUFFER;
     self.pointer = ptr;
+$endif
 }
 
-/// Overwrites the slot with a raw pointer.
-fn void TVal.set_pointer(&self, void* ptr) {
+fn void TVal.set_pointer(&self, void* ptr) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_POINTER, (usz)ptr);
+$else
     self.tag     = POINTER;
     self.pointer = ptr;
+$endif
 }
 
-/// Overwrites the slot with a lightweight function pointer.
-fn void TVal.set_lightfunc(&self, void* ptr) {
+fn void TVal.set_lightfunc(&self, void* ptr) @inline {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_LIGHTFUNC, (usz)ptr);
+$else
     self.tag     = LIGHTFUNC;
     self.pointer = ptr;
+$endif
 }
 
 // ---------------------------------------------------------------------------
 // TVal — static constructors
 // ---------------------------------------------------------------------------
 
-/// Creates a TVal representing undefined.
-fn TVal make_undefined() {
-    return (TVal){ .tag = UNDEFINED };
-}
-
-/// Creates a TVal representing null.
-fn TVal make_null() {
-    return (TVal){ .tag = NULL_VAL };
-}
-
-/// Creates a TVal from a boolean.
-fn TVal make_boolean(bool val) {
+fn TVal make_undefined() @inline {
+$if USE_NANBOX:
     TVal tv;
+    tv.bits = NANBOX_BASE;
+    return tv;
+$else
+    return (TVal){ .tag = UNDEFINED };
+$endif
+}
+
+fn TVal make_null() @inline {
+$if USE_NANBOX:
+    TVal tv;
+    tv.bits = nanbox_encode_tagged(TAG_NULL_VAL, 0);
+    return tv;
+$else
+    return (TVal){ .tag = NULL_VAL };
+$endif
+}
+
+fn TVal make_boolean(bool val) @inline {
+    TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_BOOLEAN, val ? 1 : 0);
+$else
     tv.tag     = BOOLEAN;
     tv.boolean = val;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a double-precision number.
-fn TVal make_number(double val) {
+fn TVal make_number(double val) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = bitcast(val, ulong);
+$else
     tv.tag    = NUMBER;
     tv.number = val;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a fast integer.
-fn TVal make_fastint(long val) {
+fn TVal make_fastint(long val) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_FASTINT, (ulong)val);
+$else
     tv.tag     = FASTINT;
     tv.fastint = val;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a heap string pointer.
-fn TVal make_string(void* ptr) {
+fn TVal make_string(void* ptr) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_STRING, (usz)ptr);
+$else
     tv.tag     = STRING;
     tv.pointer = ptr;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a heap object pointer.
-fn TVal make_object(void* ptr) {
+fn TVal make_object(void* ptr) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_OBJECT, (usz)ptr);
+$else
     tv.tag     = OBJECT;
     tv.pointer = ptr;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a heap buffer pointer.
-fn TVal make_buffer(void* ptr) {
+fn TVal make_buffer(void* ptr) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_BUFFER, (usz)ptr);
+$else
     tv.tag     = BUFFER;
     tv.pointer = ptr;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a raw pointer.
-fn TVal make_pointer(void* ptr) {
+fn TVal make_pointer(void* ptr) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_POINTER, (usz)ptr);
+$else
     tv.tag     = POINTER;
     tv.pointer = ptr;
+$endif
     return tv;
 }
 
-/// Creates a TVal from a lightweight function pointer.
-fn TVal make_lightfunc(void* ptr) {
+fn TVal make_lightfunc(void* ptr) @inline {
     TVal tv;
+$if USE_NANBOX:
+    tv.bits = nanbox_encode_tagged(TAG_LIGHTFUNC, (usz)ptr);
+$else
     tv.tag     = LIGHTFUNC;
     tv.pointer = ptr;
+$endif
     return tv;
 }
 

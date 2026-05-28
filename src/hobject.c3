@@ -1020,7 +1020,7 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
             PropEntry* pe = &cur.props[idx];
             if (pe.flags.is_accessor) {
                 TVal accessor_fn = want_getter ? pe.getter : pe.setter;
-                if (accessor_fn.tag == OBJECT && accessor_fn.pointer != null) {
+                if (accessor_fn.is_object() && accessor_fn.get_heapptr() != null) {
                     return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
                 }
                 // Accessor exists but the specific getter/setter is undefined
