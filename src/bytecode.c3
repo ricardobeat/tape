@@ -520,46 +520,46 @@ fn Instruction make_sabc(Opcode op, int sabc) {
 // ============================================================================
 
 /// Returns the opcode.
-fn Opcode Instruction.get_op(&self) @inline {
+macro Opcode Instruction.get_op(&self) {
     return self.op;
 }
 
 /// Returns the 8-bit A operand.
-fn uint Instruction.get_a(&self) @inline {
+macro uint Instruction.get_a(&self) {
     return self.a;
 }
 
 /// Returns the 8-bit B operand.
-fn uint Instruction.get_b(&self) @inline {
+macro uint Instruction.get_b(&self) {
     return self.b;
 }
 
 /// Returns the 8-bit C operand.
-fn uint Instruction.get_c(&self) @inline {
+macro uint Instruction.get_c(&self) {
     return self.c;
 }
 
 /// Returns the 16-bit unsigned BC combined operand.
 ///
 /// B is the low byte, C is the high byte:  `BC = C << 8 | B`.
-fn uint Instruction.get_bc(&self) @inline {
+macro uint Instruction.get_bc(&self) {
     return ((uint)self.c << 8) | (uint)self.b;
 }
 
 /// Returns the signed 16-bit BC operand (bias-decoded).
-fn int Instruction.get_sbc(&self) @inline {
+macro int Instruction.get_sbc(&self) {
     return (int)self.get_bc() - (int)BC_BIAS;
 }
 
 /// Returns the unsigned 24-bit ABC operand (all three fields concatenated).
 ///
 /// `ABC = C << 16 | B << 8 | A`.
-fn uint Instruction.get_abc(&self) @inline {
+macro uint Instruction.get_abc(&self) {
     return ((uint)self.c << 16) | ((uint)self.b << 8) | (uint)self.a;
 }
 
 /// Returns the signed 24-bit ABC operand (bias-decoded).
-fn int Instruction.get_sabc(&self) @inline {
+macro int Instruction.get_sabc(&self) {
     return (int)self.get_abc() - (int)ABC_BIAS;
 }
 
@@ -568,12 +568,12 @@ fn int Instruction.get_sabc(&self) @inline {
 // ============================================================================
 
 /// Returns the raw 32-bit word.
-fn uint Instruction.to_raw(&self) @inline {
+macro uint Instruction.to_raw(&self) {
     return (uint)*self;
 }
 
 /// Creates an Instruction from a raw 32-bit word.
-fn Instruction from_raw(uint raw) @inline {
+macro Instruction from_raw(uint raw) {
     return (Instruction)raw;
 }
 
@@ -764,7 +764,7 @@ struct CompiledFunction {
 
 /// Returns a HeapHeader pointer to this compiled function
 /// (binary-compatible cast).
-fn HeapHeader* CompiledFunction.as_header(&self) @inline {
+macro HeapHeader* CompiledFunction.as_header(&self) {
     return (HeapHeader*)self;
 }
 
@@ -784,42 +784,42 @@ fn uint CompiledFunction.decref(&self) {
 // ============================================================================
 
 /// Returns `true` when the function uses strict-mode semantics.
-fn bool CompiledFunction.is_strict(&self) @inline {
+macro bool CompiledFunction.is_strict(&self) {
     return self.flags.is_strict;
 }
 
 /// Returns `true` when the function is an arrow function.
-fn bool CompiledFunction.is_arrow(&self) @inline {
+macro bool CompiledFunction.is_arrow(&self) {
     return self.flags.is_arrow;
 }
 
 /// Returns `true` when the function is a generator.
-fn bool CompiledFunction.is_generator(&self) @inline {
+macro bool CompiledFunction.is_generator(&self) {
     return self.flags.is_generator;
 }
 
 /// Returns `true` when the function is async.
-fn bool CompiledFunction.is_async(&self) @inline {
+macro bool CompiledFunction.is_async(&self) {
     return self.flags.is_async;
 }
 
 /// Returns `true` when the function can be used as a constructor.
-fn bool CompiledFunction.is_constructable(&self) @inline {
+macro bool CompiledFunction.is_constructable(&self) {
     return self.flags.is_constructable;
 }
 
 /// Returns `true` when the function uses `arguments`.
-fn bool CompiledFunction.uses_arguments(&self) @inline {
+macro bool CompiledFunction.uses_arguments(&self) {
     return self.flags.uses_arguments;
 }
 
 /// Returns `true` when the function contains direct `eval()` calls.
-fn bool CompiledFunction.has_direct_eval(&self) @inline {
+macro bool CompiledFunction.has_direct_eval(&self) {
     return self.flags.has_direct_eval;
 }
 
 /// Returns `true` when the function has a rest parameter.
-fn bool CompiledFunction.has_rest(&self) @inline {
+macro bool CompiledFunction.has_rest(&self) {
     return self.flags.has_rest;
 }
 

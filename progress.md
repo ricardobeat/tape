@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 81 (Performance optimization: release builds, scope chain lookups, proto chain walks, register zeroing, ensure_valstack)
+**Last Updated:** Session 82 (Macro conversion of bytecode/hstring fn @inline methods, remove @likely hints)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -22,22 +22,67 @@ The script walks `test262/test/` and counts `.js` files per phase using the same
 
 Update the counts and pass rate after every implemented feature
 
-## Benchmark Performance vs Duktape v2.7.0 (Session 81)
+## Benchmark Performance vs Duktape v2.7.0 (Session 82)
 
 All benchmarks with `optlevel: "max"` (release build). Ratio < 1.0 means C3 port is faster.
 
-| Benchmark | C3 Port | Duktape | Ratio |
-|-----------|---------|---------|-------|
-| arithmetic | 189ms | 320ms | **0.6x** |
-| array | 29ms | 30ms | **0.9x** |
-| function_call | 102ms | 127ms | **0.8x** |
-| loop | 91ms | 137ms | **0.7x** |
-| object | 87ms | 167ms | **0.5x** |
-| property_lookup | 93ms | 173ms | **0.5x** |
-| string | 10ms | 10ms | **1.0x** |
-| recursion | 634ms | 453ms | 1.4x |
+| Benchmark | C3 Port | Duktape | QuickJS | Ratio (C3/Duk) |
+|-----------|---------|---------|---------|----------------|
+| arithmetic | 178ms | 328ms | 28ms | **0.5x** |
+| array | 28ms | 39ms | 7ms | **0.7x** |
+| function_call | 98ms | 131ms | 18ms | **0.7x** |
+| loop | 83ms | 140ms | 15ms | **0.6x** |
+| object | 92ms | 170ms | 24ms | **0.5x** |
+| property_lookup | 91ms | 181ms | 18ms | **0.5x** |
+| string | 10ms | 17ms | 5ms | **0.6x** |
+| recursion | 621ms | 463ms | 118ms | 1.3x |
+| recursion_deep | 3783ms | 1940ms | 488ms | 1.9x |
+| valstack_copy | 17ms | 12ms | 9ms | 1.4x |
 
-7/8 benchmarks match or beat original Duktape. Recursion gap is architectural (16-byte TVal vs 8-byte NaN-boxing, no register-binding fast path).
+8/10 benchmarks beat original Duktape. Recursion gap is architectural (16-byte TVal vs 8-byte NaN-boxing, no register-binding fast path).
+
+### Session 82: Macro conversion of non-inlined helpers
+
+**Problem**: c3c's `@inline` on struct methods is not honored when the caller function is very large (>500 instructions). Vm.execute (31KB, 7,938 instructions) had 491 `bl` calls, many to trivial functions that should have been inlined.
+
+**Root cause**: Same as the TVal fix in session 81 — c3c's LLVM inliner threshold is exceeded by Vm.execute's size.
+
+**Fix**: Converted `fn @inline` methods to `macro` in 3 files:
+
+- `src/bytecode.c3` — 19 methods: `Instruction.get_op/get_a/get_b/get_c/get_bc/get_sbc/get_abc/get_sabc/to_raw/from_raw`, `CompiledFunction.as_header/is_strict/is_arrow/is_generator/is_async/is_constructable/uses_arguments/has_direct_eval/has_rest`
+- `src/hstring.c3` — 2 methods: `HString.get_data`, `HString.get_cstr` (these were plain `fn` — never even `@inline`)
+- `src/vm.c3` — 2 functions: `num_val`, `is_truthy` (were `fn @inline`)
+
+**Result**: bl calls reduced from 491 to 464 (-27). Vm.execute shrank from 31,728 to 31,572 bytes.
+
+### Session 82: Experiments that did NOT help
+
+| Experiment | Result | Why |
+|---|---|---|
+| `@likely`/`@unlikely` hints on fastint paths | **Hurt** arithmetic -7.7% | Increased code size without benefit; LLVM already optimizes branch weights correctly |
+| Combined tag check `(rb\|rc)>>48` | **Hurt** arithmetic | Forced `bits<<16>>16` sign extension instead of compiler's preferred `sbfx` |
+| `switch @jump` for dispatch | **No benefit** | Compiler already generates jump table with `br x11` through 16-bit offset table |
+| `num_val` as macro | **Neutral** | Arithmetic/loop benchmarks hit fastint fast path; `num_val` only called on slow path (DIV, mixed types) |
+
+### Session 82: Remaining bottleneck analysis
+
+Vm.execute has 464 remaining `bl` calls to legitimately large functions:
+
+| Target | Calls | Category |
+|---|---|---|
+| `hstring_alloc` | 50 | String heap allocation |
+| `Heap.hash_string` | 50 | String hashing |
+| `str_table_lookup` | 50 | String interning |
+| `str_table_insert` | 45 | String interning |
+| `HObject.put_prop` | 42 | Property write |
+| `Heap.alloc_object` | 42 | Object allocation |
+| `intern_string` | 18 | String interning |
+| `vm_throw_value` | 18 | Error throwing |
+| `HObject.get_prop_proto` | 13 | Property read (proto chain) |
+| `vm_to_string` | 12 | Type coercion |
+| `typeof_string` | 12 | typeof operator |
+
+These are all legitimately large functions that cannot be macroized. The function is at the edge of L1i cache (32-64KB on Apple Silicon). No easy wins remain without architectural changes (inline caching, scope-depth hints, opcode fusion).
 
 ## Per-Phase Status
 

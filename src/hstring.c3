@@ -120,14 +120,14 @@ struct HString {
 ///
 /// The returned slice has exactly `self.blen` elements.  A NUL terminator
 /// sits at `data[blen]` but is *not* included in the slice length.
-fn char[] HString.get_data(&self) {
+macro char[] HString.get_data(&self) {
     char* ptr = (char*)((usz)self + HSTRING_HDR_SIZE);
     return ptr[:self.blen];
 }
 
 /// Returns a raw C-string pointer to the inline data.  The data is always
 /// NUL-terminated.
-fn char* HString.get_cstr(&self) {
+macro char* HString.get_cstr(&self) {
     return (char*)((usz)self + HSTRING_HDR_SIZE);
 }
 

@@ -236,7 +236,7 @@ fn TVal* ptr_from_byteoff(TVal* base, uint byteoff) @inline {
 // ============================================================================
 
 /// Extract a numeric double from a TVal (promoting FASTINT if needed).
-fn double num_val(TVal* val) @inline {
+macro double num_val(TVal* val) {
     if (val.is_fastint()) {
         return (double)val.get_fastint();
     }
@@ -244,7 +244,7 @@ fn double num_val(TVal* val) @inline {
 }
 
 /// ECMAScript truthiness.
-fn bool is_truthy(TVal* val) @inline {
+macro bool is_truthy(TVal* val) {
     switch (val.get_tag()) {
         case UNDEFINED: return false;
         case NULL_VAL:  return false;
@@ -1411,10 +1411,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.LT:
             ra.set_boolean(false);
-            if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0));
-            } else if (rb.is_fastint() && rc.is_fastint()) {
+            if (rb.is_fastint() && rc.is_fastint()) {
                 ra.set_boolean((rb.get_fastint() < rc.get_fastint()));
+            } else if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0));
             } else {
                 ra.set_boolean((num_val(rb) < num_val(rc)));
             }
@@ -1422,10 +1422,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.LE:
             ra.set_boolean(false);
-            if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0));
-            } else if (rb.is_fastint() && rc.is_fastint()) {
+            if (rb.is_fastint() && rc.is_fastint()) {
                 ra.set_boolean((rb.get_fastint() <= rc.get_fastint()));
+            } else if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0));
             } else {
                 ra.set_boolean((num_val(rb) <= num_val(rc)));
             }
@@ -1433,10 +1433,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.GT:
             ra.set_boolean(false);
-            if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0));
-            } else if (rb.is_fastint() && rc.is_fastint()) {
+            if (rb.is_fastint() && rc.is_fastint()) {
                 ra.set_boolean((rb.get_fastint() > rc.get_fastint()));
+            } else if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0));
             } else {
                 ra.set_boolean((num_val(rb) > num_val(rc)));
             }
@@ -1444,10 +1444,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.GE:
             ra.set_boolean(false);
-            if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0));
-            } else if (rb.is_fastint() && rc.is_fastint()) {
+            if (rb.is_fastint() && rc.is_fastint()) {
                 ra.set_boolean((rb.get_fastint() >= rc.get_fastint()));
+            } else if (rb.is_string() && rc.is_string()) {
+                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0));
             } else {
                 ra.set_boolean((num_val(rb) >= num_val(rc)));
             }
