@@ -18,7 +18,9 @@
     },
     "bench_run": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/bench_run.c3" ]
+      "sources": [ "src", "benchmarks/bench_run.c3" ],
+      "optlevel": "max",
+      "safe": false
     }
   }
 }

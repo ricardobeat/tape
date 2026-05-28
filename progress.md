@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 80 (Number static properties: EPSILON, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, parseInt, parseFloat + numeric separators + Array callback methods)
+**Last Updated:** Session 81 (Performance optimization: release builds, scope chain lookups, proto chain walks, register zeroing, ensure_valstack)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
 | Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 7,123 |
-| Currently failing (test262) | 23,323 |
-| Pass rate (of run tests) | 23.4% |
+| Currently passing (test262) | 7,182 |
+| Currently failing (test262) | 23,264 |
+| Pass rate (of run tests) | 23.6% |
 
 ## Refreshing test pass rate
 
@@ -22,6 +22,23 @@ The script walks `test262/test/` and counts `.js` files per phase using the same
 
 Update the counts and pass rate after every implemented feature
 
+## Benchmark Performance vs Duktape v2.7.0 (Session 81)
+
+All benchmarks with `optlevel: "max"` (release build). Ratio < 1.0 means C3 port is faster.
+
+| Benchmark | C3 Port | Duktape | Ratio |
+|-----------|---------|---------|-------|
+| arithmetic | 189ms | 320ms | **0.6x** |
+| array | 29ms | 30ms | **0.9x** |
+| function_call | 102ms | 127ms | **0.8x** |
+| loop | 91ms | 137ms | **0.7x** |
+| object | 87ms | 167ms | **0.5x** |
+| property_lookup | 93ms | 173ms | **0.5x** |
+| string | 10ms | 10ms | **1.0x** |
+| recursion | 634ms | 453ms | 1.4x |
+
+7/8 benchmarks match or beat original Duktape. Recursion gap is architectural (16-byte TVal vs 8-byte NaN-boxing, no register-binding fast path).
+
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
@@ -29,19 +46,19 @@ Update the counts and pass rate after every implemented feature
 | 0-1: Core VM | 2,185 | 573 | 554 | 1,058 |
 | 1: Calling Convention | 426 | 26 | 316 | 84 |
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,858 | 5,120 | 788 |
+| 3: Object System | 7,766 | 1,865 | 5,113 | 788 |
 | 4: Error Handling | 402 | 59 | 279 | 64 |
-| 5: Built-in Constructors | 8,615 | 2,239 | 5,893 | 483 |
-| 6: Prototype Methods | 4,713 | 896 | 3,511 | 306 |
+| 5: Built-in Constructors | 8,615 | 2,265 | 5,867 | 483 |
+| 6: Prototype Methods | 4,713 | 922 | 3,485 | 306 |
 | 7: ES5 Features | 1,240 | 212 | 401 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 488 | 1,971 | 288 |
-| 11: Arrow/Templates | 427 | 60 | 227 | 140 |
+| 8: ES5 Built-in Objects | 2,747 | 495 | 1,964 | 288 |
+| 11: Arrow/Templates | 427 | 61 | 226 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
 | 15: Classes | 8,520 | 146 | 2,149 | 6,225 |
 | 17-20: Map/Set/Symbol/Promise | 1,588 | 164 | 821 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,446** | **7,123** | **23,323** | **11,541** |
+| **Overall** | **30,446** | **7,182** | **23,264** | **11,541** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 573 pass / 554 fail (skip: 1,058)**
@@ -91,7 +108,7 @@ Update the counts and pass rate after every implemented feature
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System
-**test262: 7,766 files — 1,858 pass / 5,120 fail (skip: 788)**
+**test262: 7,766 files — 1,865 pass / 5,113 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -117,7 +134,7 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 2,239 pass / 5,893 fail (skip: 483)**
+**test262: 8,615 files — 2,265 pass / 5,867 fail (skip: 483)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -142,7 +159,7 @@ Update the counts and pass rate after every implemented feature
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
-**test262: 4,713 files — 896 pass / 3,511 fail (skip: 306)**
+**test262: 4,713 files — 922 pass / 3,485 fail (skip: 306)**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -178,7 +195,7 @@ Update the counts and pass rate after every implemented feature
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 488 pass / 1,971 fail (skip: 288)**
+**test262: 2,747 files — 495 pass / 1,964 fail (skip: 288)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |

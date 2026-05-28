@@ -1036,6 +1036,42 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     return { .found = false };
 }
 
+/// Result of a combined accessor + data property lookup.
+enum PropLookupKind {
+    PROP_ACCESSOR,
+    PROP_DATA,
+    PROP_NOT_FOUND
+}
+
+/// Single-pass prototype chain search: finds either an accessor or data property.
+/// Returns the kind found. For accessors, sets `acc_out`; for data, sets `data_out`.
+/// This avoids walking the chain twice (once for accessor, once for data).
+fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want_getter, AccessorResult* acc_out, TVal* data_out) {
+    const uint MAX_PROTO_DEPTH = 256;
+    HObject* cur = self;
+    uint depth = 0;
+
+    while (cur != null && depth < MAX_PROTO_DEPTH) {
+        int idx = cur.find_prop_idx(key);
+        if (idx >= 0) {
+            PropEntry* pe = &cur.props[idx];
+            if (pe.flags.is_accessor) {
+                TVal accessor_fn = want_getter ? pe.getter : pe.setter;
+                acc_out.accessor_fn = accessor_fn;
+                acc_out.this_obj = self;
+                acc_out.found = true;
+                return PropLookupKind.PROP_ACCESSOR;
+            }
+            *data_out = pe.value;
+            return PropLookupKind.PROP_DATA;
+        }
+        cur = cur.prototype;
+        depth++;
+    }
+
+    return PropLookupKind.PROP_NOT_FOUND;
+}
+
 /// Check whether the property exists anywhere on the prototype chain.
 fn bool HObject.has_prop_proto(&self, void* key) {
     const uint MAX_PROTO_DEPTH = 256;

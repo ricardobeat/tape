@@ -261,23 +261,29 @@ fn bool is_truthy(TVal* val) @inline {
 }
 
 /// Ensure the value stack has room for `needed` more slots.
-fn bool ensure_valstack(Vm* vm, uint needed) {
-    uint used = (uint)((usz)vm.valstack_top - (usz)vm.valstack) / TVal::size;
-    if (used + needed <= vm.valstack_size) {
+/// Fast path uses pointer comparison (no division).
+fn bool ensure_valstack(Vm* vm, uint needed) @inline {
+    // Fast path: check if top + needed fits within allocated end
+    if (vm.valstack_top + needed <= vm.valstack_end) {
         return true;
     }
+    return ensure_valstack_grow(vm, needed);
+}
+
+/// Slow path: grow the value stack.
+fn bool ensure_valstack_grow(Vm* vm, uint needed) {
+    uint used = (uint)((usz)vm.valstack_top - (usz)vm.valstack) / TVal::size;
     uint new_size = vm.valstack_size;
     while (new_size < used + needed) {
         new_size *= 2;
     }
-    uint old_used = (uint)((usz)vm.valstack_top - (usz)vm.valstack) / TVal::size;
     void* new_raw = libc::realloc(vm.valstack, (usz)new_size * TVal::size);
     if (new_raw == null) {
         return false;
     }
     vm.valstack = (TVal*)new_raw;
     vm.valstack_size = new_size;
-    vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)(old_used * TVal::size));
+    vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)(used * TVal::size));
     vm.valstack_end = (TVal*)((usz)vm.valstack + (usz)(new_size * TVal::size));
     return true;
 }
@@ -888,10 +894,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     // Clear registers and copy args (getters have 0 args)
     TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
     uint new_nregs = target.num_regs;
-    for (uint i = 0; i < new_nregs; i++) {
-        new_regs[i].tag = UNDEFINED;
-        new_regs[i].pointer = null;
-    }
+    libc::memset(new_regs, 0, (usz)new_nregs * TVal::size);
 
     vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * TVal::size);
     vm.valstack_bottom = new_act.bottom_byteoff;
@@ -1702,9 +1705,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* hobj = (HObject*)rb.pointer;
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    // Check for accessor property first
-                    hobject::AccessorResult acc = hobj.find_accessor_proto(key, true);
-                    if (acc.found) {
+                    // Single-pass: check accessor and data property in one chain walk
+                    hobject::AccessorResult acc;
+                    TVal data_val;
+                    hobject::PropLookupKind kind = hobj.get_prop_or_accessor_proto(key, true, &acc, &data_val);
+                    if (kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                         TVal obj_val;
                         obj_val.tag = OBJECT;
                         obj_val.pointer = hobj;
@@ -1715,11 +1720,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                         // If invoke_getter returned false, result was set to undefined
                         break;
-                    }
-                    // Data property: inline get_prop_with_proto
-                    TVal? result = hobj.get_prop_proto(key);
-                    if (try v = result) {
-                        *ra = v;
+                    } else if (kind == hobject::PropLookupKind.PROP_DATA) {
+                        *ra = data_val;
                     } else {
                         ra.tag = UNDEFINED;
                         ra.pointer = null;
@@ -1877,10 +1879,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 new_act.this_binding = obj_tv;
 
                                 TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
-                                for (uint i = 0; i < target.num_regs; i++) {
-                                    new_regs[i].tag = UNDEFINED;
-                                    new_regs[i].pointer = null;
-                                }
+                                libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
                                 // Copy arg (the value being set)
                                 new_regs[0] = put_val;
 
@@ -2728,17 +2727,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 }
 
                 // Fill remaining registers with UNDEFINED (after the rest param)
-                for (uint i = rest_idx + 1; i < new_nregs; i++) {
-                    new_regs[i].tag = UNDEFINED;
-                    new_regs[i].pointer = null;
+                if (rest_idx + 1 < new_nregs) {
+                    libc::memset(&new_regs[rest_idx + 1], 0, (usz)(new_nregs - rest_idx - 1) * TVal::size);
                 }
             } else {
+                // Args are already in position (new_regs == old_args, sliding window).
+                // Only zero the unused registers beyond nargs.
                 for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
-                    new_regs[i] = old_args[i];
+                    new_regs[i] = old_args[i];  // self-copy (no-op) — keeps code clear
                 }
-                for (uint i = nargs; i < new_nregs; i++) {
-                    new_regs[i].tag = UNDEFINED;
-                    new_regs[i].pointer = null;
+                if (nargs < new_nregs) {
+                    libc::memset(&new_regs[nargs], 0, (usz)(new_nregs - nargs) * TVal::size);
                 }
             }
 
@@ -2962,9 +2961,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 for (uint i = 0; i < nargs && i < new_nregs; i++) {
                     new_regs[i] = old_args[i];
                 }
-                for (uint i = nargs; i < new_nregs; i++) {
-                    new_regs[i].tag = UNDEFINED;
-                    new_regs[i].pointer = null;
+                if (nargs < new_nregs) {
+                    libc::memset(&new_regs[nargs], 0, (usz)(new_nregs - nargs) * TVal::size);
                 }
             }
 
@@ -3267,17 +3265,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     new_regs2[rest_idx].pointer = null;
                 }
 
-                for (uint i = rest_idx + 1; i < new_nregs2; i++) {
-                    new_regs2[i].tag = UNDEFINED;
-                    new_regs2[i].pointer = null;
+                if (rest_idx + 1 < new_nregs2) {
+                    libc::memset(&new_regs2[rest_idx + 1], 0, (usz)(new_nregs2 - rest_idx - 1) * TVal::size);
                 }
             } else {
                 for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
                     new_regs2[i] = old_args2[i];
                 }
-                for (uint i = nargs; i < new_nregs2; i++) {
-                    new_regs2[i].tag = UNDEFINED;
-                    new_regs2[i].pointer = null;
+                if (nargs < new_nregs2) {
+                    libc::memset(&new_regs2[nargs], 0, (usz)(new_nregs2 - nargs) * TVal::size);
                 }
             }
 
@@ -3661,6 +3657,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 TVal name_val = constants[bc];
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
+                    bool found = false;
 
                     // Search lexical environment first (for let/const bindings)
                     TVal? result = env::env_get_lex(act.lex_env, key);
@@ -3693,38 +3690,43 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             }
                         } else {
                             *ra = v;
+                            found = true;
                         }
-                    } else {
-                        // Not in lex_env — search var_env
+                    } else if (act.lex_env != act.var_env) {
+                        // Not in lex_env — search var_env (only needed with `with` blocks)
                         result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
                             *ra = v2;
-                        } else {
-                            // ReferenceError: variable not declared
-                            HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.ref_err_proto;
-                                char[160] buf;
-                                int len = libc::snprintf(&buf, 160, "%s is not defined",
-                                                         name_hstr.get_cstr());
-                                if (len > 0 && len < 160) {
-                                    HString* msg_str = intern_string(vm, buf[:len]);
-                                    TVal msg_val;
-                                    msg_val.tag = STRING;
-                                    msg_val.pointer = msg_str;
-                                    HString* msg_key = intern_string(vm, "message");
-                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val;
-                                err_val.tag = OBJECT;
-                                err_val.pointer = err;
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
-                                }
-                            } else {
+                            found = true;
+                        }
+                    }
+                    // If lex_env == var_env, env_get_lex already walked the entire chain.
+
+                    if (!found) {
+                        // ReferenceError: variable not declared
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.ref_err_proto;
+                            char[160] buf;
+                            int len = libc::snprintf(&buf, 160, "%s is not defined",
+                                                     name_hstr.get_cstr());
+                            if (len > 0 && len < 160) {
+                                HString* msg_str = intern_string(vm, buf[:len]);
+                                TVal msg_val;
+                                msg_val.tag = STRING;
+                                msg_val.pointer = msg_str;
+                                HString* msg_key = intern_string(vm, "message");
+                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.tag = OBJECT;
+                            err_val.pointer = err;
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                 return VM_ERROR~;
                             }
+                        } else {
+                            return VM_ERROR~;
                         }
                     }
                 } else {
@@ -3814,42 +3816,40 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 TVal name_val = constants[bc];
                 if (name_val.tag == STRING) {
                     void* key = name_val.pointer;
-                    // Check lex_env first — if the binding is a let/const,
-                    // we need to update it in the lexical environment, not
-                    // create a new var_env binding.
-                    if (env::env_has_lex(act.lex_env, key)) {
-                        // Enforce const: check writability of existing binding
-                        if (!env::env_is_lex_writable(act.lex_env, key)) {
-                            HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                char[160] buf;
-                                int len = libc::snprintf(&buf, 160, "Assignment to constant variable '%s'",
-                                                         name_hstr.get_cstr());
-                                if (len > 0 && len < 160) {
-                                    HString* msg_str = intern_string(vm, buf[:len]);
-                                    TVal msg_val;
-                                    msg_val.tag = STRING;
-                                    msg_val.pointer = msg_str;
-                                    HString* msg_key = intern_string(vm, "message");
-                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val;
-                                err_val.tag = OBJECT;
-                                err_val.pointer = err;
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
-                                }
-                            } else {
+                    // Combined single-walk: check lex_env, writability, and update in one pass
+                    int put_result = env::env_try_put_lex(act.lex_env, key, *ra);
+                    if (put_result == -1) {
+                        // Const violation — throw TypeError
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            char[160] buf;
+                            int len = libc::snprintf(&buf, 160, "Assignment to constant variable '%s'",
+                                                     name_hstr.get_cstr());
+                            if (len > 0 && len < 160) {
+                                HString* msg_str = intern_string(vm, buf[:len]);
+                                TVal msg_val;
+                                msg_val.tag = STRING;
+                                msg_val.pointer = msg_str;
+                                HString* msg_key = intern_string(vm, "message");
+                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.tag = OBJECT;
+                            err_val.pointer = err;
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                 return VM_ERROR~;
                             }
-                            break;
+                        } else {
+                            return VM_ERROR~;
                         }
-                        env::env_put_lex(act.lex_env, key, *ra);
-                    } else {
+                        break;
+                    } else if (put_result == 0) {
+                        // Not in lex_env — fall through to var_env
                         env::env_put(act.var_env, key, *ra);
                     }
+                    // put_result == 1: already updated in lex_env
                 }
             }
             break;
