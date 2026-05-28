@@ -244,6 +244,19 @@ const uint BUILTIN_STRING_FROMCHARCODE = 217;
 const uint BUILTIN_OBJECT_IS           = 218;
 const uint BUILTIN_OBJECT_HASOWN       = 219;
 const uint BUILTIN_OBJECT_SETPROTOTYPEOF = 220;
+const uint BUILTIN_ARRAY_PROTO_FLAT      = 221;
+const uint BUILTIN_ARRAY_PROTO_FLATMAP   = 222;
+const uint BUILTIN_STRING_FROMCODEPOINT  = 223;
+
+const uint BUILTIN_ENCODE_URI              = 224;
+const uint BUILTIN_ENCODE_URI_COMPONENT    = 225;
+const uint BUILTIN_DECODE_URI              = 226;
+const uint BUILTIN_DECODE_URI_COMPONENT    = 227;
+const uint BUILTIN_URI_ERROR               = 228;
+const uint BUILTIN_ARRAY_PROTO_TOREVERSED = 229;
+const uint BUILTIN_ARRAY_PROTO_TOSORTED   = 230;
+const uint BUILTIN_ARRAY_PROTO_TOSPLICED  = 231;
+const uint BUILTIN_ARRAY_PROTO_WITH       = 232;
 
 const uint BUILTIN_STRING_PROTO_INCLUDES  = 170;
 const uint BUILTIN_STRING_PROTO_STARTSWITH = 171;
@@ -1001,6 +1014,10 @@ fn void builtin_eval_error(BuiltinContext* ctx) {
     builtin_error_constructor_shared(ctx, ctx.heap.eval_err_proto);
 }
 
+fn void builtin_uri_error(BuiltinContext* ctx) {
+    builtin_error_constructor_shared(ctx, ctx.heap.uri_err_proto);
+}
+
 // ============================================================================
 // Error.prototype.toString — returns "name: message" per ES5 §15.11.4.4
 // ============================================================================
@@ -1194,6 +1211,510 @@ fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// String.fromCodePoint(...codePoints) — ES6 §21.1.2.2
+fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        HString* empty = builtin_intern_string(ctx.heap, "");
+        ctx.result.tag = STRING;
+        ctx.result.pointer = empty;
+        return;
+    }
+    // Build string from code points (supporting supplementary plane via UTF-8)
+    char[1024] buf;
+    usz offset = 0;
+    ushort max_args = (ushort)(ctx.argc < 256 ? ctx.argc : 256);
+    for (ushort i = 0; i < max_args && offset < 1020; i++) {
+        TVal* arg = &ctx.regs[ctx.base_reg + i];
+        double d;
+        if (arg.tag == FASTINT) {
+            d = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            d = arg.number;
+        } else if (arg.tag == BOOLEAN) {
+            d = arg.boolean ? 1.0 : 0.0;
+        } else if (arg.tag == UNDEFINED || arg.tag == NULL_VAL) {
+            d = 0.0;
+        } else {
+            d = builtin_to_number_getdouble(ctx, arg);
+        }
+        // Check: must be integral Number in [0, 0x10FFFF]
+        if (math::is_nan(d) || math::is_inf(d) || d != math::trunc(d) || d < 0 || d > 0x10FFFF) {
+            // Throw RangeError
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.range_err_proto;
+                HString* msg = builtin_intern_string(ctx.heap, "Invalid code point value");
+                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            }
+            return;
+        }
+        uint ucp = (uint)(long)d;
+        if (ucp < 0x80) {
+            buf[offset++] = (char)ucp;
+        } else if (ucp < 0x800) {
+            buf[offset++] = (char)(0xC0 | (ucp >> 6));
+            buf[offset++] = (char)(0x80 | (ucp & 0x3F));
+        } else if (ucp < 0x10000) {
+            buf[offset++] = (char)(0xE0 | (ucp >> 12));
+            buf[offset++] = (char)(0x80 | ((ucp >> 6) & 0x3F));
+            buf[offset++] = (char)(0x80 | (ucp & 0x3F));
+        } else {
+            // 4-byte UTF-8 for supplementary plane
+            buf[offset++] = (char)(0xF0 | (ucp >> 18));
+            buf[offset++] = (char)(0x80 | ((ucp >> 12) & 0x3F));
+            buf[offset++] = (char)(0x80 | ((ucp >> 6) & 0x3F));
+            buf[offset++] = (char)(0x80 | (ucp & 0x3F));
+        }
+    }
+    HString* result_str = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result_str;
+}
+
+// ============================================================================
+// URI encode/decode helpers (ES5 §15.1.3)
+// ============================================================================
+
+fn void uri_encode_byte(char* out, usz* offset, char b) {
+    out[*offset] = '%';
+    out[*offset + 1] = "0123456789ABCDEF"[b >> 4];
+    out[*offset + 2] = "0123456789ABCDEF"[b & 0x0F];
+    *offset += 3;
+}
+
+fn bool uri_is_unreserved(char c) {
+    if (c >= 'A' && c <= 'Z') return true;
+    if (c >= 'a' && c <= 'z') return true;
+    if (c >= '0' && c <= '9') return true;
+    if (c == '-' || c == '_' || c == '.' || c == '!') return true;
+    if (c == '~' || c == '*' || c == '\'' || c == '(') return true;
+    if (c == ')') return true;
+    return false;
+}
+
+fn int hex_digit_val(char c) {
+    if (c >= '0' && c <= '9') return (int)c - '0';
+    if (c >= 'A' && c <= 'F') return (int)c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return (int)c - 'a' + 10;
+    return -1;
+}
+
+/// encodeURI (ES5 §15.1.3.1)
+fn void builtin_encode_uri(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        return;
+    }
+    HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    if (str == null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    char[] data = str.get_data();
+    uint len = str.blen;
+    char[65536] out;
+    usz offset = 0;
+    uint i = 0;
+    while (i < len && offset < 65530) {
+        char c = data[i];
+        // URI unreserved + reserved + '#' characters (not encoded)
+        if (uri_is_unreserved(c)) {
+            out[offset++] = c;
+            i++;
+        } else if (c == ';' || c == ',' || c == '/' || c == '?' || c == ':' ||
+                   c == '@' || c == '&' || c == '=' || c == '+' || c == '$' ||
+                   c == '-' || c == '_' || c == '.' || c == '!' || c == '~' ||
+                   c == '*' || c == '\'' || c == '(' || c == ')' || c == '#') {
+            out[offset++] = c;
+            i++;
+        } else {
+            uint b = (uint)c;
+            if (b < 0x80) {
+                uri_encode_byte(&out, &offset, (char)b);
+                i++;
+            } else if (b >= 0xC2 && b <= 0xF4) {
+                uint seq_len;
+                if (b < 0xE0) { seq_len = 2; }
+                else if (b < 0xF0) { seq_len = 3; }
+                else { seq_len = 4; }
+                if (i + seq_len > len) {
+                    // Incomplete sequence - encode byte
+                    uri_encode_byte(&out, &offset, (char)b);
+                    i++;
+                } else {
+                    // Validate continuation bytes
+                    bool valid = true;
+                    for (uint j = 1; j < seq_len; j++) {
+                        uint cb = (uint)data[i + j];
+                        if (cb < 0x80 || cb > 0xBF) { valid = false; break; }
+                    }
+                    if (!valid) {
+                        uri_encode_byte(&out, &offset, (char)b);
+                        i++;
+                    } else {
+                        for (uint j = 0; j < seq_len; j++) {
+                            uri_encode_byte(&out, &offset, (char)data[i + j]);
+                        }
+                        i += seq_len;
+                    }
+                }
+            } else {
+                // Invalid leading byte (0x80-0xBF, 0xC0-0xC1, 0xF5-0xFF)
+                uri_encode_byte(&out, &offset, (char)b);
+                i++;
+            }
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, out[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// encodeURIComponent (ES5 §15.1.3.2)
+fn void builtin_encode_uri_component(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        return;
+    }
+    HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    if (str == null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    char[] data = str.get_data();
+    uint len = str.blen;
+    char[65536] out;
+    usz offset = 0;
+    uint i = 0;
+    while (i < len && offset < 65530) {
+        char c = data[i];
+        if (uri_is_unreserved(c)) {
+            out[offset++] = c;
+            i++;
+        } else {
+            uint b = (uint)c;
+            if (b < 0x80) {
+                uri_encode_byte(&out, &offset, (char)b);
+                i++;
+            } else if (b >= 0xC2 && b <= 0xF4) {
+                uint seq_len;
+                if (b < 0xE0) { seq_len = 2; }
+                else if (b < 0xF0) { seq_len = 3; }
+                else { seq_len = 4; }
+                if (i + seq_len > len) {
+                    uri_encode_byte(&out, &offset, (char)b);
+                    i++;
+                } else {
+                    bool valid = true;
+                    for (uint j = 1; j < seq_len; j++) {
+                        uint cb = (uint)data[i + j];
+                        if (cb < 0x80 || cb > 0xBF) { valid = false; break; }
+                    }
+                    if (!valid) {
+                        uri_encode_byte(&out, &offset, (char)b);
+                        i++;
+                    } else {
+                        for (uint j = 0; j < seq_len; j++) {
+                            uri_encode_byte(&out, &offset, (char)data[i + j]);
+                        }
+                        i += seq_len;
+                    }
+                }
+            } else {
+                uri_encode_byte(&out, &offset, (char)b);
+                i++;
+            }
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, out[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// decodeURI (ES5 §15.1.3.3)
+fn void builtin_decode_uri(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        return;
+    }
+    HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    if (str == null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    char[] data = str.get_data();
+    uint len = str.blen;
+    char[65536] out;
+    usz offset = 0;
+    uint i = 0;
+    while (i < len && offset < 65530) {
+        if (data[i] == '%') {
+            // Check if this is a reserved character that should NOT be decoded
+            if (i + 2 < len) {
+                int d1 = hex_digit_val(data[i + 1]);
+                int d2 = hex_digit_val(data[i + 2]);
+                if (d1 >= 0 && d2 >= 0) {
+                    uint cp = (uint)((d1 << 4) | d2);
+                    // decodeURI does NOT decode reserved URI characters
+                    if (cp == 0x23 || cp == 0x24 || cp == 0x26 || cp == 0x2B ||
+                        cp == 0x2C || cp == 0x2F || cp == 0x3A || cp == 0x3B ||
+                        cp == 0x3D || cp == 0x3F || cp == 0x40) {
+                        out[offset++] = '%';
+                        out[offset++] = data[i + 1];
+                        out[offset++] = data[i + 2];
+                        i += 3;
+                        continue;
+                    }
+                    // Decode the byte
+                    char first = (char)cp;
+                    if (first < 0x80) {
+                        out[offset++] = (char)first;
+                        i += 3;
+                    } else if (first >= 0xC0 && first <= 0xF4) {
+                        // Multi-byte UTF-8 sequence
+                        uint seq_len;
+                        if (first < 0xE0) { seq_len = 2; }
+                        else if (first < 0xF0) { seq_len = 3; }
+                        else { seq_len = 4; }
+                        if (i + 3 * seq_len > len) {
+                            // Incomplete - throw URIError
+                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = ctx.heap.uri_err_proto;
+                                HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                ctx.should_throw = true;
+                                ctx.throw_value.tag = OBJECT;
+                                ctx.throw_value.pointer = err;
+                            }
+                            return;
+                        }
+                        char[4] bytes;
+                        bytes[0] = (char)first;
+                        bool valid = true;
+                        for (uint j = 1; j < seq_len; j++) {
+                            if (data[i + 3 * j] != '%') { valid = false; break; }
+                            int h1 = hex_digit_val(data[i + 3 * j + 1]);
+                            int h2 = hex_digit_val(data[i + 3 * j + 2]);
+                            if (h1 < 0 || h2 < 0) { valid = false; break; }
+                            char b = (char)((h1 << 4) | h2);
+                            if (b < 0x80 || b > 0xBF) { valid = false; break; }
+                            bytes[j] = (char)b;
+                        }
+                        if (!valid) {
+                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = ctx.heap.uri_err_proto;
+                                HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                ctx.should_throw = true;
+                                ctx.throw_value.tag = OBJECT;
+                                ctx.throw_value.pointer = err;
+                            }
+                            return;
+                        }
+                        for (uint j = 0; j < seq_len; j++) {
+                            out[offset++] = bytes[j];
+                        }
+                        i += 3 * seq_len;
+                    } else {
+                        // Invalid leading byte for multi-byte sequence
+                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = ctx.heap.uri_err_proto;
+                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            ctx.should_throw = true;
+                            ctx.throw_value.tag = OBJECT;
+                            ctx.throw_value.pointer = err;
+                        }
+                        return;
+                    }
+                } else {
+                    // Invalid hex digits
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = ctx.heap.uri_err_proto;
+                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        ctx.should_throw = true;
+                        ctx.throw_value.tag = OBJECT;
+                        ctx.throw_value.pointer = err;
+                    }
+                    return;
+                }
+            } else {
+                // '%' not followed by two hex digits
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.uri_err_proto;
+                    HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                    TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.tag = OBJECT;
+                    ctx.throw_value.pointer = err;
+                }
+                return;
+            }
+        } else {
+            out[offset++] = data[i];
+            i++;
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, out[:offset]);
+    ctx.result.tag = STRING;
+    ctx.result.pointer = result;
+}
+
+/// decodeURIComponent (ES5 §15.1.3.4)
+fn void builtin_decode_uri_component(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "undefined");
+        return;
+    }
+    HString* str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    if (str == null) {
+        ctx.result.tag = STRING;
+        ctx.result.pointer = builtin_intern_string(ctx.heap, "");
+        return;
+    }
+    char[] data = str.get_data();
+    uint len = str.blen;
+    char[65536] out;
+    usz offset = 0;
+    uint i = 0;
+    while (i < len && offset < 65530) {
+        if (data[i] == '%') {
+            if (i + 2 < len) {
+                int d1 = hex_digit_val(data[i + 1]);
+                int d2 = hex_digit_val(data[i + 2]);
+                if (d1 < 0 || d2 < 0) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = ctx.heap.uri_err_proto;
+                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        ctx.should_throw = true;
+                        ctx.throw_value.tag = OBJECT;
+                        ctx.throw_value.pointer = err;
+                    }
+                    return;
+                }
+                char first = (char)((d1 << 4) | d2);
+                if (first < 0x80) {
+                    out[offset++] = (char)first;
+                    i += 3;
+                } else if (first >= 0xC0 && first <= 0xF4) {
+                    uint seq_len;
+                    if (first < 0xE0) { seq_len = 2; }
+                    else if (first < 0xF0) { seq_len = 3; }
+                    else { seq_len = 4; }
+                    if (i + 3 * seq_len > len) {
+                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = ctx.heap.uri_err_proto;
+                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            ctx.should_throw = true;
+                            ctx.throw_value.tag = OBJECT;
+                            ctx.throw_value.pointer = err;
+                        }
+                        return;
+                    }
+                    char[4] bytes;
+                    bytes[0] = (char)first;
+                    bool valid = true;
+                    for (uint j = 1; j < seq_len; j++) {
+                        if (data[i + 3 * j] != '%') { valid = false; break; }
+                        int h1 = hex_digit_val(data[i + 3 * j + 1]);
+                        int h2 = hex_digit_val(data[i + 3 * j + 2]);
+                        if (h1 < 0 || h2 < 0) { valid = false; break; }
+                        char b = (char)((h1 << 4) | h2);
+                        if (b < 0x80 || b > 0xBF) { valid = false; break; }
+                        bytes[j] = (char)b;
+                    }
+                    if (!valid) {
+                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = ctx.heap.uri_err_proto;
+                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            ctx.should_throw = true;
+                            ctx.throw_value.tag = OBJECT;
+                            ctx.throw_value.pointer = err;
+                        }
+                        return;
+                    }
+                    for (uint j = 0; j < seq_len; j++) {
+                        out[offset++] = bytes[j];
+                    }
+                    i += 3 * seq_len;
+                } else {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = ctx.heap.uri_err_proto;
+                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                        TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        ctx.should_throw = true;
+                        ctx.throw_value.tag = OBJECT;
+                        ctx.throw_value.pointer = err;
+                    }
+                    return;
+                }
+            } else {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.uri_err_proto;
+                    HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
+                    TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.tag = OBJECT;
+                    ctx.throw_value.pointer = err;
+                }
+                return;
+            }
+        } else {
+            out[offset++] = data[i];
+            i++;
+        }
+    }
+    HString* result = builtin_intern_string(ctx.heap, out[:offset]);
     ctx.result.tag = STRING;
     ctx.result.pointer = result;
 }
@@ -2579,6 +3100,121 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
         }
     }
     ctx.result.set_boolean(false);
+}
+
+/// Helper: flatten source array into target array recursively.
+/// Returns the next target index after all elements are inserted.
+fn uint flatten_into(HObject* target, HObject* source, uint source_len, uint target_idx, double depth, Heap* heap) {
+    for (uint i = 0; i < source_len; i++) {
+        TVal elem = array_get_elem(source, i, heap);
+        if (elem.tag == OBJECT && elem.pointer != null &&
+            ((HObject*)elem.pointer).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
+            HObject* inner = (HObject*)elem.pointer;
+            uint inner_len = array_get_length(inner, heap);
+            target_idx = flatten_into(target, inner, inner_len, target_idx, depth - 1, heap);
+        } else {
+            array_set_elem(target, target_idx, elem, heap);
+            target_idx++;
+        }
+    }
+    return target_idx;
+}
+
+/// Array.prototype.flat(depth) — ES2019 §22.1.3.10
+fn void builtin_array_proto_flat(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flat requires 'this' to be an object");
+            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        }
+        return;
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    double depth_num = 1.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        if (arg.tag != UNDEFINED) {
+            depth_num = builtin_to_integer(arg);
+        }
+    }
+    if (depth_num < 0) depth_num = 0;
+
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    uint n = flatten_into(result, obj, len, 0, depth_num, ctx.heap);
+    array_set_length(result, n, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+/// Array.prototype.flatMap(mapFn, thisArg) — ES2019 §22.1.3.11
+fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flatMap requires 'this' to be an object");
+            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        }
+        return;
+    }
+
+    // Validate callbackfn is callable (if provided)
+    if (ctx.argc >= 1) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        if (arg.tag != OBJECT || arg.pointer == null || !((HObject*)arg.pointer).is_callable()) {
+            HObject*? err_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err2 = err_raw2) {
+                err2.prototype = ctx.heap.type_err_proto;
+                HString* msg2 = builtin_intern_string(ctx.heap, "Array.prototype.flatMap callback is not callable");
+                TVal msg_tv2; msg_tv2.tag = STRING; msg_tv2.pointer = msg2;
+                HString* msg_key2 = builtin_intern_string(ctx.heap, "message");
+                err2.put_prop(msg_key2, msg_tv2, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err2;
+            }
+            return;
+        }
+    }
+
+    // Stub: flatten without mapping (no VM callback support yet)
+    uint len = array_get_length(obj, ctx.heap);
+
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    uint n = flatten_into(result, obj, len, 0, 1.0, ctx.heap);
+    array_set_length(result, n, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
 }
 
 // ============================================================================
@@ -5965,6 +6601,320 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         TVal item = ctx.regs[ctx.base_reg + 2 + i];
         array_set_elem(obj, actual_start + i, item, ctx.heap);
     }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.toReversed (ES2023 §23.1.3.33)
+// ============================================================================
+fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        TVal this_val = ctx.regs[ctx.base_reg - 1];
+        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toReversed called on null or undefined");
+                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            }
+        }
+        return;
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    for (uint i = 0; i < len; i++) {
+        TVal elem = array_get_elem(obj, len - 1 - i, ctx.heap);
+        array_set_elem(result, i, elem, ctx.heap);
+    }
+    array_set_length(result, len, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.toSorted (ES2023 §23.1.3.34) — default compare (no comparefn)
+// ============================================================================
+fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        TVal this_val = ctx.regs[ctx.base_reg - 1];
+        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSorted called on null or undefined");
+                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            }
+        }
+        return;
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Create a copy
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    for (uint i = 0; i < len; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        array_set_elem(result, i, elem, ctx.heap);
+    }
+    array_set_length(result, len, ctx.heap);
+
+    // Compact defined elements to the front
+    uint def_count = 0;
+    for (uint i = 0; i < len; i++) {
+        TVal elem = array_get_elem(result, i, ctx.heap);
+        if (elem.tag != UNDEFINED) {
+            array_set_elem(result, def_count, elem, ctx.heap);
+            def_count++;
+        }
+    }
+
+    // Bubble-sort defined elements by string comparison
+    for (uint i = 0; i < def_count; i++) {
+        for (uint j = 0; j < def_count - 1 - i; j++) {
+            TVal a = array_get_elem(result, j, ctx.heap);
+            TVal b = array_get_elem(result, j + 1, ctx.heap);
+            HString* a_str = builtin_to_string(ctx.heap, &a);
+            HString* b_str = builtin_to_string(ctx.heap, &b);
+            int cmp = 0;
+            if (a_str != null && b_str != null) {
+                cmp = hstring::hstring_compare(a_str, b_str);
+            } else if (a_str == null && b_str == null) {
+                cmp = 0;
+            } else if (a_str == null) {
+                cmp = 1;
+            } else {
+                cmp = -1;
+            }
+            if (cmp > 0) {
+                array_set_elem(result, j, b, ctx.heap);
+                array_set_elem(result, j + 1, a, ctx.heap);
+            }
+        }
+    }
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.toSpliced (ES2023 §23.1.3.35)
+// ============================================================================
+fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        TVal this_val = ctx.regs[ctx.base_reg - 1];
+        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSpliced called on null or undefined");
+                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            }
+        }
+        return;
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Get relativeStart (argument 0)
+    double relative_start = 0.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        if (arg.tag == FASTINT) {
+            relative_start = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            relative_start = arg.number;
+        }
+    }
+
+    uint actual_start;
+    if (relative_start < 0) {
+        double tmp = (double)len + relative_start;
+        actual_start = tmp < 0 ? 0 : (uint)(long)tmp;
+    } else {
+        actual_start = relative_start > (double)len ? len : (uint)(long)relative_start;
+    }
+
+    // Get actualDeleteCount
+    uint actual_delete_count;
+    if (ctx.argc <= 1) {
+        actual_delete_count = len - actual_start;
+    } else {
+        TVal* arg = &ctx.regs[ctx.base_reg + 1];
+        double delete_count;
+        if (arg.tag == FASTINT) {
+            delete_count = (double)arg.fastint;
+        } else if (arg.tag == NUMBER) {
+            delete_count = arg.number;
+        } else {
+            delete_count = 0;
+        }
+
+        if (delete_count < 0) delete_count = 0;
+        uint dc = (uint)(long)delete_count;
+        actual_delete_count = dc > (len - actual_start) ? (len - actual_start) : dc;
+    }
+
+    // Get items to insert
+    ushort item_count = 0;
+    if (ctx.argc > 2) {
+        item_count = ctx.argc - 2;
+    }
+
+    // Create new array: prefix + items + suffix
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    uint n = 0;
+    // Copy prefix [0, actual_start)
+    for (uint i = 0; i < actual_start; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        array_set_elem(result, n, elem, ctx.heap);
+        n++;
+    }
+    // Insert new items
+    for (ushort i = 0; i < item_count; i++) {
+        TVal item = ctx.regs[ctx.base_reg + 2 + i];
+        array_set_elem(result, n, item, ctx.heap);
+        n++;
+    }
+    // Copy suffix [actual_start + actual_delete_count, len)
+    for (uint i = actual_start + actual_delete_count; i < len; i++) {
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        array_set_elem(result, n, elem, ctx.heap);
+        n++;
+    }
+    array_set_length(result, n, ctx.heap);
+
+    ctx.result.tag = OBJECT;
+    ctx.result.pointer = result;
+}
+
+// ============================================================================
+// Array.prototype.with (ES2023 §23.1.3.37)
+// ============================================================================
+fn void builtin_array_proto_with(BuiltinContext* ctx) {
+    HObject* obj = array_proto_get_this(ctx);
+    if (obj == null) {
+        TVal this_val = ctx.regs[ctx.base_reg - 1];
+        if (this_val.tag == UNDEFINED || this_val.tag == NULL_VAL) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.with called on null or undefined");
+                TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                ctx.should_throw = true;
+                ctx.throw_value.tag = OBJECT;
+                ctx.throw_value.pointer = err;
+            }
+        }
+        return;
+    }
+
+    uint len = array_get_length(obj, ctx.heap);
+
+    // Get index using ToIntegerOrInfinity
+    double index_d = 0.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        index_d = builtin_to_integer(arg);
+    }
+
+    uint actual_index;
+    if (index_d < 0) {
+        double tmp = (double)len + index_d;
+        if (tmp < 0) {
+            actual_index = len; // Out of range
+        } else {
+            actual_index = (uint)(long)tmp;
+        }
+    } else if (index_d < (double)len) {
+        actual_index = (uint)(long)index_d;
+    } else {
+        actual_index = len; // Out of range (includes NaN, Infinity, >= len)
+    }
+
+    if (actual_index >= len) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.range_err_proto;
+            HString* msg = builtin_intern_string(ctx.heap, "Invalid array index");
+            TVal msg_tv; msg_tv.tag = STRING; msg_tv.pointer = msg;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            ctx.should_throw = true;
+            ctx.throw_value.tag = OBJECT;
+            ctx.throw_value.pointer = err;
+        }
+        return;
+    }
+
+    // Get value to set
+    TVal new_val;
+    if (ctx.argc > 1) {
+        new_val = ctx.regs[ctx.base_reg + 1];
+    } else {
+        new_val.tag = UNDEFINED;
+        new_val.pointer = null;
+    }
+
+    // Create new array
+    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = new_arr) {
+        ctx.result.tag = UNDEFINED; ctx.result.pointer = null; return;
+    }
+    HObject* result = new_arr;
+    result.prototype = ctx.heap.array_proto;
+
+    for (uint i = 0; i < len; i++) {
+        if (i == actual_index) {
+            array_set_elem(result, i, new_val, ctx.heap);
+        } else {
+            TVal elem = array_get_elem(obj, i, ctx.heap);
+            array_set_elem(result, i, elem, ctx.heap);
+        }
+    }
+    array_set_length(result, len, ctx.heap);
 
     ctx.result.tag = OBJECT;
     ctx.result.pointer = result;
@@ -11465,6 +12415,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_syntax_error(ctx);
         case BUILTIN_EVAL_ERROR:
             builtin_eval_error(ctx);
+        case BUILTIN_URI_ERROR:
+            builtin_uri_error(ctx);
         case BUILTIN_ERROR_PROTO_TOSTRING:
             builtin_error_prototype_to_string(ctx);
         case BUILTIN_BOOLEAN:
@@ -11481,6 +12433,20 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_valueOf(ctx);
         case BUILTIN_STRING_FROMCHARCODE:
             builtin_string_fromcharcode(ctx);
+        case BUILTIN_STRING_FROMCODEPOINT:
+            builtin_string_fromcodepoint(ctx);
+        case BUILTIN_ARRAY_PROTO_FLAT:
+            builtin_array_proto_flat(ctx);
+        case BUILTIN_ARRAY_PROTO_FLATMAP:
+            builtin_array_proto_flatMap(ctx);
+        case BUILTIN_ARRAY_PROTO_TOREVERSED:
+            builtin_array_proto_toReversed(ctx);
+        case BUILTIN_ARRAY_PROTO_TOSORTED:
+            builtin_array_proto_toSorted(ctx);
+        case BUILTIN_ARRAY_PROTO_TOSPLICED:
+            builtin_array_proto_toSpliced(ctx);
+        case BUILTIN_ARRAY_PROTO_WITH:
+            builtin_array_proto_with(ctx);
         case BUILTIN_NUMBER:
             builtin_number(ctx);
         case BUILTIN_NUMBER_PROTO_TOSTRING:
@@ -11861,6 +12827,14 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_generator_proto_throw(ctx);
         case BUILTIN_GENERATOR_PROTO_RETURN:
             builtin_generator_proto_return(ctx);
+        case BUILTIN_ENCODE_URI:
+            builtin_encode_uri(ctx);
+        case BUILTIN_ENCODE_URI_COMPONENT:
+            builtin_encode_uri_component(ctx);
+        case BUILTIN_DECODE_URI:
+            builtin_decode_uri(ctx);
+        case BUILTIN_DECODE_URI_COMPONENT:
+            builtin_decode_uri_component(ctx);
         default:
             ctx.result.tag = UNDEFINED;
             ctx.result.pointer = null;
@@ -11991,6 +12965,18 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register eval (ES5 §15.1.2.1)
     if (!register_simple_builtin(global_env, heap, "eval", BUILTIN_EVAL)) return false;
 
+    // Register encodeURI (ES5 §15.1.3.1)
+    if (!register_simple_builtin(global_env, heap, "encodeURI", BUILTIN_ENCODE_URI)) return false;
+
+    // Register encodeURIComponent (ES5 §15.1.3.2)
+    if (!register_simple_builtin(global_env, heap, "encodeURIComponent", BUILTIN_ENCODE_URI_COMPONENT)) return false;
+
+    // Register decodeURI (ES5 §15.1.3.3)
+    if (!register_simple_builtin(global_env, heap, "decodeURI", BUILTIN_DECODE_URI)) return false;
+
+    // Register decodeURIComponent (ES5 §15.1.3.4)
+    if (!register_simple_builtin(global_env, heap, "decodeURIComponent", BUILTIN_DECODE_URI_COMPONENT)) return false;
+
     // Register test262 batch runner helper
     if (!register_simple_builtin(global_env, heap, "__resetGlobals", BUILTIN_RESET_GLOBALS)) return false;
 
@@ -12077,7 +13063,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "GeneratorFunction" };
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "URIError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "GeneratorFunction" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {
@@ -12758,6 +13744,12 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     eval_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
     heap.eval_err_proto = eval_err_proto;
 
+    // --- Create URIError.prototype ---
+    HObject* uri_err_proto = register_error_prototype(heap, err_proto, "URIError");
+    if (uri_err_proto == null) return false;
+    uri_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    heap.uri_err_proto = uri_err_proto;
+
     // Set .constructor on each error sub-prototype to point to its own builtin
     // (type_err_proto already done above — fix it now with correct index)
     TVal type_err_constr;
@@ -12785,6 +13777,11 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     eval_err_constr.fastint = (long)BUILTIN_EVAL_ERROR;
     eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WEC);
 
+    TVal uri_err_constr;
+    uri_err_constr.tag = LIGHTFUNC;
+    uri_err_constr.fastint = (long)BUILTIN_URI_ERROR;
+    uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WEC);
+
     // --- Register Error global constructor ---
     if (!register_simple_builtin(global_env, heap, "Error", BUILTIN_ERROR)) return false;
 
@@ -12802,6 +13799,9 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
 
     // --- Register EvalError ---
     if (!register_simple_builtin(global_env, heap, "EvalError", BUILTIN_EVAL_ERROR)) return false;
+
+    // --- Register URIError ---
+    if (!register_simple_builtin(global_env, heap, "URIError", BUILTIN_URI_ERROR)) return false;
 
     return true;
 }
@@ -12926,6 +13926,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add String.fromCharCode (ES5 §15.5.3.2)
     if (!register_string_proto_method(str_obj, heap, "fromCharCode", BUILTIN_STRING_FROMCHARCODE)) return false;
+    if (!register_string_proto_method(str_obj, heap, "fromCodePoint", BUILTIN_STRING_FROMCODEPOINT)) return false;
 
     // Register String constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("String");
@@ -13026,6 +14027,12 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
     if (!register_array_proto_method(proto, heap, "find",      BUILTIN_ARRAY_PROTO_FIND))      return false;
     if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX)) return false;
+    if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
+    if (!register_array_proto_method(proto, heap, "flatMap",   BUILTIN_ARRAY_PROTO_FLATMAP))   return false;
+    if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
+    if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
+    if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;
+    if (!register_array_proto_method(proto, heap, "with",      BUILTIN_ARRAY_PROTO_WITH))      return false;
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
     HString* isarray_key = builtin_intern_string(heap, "isArray");

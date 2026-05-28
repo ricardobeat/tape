@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 78 (Object.is, Object.hasOwn, Object.setPrototypeOf)
+**Last Updated:** Session 79 (ES2023 change-array-by-copy: toReversed, toSorted, toSpliced, with)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,371 |
 | Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 6,152 |
-| Currently failing (test262) | 24,219 |
-| Pass rate (of run tests) | 20.3% |
+| Currently passing (test262) | 6,181 |
+| Currently failing (test262) | 24,190 |
+| Pass rate (of run tests) | 20.4% |
 
 ## Refreshing test pass rate
 
@@ -133,6 +133,10 @@ Update the counts and pass rate after every implemented feature
 | Array.of | ✅ (Session 77) |
 | Array.prototype.find | ✅ (Session 77, stub) |
 | Array.prototype.findIndex | ✅ (Session 77, stub) |
+| Array.prototype.toReversed | ✅ (Session 79) |
+| Array.prototype.toSorted | ✅ (Session 79) |
+| Array.prototype.toSpliced | ✅ (Session 79) |
+| Array.prototype.with | ✅ (Session 79) |
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
@@ -359,6 +363,7 @@ Update the counts and pass rate after every implemented feature
 | 76 | **Session 76: String.fromCharCode + String constructor upgrade** — Upgraded String constructor from LIGHTFUNC to proper HObject (ObjClass.FUNCTION), following the same pattern as Number (Session 75). `String.prototype.constructor` now correctly points to the String object. Implemented `String.fromCharCode()` (ES5 §15.5.3.2) with ToUint16 conversion and UTF-8 encoding for non-BMP code units. New constant BUILTIN_STRING_FROMCHARCODE (217). Static method registered on String constructor object. Test262: Phase 0-1 +19 (543→562), Phase 1 +1 (25→26), Phase 3 +153 (1,343→1,496), Phase 5 +144 (1,702→1,846), Phase 6 +94 (509→603), Phase 7 +3 (209→212), Phase 8 +5 (472→477), overall **6,078 pass / 24,293 fail (20.0%)** — +419 new passing tests. |
 | 77 | **Session 77: Array.of + Array.prototype.find/findIndex registration** — Registered `Array.of()` (ES6 §22.1.2.3) as a static LIGHTFUNC method on the Array constructor. Implementation was already complete but not wired up. Also registered `Array.prototype.find` (ES6 §22.1.3.8) and `Array.prototype.findIndex` (ES6 §22.1.3.9) on Array.prototype (stub implementations — return first element / -1 without calling callback). Test262: Phase 3 +3 (1,496→1,499), Phase 5 +3 (1,846→1,849), Phase 6 +2 (603→605), overall **6,086 pass / 24,285 fail (20.1%)** — +8 new passing tests. |
 | 78 | **Session 78: Object.is, Object.hasOwn, Object.setPrototypeOf** — Implemented `Object.is()` (ES6 §19.1.2.10) using SameValue algorithm (NaN===NaN, +0!==-0). Implemented `Object.hasOwn()` (ES2022 §19.1.2.10) delegating to hasOwnProperty check. Implemented `Object.setPrototypeOf()` (ES2015 §19.1.2.19) with prototype chain mutation and TypeError on invalid args. Added `same_value()` function alongside existing `same_value_zero()`. New BUILTIN constants 218-220. Test262: Phase 3 +66 (1,499→1,565), Phase 5 +66 (1,849→1,915), overall **6,152 pass / 24,219 fail (20.3%)** — +66 new passing tests. |
+| 79 | **Session 79: ES2023 change-array-by-copy** — Implemented `Array.prototype.toReversed()` (ES2023 §23.1.3.33), `Array.prototype.toSorted()` (ES2023 §23.1.3.34), `Array.prototype.toSpliced()` (ES2023 §23.1.3.35), and `Array.prototype.with()` (ES2023 §23.1.3.37). All four methods create a new array copy without mutating the original. `toReversed` copies elements in reverse order. `toSorted` uses default string comparison sort on a copy. `toSpliced` copies prefix, inserts items, copies suffix. `with` copies all elements replacing one index. `with` uses `builtin_to_integer` for proper type coercion (string→number, NaN→0). New BUILTIN constants 229-232. Test262: 29 new passing tests. Remaining failures are due to LIGHTFUNC registration (no .name/.length/.call support) and VM limitations. Overall **6,181 pass / 24,190 fail (20.4%)** — +29 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
