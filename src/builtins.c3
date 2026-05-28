@@ -6177,6 +6177,55 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     return true;
 }
 
+/// Helper: compile a JS function expression and register it as a method on a prototype.
+/// The src must be a complete function expression like "(function(a,b){...})" or "(function name(a){...})".
+/// Used for callback-based methods (forEach, map, filter, etc.) that can't be LIGHTFUNC builtins.
+fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* global_env, char[] name, char[] src) {
+    Lexer lex = lexer::lexer_init(src, heap);
+    CompiledFunction*? cf = compiler::compile_function(&lex, heap, true);
+    CompiledFunction* func;
+    if (try f = cf) {
+        func = f;
+    } else {
+        return false;
+    }
+    HObject*? func_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) return false;
+    HObject* func_obj = func_obj_raw;
+    func_obj.comp_func = func;
+    func_obj.builtin_fn_index = -1;
+    func_obj.var_env = global_env;
+    func_obj.lex_env = global_env;
+    func_obj.prototype = heap.function_proto;
+    func_obj.flags.callable = true;
+    HString* name_str = builtin_intern_string(heap, "name");
+    if (name_str != null) {
+        HString* fname = builtin_intern_string(heap, name);
+        if (fname != null) {
+            TVal name_tv;
+            name_tv.tag = STRING;
+            name_tv.pointer = fname;
+            func_obj.put_prop(name_str, name_tv, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    void* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal tv;
+    tv.tag = OBJECT;
+    tv.pointer = func_obj;
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    return true;
+}
+
 // ============================================================================
 // Array.prototype.toString (ES5 §15.4.4.2)
 // ============================================================================
@@ -13529,6 +13578,17 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Add Number.isSafeInteger (ES6 §20.1.2.5)
     if (!register_string_proto_method(num, heap, "isSafeInteger", BUILTIN_NUMBER_ISSAFEINTEGER)) return false;
 
+    // Add Number.EPSILON (ES6 §20.1.2.1) — 2^-52
+    if (!set_num_static_prop(num, heap, "EPSILON", 2.220446049250313e-16)) return false;
+    // Add Number.MAX_SAFE_INTEGER (ES6 §20.1.2.6) — 2^53 - 1
+    if (!set_num_static_prop(num, heap, "MAX_SAFE_INTEGER", 9007199254740991.0)) return false;
+    // Add Number.MIN_SAFE_INTEGER (ES6 §20.1.2.8) — -(2^53 - 1)
+    if (!set_num_static_prop(num, heap, "MIN_SAFE_INTEGER", -9007199254740991.0)) return false;
+    // Add Number.parseInt (ES6 §20.1.2.12) — same as global parseInt
+    if (!register_string_proto_method(num, heap, "parseInt", BUILTIN_PARSE_INT)) return false;
+    // Add Number.parseFloat (ES6 §20.1.2.13) — same as global parseFloat
+    if (!register_string_proto_method(num, heap, "parseFloat", BUILTIN_PARSE_FLOAT)) return false;
+
     // Register Number constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Number");
     HString* existing = heap.str_table_lookup("Number", hash);
@@ -14033,6 +14093,25 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
     if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;
     if (!register_array_proto_method(proto, heap, "with",      BUILTIN_ARRAY_PROTO_WITH))      return false;
+
+    // Register callback-based Array.prototype methods as compiled JS functions.
+    // These need VM callback invocation, so they're compiled from JS source.
+    // Format: (params){body} — compile_function expects no "function" keyword.
+    if (!register_compiled_proto_method(proto, heap, global_env, "forEach",
+        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];callback(v,k,O);k++}}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "map",
+        "(callback){var O=Object(this);var len=O.length;var A=[];var k=0;while(k<len){var v=O[k];var r=callback(v,k,O);A.push(r);k++}return A}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "filter",
+        "(callback){var O=Object(this);var len=O.length;var res=[];var k=0;while(k<len){var v=O[k];if(callback(v,k,O)){res.push(v)}k++}return res}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "every",
+        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(!callback(v,k,O))return false;k++}return true}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "some",
+        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return true;k++}return false}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "reduce",
+        "(callback,initialValue){var O=Object(this);var len=O.length;var k=0;var acc=initialValue;while(k<len){var v=O[k];var a=acc;acc=callback(a,v,k,O);k++}return acc}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "reduceRight",
+        "(callback,initialValue){var O=Object(this);var len=O.length;var k=len-1;var acc=initialValue;while(k>=0){var v=O[k];var a=acc;acc=callback(a,v,k,O);k--}return acc}")) return false;
+    // TODO: register map/filter/every/some/reduce/reduceRight after forEach works
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
     HString* isarray_key = builtin_intern_string(heap, "isArray");

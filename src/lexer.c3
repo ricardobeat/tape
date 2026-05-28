@@ -577,11 +577,23 @@ fn Token? Lexer.scan_number(&self) {
             if (self.at_end() || !is_hex_digit(self.peek_char())) {
                 return LEX_ERROR~;
             }
-            while (!self.at_end() && is_hex_digit(self.peek_char())) {
-                value = value * 16.0 + (double)hex_value(self.peek_char());
+            bool prev_was_digit = false;
+            while (!self.at_end()) {
+                c = self.peek_char();
+                if (c == '_') {
+                    if (!prev_was_digit) return LEX_ERROR~;
+                    self.pos++;
+                    self.col++;
+                    prev_was_digit = false;
+                    continue;
+                }
+                if (!is_hex_digit(c)) break;
+                value = value * 16.0 + (double)hex_value(c);
                 self.pos++;
                 self.col++;
+                prev_was_digit = true;
             }
+            if (!prev_was_digit) return LEX_ERROR~;
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -595,11 +607,23 @@ fn Token? Lexer.scan_number(&self) {
             if (self.at_end() || !is_octal_digit(self.peek_char())) {
                 return LEX_ERROR~;
             }
-            while (!self.at_end() && is_octal_digit(self.peek_char())) {
-                value = value * 8.0 + (double)(self.peek_char() - '0');
+            bool prev_was_digit = false;
+            while (!self.at_end()) {
+                c = self.peek_char();
+                if (c == '_') {
+                    if (!prev_was_digit) return LEX_ERROR~;
+                    self.pos++;
+                    self.col++;
+                    prev_was_digit = false;
+                    continue;
+                }
+                if (!is_octal_digit(c)) break;
+                value = value * 8.0 + (double)(c - '0');
                 self.pos++;
                 self.col++;
+                prev_was_digit = true;
             }
+            if (!prev_was_digit) return LEX_ERROR~;
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -613,11 +637,23 @@ fn Token? Lexer.scan_number(&self) {
             if (self.at_end() || !is_binary_digit(self.peek_char())) {
                 return LEX_ERROR~;
             }
-            while (!self.at_end() && is_binary_digit(self.peek_char())) {
-                value = value * 2.0 + (double)(self.peek_char() - '0');
+            bool prev_was_digit = false;
+            while (!self.at_end()) {
+                c = self.peek_char();
+                if (c == '_') {
+                    if (!prev_was_digit) return LEX_ERROR~;
+                    self.pos++;
+                    self.col++;
+                    prev_was_digit = false;
+                    continue;
+                }
+                if (!is_binary_digit(c)) break;
+                value = value * 2.0 + (double)(c - '0');
                 self.pos++;
                 self.col++;
+                prev_was_digit = true;
             }
+            if (!prev_was_digit) return LEX_ERROR~;
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -626,11 +662,23 @@ fn Token? Lexer.scan_number(&self) {
     }
 
     // Decimal integer part
-    while (!self.at_end() && is_digit(self.peek_char())) {
-        value = value * 10.0 + (double)(self.peek_char() - '0');
+    bool dec_prev_was_digit = false;
+    while (!self.at_end()) {
+        c = self.peek_char();
+        if (c == '_') {
+            if (!dec_prev_was_digit) return LEX_ERROR~;
+            self.pos++;
+            self.col++;
+            dec_prev_was_digit = false;
+            continue;
+        }
+        if (!is_digit(c)) break;
+        value = value * 10.0 + (double)(c - '0');
         self.pos++;
         self.col++;
+        dec_prev_was_digit = true;
     }
+    if (!dec_prev_was_digit) return LEX_ERROR~;
 
     // Fractional part
     if (!self.at_end() && self.peek_char() == '.') {
@@ -639,12 +687,24 @@ fn Token? Lexer.scan_number(&self) {
             self.pos++;
             self.col++;
             double frac = 0.1;
-            while (!self.at_end() && is_digit(self.peek_char())) {
-                value = value + (double)(self.peek_char() - '0') * frac;
+            bool frac_prev_was_digit = false;
+            while (!self.at_end()) {
+                c = self.peek_char();
+                if (c == '_') {
+                    if (!frac_prev_was_digit) return LEX_ERROR~;
+                    self.pos++;
+                    self.col++;
+                    frac_prev_was_digit = false;
+                    continue;
+                }
+                if (!is_digit(c)) break;
+                value = value + (double)(c - '0') * frac;
                 frac *= 0.1;
                 self.pos++;
                 self.col++;
+                frac_prev_was_digit = true;
             }
+            if (!frac_prev_was_digit) return LEX_ERROR~;
         }
     }
 
@@ -662,11 +722,23 @@ fn Token? Lexer.scan_number(&self) {
             return LEX_ERROR~;
         }
         double exp_val = 0.0;
-        while (!self.at_end() && is_digit(self.peek_char())) {
-            exp_val = exp_val * 10.0 + (double)(self.peek_char() - '0');
+        bool exp_prev_was_digit = false;
+        while (!self.at_end()) {
+            c = self.peek_char();
+            if (c == '_') {
+                if (!exp_prev_was_digit) return LEX_ERROR~;
+                self.pos++;
+                self.col++;
+                exp_prev_was_digit = false;
+                continue;
+            }
+            if (!is_digit(c)) break;
+            exp_val = exp_val * 10.0 + (double)(c - '0');
             self.pos++;
             self.col++;
+            exp_prev_was_digit = true;
         }
+        if (!exp_prev_was_digit) return LEX_ERROR~;
         if (neg_exp) exp_val = -exp_val;
         value = value * math::pow(10.0, exp_val);
     }

@@ -204,7 +204,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"optional-chaining|logical-assignment|resizable-arraybuffer|"
     r"array-grouping|upsert|set-methods|"
     r"symbols-as-weakmap-keys|cross-realm|"
-    r"numeric-separator-literal|await-dictionary|"
+    r"await-dictionary|"
     r"Promise\.allSettled|Promise\.any"
     r")\b"
 )

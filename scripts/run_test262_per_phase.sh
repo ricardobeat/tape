@@ -11,7 +11,7 @@ if [ ! -f "$VM" ]; then
   cd "$SCRIPT_DIR" && c3c build batch_test_vm 2>&1 | grep -v "ld: warning"
 fi
 
-UNSUPPORTED_FEATURES="proxy|BigInt|async|module|Reflect|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|import\\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry|WeakRef|class-methods-private|class-static-methods-private|class-fields-private|class-fields-public|class-static-fields-private|class-static-fields-public|class-static-block|object-rest|explicit-resource-management|optional-chaining|logical-assignment|resizable-arraybuffer|array-grouping|upsert|set-methods|symbols-as-weakmap-keys|cross-realm|numeric-separator-literal|await-dictionary|Promise\.allSettled|Promise\.any"
+UNSUPPORTED_FEATURES="proxy|BigInt|async|module|Reflect|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|import\\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry|WeakRef|class-methods-private|class-static-methods-private|class-fields-private|class-fields-public|class-static-fields-private|class-static-fields-public|class-static-block|object-rest|explicit-resource-management|optional-chaining|logical-assignment|resizable-arraybuffer|array-grouping|upsert|set-methods|symbols-as-weakmap-keys|cross-realm|await-dictionary|Promise\.allSettled|Promise\.any"
 
 should_skip() {
   local f="$1"

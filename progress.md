@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 79 (ES2023 change-array-by-copy: toReversed, toSorted, toSpliced, with)
+**Last Updated:** Session 80 (Number static properties: EPSILON, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, parseInt, parseFloat + numeric separators + Array callback methods)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -8,11 +8,11 @@
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,568 |
-| Tests run (phases 0-21) | 30,371 |
-| Skipped (unsupported features) | 11,616 |
-| Currently passing (test262) | 6,181 |
-| Currently failing (test262) | 24,190 |
-| Pass rate (of run tests) | 20.4% |
+| Tests run (phases 0-21) | 30,446 |
+| Skipped (unsupported features) | 11,541 |
+| Currently passing (test262) | 7,123 |
+| Currently failing (test262) | 23,323 |
+| Pass rate (of run tests) | 23.4% |
 
 ## Refreshing test pass rate
 
@@ -26,25 +26,25 @@ Update the counts and pass rate after every implemented feature
 
 | Phase | Total | Pass | Fail | Skip |
 |-------|-------|------|------|------|
-| 0-1: Core VM | 2,185 | 562 | 535 | 1,088 |
+| 0-1: Core VM | 2,185 | 573 | 554 | 1,058 |
 | 1: Calling Convention | 426 | 26 | 316 | 84 |
 | 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,565 | 5,413 | 788 |
-| 4: Error Handling | 402 | 56 | 282 | 64 |
-| 5: Built-in Constructors | 8,615 | 1,915 | 6,187 | 513 |
-| 6: Prototype Methods | 4,713 | 605 | 3,802 | 306 |
+| 3: Object System | 7,766 | 1,858 | 5,120 | 788 |
+| 4: Error Handling | 402 | 59 | 279 | 64 |
+| 5: Built-in Constructors | 8,615 | 2,239 | 5,893 | 483 |
+| 6: Prototype Methods | 4,713 | 896 | 3,511 | 306 |
 | 7: ES5 Features | 1,240 | 212 | 401 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 477 | 1,967 | 303 |
+| 8: ES5 Built-in Objects | 2,747 | 488 | 1,971 | 288 |
 | 11: Arrow/Templates | 427 | 60 | 227 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
-| 15: Classes | 8,520 | 142 | 2,153 | 6,225 |
-| 17-20: Map/Set/Symbol/Promise | 1,588 | 162 | 823 | 603 |
+| 15: Classes | 8,520 | 146 | 2,149 | 6,225 |
+| 17-20: Map/Set/Symbol/Promise | 1,588 | 164 | 821 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,371** | **6,152** | **24,219** | **11,616** |
+| **Overall** | **30,446** | **7,123** | **23,323** | **11,541** |
 
 ### Phase 0-1: Core VM
-**test262: 2,185 files — 543 pass / 554 fail (skip: 1,088)**
+**test262: 2,185 files — 573 pass / 554 fail (skip: 1,058)**
 | Component | Status |
 |---|---|
 | TVal tagged values | ✅ |
@@ -91,7 +91,7 @@ Update the counts and pass rate after every implemented feature
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System
-**test262: 7,766 files — 1,565 pass / 5,413 fail (skip: 788)**
+**test262: 7,766 files — 1,858 pass / 5,120 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -104,7 +104,7 @@ Update the counts and pass rate after every implemented feature
 | Member LHS assignment | ✅ |
 
 ### Phase 4: Error Handling & References
-**test262: 402 files — 56 pass / 282 fail (skip: 64)**
+**test262: 402 files — 59 pass / 279 fail (skip: 64)**
 | Component | Status |
 |---|---|
 | Error constructors | ✅ |
@@ -117,7 +117,7 @@ Update the counts and pass rate after every implemented feature
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 1,915 pass / 6,187 fail (skip: 513)**
+**test262: 8,615 files — 2,239 pass / 5,893 fail (skip: 483)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -128,6 +128,8 @@ Update the counts and pass rate after every implemented feature
 | Number.prototype.toString/valueOf | ✅ |
 | Number static properties (NaN, MAX_VALUE…) | ✅ |
 | Number static methods (isNaN, isFinite…) | ✅ (Session 75) |
+| Number.EPSILON, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER | ✅ (Session 80) |
+| Number.parseInt, Number.parseFloat | ✅ (Session 80) |
 | Object() as function | ✅ |
 | Array constructor | ✅ |
 | Array.of | ✅ (Session 77) |
@@ -140,7 +142,7 @@ Update the counts and pass rate after every implemented feature
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
-**test262: 4,713 files — 443 pass / 3,964 fail (skip: 306)**
+**test262: 4,713 files — 896 pass / 3,511 fail (skip: 306)**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -176,7 +178,7 @@ Update the counts and pass rate after every implemented feature
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 477 pass / 1,967 fail (skip: 303)**
+**test262: 2,747 files — 488 pass / 1,971 fail (skip: 288)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -364,6 +366,7 @@ Update the counts and pass rate after every implemented feature
 | 77 | **Session 77: Array.of + Array.prototype.find/findIndex registration** — Registered `Array.of()` (ES6 §22.1.2.3) as a static LIGHTFUNC method on the Array constructor. Implementation was already complete but not wired up. Also registered `Array.prototype.find` (ES6 §22.1.3.8) and `Array.prototype.findIndex` (ES6 §22.1.3.9) on Array.prototype (stub implementations — return first element / -1 without calling callback). Test262: Phase 3 +3 (1,496→1,499), Phase 5 +3 (1,846→1,849), Phase 6 +2 (603→605), overall **6,086 pass / 24,285 fail (20.1%)** — +8 new passing tests. |
 | 78 | **Session 78: Object.is, Object.hasOwn, Object.setPrototypeOf** — Implemented `Object.is()` (ES6 §19.1.2.10) using SameValue algorithm (NaN===NaN, +0!==-0). Implemented `Object.hasOwn()` (ES2022 §19.1.2.10) delegating to hasOwnProperty check. Implemented `Object.setPrototypeOf()` (ES2015 §19.1.2.19) with prototype chain mutation and TypeError on invalid args. Added `same_value()` function alongside existing `same_value_zero()`. New BUILTIN constants 218-220. Test262: Phase 3 +66 (1,499→1,565), Phase 5 +66 (1,849→1,915), overall **6,152 pass / 24,219 fail (20.3%)** — +66 new passing tests. |
 | 79 | **Session 79: ES2023 change-array-by-copy** — Implemented `Array.prototype.toReversed()` (ES2023 §23.1.3.33), `Array.prototype.toSorted()` (ES2023 §23.1.3.34), `Array.prototype.toSpliced()` (ES2023 §23.1.3.35), and `Array.prototype.with()` (ES2023 §23.1.3.37). All four methods create a new array copy without mutating the original. `toReversed` copies elements in reverse order. `toSorted` uses default string comparison sort on a copy. `toSpliced` copies prefix, inserts items, copies suffix. `with` copies all elements replacing one index. `with` uses `builtin_to_integer` for proper type coercion (string→number, NaN→0). New BUILTIN constants 229-232. Test262: 29 new passing tests. Remaining failures are due to LIGHTFUNC registration (no .name/.length/.call support) and VM limitations. Overall **6,181 pass / 24,190 fail (20.4%)** — +29 new passing tests. |
+| 80 | **Session 80: Number static properties + numeric separators + Array callback methods** — Implemented `Number.EPSILON` (ES6 §20.1.2.1, 2^-52), `Number.MAX_SAFE_INTEGER` (ES6 §20.1.2.6, 2^53-1), `Number.MIN_SAFE_INTEGER` (ES6 §20.1.2.8, -(2^53-1)) as non-writable/non-enumerable/non-configurable properties. Implemented `Number.parseInt` (ES6 §20.1.2.12) and `Number.parseFloat` (ES6 §20.1.2.13) as LIGHTFUNC aliases to global `parseInt`/`parseFloat`. Added `register_compiled_proto_method` helper for JS-compiled prototype methods. Registered Array.prototype callback methods (forEach, map, filter, every, some, reduce, reduceRight) as compiled JS functions. Added numeric separator (`_`) support in lexer for hex, octal, binary, and decimal literals. Added URIError proto to heap. Unskipped `numeric-separator-literal` in test262 runner. Test262: Overall **7,123 pass / 23,323 fail (23.4%)** — +942 new passing tests. |
 | 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
 | 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
 | 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
