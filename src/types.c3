@@ -94,9 +94,9 @@ enum TValTag : char {
     LIGHTFUNC,
 }
 
-/// FASTINT uses 52-bit signed integer range (fits in double mantissa exactly).
-const long FASTINT_MIN = -2251799813685248L;  // -2^51
-const long FASTINT_MAX =  2251799813685247L;  //  2^51 - 1
+/// FASTINT uses 48-bit signed integer range (fits in NaN-box payload).
+const long FASTINT_MIN = -140737488355328L;  // -2^47
+const long FASTINT_MAX =  140737488355327L;  //  2^47 - 1
 
 /// Toggle for NaN-boxing representation. When true, TVal is an 8-byte
 /// NaN-boxed ulong. When false, TVal is the 16-byte tagged union.
@@ -106,32 +106,33 @@ const bool USE_NANBOX = true;
 // NaN-boxing constants and helpers (used when USE_NANBOX = true)
 // ============================================================================
 
-const ulong NANBOX_BASE     = 0xFFF8000000000000;
-const ulong NANBOX_TAG_MASK = 0x0000FF0000000000;  // bits 47-40
-const ulong NANBOX_PAYLOAD_MASK = 0x000000FFFFFFFFFF;  // bits 39-0
-const int   NANBOX_TAG_SHIFT = 40;
+const ulong NANBOX_PAYLOAD_MASK = 0x0000FFFFFFFFFFFF;  // bits 47-0
 
-/// Tag values for NaN-boxed representation. Ordinals match TValTag.
-const ulong TAG_UNDEFINED  = 0;
-const ulong TAG_NULL_VAL   = 1;
-const ulong TAG_BOOLEAN    = 2;
-const ulong TAG_FASTINT    = 3;  // same ordinal as TValTag.FASTINT
-const ulong TAG_STRING     = 4;
-const ulong TAG_OBJECT     = 5;  // same ordinal as TValTag.OBJECT
-const ulong TAG_BUFFER     = 6;
-const ulong TAG_POINTER    = 7;
-const ulong TAG_LIGHTFUNC  = 8;
+/// Tag values for NaN-boxed representation. These are full 16-bit values
+/// stored in bits 63-48, matching Duktape's encoding. All doubles must
+/// have bits 63-48 <= 0xFFF0 (achieved by NaN normalization in set_number).
+const ulong TAG_FASTINT    = 0xFFF1;  // embed: 48-bit signed integer
+const ulong TAG_UNDEFINED  = 0xFFF3;  // embed: nothing
+const ulong TAG_NULL_VAL   = 0xFFF4;  // embed: nothing
+const ulong TAG_BOOLEAN    = 0xFFF5;  // embed: 0 or 1
+const ulong TAG_POINTER    = 0xFFF6;  // embed: void* ptr
+const ulong TAG_LIGHTFUNC  = 0xFFF7;  // embed: func ptr
+const ulong TAG_STRING     = 0xFFF8;  // embed: HString* ptr
+const ulong TAG_OBJECT     = 0xFFF9;  // embed: HObject* ptr
+const ulong TAG_BUFFER     = 0xFFFA;  // embed: buffer ptr
 
 fn ulong nanbox_encode_tagged(ulong tag, ulong payload) @inline {
-    return NANBOX_BASE | (tag << NANBOX_TAG_SHIFT) | (payload & NANBOX_PAYLOAD_MASK);
+    return (tag << 48) | (payload & NANBOX_PAYLOAD_MASK);
 }
 
+/// True if the value is a regular double (not a tagged NaN).
+/// Doubles have bits 63-48 <= 0xFFF0; tagged values >= 0xFFF1.
 fn bool nanbox_is_double(ulong v) @inline {
-    return ((v >> 52) & 0x7FF) != 0x7FF;
+    return (v >> 48) <= 0xFFF0;
 }
 
 fn ulong nanbox_get_tag(ulong v) @inline {
-    return (v & NANBOX_TAG_MASK) >> NANBOX_TAG_SHIFT;
+    return v >> 48;
 }
 
 fn ulong nanbox_get_payload(ulong v) @inline {
@@ -187,7 +188,7 @@ $endif
 
 fn bool TVal.is_undefined(&self) @inline {
 $if USE_NANBOX:
-    return self.bits == NANBOX_BASE;
+    return self.bits == (TAG_UNDEFINED << 48);
 $else
     return self.tag == UNDEFINED;
 $endif
@@ -195,7 +196,7 @@ $endif
 
 fn bool TVal.is_null(&self) @inline {
 $if USE_NANBOX:
-    return self.bits == nanbox_encode_tagged(TAG_NULL_VAL, 0);
+    return self.bits == (TAG_NULL_VAL << 48);
 $else
     return self.tag == NULL_VAL;
 $endif
@@ -275,7 +276,7 @@ $endif
 
 fn bool TVal.is_numeric(&self) @inline {
 $if USE_NANBOX:
-    return nanbox_is_double(self.bits) || nanbox_get_tag(self.bits) == TAG_FASTINT;
+    return (self.bits >> 48) <= TAG_FASTINT;
 $else
     return self.tag == NUMBER || self.tag == FASTINT;
 $endif
@@ -283,8 +284,8 @@ $endif
 
 fn bool TVal.is_heap_allocated(&self) @inline {
 $if USE_NANBOX:
-    ulong tag = nanbox_get_tag(self.bits);
-    return tag == TAG_STRING || tag == TAG_OBJECT || tag == TAG_BUFFER;
+    ulong tag = self.bits >> 48;
+    return tag >= TAG_STRING && tag <= TAG_BUFFER;
 $else
     return self.tag == STRING || self.tag == OBJECT || self.tag == BUFFER;
 $endif
@@ -312,12 +313,10 @@ $endif
 
 fn long TVal.get_fastint(&self) @inline {
 $if USE_NANBOX:
-    ulong payload = nanbox_get_payload(self.bits);
-    if (payload & (1L << 39) != 0) {
-        // Negative: sign-extend from 40-bit two's complement
-        return (long)(payload | 0xFFFFFF0000000000);
-    }
-    return (long)payload;
+    // Branchless sign extension from 48-bit two's complement.
+    // Shift left 16 to put sign bit at bit 63, then arithmetic right shift.
+    long payload = (long)nanbox_get_payload(self.bits);
+    return (payload << 16) >> 16;
 $else
     return self.fastint;
 $endif
@@ -333,7 +332,7 @@ $endif
 
 fn double TVal.get_number_or_fastint(&self) @inline {
 $if USE_NANBOX:
-    if (nanbox_get_tag(self.bits) == TAG_FASTINT) {
+    if (self.is_fastint()) {
         return (double)self.get_fastint();
     }
     return bitcast(self.bits, double);
@@ -351,7 +350,7 @@ $endif
 
 fn void TVal.set_undefined(&self) @inline {
 $if USE_NANBOX:
-    self.bits = NANBOX_BASE;
+    self.bits = TAG_UNDEFINED << 48;
 $else
     self.tag     = UNDEFINED;
     self.pointer = null;
@@ -360,7 +359,7 @@ $endif
 
 fn void TVal.set_null(&self) @inline {
 $if USE_NANBOX:
-    self.bits = nanbox_encode_tagged(TAG_NULL_VAL, 0);
+    self.bits = TAG_NULL_VAL << 48;
 $else
     self.tag     = NULL_VAL;
     self.pointer = null;
@@ -378,7 +377,13 @@ $endif
 
 fn void TVal.set_number(&self, double val) @inline {
 $if USE_NANBOX:
-    self.bits = bitcast(val, ulong);
+    ulong bits = bitcast(val, ulong);
+    // NaN normalization: negative NaNs have bits 63-48 >= 0xFFF8, which
+    // would collide with tagged values. Normalize to canonical positive NaN.
+    if (bits >> 48 >= TAG_FASTINT) {
+        bits = 0x7FF8000000000000;
+    }
+    self.bits = bits;
 $else
     self.tag    = NUMBER;
     self.number = val;
@@ -387,7 +392,6 @@ $endif
 
 fn void TVal.set_fastint(&self, long val) @inline {
 $if USE_NANBOX:
-    // Two's complement in 40-bit payload: negative values wrap naturally
     self.bits = nanbox_encode_tagged(TAG_FASTINT, (ulong)val);
 $else
     self.tag     = FASTINT;
@@ -447,7 +451,7 @@ $endif
 fn TVal make_undefined() @inline {
 $if USE_NANBOX:
     TVal tv;
-    tv.bits = NANBOX_BASE;
+    tv.bits = TAG_UNDEFINED << 48;
     return tv;
 $else
     return (TVal){ .tag = UNDEFINED };

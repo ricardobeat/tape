@@ -14,12 +14,22 @@
 
 ## NaN-Boxing Gotchas (src/types.c3)
 
-The NaN-boxing encoding uses `NANBOX_BASE | (tag << shift) | payload` to store tagged values in the mantissa of IEEE 754 NaN values. Two bugs were found and fixed during implementation:
+The NaN-boxing encoding stores tagged values in the mantissa of IEEE 754 NaN values using Duktape's scheme: **16-bit tags in bits 63-48**, 48-bit payload in bits 47-0.
 
-1. **Tag shift collides with NaN exponent bits**: `NANBOX_TAG_SHIFT = 48` placed tags in bits 55-48, which overlap with NANBOX_BASE's `0xFFF8...` prefix. The correct shift is **40**, placing tags in bits 47-40 where NANBOX_BASE has zeros. `NANBOX_PAYLOAD_MASK` must also be `0x000000FFFFFFFFFF` (bits 39-0), not `0x0000FFFFFFFFFFFF`.
+### Current encoding (Duktape-style)
 
-2. **C3 operator precedence in `nanbox_is_double`**: The expression `(v >> 52) & 0x7FF != 0x7FF0` parses as `(v >> 52) & (0x7FF != 0x7FF0)` in C3, which evaluates to `(v >> 52) & 1` — making every tagged value look like a double. Must use parentheses: `((v >> 52) & 0x7FF) != 0x7FF`.
+Tags are full 16-bit values: `TAG_FASTINT=0xFFF1`, `TAG_UNDEFINED=0xFFF3`, etc. A value is a double if `bits >> 48 <= 0xFFF0`. Tagged values have `bits >> 48 >= 0xFFF1`.
+
+**NaN normalization**: Negative NaNs have bits 63-48 in 0xFFF8-0xFFFF, which collides with tagged values. `set_number()` normalizes any double with bits 63-48 >= 0xFFF8 to the canonical positive NaN `0x7FF8000000000000`.
+
+**Fastint sign extension**: 48-bit payload, branchless: `(long)(bits << 16) >> 16`. Range is ±2^47 (~140 trillion).
+
+### Bugs encountered during implementation
+
+1. **C3 operator precedence in `nanbox_is_double`**: The expression `(v >> 52) & 0x7FF != 0x7FF0` parses as `(v >> 52) & (0x7FF != 0x7FF0)` in C3, which evaluates to `(v >> 52) & 1` — making every tagged value look like a double. Must use parentheses: `((v >> 52) & 0x7FF) != 0x7FF`.
 
 **Rule of thumb**: In C3, always parenthesize bitwise operations mixed with comparisons. `&` / `|` / `^` bind differently than in C.
 
-3. **Fastint sign extension with 40-bit payload**: The payload is only 40 bits (not 52), so negative fastints lose their sign bit when encoded via `(ulong)val & 0x000000FFFFFFFFFF`. The fix: `get_fastint()` must check bit 39 (not bit 51) for sign, and sign-extend with `0xFFFFFF0000000000` (not `0xFFF0000000000000`). Range is ±2^39 (~549 billion), sufficient for typical JS integer values.
+2. **Small tag scheme collision**: An earlier scheme used 4-bit tags (0-8) shifted into bits 51-48 with `NANBOX_BASE = 0xFFF8000000000000`. This collided because NANBOX_BASE already has bits 51-48 = 0x8, making `nanbox_get_tag(UNDEFINED)` return 8 instead of 0. Fixed by switching to Duktape's 16-bit tag scheme.
+
+3. **Negative NaN collision**: A scheme with `NANBOX_BASE = 0xFFF0000000000000` and 4-bit tags in bits 51-48 worked for positive values but negative NaN doubles (0xFFF8...) had bits 51-48 = 0x8, colliding with tags. Fixed by NaN normalization in `set_number()`.
