@@ -61,14 +61,14 @@ test262-phase phase="0":
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 # Run all benchmarks without rebuilding (default: 3 iterations)
-bench n="5":
+bench n="3":
 	@test -f out/bench_run || { echo "ERROR: out/bench_run not found — run: c3c build bench_run"; exit 1; }
 	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_benchmarks.sh {{n}}
 
 # Rebuild bench_run and run all benchmarks
-bench-rebuild n="5":
+bench-rebuild n="3":
 	c3c build bench_run
 	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }

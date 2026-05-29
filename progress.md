@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 85 (Object.prototype.toString @@toStringTag, LIGHTFUNC .call, arguments object)
+**Last Updated:** Session 86 (Fix is_truthy for NaNBox — FASTINT 0 and empty string were truthy)
 **Target:** Full test262 conformance
 
 ## Summary

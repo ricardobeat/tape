@@ -246,15 +246,29 @@ macro double num_val(TVal* val) {
 /// ECMAScript truthiness.
 macro bool is_truthy(TVal* val) {
 $if types::USE_NANBOX:
-    if (val.bits == (types::TAG_UNDEFINED << 48) ||
-        val.bits == (types::TAG_NULL_VAL << 48) ||
+    ulong tag = val.bits >> 48;
+    // Falsy primitives: undefined, null, false
+    if (tag == types::TAG_UNDEFINED ||
+        tag == types::TAG_NULL_VAL ||
         val.bits == (types::TAG_BOOLEAN << 48)) {
         return false;
     }
+    // Fastint: sign-extend 48-bit payload, check != 0
+    if (tag == types::TAG_FASTINT) {
+        long fi = ((long)(val.bits & types::NANBOX_PAYLOAD_MASK) << 16) >> 16;
+        return fi != 0;
+    }
+    // Number (double): 0.0 and NaN are falsy
     if (types::nanbox_is_double(val.bits)) {
         double d = bitcast(val.bits, double);
         return d != 0.0 && !math::is_nan(d);
     }
+    // String: empty string is falsy
+    if (tag == types::TAG_STRING) {
+        HString* s = (HString*)(val.bits & types::NANBOX_PAYLOAD_MASK);
+        return s.blen > 0;
+    }
+    // Objects, lightfuncs, etc. are always truthy
     return true;
 $else
     switch (val.get_tag()) {
