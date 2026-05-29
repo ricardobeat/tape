@@ -12,7 +12,7 @@ BENCH_DIR="$PROJ_DIR/benchmarks"
 C3_RUNNER="$PROJ_DIR/out/bench_run"
 DUKTAPE="$PROJ_DIR/out/duktape_orig"
 QJS="$PROJ_DIR/out/qjs"
-ITERATIONS="${1:-20}"
+ITERATIONS="${1:-3}"
 
 TMPDIR_BENCH=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_BENCH"' EXIT

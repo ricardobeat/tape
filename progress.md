@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 85 (Object.prototype.toString @@toStringTag, Array.prototype.find/findIndex, LIGHTFUNC .call fix)
+**Last Updated:** Session 85 (Object.prototype.toString @@toStringTag, LIGHTFUNC .call, arguments object)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
 | Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 7,234 |
-| Currently failing (test262) | 23,212 |
-| Pass rate (of run tests) | 23.8% |
+| Currently passing (test262) | 7,621 |
+| Currently failing (test262) | 22,825 |
+| Pass rate (of run tests) | 25.0% |
 
 ## Refreshing test pass rate
 
@@ -22,67 +22,11 @@ The script walks `test262/test/` and counts `.js` files per phase using the same
 
 Update the counts and pass rate after every implemented feature
 
-## Benchmark Performance vs Duktape v2.7.0 (Session 82)
+## Benchmarks
 
-All benchmarks with `optlevel: "max"` (release build). Ratio < 1.0 means C3 port is faster.
+See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 and QuickJS.
 
-| Benchmark | C3 Port | Duktape | QuickJS | Ratio (C3/Duk) |
-|-----------|---------|---------|---------|----------------|
-| arithmetic | 178ms | 328ms | 28ms | **0.5x** |
-| array | 28ms | 39ms | 7ms | **0.7x** |
-| function_call | 98ms | 131ms | 18ms | **0.7x** |
-| loop | 83ms | 140ms | 15ms | **0.6x** |
-| object | 92ms | 170ms | 24ms | **0.5x** |
-| property_lookup | 91ms | 181ms | 18ms | **0.5x** |
-| string | 10ms | 17ms | 5ms | **0.6x** |
-| recursion | 621ms | 463ms | 118ms | 1.3x |
-| recursion_deep | 3783ms | 1940ms | 488ms | 1.9x |
-| valstack_copy | 17ms | 12ms | 9ms | 1.4x |
-
-8/10 benchmarks beat original Duktape. Recursion gap is architectural (16-byte TVal vs 8-byte NaN-boxing, no register-binding fast path).
-
-### Session 82: Macro conversion of non-inlined helpers
-
-**Problem**: c3c's `@inline` on struct methods is not honored when the caller function is very large (>500 instructions). Vm.execute (31KB, 7,938 instructions) had 491 `bl` calls, many to trivial functions that should have been inlined.
-
-**Root cause**: Same as the TVal fix in session 81 — c3c's LLVM inliner threshold is exceeded by Vm.execute's size.
-
-**Fix**: Converted `fn @inline` methods to `macro` in 3 files:
-
-- `src/bytecode.c3` — 19 methods: `Instruction.get_op/get_a/get_b/get_c/get_bc/get_sbc/get_abc/get_sabc/to_raw/from_raw`, `CompiledFunction.as_header/is_strict/is_arrow/is_generator/is_async/is_constructable/uses_arguments/has_direct_eval/has_rest`
-- `src/hstring.c3` — 2 methods: `HString.get_data`, `HString.get_cstr` (these were plain `fn` — never even `@inline`)
-- `src/vm.c3` — 2 functions: `num_val`, `is_truthy` (were `fn @inline`)
-
-**Result**: bl calls reduced from 491 to 464 (-27). Vm.execute shrank from 31,728 to 31,572 bytes.
-
-### Session 82: Experiments that did NOT help
-
-| Experiment | Result | Why |
-|---|---|---|
-| `@likely`/`@unlikely` hints on fastint paths | **Hurt** arithmetic -7.7% | Increased code size without benefit; LLVM already optimizes branch weights correctly |
-| Combined tag check `(rb\|rc)>>48` | **Hurt** arithmetic | Forced `bits<<16>>16` sign extension instead of compiler's preferred `sbfx` |
-| `switch @jump` for dispatch | **No benefit** | Compiler already generates jump table with `br x11` through 16-bit offset table |
-| `num_val` as macro | **Neutral** | Arithmetic/loop benchmarks hit fastint fast path; `num_val` only called on slow path (DIV, mixed types) |
-
-### Session 82: Remaining bottleneck analysis
-
-Vm.execute has 464 remaining `bl` calls to legitimately large functions:
-
-| Target | Calls | Category |
-|---|---|---|
-| `hstring_alloc` | 50 | String heap allocation |
-| `Heap.hash_string` | 50 | String hashing |
-| `str_table_lookup` | 50 | String interning |
-| `str_table_insert` | 45 | String interning |
-| `HObject.put_prop` | 42 | Property write |
-| `Heap.alloc_object` | 42 | Object allocation |
-| `intern_string` | 18 | String interning |
-| `vm_throw_value` | 18 | Error throwing |
-| `HObject.get_prop_proto` | 13 | Property read (proto chain) |
-| `vm_to_string` | 12 | Type coercion |
-| `typeof_string` | 12 | typeof operator |
-
-These are all legitimately large functions that cannot be macroized. The function is at the edge of L1i cache (32-64KB on Apple Silicon). No easy wins remain without architectural changes (inline caching, scope-depth hints, opcode fusion).
+**Update after every session**: `scripts/run_benchmarks.sh > benchmarks/results.txt`
 
 ## Per-Phase Status
 
@@ -106,7 +50,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | **Overall** | **30,446** | **7,621** | **22,825** | **11,541** |
 
 ### Phase 0-1: Core VM
-**test262: 2,185 files — 573 pass / 554 fail (skip: 1,058)**
+**test262: 2,185 files — 564 pass / 563 fail (skip: 1,058)**
 | Component | Status |
 |---|---|
 | TVal tagged values | ✅ |
@@ -118,7 +62,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Built-in print/console.log | ✅ |
 
 ### Phase 1: Calling Convention & Closures
-**test262: 426 files — 25 pass / 317 fail (skip: 84)**
+**test262: 426 files — 21 pass / 321 fail (skip: 84)**
 | Component | Status |
 |---|---|
 | Register-based call convention | ✅ |
@@ -127,7 +71,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Nested calls | ✅ |
 
 ### Phase 2: Basic Operators
-**test262: 1,969 files — 392 pass / 1,020 fail (skip: 557)**
+**test262: 1,969 files — 409 pass / 1,003 fail (skip: 557)**
 | Component | Status |
 |---|---|
 | Addition (+) | ✅ |
@@ -153,7 +97,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System
-**test262: 7,766 files — 1,865 pass / 5,113 fail (skip: 788)**
+**test262: 7,766 files — 1,969 pass / 5,009 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -166,7 +110,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Member LHS assignment | ✅ |
 
 ### Phase 4: Error Handling & References
-**test262: 402 files — 59 pass / 279 fail (skip: 64)**
+**test262: 402 files — 66 pass / 272 fail (skip: 64)**
 | Component | Status |
 |---|---|
 | Error constructors | ✅ |
@@ -179,7 +123,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 2,265 pass / 5,867 fail (skip: 483)**
+**test262: 8,615 files — 2,436 pass / 5,696 fail (skip: 483)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -204,7 +148,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
-**test262: 4,713 files — 922 pass / 3,485 fail (skip: 306)**
+**test262: 4,713 files — 1,065 pass / 3,342 fail (skip: 306)**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -215,7 +159,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Function.prototype | ✅ |
 
 ### Phase 7: Remaining ES5 Features
-**test262: 1,240 files — 209 pass / 404 fail (skip: 627)**
+**test262: 1,240 files — 194 pass / 419 fail (skip: 627)**
 | Feature | Files | Pass | Fail |
 |---|---|---|---|
 | instanceof | 43 | 16 | 27 |
@@ -240,7 +184,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 547 pass / 1,912 fail (skip: 288)**
+**test262: 2,747 files — 552 pass / 1,907 fail (skip: 288)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -286,7 +230,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | for-in/for-of with let/const | 🚫 Deferred |
 
 ### Phase 11: ES6+ — Arrow Functions, Templates, Default/Rest Parameters
-**test262: 427 files — 60 pass / 227 fail (skip: 140)**
+**test262: 427 files — 58 pass / 229 fail (skip: 140)**
 ||  | | _Tagged templates now implemented (Session 45); remaining test failures due to unrelated VM limitations._ |
 || Component | Status |
 ||---|---|
@@ -317,7 +261,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 
 
 ### Phase 20: ES6+ — Promise
-**test262: 1,588 files — 162 pass / 823 fail (skip: 603)**
+**test262: 1,588 files — 134 pass / 851 fail (skip: 603)**
 *(includes Map, Set, Symbol, WeakMap, WeakSet)*
 || Component | Status |
 ||---|---|
@@ -381,7 +325,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 ||| for-of in for-in | 🚫 Deferred |
 
 ### Phase 15: ES6+ — Classes
-**test262: 8,520 files — 142 pass / 2,153 fail (skip: 6,225)**
+**test262: 8,520 files — 145 pass / 2,150 fail (skip: 6,225)**
 | Component | Status |
 |---|---|
 | Class declarations (`class Name { }`) | ✅ |
@@ -413,91 +357,5 @@ These are all legitimately large functions that cannot be macroized. The functio
 ||| Object literals in nested expressions | ✅ |
 
 ### Phase 21: ES6+ — Generators
-**test262: 619 files — 6 pass / 483 fail (skip: 130)**
+**test262: 619 files — 5 pass / 484 fail (skip: 130)**
 
-## Session History
-
-| Session | Key Features |
-|---|---|
-| 1 | Core VM, calling convention, closures, basic comparisons |
-| 83 | **Logical assignment operators (&&=, ||=, ??=)** — Implemented ES2021 logical assignment operators in the compiler with proper short-circuit semantics. Lexer tokens (LOG_AND_ASSIGN, LOG_OR_ASSIGN, NULLISH_ASSIGN) already existed. Added compiler support: `\|\|=` skips RHS when LHS is truthy, `&&=` skips RHS when LHS is falsy, `??=` skips RHS when LHS is not null/undefined. Handles both simple variable and member expression LHS. Member expression case allocates a separate result register to correctly return the original LHS value on short-circuit. Also simplified valstack_top computation in vm.c3 (5 call sites) using `ptr_from_byteoff` helper. Test262: 16/78 logical-assignment tests passing. |
-| 84 | **Session 84: Date prototype methods** — Implemented 29 Date.prototype methods: UTC getters (getUTCFullYear, getUTCMonth, getUTCDate, getUTCDay, getUTCHours, getUTCMinutes, getUTCSeconds, getUTCMilliseconds), getTimezoneOffset, setters (setTime, setMilliseconds, setSeconds, setMinutes, setHours, setDate, setMonth, setFullYear), UTC setters (setUTCMilliseconds, setUTCSeconds, setUTCMinutes, setUTCHours, setUTCDate, setUTCMonth, setUTCFullYear), and formatting (toISOString, toUTCString, toGMTString). Added `date_break_time_utc` (gmtime_r), `date_utc_to_ms` (UTC epoch calculation), `date_time_clip`, `date_set_ms` helpers. Constants 100, 235-260. Updated BUILTIN_COUNT from 111 to 261. Test262: Date tests improved from 34 → 86 pass (+52). Phase 8: 495 → 547 pass. Overall **7,234 pass / 23,212 fail (23.8%)** — +52 new passing tests. |
-| 72 | **Memory leak fix**: `Heap.destroy` now frees HString objects in the string table and CompiledFunction objects. Full test262 re-run: **5,464 pass / 24,907 fail (18.0%)** |
-| 73 | **Session 73: String.prototype + Array.prototype methods** — Implemented `includes`, `startsWith`, `endsWith`, `repeat`, `trimStart`, `trimEnd`, `codePointAt`, `at`, `padStart`, `padEnd`, `lastIndexOf` on String.prototype. Implemented `fill`, `includes`, `at`, `copyWithin` on Array.prototype. New constants 170-187, dispatch cases, and registrations. Test262: Phase 5 +66 (1,608→1,674), Phase 6 +66 (443→509), overall **5,596 pass / 24,775 fail (18.4%)** — +132 new passing tests. |
-| 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |
-| 75 | **Session 75: Number static methods** — Implemented `Number.isNaN()` (ES6 §20.1.2.4), `Number.isFinite()` (ES6 §20.1.2.2), `Number.isInteger()` (ES6 §20.1.2.3), and `Number.isSafeInteger()` (ES6 §20.1.2.5) as static methods on the Number constructor. No-coercion type checks per ES6 spec. New constants 191-194. Test262: Phase 5 +18 (1,684→1,702), overall **5,659 pass / 24,712 fail (18.6%)** — +53 new passing tests. |
-| 76 | **Session 76: String.fromCharCode + String constructor upgrade** — Upgraded String constructor from LIGHTFUNC to proper HObject (ObjClass.FUNCTION), following the same pattern as Number (Session 75). `String.prototype.constructor` now correctly points to the String object. Implemented `String.fromCharCode()` (ES5 §15.5.3.2) with ToUint16 conversion and UTF-8 encoding for non-BMP code units. New constant BUILTIN_STRING_FROMCHARCODE (217). Static method registered on String constructor object. Test262: Phase 0-1 +19 (543→562), Phase 1 +1 (25→26), Phase 3 +153 (1,343→1,496), Phase 5 +144 (1,702→1,846), Phase 6 +94 (509→603), Phase 7 +3 (209→212), Phase 8 +5 (472→477), overall **6,078 pass / 24,293 fail (20.0%)** — +419 new passing tests. |
-| 77 | **Session 77: Array.of + Array.prototype.find/findIndex registration** — Registered `Array.of()` (ES6 §22.1.2.3) as a static LIGHTFUNC method on the Array constructor. Implementation was already complete but not wired up. Also registered `Array.prototype.find` (ES6 §22.1.3.8) and `Array.prototype.findIndex` (ES6 §22.1.3.9) on Array.prototype (stub implementations — return first element / -1 without calling callback). Test262: Phase 3 +3 (1,496→1,499), Phase 5 +3 (1,846→1,849), Phase 6 +2 (603→605), overall **6,086 pass / 24,285 fail (20.1%)** — +8 new passing tests. |
-| 78 | **Session 78: Object.is, Object.hasOwn, Object.setPrototypeOf** — Implemented `Object.is()` (ES6 §19.1.2.10) using SameValue algorithm (NaN===NaN, +0!==-0). Implemented `Object.hasOwn()` (ES2022 §19.1.2.10) delegating to hasOwnProperty check. Implemented `Object.setPrototypeOf()` (ES2015 §19.1.2.19) with prototype chain mutation and TypeError on invalid args. Added `same_value()` function alongside existing `same_value_zero()`. New BUILTIN constants 218-220. Test262: Phase 3 +66 (1,499→1,565), Phase 5 +66 (1,849→1,915), overall **6,152 pass / 24,219 fail (20.3%)** — +66 new passing tests. |
-| 79 | **Session 79: ES2023 change-array-by-copy** — Implemented `Array.prototype.toReversed()` (ES2023 §23.1.3.33), `Array.prototype.toSorted()` (ES2023 §23.1.3.34), `Array.prototype.toSpliced()` (ES2023 §23.1.3.35), and `Array.prototype.with()` (ES2023 §23.1.3.37). All four methods create a new array copy without mutating the original. `toReversed` copies elements in reverse order. `toSorted` uses default string comparison sort on a copy. `toSpliced` copies prefix, inserts items, copies suffix. `with` copies all elements replacing one index. `with` uses `builtin_to_integer` for proper type coercion (string→number, NaN→0). New BUILTIN constants 229-232. Test262: 29 new passing tests. Remaining failures are due to LIGHTFUNC registration (no .name/.length/.call support) and VM limitations. Overall **6,181 pass / 24,190 fail (20.4%)** — +29 new passing tests. |
-| 80 | **Session 80: Number static properties + numeric separators + Array callback methods** — Implemented `Number.EPSILON` (ES6 §20.1.2.1, 2^-52), `Number.MAX_SAFE_INTEGER` (ES6 §20.1.2.6, 2^53-1), `Number.MIN_SAFE_INTEGER` (ES6 §20.1.2.8, -(2^53-1)) as non-writable/non-enumerable/non-configurable properties. Implemented `Number.parseInt` (ES6 §20.1.2.12) and `Number.parseFloat` (ES6 §20.1.2.13) as LIGHTFUNC aliases to global `parseInt`/`parseFloat`. Added `register_compiled_proto_method` helper for JS-compiled prototype methods. Registered Array.prototype callback methods (forEach, map, filter, every, some, reduce, reduceRight) as compiled JS functions. Added numeric separator (`_`) support in lexer for hex, octal, binary, and decimal literals. Added URIError proto to heap. Unskipped `numeric-separator-literal` in test262 runner. Test262: Overall **7,123 pass / 23,323 fail (23.4%)** — +942 new passing tests. |
-| 2 | `new` operator, NaN/Infinity, Number/Math, member LHS |
-| 3 | Real test262 runner, NaN fix, String.concat interning, nullish fix |
-| 4 | Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError), Error.prototype.toString, string interning fix in registration helpers |
-| 5 | ReferenceError on undeclared variable access in GETVAR |
-| 6 | TypeError on primitive value access in GETPROP (null/undefined), PUTPROP (null/undefined), CALL (non-function), NEW_OBJ (non-constructor) |
-| 7 | try/catch/throw VM — Catcher chain with activation unwinding, TRY/ENDTRY/CATCH/FINALLY/ENDFINALLY opcodes, cross-activation throw propagation |
-| 8 | Phase 5a: Boolean constructor |
-| 9 | Phase 5b: String constructor |
-| 10 | Phase 5c: Number constructor |
-| 11 | Phase 5d: Object constructor, Phase 5e: Array constructor |
-| 12 | Number static properties |
-| 13 | Phase 6a: Math methods |
-| 14 | Phase 6b: String.prototype methods |
-| 15 | Phase 6c: Array.prototype methods (non-callback) |
-| 16 | Phase 6d: Number.prototype methods |
-| 17 | Phase 6f: Function.prototype methods (call, apply, bind) |
-| 18 | Phase 7a: for-in enumeration |
-| 19 | Phase 7b: instanceof operator |
-| 20 | Phase 7d: in operator |
-| 21 | Phase 7c: delete operator |
-| 22 | Phase 7e: switch/case |
-| 23 | Phase 7f: Labeled break/continue |
-| 24 | Phase 7g: with statement |
-| 25 | Phase 8a: JSON (parse, stringify) |
-| 26 | Phase 8b: Date constructor and methods |
-| 27 | Phase 8c: RegExp — integrated QuickJS libregexp engine (libregexp.c, libunicode.c) as C library. `re_compile`/`re_exec`/`re_free` API, C3 bindings, compiled bytecode stored in HObject. 0 test262 passing — blocked on parser regexp literals and harness gaps. |
-| 28 | Phase 5f: Function constructor — `new Function(p1, ..., body)` / `Function(p1, ..., body)`, source compilation via compiler::compile_function, `.constructor` on `Function.prototype` wired to Function object, `Function.length`, `[[Prototype]]` chain for instanceof support. |
-| 29 | **Bug fixes**: Fixed VM arithmetic/bitwise opcode bug where `ra.tag = NUMBER` was set before reading `rb`, causing incorrect results when `ra == rb` (compound assignments `x -= 1`, prefix `++`/`--`). Fixed `postfix_expr`/`unary_expr` missing `PUTVAR` write-back for global-scope `i++`/`++i` patterns. |
-| 30 | **ASI bug fixes**: Added line terminator tracking (`seen_line_term`) to lexer. Fixed `break`/`continue`/`return` ASI — line terminators between keyword and identifier now suppress label/expression parsing per ES5 spec. Fixed test262 harness: includes `assert.js`, fixed `set -e` exit on skip. 3 test262 tests newly passing (break/line-terminators, continue/line-terminators, return/line-terminators). |
-| 31 | **Continue-in-switch infinite loop fix**: Fixed `continue` inside `switch` inside a loop generating a JUMP to itself (infinite loop). Root cause: `switch_statement()` used `push_loop()` for break handling, which incremented `loop_depth`, making `continue_statement()` find the switch's pseudo-loop entry instead of the enclosing real loop. Fix: added `is_loop` flag to `LoopInfo` and `continue_patch_head` for deferred patching. `continue` now skips switch pseudo-loops (`is_loop=false`) and finds the innermost real loop. `do-while` continue targets are resolved via deferred patch chain. Switch tests `cptn-a-fall-thru-abrupt-empty`, `cptn-b-fall-thru-abrupt-empty`, `cptn-dflt-b-fall-thru-abrupt-empty` no longer hang. |
-| 32 | **RegExp prototype initialization + flag properties**: Added `register_regexp_constructor` function that creates `RegExp.prototype`, registers `.test()/exec()/toString()` methods, and creates the `RegExp` global constructor with proper `.prototype` and `.length` properties. `heap.regexp_proto` now wired to `Object.prototype`. RegExp instances now store `.source`, `.global`, `.ignoreCase`, `.multiline`, `.lastIndex` properties and correctly parse the `g` flag. Previously every RegExp usage crashed because `regexp_proto` was null. First test262 RegExp test now passing (`15.10.4.1-1`). All 4 local regexp tests passing. |
-| 33 | **RegExp SyntaxError on invalid pattern/flags + error .constructor**: Added SyntaxError throwing in `builtin_regexp` when `re_compile` fails (invalid patterns like `\` per ES5 §15.10.4.1). Added flag validation — invalid flags (anything other than g/i/m/s) now throw SyntaxError. Added `.constructor` property on Error.prototype and all error sub-prototypes (TypeError, RangeError, ReferenceError, SyntaxError, EvalError) so `assert.throws` identity checks work. Test262 RegExp top-level tests: 1 → 144 passing. |
-| 34 | **Fix RegExp literal NEWREGEXP**: `NEWREGEXP` opcode handler now sets `obj.prototype = regexp_proto` so method lookup (`.test()`, `.exec()`, `.toString()`) works on regexp literals via prototype chain. Null-terminates pattern before passing to `lre_compile` (which requires null-terminated input). Sets instance properties (source, global, ignoreCase, multiline, lastIndex) on literal regexps per ES5 §15.10.7. Fixes `/pattern/.test()` crashes and VM errors. |
-| 35 | **RegExp global flag + lastIndex**: Fixed `builtin_regexp_proto_exec` to respect the `global` flag and `lastIndex` property per ES5 §15.10.6.2. On global regexps, exec now reads `lastIndex` as the starting match position, updates it to the end of each match, and resets to 0 on failure. Same fix applied to `builtin_regexp_proto_test` (ES5 §15.10.6.3). This was causing infinite loops in `do...while` patterns that loop over global matches. 6 previously-hanging exec tests (`S15.10.6.2_A3_T1`–`T6`) now pass. No more RegExp exec/test hangs. |
-| 36 | **Object constructor as HObject + RegExp TypeError**: Changed `Object` constructor from LIGHTFUNC to proper HObject with `.prototype` property, enabling `Object.prototype` access (was `undefined`). Added PROP_FLAGS_WC convenience constant. Added `exec_js` helper and expanded test262 harness with minified `assert.sameValue`/`assert.throws`/`compareArray` in batch runner. Fixed `builtin_regexp_proto_exec`/`builtin_regexp_proto_test` to throw TypeError per ES5 §15.10.6.2/3 when called on incompatible receiver (was silently returning null). RegExp exec TypeError tests (`S15.10.6.2_A2_*`) now passing: 7→11 exec tests passing in sample. |
-| 37 | **typeof identifier + builtin .constructor + isPrototypeOf/toLocaleString**: Added TYPEOFIDENT opcode for `typeof undeclaredVar` (ES5 §11.4.3 — returns "undefined" instead of throwing ReferenceError). Fixed `.constructor` on Object.prototype and Number.prototype to point to actual OBJECT constructors (not LIGHTFUNC), fixing `obj.constructor === Object` and `obj.constructor === Number`. Implemented `Object.prototype.isPrototypeOf` (ES5 §15.2.4.6) and `Object.prototype.toLocaleString` (ES5 §15.2.4.3). Wired constructor functions' internal [[Prototype]] to Function.prototype so `Function.prototype.isPrototypeOf(Object)` returns true. Object tests: 12→24 pass (+12). |
-| 38 | **Phase 9: Strict Mode**: Added "use strict" directive prologue detection in `compile()`, `compile_eval()`, and `block()` (for function bodies). `CompilerContext.is_strict` flag set by `parse_directives()`. Lexer `set_strict()` enables FutureReservedWords as keywords. `is_strict` propagated from `CompilerContext` to `CompiledFunction.flags.is_strict` in `finish()`. VM activations now read `CompiledFunction.is_strict()` instead of hardcoding `ACT_FLAG_STRICT`. `with` statement rejected in strict mode (SyntaxError). `eval`/`arguments` rejected as parameter names, `var` declarations, and catch variable names in strict mode. Inner functions inherit strict mode from parent context via `compile_inner_function()`. |
-| 39 | **Phase 9: Octal literals error in strict**: Added `has_octal_escape` flag to `Token` struct. Lexer detects legacy octal escape sequences (\0 followed by digit, \1-\9) in strings and sets the flag. Compiler validates NUMBER tokens against legacy octal pattern (0 followed by 0-7) in `primary_expr`. String tokens with octal escapes also rejected via `has_octal_escape` flag check. Fixed `builtin_eval` and `builtin_function` to use `ctx.should_throw`/`ctx.throw_value` instead of `ctx.result` for SyntaxError propagation (eval was silently returning error objects instead of throwing). |
-| 40 | **Phase 9: Duplicate property names error in strict**: Added duplicate data property key detection to `object_literal()` in compiler. In strict mode, duplicate property names in object literals now throw SyntaxError per ES5 §11.1.5. Tracks both identifier/string and numeric keys, canonicalizing numeric keys via `%.17g` to match runtime `vm_number_to_string`. Computed property keys (`[expr]`) are excluded since they can't be statically analyzed. |
-| 41 | **Phase 10: Block-scoped let/const — lexical environments**: Added PUSH_LEX, POP_LEX, PUTLEX bytecode opcodes. PUSH_LEX pushes a new declarative EnvRecord onto act.lex_env at block/function entry; POP_LEX restores parent. let/const declarations emit PUTLEX to store in lex_env; var continues using PUTVAR for var_env. GETVAR, PUTVAR, and TYPEOFIDENT now search lex_env chain first. TDZ sentinel infrastructure added (tdz_sentinel, is_tdz_sentinel, env_get_lex, env_put_lex, env_has_lex). ScopeEntry uses ScopeKind enum (VAR/LET/CONST). Block scoping verified for nested blocks, shadowing, function-level let/const, and closure capturing of let variables. Full TDZ enforcement at block entry (pre-scan) and const runtime re-assignment checks deferred. |
-| 42 | **Phase 10: Const runtime enforcement**: Added PUTLEX_C opcode for const declarations — stores bindings with non-writable property flags (PROP_FLAGS_EC). PUTVAR handler checks writability via `env_is_lex_writable()` and throws TypeError ("Assignment to constant variable '…'") on const reassignment. Added `HObject.is_prop_writable()` and `env_is_lex_writable()` for chain-aware writability checks. let variables continue to use writable PUTLEX. No regressions on existing test suite. |
-| 43 | **Phase 10: TDZ enforcement at block entry**: Added INITTZ opcode (A-BC format) that stores the TDZ sentinel in the current lex_env. Implemented pre-scan in compiler::block() that collects let/const variable names by scanning tokens before emitting bytecode, then emits PUSH_LEX + INITTZ for each at block entry. Added `is_captured` check to `resolve_var()`: when a variable is shadowed by an inner let/const, the compiler now emits GETVAR instead of LDREG, forcing a walk of the lex_env chain where the TDZ sentinel is checked. Introduced NameSpan struct to work around C3 slice-of-slices type limitations. No regressions on existing test suite. Phase 10 now complete except for for-in/for-of with let/const (deferred). |
-| 44 | **Phase 11: Arrow functions** — First ES6+ feature. Added arrow function parsing to compiler: `x => expr`, `() => expr`, `(x) => expr`, `(x, y) => { body }`. `is_arrow` flag on CompiledFunction (bit 12 in FuncFlags, already existed). Added pushback buffer (4-token stack) to CompilerContext for backtracking during arrow-vs-grouping-expression disambiguation. VM changes: CLOSURE handler skips `.prototype` creation for arrow functions; CALL handler uses parent activation's `this_binding` for lexical `this` (ignoring stack `this` slot); NEW_OBJ handler throws TypeError (`is not a constructor`) for arrow functions per ES6 §14.2.2. `compile_arrow_inner()` creates sub-CompiledFunction with `is_arrow=true`, handles expression bodies (implicit return) vs block bodies. No regressions on existing 60+ test suite. |
-| 45 | **Phase 11: Template literals** — Lexer split into `scan_template_head()` + `scan_template_after_expr()` with `TemplateState` enum (NONE/IN_EXPR) and `template_brace_balance` for ${} brace-depth tracking. New token types: TEMPLATE_HEAD, TEMPLATE_MIDDLE, TEMPLATE_TAIL. No-substitution templates return STRING token (zero-cost). Compiler emits LDCONST for template parts + ADD for concatenation. Escape sequences and line continuations supported. Brace tracking handles object literals and function bodies inside ${}. Tagged templates: `emit_tagged_template` builds template object array with `.raw` property, handles no-substitution (STRING), multi-part (HEAD/MIDDLE/TAIL), chained calls, and member expression tags with proper `this` binding. No regressions. |
-| 46 | **Phase 11: Default parameters** — Added `compile_default_expr()` helper that compiles each default as a zero-argument inner function; free variables resolve via GETVAR against the outer scope environment chain. Parameter parsing checks for `=` after each name: compiles default via sub-CompilerContext, stores in `inner_funcs`, records in `defaults[]`. After PUSH_LEX (before body), emits undef-check: `SNEQ param,undef; IF_TRUE skip; CLOSURE; LDTHIS; CALL 0; LDREG param,result; PUTVAR`. Both `compile_inner_function` and `parse_function_body` support defaults. Defaults can reference earlier params (e.g., `function f(a, b = a + 1)`). No regressions. |
-| 47 | **Phase 11: Rest parameters** — Added `has_rest`, `rest_formal_count`, and `num_args` fields to CompilerContext. `finish()` now sets `func.num_formals` from `rest_formal_count` when `has_rest=true`. Modified `parse_function_body()`, `compile_inner_function()`, and `compile_arrow_inner()` to detect `...rest` in parameter lists. Arrow function detection updated to handle ELLIPSIS in paren params. CLOSURE opcode handler now sets `.length` property from `num_formals` (fixing pre-existing gap). VM CALL and NEW_OBJ handlers build rest array: copy first `num_formals` args normally, create HObject ARRAY from overflow args with indexed properties and `.length`. No regressions on existing suite. |
-| 48 | **Phase 13: Spread operator** — Array literal spread: `[...arr, x]` using new `ARRSPRD` opcode (ABC format, in-place index update). Call spread: `f(...args)` using `SPREAD_ARG` (register-level copy) + `CALL_S` (dynamic arg count). Compiler `emit_call()` detects `...` prefix, allocates count registers, emits SPREAD_ARG + ADD accumulation + CALL_S. Array literal handles mixed spread+non-spread with register-based index tracking (switches from compile-time index when first spread encountered). Multiple spreads per array supported. Non-spread-before-spread in calls supported; spread-before-non-spread deferred. No regressions. |
-| 49 | **Phase 14: for-of loop bugfix** — Fixed `continue` in for-of causing infinite loop. Root cause: `emit_forof_loop()` set `push_loop(loop_start, true)` which set `continue_target` to the LT comparison at loop_start. When `continue` executed, it jumped back to LT without advancing the index, re-entering the same iteration forever. Fix: added `self.loop_stack[self.loop_depth - 1].continue_target = self.code_count` after `self.statement()!` and before the index increment, so `continue` advances to the next element. All 7 for-of test cases (var/let/const/bare/empty/break/continue) now pass; no regressions on existing suite. **Test262: 1,621 pass.** |
-|| 50 | **Phase 15: ES6 Classes** — Implemented class declarations/expressions with constructors, methods, static methods, `extends`, `super()`, `super.method()`, and `new.target`. Added 3 opcodes: `SETPROTO`, `SUPER_CALL`, `NEWTARGET`. `FuncFlags.is_constructable` now propagated from compiler through `CLOSURE` to `HObject.flags.constructable`. Default base constructors built manually. Fixed `handle_return` to use `this_binding` for constructor instance return (freeing `new_target` for ES6 meta-property). 25/25 class tests pass; no regressions. |
-|| 51 | **Phase 16: Nested Templates** — Lexer now supports nested template literals (backtick inside ${...}). Added template_balance_stack (up to 16 levels deep) and template_balance_stack_depth to Lexer struct. When a backtick is encountered in IN_EXPR mode, the current brace balance is pushed, the inner template is scanned via scan_template_head(), and after the inner template closes (TEMPLATE_TAIL), the outer IN_EXPR state is restored. For simple inner templates (no ${}), state restoration happens in next_token() after scan_template_head() returns. No compiler changes required — nested templates are parsed transparently as expressions within expressions. 27/27 template tests pass (20 existing + 7 new nested). |
-||| 52 | **Phase 17: Map / Set built-ins** — Map and Set constructors and prototype methods (set, get, has, delete, clear, keys, values, entries, forEach, add). Internal storage uses HObject.array_part (Map: [k0,v0,k1,v1,...]; Set: [v0,v1,...]). SameValueZero comparison for key/value equality. Expanded ObjClass bitfield from 5→6 bits to fit MAP/SET. Registered globally with proper prototype chain wiring.
-||| 53 | **Phase 18: WeakMap / WeakSet built-ins** — WeakMap (constructor, set, get, has, delete) and WeakSet (constructor, add, has, delete). ES6 §23.3-23.4. Key restriction: WeakMap keys must be Objects (TypeError on primitives); WeakSet values must be Objects. No size, clear, or iteration methods. ObjClass.WEAKMAP/WEAKSET added to enum; heap.weakmap_proto/weakset_proto fields; BUILTIN constants 131-139; class_name switch entries for "[object WeakMap/WeakSet]".
-||| 54 | **Phase 19: Symbol built-in** — Symbol constructor (returns unique symbol STRING TVal with 0xFF prefix byte and is_symbol flag), Symbol.for(key) with global registry (heap-resident linear arrays), Symbol.keyFor(sym), Symbol.prototype.toString() and valueOf(). Added BUILTIN_SYMBOL (140) through BUILTIN_SYMBOL_PROTO_VALUEOF (144). Added heap.symbol_proto, symbol_registry_keys/syms/count/cap fields. Fixed keyword-as-property-name in compiler: after '.' any IdentifierName (including keywords) is accepted, enabling Symbol.for syntax. Fixed GETPROP VM opcode to route symbol STRING TVal to Symbol.prototype (not String.prototype). No regressions on existing test suite.
-||| 55 | **Phase 20: Promise built-in** — Promise constructor (new Promise(executor)), Promise.resolve(x), Promise.reject(r), Promise.prototype.then(onFulfilled, onRejected), Promise.prototype.catch(onRejected), Promise.prototype.finally(onFinally), Promise.all(iterable) stub, Promise.race(iterable) stub. Internal state machine (pending/fulfilled/rejected) stored in HObject.array_part with reaction queue for .then() chaining. Added ObjClass.PROMISE to enum, heap.promise_proto, BUILTIN constants 145-152, class_name switch for "[object Promise]". Static methods registered as LIGHTFUNC on Promise constructor. Full constructor/prototype wiring with Object.prototype and Function.prototype. No regressions on existing 18-test suite.
-|| 56 | **Skip filter update** — Updated `UNSUPPORTED_PATTERN` in `scripts/run_test262.py` and `UNSUPPORTED_FEATURES` in `scripts/run_test262_per_phase.sh` to unskip tests tagged with now-implemented features: `Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Promise`, `class`, `new.Target`. 328 tests in existing phase directories now runnable. Full re-run: **1,653 pass / 2,592 fail / 1,625 skip** (38.9% of runnable, 3.1% of total 53,568).
-|| 57 | **Phase 20: Promise.all/race + Phase 21: Generators** — Promise.all and Promise.race fully implemented (were stubs). Generator function (`function*`) parsing, `is_generator` flag in compiler, YIELD/LOAD_RESUME opcodes, GeneratorState with state machine, Generator.prototype.next/throw/return builtins, VM generator resumption with `.next(val)` resume values, `.throw()` exception injection, `.return()` completion. `yield*` compiled to array-index loop.
-|| 58 | **Performance fix: GETPROP 4x call bug** — Fixed critical performance bug in GETPROP opcode: the OBJECT-tag branch called `get_prop_with_proto()` **4 times** instead of caching the result in a local variable. The remaining branches (STRING, NUMBER, BOOLEAN, SYMBOL) already used the correct cached pattern. This was the single biggest hotspot in property access. **Benchmark improvements**: property_lookup 6.4x→4.0x (-29%), arithmetic 5.8x→4.6x (-19%), object 6.5x→5.8x (-11%), string 7.6x→6.0x (-20%), array 5.8x→4.9x (-15%), loop 5.3x→4.8x (-8%). Overall average across all benchmarks improved from **6.5x to 5.5x** Duktape ratio.
-|| 59 | **VM speed: FASTINT preservation across 15+ opcodes** — Extended FASTINT preservation from ADD-only to SUB, MUL, MOD, UNP, UNM. Bitwise ops (BNOT, BAND, BOR, BXOR, SHL, SHR, USHR) now extract Int32 operands directly and store results as FASTINT, eliminating double conversion roundtrips. Comparison ops (LT, LE, GT, GE) compare FASTINT operands directly without promoting to double. Added `types::FASTINT_MIN`/`types::FASTINT_MAX` constants. All C3 unit tests and JS test suite continue to pass with no regressions. Theoretical benefit: fewer int↔double conversions in the hottest VM loops. macOS benchmark variance too high for conclusive single-run measurement, but `function_call` and `object` benchmarks consistently show improvement.
-|| 60 | **VM speed: Struct assignment for TVal + regs_base hoist** — Replaced all field-by-field TVal copies (tag/fastint/number/pointer = 3 redundant union writes per copy) with single `*ra = *rb` struct assignments across LDREG, LDCONST, LDTHIS, GETPROP (5 branches), GETVAR, and CATCH opcodes. Hoisted `regs_base` pointer computation out of the inner dispatch loop to the outer restart loop — one call per activation instead of one per instruction. Benchmark improvements: object -20.8%, function_call -12.1%. **Current average slowdown: ~5.1x Duktape** (was 5.5x). Test262: no regressions (phase 0-1: 447 pass, phase 2: 379 pass, phase 3: 101 pass).
-|| 61 | **VM speed: Direct call/return dispatch** — Eliminated the `needs_restart=true; break;` round-trip through the outer restart loop for ECMAScript-to-ECMAScript CALL/RET/RETUNDEF opcodes. Instead of breaking the inner dispatch loop and having the outer loop reload activation state, the CALL/RET handlers now update local variables (`act`, `regs_base`, `code_base`, `curr_pc`, etc.) inline and `continue` directly to the next dispatch. This saves one inner-loop exit/enter + full state reload per call/return. **Benchmark improvements**: function_call ~17%, recursion ~15%, object ~21%. Test262: no regressions (phase 0-1: 447, phase 2: 379, phase 3: 101, phase 4: 45).
-|| 62 | **VM speed: Remove per-instruction act.curr_pc store + fast int-to-string** — Two performance improvements: (1) Removed the `act.curr_pc = curr_pc` store from every instruction in the inner dispatch loop (was updating the activation struct's program counter through a pointer on every opcode). The store is deferred to only when needed: before CALL direct dispatch (to save the caller's resume point). The JUMP/IF_TRUE/IF_FALSE handlers retain their own `act.curr_pc` updates. (2) Added `int_to_buf` fast integer-to-string conversion and `vm_fastint_to_string` to replace `snprintf("%.17g")` + double conversion for FASTINT property keys. This avoids libc snprintf overhead (format string parsing, locale handling) and the double→long conversion when converting FASTINT values to interned strings for property access. Combined: reduces memory store bandwidth, eliminates snprintf for integer keys, fewer function calls in the hottest property-access paths. Test262: no regressions (phase 0-1: 447, phase 2: 379, phase 3: 101, phase 4: 45).
-||| 63 | **VM speed: code_end hoisting + dead store removal** — Hoisted `code_end` pointer computation out of every inner-loop instruction into a local variable, eliminating one redundant address addition per bytecode dispatch cycle. Also removed a dead `func_slot` assignment in the CALL ECMAScript path (was written but never read after `ensure_valstack`). Test262: no regressions (phase 0-1: 441 pass with 7 pre-existing timeouts).|
-||| 64 | **VM speed: @inline annotations + get_prop_with_proto inlining** — Added `@inline` to hot-path flag accessors: `HObject.is_callable()/is_constructable()/is_bound()`, `CompiledFunction.is_arrow()/is_generator()/is_async()/is_constructable()/uses_arguments()/has_direct_eval()/has_rest()/is_strict()`, and all `TVal.set_*()` methods. Inlined `get_prop_with_proto` calls in all GETPROP branches to eliminate function call + TVal return copy overhead. All tests pass with no regressions.|
-||| 65 | **Phase 15: Getters/setters + NEW_OBJ curr_pc fix** — Implemented getter/setter support for class bodies and object literals. Added `AccessorResult` struct and `find_accessor_proto()` to walk prototype chain for accessor properties. GETPROP handler checks for accessor before data property lookup; PUTPROP checks for setter before direct write. `invoke_getter()` sets up ECMAScript call frame for getter with proper `this` binding. INITGET/INITSET opcode handlers define accessor properties. Compiler parses `get prop(){}` / `set prop(v){}` in class bodies and object literals. **Bug fix**: NEW_OBJ missing `act.curr_pc = curr_pc` (from Session 62 removal) caused infinite loop on constructor return. Test262: 1,629 pass. All 102 local tests pass.|
-||| 66 | **Phase 15: Computed property names** — Implemented computed property names for object literals (data, methods, getters, setters) and class bodies (methods, getters, setters, static). Compiled key expressions as 0-arg inner functions via `compile_key_expr()`, deferred evaluation via CLOSURE+LDTHIS+CALL at method-install time. Removed `computed-property-names` from test262 skip lists. 17/17 local tests pass. 11/48 test262 computed-property-name tests pass (37 fail due to pre-existing `new X().prop` compiler bug).|
-||| 67 | **Phase 8: Object.keys** — Implemented `Object.keys()` as a static method on the Object constructor per ES5 §15.2.3.14. Function collects own enumerable property names (both named properties and dense array indices), returns them in a new Array. Addressed stale-binary caching issue (full `rm` + rebuild required). Test262: 8/59 Object.keys tests passing.|
-|||| 68 | **Phase 8: Object.getPrototypeOf, isExtensible, preventExtensions, getOwnPropertyDescriptor** — Implemented 4 additional ES5 Object static methods with proper TypeError handling for non-object arguments and full property descriptor construction. |
-|||| 69 | **Phase 8: Object.defineProperty + PUTPROP writable check** — Implemented Object.defineProperty (ES5 §15.2.3.6) with ToPropertyDescriptor, [[DefineOwnProperty]] validation (configurable/writable constraints), getter/setter accessor support, and proper TypeError errors. Fixed PUTPROP VM opcode to check writable flag before writing — non-writable data properties now throw TypeError in strict mode instead of silently succeeding. |
-|||| 70 | **Phase 8: Object.getOwnPropertyNames** — Implemented `Object.getOwnPropertyNames()` as a static method on the Object constructor per ES5 §15.2.3.4. Returns all own property names (both enumerable and non-enumerable) as an array. 16/30 test262 tests passing. |
-| 71 | **Phase 8: Remaining ES5 Object static methods** — Implemented `Object.defineProperties` (ES5 §15.2.3.7), `Object.create` (ES5 §15.2.3.5), `Object.seal` (ES5 §15.2.3.8), `Object.freeze` (ES5 §15.2.3.9), `Object.isSealed` (ES5 §15.2.3.11), `Object.isFrozen` (ES5 §15.2.3.12). All wired in dispatch table and registered on Object constructor. 18/18 local tests pass. No regressions. Phase 8 now ~100%. |
