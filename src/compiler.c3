@@ -226,6 +226,9 @@ struct CompilerContext {
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
+
+    // arguments tracking
+    bool uses_arguments;        // true when 'arguments' is referenced in function body
 }
 
 // ============================================================================
@@ -374,6 +377,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
     func.flags.is_generator = self.is_generator;
+    func.flags.uses_arguments = self.uses_arguments;
     func.num_args = self.num_args;
     if (self.has_rest) {
         func.num_formals = self.rest_formal_count;
@@ -4150,6 +4154,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         self.last_was_getvar = false;
                         return var_reg;
                     }
+                }
+
+                // When 'arguments' is referenced inside a non-arrow function body,
+                // set the uses_arguments flag so the VM creates the arguments object.
+                if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    self.uses_arguments = true;
                 }
 
                 // Not found locally: emit GETVAR to look up by name at runtime

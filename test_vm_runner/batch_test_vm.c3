@@ -63,7 +63,7 @@ fn int exec_js(Vm* vm, Heap* hp, char[] src) {
 // Run one test with a fresh heap+VM (gold-standard isolation)
 // ============================================================================
 
-fn int run_test_fresh_with_harness(char[] test_path, char[] assert_src) {
+fn int run_test_fresh_with_harness(char[] test_path, char[] assert_src, char[] property_helper_src) {
     Heap*? hp = heap::create(null, null, null, null, null);
     if (catch h = hp) { return 1; }
     defer hp.destroy();
@@ -93,6 +93,11 @@ fn int run_test_fresh_with_harness(char[] test_path, char[] assert_src) {
         }
     }
 
+    // propertyHelper.js: load if provided (for verifyProperty, verifyCallableProperty, etc.)
+    if (property_helper_src.len > 0) {
+        exec_js(v, hp, property_helper_src);
+    }
+
     // Now compile+execute the test
     if (exec_js(v, hp, src) != 0) return 1;
 
@@ -109,8 +114,8 @@ fn int run_test_fresh_with_harness(char[] test_path, char[] assert_src) {
     return 1;
 }
 
-fn int run_test_fresh(char[] test_path) {
-    return run_test_fresh_with_harness(test_path, (char[]){});
+fn int run_test_fresh(char[] test_path, char[] property_helper_src) {
+    return run_test_fresh_with_harness(test_path, (char[]){}, property_helper_src);
 }
 
 // ============================================================================
@@ -118,10 +123,14 @@ fn int run_test_fresh(char[] test_path) {
 // ============================================================================
 
 fn int run_worker_loop() {
-    // Pre-load assert.js once (avoid per-test disk reads)
+    // Pre-load assert.js and propertyHelper.js once (avoid per-test disk reads)
     char[]? assert_src_opt = file::load_temp((String)"test262/harness/assert.js");
     char[] assert_src;
     if (try a = assert_src_opt) { assert_src = a; }
+
+    char[]? ph_src_opt = file::load_temp((String)"test262/harness/propertyHelper.js");
+    char[] ph_src;
+    if (try p = ph_src_opt) { ph_src = p; }
 
     // Read test paths from stdin line by line
     char[4096] buf;
@@ -134,7 +143,7 @@ fn int run_worker_loop() {
             if (len == 0) { continue; }
 
             char[] path = buf[:len];
-            int rc = run_test_fresh_with_harness(path, assert_src);
+            int rc = run_test_fresh_with_harness(path, assert_src, ph_src);
 
             if (rc == 0) {
                 io::printfn("PASS %s", (String)path);
@@ -180,7 +189,7 @@ fn int main(String[] args) {
             char[] tp = entries[i].path[:entries[i].len];
             bool report = (num <= 20) || (i % 100 == 0) || (i == num - 1);
 
-            int rc = run_test_fresh(tp);
+            int rc = run_test_fresh(tp, (char[]){});
             if (rc == 0) { pass++; } else { fail++; }
 
             if (report) {

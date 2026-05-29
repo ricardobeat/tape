@@ -218,6 +218,15 @@ const PropFlags PROP_FLAGS_ACCESSOR = {
     .is_accessor  = true
 };
 
+/// Convenience constant: non-writable, non-enumerable, configurable.
+/// Used for .name and .length properties of built-in functions.
+const PropFlags PROP_FLAGS_NWC = {
+    .writable     = false,
+    .enumerable   = false,
+    .configurable = true,
+    .is_accessor  = false
+};
+
 /// Result of searching for an accessor property on the prototype chain.
 struct AccessorResult {
     /// The getter or setter TVal (function), or undefined if not found.

@@ -733,7 +733,7 @@ fn void builtin_function(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in Function constructor");
             TVal msg_tv;
             msg_tv.set_string(msg_str);
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             TVal err_tv;
             err_tv.set_object(err);
             ctx.throw_value.set_object(err_tv.get_heapptr());
@@ -766,7 +766,7 @@ fn void builtin_function(BuiltinContext* ctx) {
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
         proto_tv.set_object(proto);
-        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Set function length
@@ -775,7 +775,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
     len_tv.set_fastint((long)num_params);
-    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
 
     // Return the function object
     ctx.result.set_object(func_obj);
@@ -822,7 +822,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
             HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in eval code");
             TVal msg_tv;
             msg_tv.set_string(msg_str);
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             TVal err_tv;
             err_tv.set_object(err);
             ctx.throw_value.set_object(err_tv.get_heapptr());
@@ -971,7 +971,7 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
     }
@@ -1225,7 +1225,7 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
                 HString* msg = builtin_intern_string(ctx.heap, "Invalid code point value");
                 TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
             }
@@ -1464,7 +1464,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                                 HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                                 TVal msg_tv; msg_tv.set_string(msg);
                                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                                 ctx.should_throw = true;
                                 ctx.throw_value.set_object(err);
                             }
@@ -1489,7 +1489,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                                 HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                                 TVal msg_tv; msg_tv.set_string(msg);
                                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                                 ctx.should_throw = true;
                                 ctx.throw_value.set_object(err);
                             }
@@ -1507,7 +1507,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                             TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                             ctx.should_throw = true;
                             ctx.throw_value.set_object(err);
                         }
@@ -1521,7 +1521,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                         TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                         ctx.should_throw = true;
                         ctx.throw_value.set_object(err);
                     }
@@ -1535,7 +1535,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                     HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                     TVal msg_tv; msg_tv.set_string(msg);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                     ctx.should_throw = true;
                     ctx.throw_value.set_object(err);
                 }
@@ -1578,7 +1578,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                         TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                         ctx.should_throw = true;
                         ctx.throw_value.set_object(err);
                     }
@@ -1600,7 +1600,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                             TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                             ctx.should_throw = true;
                             ctx.throw_value.set_object(err);
                         }
@@ -1625,7 +1625,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                             HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                             TVal msg_tv; msg_tv.set_string(msg);
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                             ctx.should_throw = true;
                             ctx.throw_value.set_object(err);
                         }
@@ -1642,7 +1642,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                         HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                         TVal msg_tv; msg_tv.set_string(msg);
                         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                         ctx.should_throw = true;
                         ctx.throw_value.set_object(err);
                     }
@@ -1655,7 +1655,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                     HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
                     TVal msg_tv; msg_tv.set_string(msg);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                     ctx.should_throw = true;
                     ctx.throw_value.set_object(err);
                 }
@@ -1747,7 +1747,7 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         TVal msg_val;
         msg_val.set_string(msg_str);
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         // Store the error for bubbling — but for now just return null
     }
     return null;
@@ -2554,7 +2554,7 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
             HString* msg = builtin_intern_string(ctx.heap, "Invalid count value");
             TVal msg_val; msg_val.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             TVal err_val; err_val.set_object(err);
             ctx.heap.curr_thread = err;
         }
@@ -3203,37 +3203,6 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     ctx.result.set_object(obj);
 }
 
-/// Array.prototype.find(predicate, thisArg) — ES6 §22.1.3.8
-fn void builtin_array_proto_find(BuiltinContext* ctx) {
-    HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.set_undefined(); return; }
-
-    uint len = array_get_length(obj, ctx.heap);
-
-    if (ctx.argc < 1 || !(ctx.regs[ctx.base_reg].is_object() && ctx.regs[ctx.base_reg].get_heapptr() != null &&
-                          ((HObject*)ctx.regs[ctx.base_reg].get_heapptr()).is_callable())) {
-        ctx.result.set_undefined(); return;
-    }
-
-    for (uint i = 0; i < len; i++) {
-        TVal elem = array_get_elem(obj, i, ctx.heap);
-        // Simple stub: just return first element for now — real callback needs VM
-        ctx.result.set_fastint(elem.get_fastint());
-        ctx.result.set_number(elem.get_number());
-        ctx.result.set_object(elem.get_heapptr());
-        return;
-    }
-    ctx.result.set_undefined();
-}
-
-/// Array.prototype.findIndex(predicate, thisArg) — ES6 §22.1.3.9
-fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
-    HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.set_undefined(); return; }
-
-    ctx.result.set_fastint(-1);
-}
-
 /// Array.prototype.includes(searchElement, fromIndex) — ES7 §22.1.3.13
 fn void builtin_array_proto_includes(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
@@ -3294,7 +3263,7 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
             HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flat requires 'this' to be an object");
             TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.should_throw = true;
             ctx.throw_value.set_object(err);
         }
@@ -3335,7 +3304,7 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
             HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.flatMap requires 'this' to be an object");
             TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.should_throw = true;
             ctx.throw_value.set_object(err);
         }
@@ -4102,7 +4071,7 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf requires a value");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4121,7 +4090,7 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getPrototypeOf called on non-object");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4159,7 +4128,7 @@ fn void builtin_object_isExtensible(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.isExtensible called on non-object");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4187,7 +4156,7 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions requires a value");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4206,7 +4175,7 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions called on non-object");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4239,7 +4208,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyDescriptor called on non-object");
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4455,7 +4424,7 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
         if (msg_key == null || msg_str == null) return false;
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return false;
@@ -4603,7 +4572,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4902,7 +4871,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -4953,7 +4922,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
                 msg_tv.set_string(msg_str);
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
                 return;
@@ -4983,7 +4952,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                     TVal msg_tv;
                     msg_tv.set_string(msg_str);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                     ctx.should_throw = true;
                     ctx.throw_value.set_object(err);
                     return;
@@ -5014,7 +4983,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                         TVal msg_tv;
                         msg_tv.set_string(msg_str);
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                         ctx.should_throw = true;
                         ctx.throw_value.set_object(err);
                         return;
@@ -5040,7 +5009,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                             if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                             TVal msg_tv;
                             msg_tv.set_string(msg_str);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                             ctx.should_throw = true;
                             ctx.throw_value.set_object(err);
                             return;
@@ -5106,7 +5075,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5129,7 +5098,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5186,7 +5155,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                             if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                             TVal msg_tv;
                             msg_tv.set_string(msg_str);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                             ctx.should_throw = true;
                             ctx.throw_value.set_object(err);
                             return;
@@ -5242,7 +5211,7 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5272,7 +5241,7 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5302,7 +5271,7 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5346,7 +5315,7 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv;
         msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5397,7 +5366,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5498,7 +5467,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5567,7 +5536,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5639,7 +5608,7 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.hasOwn requires 2 arguments");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5656,7 +5625,7 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert undefined or null to object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5703,7 +5672,7 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5718,7 +5687,7 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         HString* msg_str = builtin_intern_string(ctx.heap, "Object.setPrototypeOf requires an object or null");
         if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
         TVal msg_tv; msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
         return;
@@ -5762,6 +5731,43 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.GENERATOR: class_name = "Generator"; break;
             default:                          class_name = "Object"; break;
         }
+
+        // ES6 §19.1.3.6: check @@toStringTag on the object
+        HString* tag_sym = ensure_tostringtag_symbol(ctx.heap);
+        if (tag_sym != null) {
+            TVal? tag_val = obj.get_prop_proto(tag_sym);
+            if (try tv = tag_val) {
+                if (tv.is_string()) {
+                    HString* tag_str = (HString*)tv.get_heapptr();
+                    if (tag_str != null && !tag_str.is_symbol()) {
+                        char[] tag_bytes = tag_str.get_data();
+                        int tag_len = (int)tag_bytes.len;
+                        if (tag_len > 0 && tag_len < 64) {
+                            // Build "[object <tag>]"
+                            buf[0] = '[';
+                            buf[1] = 'o';
+                            buf[2] = 'b';
+                            buf[3] = 'j';
+                            buf[4] = 'e';
+                            buf[5] = 'c';
+                            buf[6] = 't';
+                            buf[7] = ' ';
+                            int pos = 8;
+                            for (int i = 0; i < tag_len && pos < 62; i++) {
+                                buf[pos] = tag_bytes[i];
+                                pos++;
+                            }
+                            buf[pos] = ']';
+                            pos++;
+                            HString* s = builtin_intern_string(ctx.heap, buf[:pos]);
+                            ctx.result.set_string(s);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
         if (len > 0 && len < 64) {
             HString* s = builtin_intern_string(ctx.heap, buf[:len]);
@@ -6024,7 +6030,7 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
     }
     return null;
@@ -6342,6 +6348,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
 }
 
 /// Helper: register a method on Array.prototype.
+/// Creates a proper HObject function with .name and .length properties
+/// (ES6 §17: built-in function objects have non-enumerable .name/.length).
 fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uint fn_index) {
     uint hash = heap.hash_string(name);
     HString* existing = heap.str_table_lookup(name, hash);
@@ -6354,16 +6362,43 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
         heap.str_table_insert(new_key);
         key = new_key;
     }
+    // Create HObject function with builtin_fn_index for proper .name/.length
+    HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) return false;
+    HObject* func_obj = func_raw;
+    func_obj.builtin_fn_index = (int)fn_index;
+    func_obj.flags.callable = true;
+    func_obj.prototype = heap.function_proto;
+    // Set .name (non-writable, non-enumerable, configurable)
+    HString* name_prop_key = builtin_intern_string(heap, "name");
+    HString* name_val = builtin_intern_string(heap, name);
+    if (name_prop_key != null && name_val != null) {
+        TVal name_tv;
+        name_tv.set_string(name_val);
+        func_obj.put_prop(name_prop_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+    // Set .length from builtin metadata
+    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
+    if (meta.arity >= 0) {
+        HString* length_str = builtin_intern_string(heap, "length");
+        if (length_str != null) {
+            TVal len_tv;
+            len_tv.set_fastint((long)meta.arity);
+            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+    // Register on prototype
     TVal tv;
-    tv.set_lightfunc((void*)(usz)fn_index);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    tv.set_object(func_obj);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
 /// Helper: compile a JS function expression and register it as a method on a prototype.
 /// The src must be a complete function expression like "(function(a,b){...})" or "(function name(a){...})".
 /// Used for callback-based methods (forEach, map, filter, etc.) that can't be LIGHTFUNC builtins.
-fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* global_env, char[] name, char[] src) {
+/// length_override: if >= 0, overrides the .length property (for optional params like reduce's initialValue).
+fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* global_env, char[] name, char[] src, int length_override = -1) {
     Lexer lex = lexer::lexer_init(src, heap);
     CompiledFunction*? cf = compiler::compile_function(&lex, heap, true);
     CompiledFunction* func;
@@ -6387,8 +6422,15 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
         if (fname != null) {
             TVal name_tv;
             name_tv.set_string(fname);
-            func_obj.put_prop(name_str, name_tv, hobject::PROP_FLAGS_WEC);
+            func_obj.put_prop(name_str, name_tv, hobject::PROP_FLAGS_NWC);
         }
+    }
+    HString* length_str = builtin_intern_string(heap, "length");
+    if (length_str != null) {
+        TVal len_tv;
+        long len_val = length_override >= 0 ? length_override : (long)func.num_formals;
+        len_tv.set_fastint(len_val);
+        func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
     }
     uint hash = heap.hash_string(name);
     HString* existing = heap.str_table_lookup(name, hash);
@@ -6403,7 +6445,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     }
     TVal tv;
     tv.set_object(func_obj);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
@@ -6835,7 +6877,7 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toReversed called on null or undefined");
                 TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
             }
@@ -6875,7 +6917,7 @@ fn void builtin_array_proto_toSorted(BuiltinContext* ctx) {
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSorted called on null or undefined");
                 TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
             }
@@ -6950,7 +6992,7 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.toSpliced called on null or undefined");
                 TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
             }
@@ -7051,7 +7093,7 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
                 HString* msg = builtin_intern_string(ctx.heap, "Array.prototype.with called on null or undefined");
                 TVal msg_tv; msg_tv.set_string(msg);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 ctx.should_throw = true;
                 ctx.throw_value.set_object(err);
             }
@@ -7089,7 +7131,7 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
             HString* msg = builtin_intern_string(ctx.heap, "Invalid array index");
             TVal msg_tv; msg_tv.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.should_throw = true;
             ctx.throw_value.set_object(err);
         }
@@ -7665,6 +7707,8 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         inner_ctx.needs_re_dispatch = false;
         inner_ctx.re_nargs = 0;
         inner_ctx.should_throw = false;
+        // Update the this slot so builtins that read ctx.regs[ctx.base_reg - 1] get the correct receiver
+        inner_ctx.regs[ctx.base_reg - 1] = new_this;
         // Shift remaining args to start at base_reg
         for (ushort i = 0; i < remaining; i++) {
             ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
@@ -8567,7 +8611,7 @@ fn void json_throw_syntax_error(BuiltinContext* ctx, char[] msg) {
         TVal msg_tv;
         msg_tv.set_string(msg_str);
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
         ctx.throw_value.set_object(err);
     } else {
         ctx.throw_value.set_undefined();
@@ -10112,7 +10156,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                     TVal msg_tv;
                     msg_tv.set_string(msg_str);
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
                 }
                 ctx.throw_value.set_object(err);
             } else {
@@ -10139,7 +10183,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             TVal msg_tv;
             msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
@@ -10203,7 +10247,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
             TVal msg_tv;
             msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
@@ -10295,7 +10339,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
             TVal msg_tv;
             msg_tv.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             ctx.throw_value.set_object(err);
         } else {
             ctx.throw_value.set_undefined();
@@ -10568,7 +10612,7 @@ fn HObject* check_map(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
     }
     return null;
@@ -10850,7 +10894,7 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
         ctx.result.set_undefined();
@@ -10869,7 +10913,7 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
     }
@@ -10897,7 +10941,7 @@ fn HObject* check_set(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
     }
     return null;
@@ -11135,7 +11179,7 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
         ctx.result.set_undefined();
@@ -11165,7 +11209,7 @@ fn HObject* check_weakmap(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
     }
     return null;
@@ -11242,7 +11286,7 @@ fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
         ctx.result.set_undefined();
@@ -11336,7 +11380,7 @@ fn HObject* check_weakset(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
     }
     return null;
@@ -11404,7 +11448,7 @@ fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
         ctx.result.set_undefined();
@@ -11587,6 +11631,18 @@ fn HString* symbol_registry_get_key(Heap* heap, HString* sym) {
     return null;
 }
 
+/// Ensure the well-known @@toStringTag symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_tostringtag_symbol(Heap* heap) {
+    char[] desc = "toStringTag";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) return existing;
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -11601,7 +11657,7 @@ fn void builtin_symbol(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
             ctx.throw_value.set_object(err);
         } else {
@@ -11685,7 +11741,7 @@ fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
             ctx.throw_value.set_object(err);
         } else {
@@ -11734,7 +11790,7 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
             ctx.throw_value.set_object(err);
         } else {
@@ -11795,7 +11851,7 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
             TVal msg_val;
             msg_val.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
         ctx.throw_value.set_object(err);
     } else {
@@ -12426,6 +12482,14 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "catch",   BUILTIN_PROMISE_PROTO_CATCH))   return false;
     if (!register_string_proto_method(proto, heap, "finally", BUILTIN_PROMISE_PROTO_FINALLY)) return false;
 
+    // Set @@toStringTag on Promise.prototype
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Promise"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+    }
+
     // Create Promise function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
@@ -12798,6 +12862,14 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "throw",  BUILTIN_GENERATOR_PROTO_THROW))  return false;
     if (!register_string_proto_method(proto, heap, "return", BUILTIN_GENERATOR_PROTO_RETURN)) return false;
 
+    // Set @@toStringTag on Generator.prototype
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Generator"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+    }
+
     // Wire prototype.constructor → GeneratorFunction constructor
     // GeneratorFunction constructor is created later; we'll wire it there
 
@@ -12946,10 +13018,6 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_array_of(ctx);
         case BUILTIN_ARRAY_PROTO_FILL:
             builtin_array_proto_fill(ctx);
-        case BUILTIN_ARRAY_PROTO_FIND:
-            builtin_array_proto_find(ctx);
-        case BUILTIN_ARRAY_PROTO_FINDINDEX:
-            builtin_array_proto_findIndex(ctx);
         case BUILTIN_ARRAY_PROTO_INCLUDES:
             builtin_array_proto_includes(ctx);
         case BUILTIN_STRING_PROTO_TRIMSTART:
@@ -13370,7 +13438,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
         // Restore checkpoint values
         for (uint i = 0; i < heap.checkpoint_count; i++) {
             globals.put_prop(heap.checkpoint_keys[i], heap.checkpoint_vals[i],
-                             hobject::PROP_FLAGS_WEC);
+                             hobject::PROP_FLAGS_WC);
         }
     }
     ctx.result.set_undefined();
@@ -13415,7 +13483,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     TVal log_val;
     log_val.set_lightfunc((void*)(usz)BUILTIN_CONSOLE_LOG);
-    console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_WEC);
+    console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_WC);
 
     env::env_declare(global_env, console_key, console_val);
 
@@ -13559,7 +13627,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .hasOwnProperty() method to Object.prototype
     HString* hasown_key = builtin_intern_string(heap, "hasOwnProperty");
@@ -13577,7 +13645,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Add .isPrototypeOf() method to Object.prototype
     HString* isproto_key = builtin_intern_string(heap, "isPrototypeOf");
@@ -13602,7 +13670,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(obj);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Object.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -13619,14 +13687,14 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(1);
-    obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     // Add static methods to Object constructor
     HString* keys_key = builtin_intern_string(heap, "keys");
     if (keys_key == null) return false;
     TVal keys_tv;
     keys_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_KEYS);
-    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getPrototypeOf — ES5 §15.2.3.2
     HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
@@ -13845,7 +13913,7 @@ fn bool register_math_method(HObject* math, Heap* heap, char[] name, uint fn_ind
     }
     TVal tv;
     tv.set_lightfunc((void*)(usz)fn_index);
-    math.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    math.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
@@ -13861,7 +13929,7 @@ fn bool set_num_prop_lookup(HObject* obj, Heap* heap, char[] name, double val) {
     }
     TVal tv;
     tv.set_number(val);
-    obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
@@ -13904,13 +13972,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Add .toFixed() method (Phase 6d)
     if (!register_string_proto_method(proto, heap, "toFixed", BUILTIN_NUMBER_PROTO_TOFIXED)) return false;
@@ -13930,7 +13998,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(num);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Number.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14032,7 +14100,7 @@ fn bool set_num_prop(HObject* obj, Heap* heap, char[] name, double val) {
     }
     TVal tv;
     tv.set_number(val);
-    obj.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
@@ -14116,14 +14184,14 @@ fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] n
     HString* name_hstr = builtin_intern_string(heap, name_str);
     TVal name_tv;
     name_tv.set_string(name_hstr);
-    proto.put_prop(name_key, name_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(name_key, name_tv, hobject::PROP_FLAGS_WC);
 
     // Set .message property (empty string)
     HString* msg_key = builtin_intern_string(heap, "message");
     HString* msg_hstr = builtin_intern_string(heap, "");
     TVal msg_tv;
     msg_tv.set_string(msg_hstr);
-    proto.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
 
     return proto;
 }
@@ -14139,75 +14207,75 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
-    err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+    err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .constructor to Error.prototype pointing to Error builtin
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR);
-    err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // --- Create TypeError.prototype ---
     HObject* type_err_proto = register_error_prototype(heap, err_proto, "TypeError");
     if (type_err_proto == null) return false;
-    type_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    type_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.type_err_proto = type_err_proto;
 
     // --- Create RangeError.prototype ---
     HObject* range_err_proto = register_error_prototype(heap, err_proto, "RangeError");
     if (range_err_proto == null) return false;
-    range_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    range_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.range_err_proto = range_err_proto;
 
     // --- Create ReferenceError.prototype ---
     HObject* ref_err_proto = register_error_prototype(heap, err_proto, "ReferenceError");
     if (ref_err_proto == null) return false;
-    ref_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    ref_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.ref_err_proto = ref_err_proto;
 
     // --- Create SyntaxError.prototype ---
     HObject* syntax_err_proto = register_error_prototype(heap, err_proto, "SyntaxError");
     if (syntax_err_proto == null) return false;
-    syntax_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    syntax_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.syntax_err_proto = syntax_err_proto;
 
     // --- Create EvalError.prototype ---
     HObject* eval_err_proto = register_error_prototype(heap, err_proto, "EvalError");
     if (eval_err_proto == null) return false;
-    eval_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    eval_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.eval_err_proto = eval_err_proto;
 
     // --- Create URIError.prototype ---
     HObject* uri_err_proto = register_error_prototype(heap, err_proto, "URIError");
     if (uri_err_proto == null) return false;
-    uri_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    uri_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.uri_err_proto = uri_err_proto;
 
     // Set .constructor on each error sub-prototype to point to its own builtin
     // (type_err_proto already done above — fix it now with correct index)
     TVal type_err_constr;
     type_err_constr.set_lightfunc((void*)(usz)BUILTIN_TYPE_ERROR);
-    type_err_proto.put_prop(constructor_key, type_err_constr, hobject::PROP_FLAGS_WEC);
+    type_err_proto.put_prop(constructor_key, type_err_constr, hobject::PROP_FLAGS_WC);
 
     TVal range_err_constr;
     range_err_constr.set_lightfunc((void*)(usz)BUILTIN_RANGE_ERROR);
-    range_err_proto.put_prop(constructor_key, range_err_constr, hobject::PROP_FLAGS_WEC);
+    range_err_proto.put_prop(constructor_key, range_err_constr, hobject::PROP_FLAGS_WC);
 
     TVal ref_err_constr;
     ref_err_constr.set_lightfunc((void*)(usz)BUILTIN_REFERENCE_ERROR);
-    ref_err_proto.put_prop(constructor_key, ref_err_constr, hobject::PROP_FLAGS_WEC);
+    ref_err_proto.put_prop(constructor_key, ref_err_constr, hobject::PROP_FLAGS_WC);
 
     TVal syntax_err_constr;
     syntax_err_constr.set_lightfunc((void*)(usz)BUILTIN_SYNTAX_ERROR);
-    syntax_err_proto.put_prop(constructor_key, syntax_err_constr, hobject::PROP_FLAGS_WEC);
+    syntax_err_proto.put_prop(constructor_key, syntax_err_constr, hobject::PROP_FLAGS_WC);
 
     TVal eval_err_constr;
     eval_err_constr.set_lightfunc((void*)(usz)BUILTIN_EVAL_ERROR);
-    eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WEC);
+    eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WC);
 
     TVal uri_err_constr;
     uri_err_constr.set_lightfunc((void*)(usz)BUILTIN_URI_ERROR);
-    uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WEC);
+    uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WC);
 
     // --- Register Error global constructor ---
     if (!register_simple_builtin(global_env, heap, "Error", BUILTIN_ERROR)) return false;
@@ -14250,19 +14318,19 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Add .toString() method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Register Boolean as a global constructor
     if (!register_simple_builtin(global_env, heap, "Boolean", BUILTIN_BOOLEAN)) return false;
@@ -14287,13 +14355,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Add String.prototype methods (Phase 6b)
     if (!register_string_proto_method(proto, heap, "charAt",     BUILTIN_STRING_PROTO_CHARAT))     return false;
@@ -14333,7 +14401,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(str_obj);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set String.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14369,7 +14437,8 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     return true;
 }
 
-/// Helper: register a String.prototype method as a lightfunc property.
+/// Helper: register a method on a prototype as a proper HObject function.
+/// Creates HObject with .name/.length per ES6 §17 (non-writable, non-enumerable, configurable).
 fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, uint fn_index) {
     uint hash = heap.hash_string(name);
     HString* existing = heap.str_table_lookup(name, hash);
@@ -14382,9 +14451,35 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
         heap.str_table_insert(new_key);
         key = new_key;
     }
+    // Create HObject function with builtin_fn_index
+    HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) return false;
+    HObject* func_obj = func_raw;
+    func_obj.builtin_fn_index = (int)fn_index;
+    func_obj.flags.callable = true;
+    func_obj.prototype = heap.function_proto;
+    // Set .name (non-writable, non-enumerable, configurable)
+    HString* name_prop_key = builtin_intern_string(heap, "name");
+    HString* name_val = builtin_intern_string(heap, name);
+    if (name_prop_key != null && name_val != null) {
+        TVal name_tv;
+        name_tv.set_string(name_val);
+        func_obj.put_prop(name_prop_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+    // Set .length from builtin metadata
+    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
+    if (meta.arity >= 0) {
+        HString* length_str = builtin_intern_string(heap, "length");
+        if (length_str != null) {
+            TVal len_tv;
+            len_tv.set_fastint((long)meta.arity);
+            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+    // Register on prototype
     TVal tv;
-    tv.set_lightfunc((void*)(usz)fn_index);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WEC);
+    tv.set_object(func_obj);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
     return true;
 }
 
@@ -14412,7 +14507,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(arr);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Array.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14443,8 +14538,10 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "includes",  BUILTIN_ARRAY_PROTO_INCLUDES))  return false;
     if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
-    if (!register_array_proto_method(proto, heap, "find",      BUILTIN_ARRAY_PROTO_FIND))      return false;
-    if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX)) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "find",
+        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return v;k++}return undefined}")) return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "findIndex",
+        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return k;k++}return -1}")) return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
     if (!register_array_proto_method(proto, heap, "flatMap",   BUILTIN_ARRAY_PROTO_FLATMAP))   return false;
     if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
@@ -14466,9 +14563,9 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_compiled_proto_method(proto, heap, global_env, "some",
         "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return true;k++}return false}")) return false;
     if (!register_compiled_proto_method(proto, heap, global_env, "reduce",
-        "(callback,initialValue){var O=Object(this);var len=O.length;var k=0;var acc=initialValue;while(k<len){var v=O[k];var a=acc;acc=callback(a,v,k,O);k++}return acc}")) return false;
+        "(callback,initialValue){var O=Object(this);var len=O.length;var k=0;var acc=initialValue;while(k<len){var v=O[k];var a=acc;acc=callback(a,v,k,O);k++}return acc}", 1)) return false;
     if (!register_compiled_proto_method(proto, heap, global_env, "reduceRight",
-        "(callback,initialValue){var O=Object(this);var len=O.length;var k=len-1;var acc=initialValue;while(k>=0){var v=O[k];var a=acc;acc=callback(a,v,k,O);k--}return acc}")) return false;
+        "(callback,initialValue){var O=Object(this);var len=O.length;var k=len-1;var acc=initialValue;while(k>=0){var v=O[k];var a=acc;acc=callback(a,v,k,O);k--}return acc}", 1)) return false;
     // TODO: register map/filter/every/some/reduce/reduceRight after forEach works
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
@@ -14476,14 +14573,14 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (isarray_key == null) return false;
     TVal isarray_tv;
     isarray_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_ISARRAY);
-    arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WEC);
+    arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WC);
 
     // Add Array.of (ES6 §22.1.2.3) as static method on the constructor
     HString* of_key = builtin_intern_string(heap, "of");
     if (of_key == null) return false;
     TVal of_tv;
     of_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_OF);
-    arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WEC);
+    arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WC);
 
     // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Array");
@@ -14528,25 +14625,25 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HString* call_key = builtin_intern_string(heap, "call");
     TVal call_tv;
     call_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_CALL);
-    proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WC);
 
     // Add .apply method
     HString* apply_key = builtin_intern_string(heap, "apply");
     TVal apply_tv;
     apply_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_APPLY);
-    proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WC);
 
     // Add .bind method
     HString* bind_key = builtin_intern_string(heap, "bind");
     TVal bind_tv;
     bind_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_BIND);
-    proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WC);
 
     // Set .constructor to the Function constructor object itself
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(func_obj);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14563,7 +14660,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HString* len_key = builtin_intern_string(heap, "length");
     TVal len_tv;
     len_tv.set_fastint(1);
-    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
 
     // Register Function constructor globally as an OBJECT
     uint hash = heap.hash_string("Function");
@@ -14601,7 +14698,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_DATE);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Add Date.prototype.toString()
     if (!register_string_proto_method(proto, heap, "toString", BUILTIN_DATE_PROTO_TOSTRING)) return false;
@@ -14783,7 +14880,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_REGEXP);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Add RegExp.prototype.test()
     if (!register_string_proto_method(proto, heap, "test", BUILTIN_REGEXP_PROTO_TEST)) return false;
@@ -14815,7 +14912,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     HString* len_key = builtin_intern_string(heap, "length");
     TVal len_tv;
     len_tv.set_fastint(2);
-    regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+    regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
 
     // Register RegExp constructor globally as an OBJECT
     uint hash = heap.hash_string("RegExp");
@@ -14867,11 +14964,19 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_MAP_PROTO_FOREACH)) return false;
 
+    // Set @@toStringTag on Map.prototype
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Map"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+    }
+
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
     size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WC);
 
     // Create Map constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -14883,7 +14988,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Map.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14900,7 +15005,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     // Map.prototype's [[Prototype]] is set later (to Object.prototype)
 
@@ -14952,11 +15057,19 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_SET_PROTO_FOREACH)) return false;
 
+    // Set @@toStringTag on Set.prototype
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Set"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+    }
+
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
     size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WC);
 
     // Create Set constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -14968,7 +15081,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Set.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -14985,7 +15098,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     // Register Set constructor globally
     uint hash = heap.hash_string("Set");
@@ -15023,10 +15136,12 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKMAP_PROTO_DELETE)) return false;
 
     // Set @@toStringTag
-    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
-    TVal tag_tv;
-    tag_tv.set_string(builtin_intern_string(heap, "WeakMap"));
-    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "WeakMap"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+    }
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
@@ -15036,7 +15151,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
@@ -15051,7 +15166,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     uint hash = heap.hash_string("WeakMap");
     HString* existing = heap.str_table_lookup("WeakMap", hash);
@@ -15087,10 +15202,12 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKSET_PROTO_DELETE)) return false;
 
     // Set @@toStringTag
-    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
-    TVal tag_tv;
-    tag_tv.set_string(builtin_intern_string(heap, "WeakSet"));
-    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "WeakSet"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+    }
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
@@ -15100,7 +15217,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     HString* prototype_key = builtin_intern_string(heap, "prototype");
     TVal proto_tv;
@@ -15115,7 +15232,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     uint hash = heap.hash_string("WeakSet");
     HString* existing = heap.str_table_lookup("WeakSet", hash);
@@ -15152,10 +15269,12 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_SYMBOL_PROTO_VALUEOF)) return false;
 
     // Set @@toStringTag on prototype
-    HString* tag_key = builtin_intern_string(heap, "Symbol.toStringTag");
-    TVal tag_tv;
-    tag_tv.set_string(builtin_intern_string(heap, "Symbol"));
-    proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Symbol"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+    }
 
     // Create Symbol function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -15167,7 +15286,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = builtin_intern_string(heap, "constructor");
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = builtin_intern_string(heap, "prototype");
@@ -15184,19 +15303,28 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
 
     // Register Symbol.for as a property of the Symbol function
     HString* for_key = builtin_intern_string(heap, "for");
     TVal for_tv;
     for_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_FOR);
-    ctor.put_prop(for_key, for_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(for_key, for_tv, hobject::PROP_FLAGS_WC);
 
     // Register Symbol.keyFor as a property of the Symbol function
     HString* keyfor_key = builtin_intern_string(heap, "keyFor");
     TVal keyfor_tv;
     keyfor_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_KEYFOR);
-    ctor.put_prop(keyfor_key, keyfor_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(keyfor_key, keyfor_tv, hobject::PROP_FLAGS_WC);
+
+    // Register Symbol.toStringTag as a well-known symbol property
+    HString* tostrtag_sym = ensure_tostringtag_symbol(heap);
+    if (tostrtag_sym != null) {
+        HString* tostrtag_key = builtin_intern_string(heap, "toStringTag");
+        TVal tostrtag_val;
+        tostrtag_val.set_string(tostrtag_sym);
+        ctor.put_prop(tostrtag_key, tostrtag_val, hobject::PROP_FLAGS_WC);
+    }
 
     // Register "Symbol" in global environment
     uint hash = heap.hash_string("Symbol");

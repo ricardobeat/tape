@@ -1746,6 +1746,40 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 } else {
                     ra.set_undefined();
                 }
+            } else if (rb.is_lightfunc()) {
+                // LIGHTFUNC: resolve .name and .length from metadata, other props from Function.prototype
+                uint fn_idx = (uint)(usz)rb.get_heapptr();
+                HString* key = get_prop_key(vm, rc);
+                if (key != null) {
+                    if (key.equals("name")) {
+                        builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                        if (meta.name.len > 0) {
+                            HString* name_str = intern_string(vm, meta.name);
+                            ra.set_string(name_str);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else if (key.equals("length")) {
+                        builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                        if (meta.arity >= 0) {
+                            ra.set_number(meta.arity);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else if (vm.heap.function_proto != null) {
+                        // Walk Function.prototype for .call, .apply, .bind, etc.
+                        TVal? result = vm.heap.function_proto.get_prop_proto(key);
+                        if (try v = result) {
+                            *ra = v;
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else {
+                    ra.set_undefined();
+                }
             } else {
                 ra.set_undefined();
             }
@@ -2249,6 +2283,53 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     nregs = target_fast.num_regs;
                     curr_pc = act.curr_pc;
                     regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+
+                    // Create arguments object if the function references 'arguments'
+                    if (target_fast.uses_arguments()) {
+                        // Arguments are in the caller's frame at caller_regs[callee_reg + 2..]
+                        // We must read them BEFORE the activation switch, but we switched already.
+                        // Fortunately, the callee frame starts at the same position, so
+                        // callee_regs[0..nargs-1] = caller's args.
+                        // BUT: the function body may overwrite callee_regs via PUTVAR.
+                        // Solution: the arguments were stored by the caller before CALL,
+                        // and we read them right after activation setup, before function body runs.
+                        // At this point, regs_base[0..nargs-1] still holds the original args.
+
+                        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                        if (try args_obj = args_obj_raw) {
+                            // Set indexed properties from actual arguments
+                            for (uint ai = 0; ai < nargs; ai++) {
+                                TVal arg_val = regs_base[ai];
+                                // Create numeric key string
+                                char[32] num_buf;
+                                int num_len = int_to_buf((long)ai, &num_buf[0], 32);
+                                if (num_len > 0) {
+                                    HString*? num_key = hstring::hstring_alloc(vm.heap, num_buf[:num_len], vm.heap.hash_string(num_buf[:num_len]));
+                                    if (try nk = num_key) {
+                                        vm.heap.str_table_insert(nk);
+                                        args_obj.put_prop(nk, arg_val, hobject::PROP_FLAGS_WEC);
+                                    }
+                                }
+                            }
+                            // Set .length property
+                            HString* len_key = intern_string(vm, "length");
+                            if (len_key != null) {
+                                TVal len_tv;
+                                len_tv.set_fastint((long)nargs);
+                                args_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+                            }
+                            // Set .arguments on prototype to undefined (prevent recursive access)
+                            args_obj.prototype = null;
+                            // Declare 'arguments' in the function's var_env
+                            HString* args_name = intern_string(vm, "arguments");
+                            if (args_name != null) {
+                                TVal args_tv;
+                                args_tv.set_object(args_obj);
+                                env::env_declare(new_act.var_env, args_name, args_tv);
+                            }
+                        }
+                    }
+
                     continue;
                     }
                 }

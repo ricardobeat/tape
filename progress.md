@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 84 (Date prototype methods — UTC getters, setters, toISOString, toUTCString)
+**Last Updated:** Session 85 (Object.prototype.toString @@toStringTag, Array.prototype.find/findIndex, LIGHTFUNC .call fix)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -88,22 +88,22 @@ These are all legitimately large functions that cannot be macroized. The functio
 
 | Phase | Total | Pass | Fail | Skip |
 |-------|-------|------|------|------|
-| 0-1: Core VM | 2,185 | 573 | 554 | 1,058 |
-| 1: Calling Convention | 426 | 26 | 316 | 84 |
-| 2: Basic Operators | 1,969 | 392 | 1,020 | 557 |
-| 3: Object System | 7,766 | 1,865 | 5,113 | 788 |
-| 4: Error Handling | 402 | 59 | 279 | 64 |
-| 5: Built-in Constructors | 8,615 | 2,265 | 5,867 | 483 |
-| 6: Prototype Methods | 4,713 | 922 | 3,485 | 306 |
-| 7: ES5 Features | 1,240 | 212 | 401 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 547 | 1,912 | 288 |
-| 11: Arrow/Templates | 427 | 61 | 226 | 140 |
+| 0-1: Core VM | 2,185 | 564 | 563 | 1,058 |
+| 1: Calling Convention | 426 | 21 | 321 | 84 |
+| 2: Basic Operators | 1,969 | 409 | 1,003 | 557 |
+| 3: Object System | 7,766 | 1,969 | 5,009 | 788 |
+| 4: Error Handling | 402 | 66 | 272 | 64 |
+| 5: Built-in Constructors | 8,615 | 2,436 | 5,696 | 483 |
+| 6: Prototype Methods | 4,713 | 1,065 | 3,342 | 306 |
+| 7: ES5 Features | 1,240 | 194 | 419 | 627 |
+| 8: ES5 Built-in Objects | 2,747 | 552 | 1,907 | 288 |
+| 11: Arrow/Templates | 427 | 58 | 229 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
-| 15: Classes | 8,520 | 146 | 2,149 | 6,225 |
-| 17-20: Map/Set/Symbol/Promise | 1,588 | 164 | 821 | 603 |
-| 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,446** | **7,234** | **23,212** | **11,541** |
+| 15: Classes | 8,520 | 145 | 2,150 | 6,225 |
+| 17-20: Map/Set/Symbol/Promise | 1,588 | 134 | 851 | 603 |
+| 21: Generators | 619 | 5 | 484 | 130 |
+| **Overall** | **30,446** | **7,621** | **22,825** | **11,541** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 573 pass / 554 fail (skip: 1,058)**
