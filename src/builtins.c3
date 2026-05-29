@@ -933,11 +933,12 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             return builtin_intern_string(heap, buf[:len]);
         }
         case BOOLEAN:
-            return builtin_intern_string(heap, val.get_boolean() ? "true" : "false");
+            if (val.get_boolean()) return (HString*)heap.strs[heap::BuiltinStr.TRUE];
+            return (HString*)heap.strs[heap::BuiltinStr.FALSE];
         case UNDEFINED:
-            return builtin_intern_string(heap, "undefined");
+            return (HString*)heap.strs[heap::BuiltinStr.UNDEFINED];
         case NULL_VAL:
-            return builtin_intern_string(heap, "null");
+            return (HString*)heap.strs[heap::BuiltinStr.NULL_STR];
         case OBJECT:
             return builtin_intern_string(heap, "[object Object]");
         case LIGHTFUNC:
@@ -5040,7 +5041,7 @@ fn bool has_set_in_desc_helper(Heap* heap, HObject* desc_obj) {
 }
 /// Helper: check if descriptor object has "value" property
 fn bool has_value_in_desc_helper(Heap* heap, HObject* desc_obj) {
-    HString* key = builtin_intern_string(heap, "value");
+    HString* key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
     return key != null && desc_obj.find_prop_idx(key) >= 0;
 }
 /// Helper: check if descriptor object has "writable" property
@@ -6038,7 +6039,7 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
 
 /// Get the 'length' property of an array-like object as a uint.
 fn uint array_get_length(HObject* obj, Heap* heap) {
-    HString* len_key = builtin_intern_string(heap, "length");
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return 0;
     TVal? len_val = obj.get_prop_proto(len_key);
     if (try v = len_val) {
@@ -6050,7 +6051,7 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
 
 /// Set the 'length' property of an array-like object.
 fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
-    HString* len_key = builtin_intern_string(heap, "length");
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return;
     TVal tv;
     tv.set_fastint((long)len_val);
@@ -6380,7 +6381,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     // Set .length from builtin metadata
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
     if (meta.arity >= 0) {
-        HString* length_str = builtin_intern_string(heap, "length");
+        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (length_str != null) {
             TVal len_tv;
             len_tv.set_fastint((long)meta.arity);
@@ -6425,7 +6426,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
             func_obj.put_prop(name_str, name_tv, hobject::PROP_FLAGS_NWC);
         }
     }
-    HString* length_str = builtin_intern_string(heap, "length");
+    HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (length_str != null) {
         TVal len_tv;
         long len_val = length_override >= 0 ? length_override : (long)func.num_formals;
@@ -8557,7 +8558,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == ObjClass.ARRAY) {
-            HString* len_key = builtin_intern_string(heap, "length");
+            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
             TVal? len_prop = obj.get_prop_proto(len_key);
             uint len = 0;
             if (try l = len_prop) {
@@ -12497,13 +12498,13 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.builtin_fn_index = (int)BUILTIN_PROMISE;
 
     // Wire prototype.constructor → ctor
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -12514,7 +12515,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Promise.length = 1
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(1);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
@@ -13667,13 +13668,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     obj.builtin_fn_index = (int)BUILTIN_OBJECT;
 
     // Set .constructor on Object.prototype to point to the actual Object constructor object
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Object.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -13684,7 +13685,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     obj.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Set Object.length (ES5 §15.2.1)
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(1);
     obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
@@ -13995,13 +13996,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     num.builtin_fn_index = (int)BUILTIN_NUMBER;
 
     // Set .constructor on Number.prototype to point to the actual Number object
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(num);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Number.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14187,7 +14188,7 @@ fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] n
     proto.put_prop(name_key, name_tv, hobject::PROP_FLAGS_WC);
 
     // Set .message property (empty string)
-    HString* msg_key = builtin_intern_string(heap, "message");
+    HString* msg_key = (HString*)heap.strs[heap::BuiltinStr.MESSAGE];
     HString* msg_hstr = builtin_intern_string(heap, "");
     TVal msg_tv;
     msg_tv.set_string(msg_hstr);
@@ -14210,7 +14211,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .constructor to Error.prototype pointing to Error builtin
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR);
     err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
@@ -14315,7 +14316,7 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     heap.bool_proto = proto;
 
     // Set .constructor to Boolean lightfunc
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
@@ -14398,13 +14399,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     str_obj.builtin_fn_index = (int)BUILTIN_STRING;
 
     // Set .constructor on String.prototype to point to the actual String object
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(str_obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set String.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14469,7 +14470,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     // Set .length from builtin metadata
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
     if (meta.arity >= 0) {
-        HString* length_str = builtin_intern_string(heap, "length");
+        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (length_str != null) {
             TVal len_tv;
             len_tv.set_fastint((long)meta.arity);
@@ -14504,13 +14505,13 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     arr.builtin_fn_index = (int)BUILTIN_ARRAY;
 
     // Set .constructor on Array.prototype to point to the actual Array constructor object
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(arr);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Array.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14640,13 +14641,13 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WC);
 
     // Set .constructor to the Function constructor object itself
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(func_obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14657,7 +14658,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     func_obj.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Set Function.length (ES5 §15.3.3)
-    HString* len_key = builtin_intern_string(heap, "length");
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv;
     len_tv.set_fastint(1);
     func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
@@ -14695,7 +14696,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     heap.date_proto = proto;
 
     // Set .constructor to Date lightfunc
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_DATE);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
@@ -14824,7 +14825,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     date_obj.builtin_fn_index = (int)BUILTIN_DATE;
 
     // Set Date.prototype on the constructor
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14877,7 +14878,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     heap.regexp_proto = proto;
 
     // Set .constructor to RegExp lightfunc
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_lightfunc((void*)(usz)BUILTIN_REGEXP);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
@@ -14898,7 +14899,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     regexp_obj.builtin_fn_index = (int)BUILTIN_REGEXP;
 
     // Set RegExp.prototype on the constructor
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -14909,7 +14910,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     regexp_obj.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Set RegExp.length (ES5 15.10.5)
-    HString* len_key = builtin_intern_string(heap, "length");
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv;
     len_tv.set_fastint(2);
     regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
@@ -14985,13 +14986,13 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.builtin_fn_index = (int)BUILTIN_MAP;
 
     // Set .constructor on Map.prototype
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Map.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -15002,7 +15003,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Set Map.length
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
@@ -15078,13 +15079,13 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.builtin_fn_index = (int)BUILTIN_SET;
 
     // Set .constructor on Set.prototype
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Set.prototype on the constructor (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -15095,7 +15096,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Set Set.length
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
@@ -15148,12 +15149,12 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKMAP;
 
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -15163,7 +15164,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     proto_pflags.is_accessor = false;
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
@@ -15214,12 +15215,12 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKSET;
 
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -15229,7 +15230,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     proto_pflags.is_accessor = false;
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
@@ -15283,13 +15284,13 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.builtin_fn_index = (int)BUILTIN_SYMBOL;
 
     // Wire prototype.constructor → ctor
-    HString* constructor_key = builtin_intern_string(heap, "constructor");
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
-    HString* prototype_key = builtin_intern_string(heap, "prototype");
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
     PropFlags proto_pflags;
@@ -15300,7 +15301,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Symbol.length = 0
-    HString* length_key = builtin_intern_string(heap, "length");
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);

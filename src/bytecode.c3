@@ -358,6 +358,14 @@ enum Opcode : char {
     /// ABC format: A=result_reg, B=iterable_reg, C=0.
     YIELD_STAR,
 
+    /// `return A` from a generator — marks generator as completed,
+    /// wraps result in IteratorResult, and returns.
+    /// Same encoding as RET (ABC format).
+    RET_GEN,
+    /// `return undefined` from a generator.
+    /// Same encoding as RETUNDEF (NONE format).
+    RETUNDEF_GEN,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -425,6 +433,7 @@ fn OpFormat get_op_format(Opcode op) {
         // No operands
         case NOP:       return NONE;
         case RETUNDEF:  return NONE;
+        case RETUNDEF_GEN: return NONE;
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;
@@ -974,6 +983,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.LOAD_RESUME.ordinal] = "LOAD_RESUME",
     [Opcode.YIELD.ordinal]       = "YIELD",
     [Opcode.YIELD_STAR.ordinal]  = "YIELD_STAR",
+    [Opcode.RET_GEN.ordinal]     = "RET_GEN",
+    [Opcode.RETUNDEF_GEN.ordinal] = "RETUNDEF_GEN",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

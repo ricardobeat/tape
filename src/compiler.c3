@@ -1660,10 +1660,10 @@ fn void? CompilerContext.return_statement(&self) {
     TokenType next = self.peek_type();
     if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
         next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
-        self.emit_simple(Opcode.RETUNDEF);
+        self.emit_simple(self.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
-        self.emit_abc(Opcode.RET, (uint)val_reg, 0, 0);
+        self.emit_abc(self.is_generator ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
         self.free_reg(val_reg);
     }
 
@@ -2698,12 +2698,13 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     bool has_return = false;
     if (self.code_count > 0) {
         Opcode last_op = self.code[self.code_count - 1].op;
-        if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
+        if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF ||
+            last_op == Opcode.RET_GEN || last_op == Opcode.RETUNDEF_GEN) {
             has_return = true;
         }
     }
     if (!has_return) {
-        self.emit_simple(Opcode.RETUNDEF);
+        self.emit_simple(self.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 }
 
@@ -2902,12 +2903,13 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     bool has_return = false;
     if (inner_ctx.code_count > 0) {
         Opcode last_op = inner_ctx.code[inner_ctx.code_count - 1].op;
-        if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
+        if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF ||
+            last_op == Opcode.RET_GEN || last_op == Opcode.RETUNDEF_GEN) {
             has_return = true;
         }
     }
     if (!has_return) {
-        inner_ctx.emit_simple(Opcode.RETUNDEF);
+        inner_ctx.emit_simple(inner_ctx.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 
     CompiledFunction* func = inner_ctx.finish()!;
@@ -5008,7 +5010,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
         bool has_explicit_return = false;
         if (arrow_ctx.code_count > 0) {
             Opcode last_op = arrow_ctx.code[arrow_ctx.code_count - 1].op;
-            if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
+            if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF ||
+                last_op == Opcode.RET_GEN || last_op == Opcode.RETUNDEF_GEN) {
                 has_explicit_return = true;
             }
         }

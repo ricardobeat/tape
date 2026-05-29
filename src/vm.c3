@@ -328,6 +328,7 @@ fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
 /// Convert a TVal to an interned string key for property access.
 /// Uses a single tag extraction via switch to avoid redundant checks.
 fn void* get_prop_key(Vm* vm, TVal* val) {
+    Heap* h = vm.heap;
     switch (val.get_tag()) {
         case STRING:    return val.get_heapptr();
         case FASTINT:
@@ -337,11 +338,11 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
             if (try s = vm_number_to_string(vm, val.get_number())) return s;
             return null;
         case BOOLEAN:
-            if (val.get_boolean()) return intern_string(vm, "true");
-            return intern_string(vm, "false");
-        case UNDEFINED: return intern_string(vm, "undefined");
-        case NULL_VAL:  return intern_string(vm, "null");
-        default:        return intern_string(vm, "undefined");
+            if (val.get_boolean()) return h.strs[heap::BuiltinStr.TRUE];
+            return h.strs[heap::BuiltinStr.FALSE];
+        case UNDEFINED: return h.strs[heap::BuiltinStr.UNDEFINED];
+        case NULL_VAL:  return h.strs[heap::BuiltinStr.NULL_STR];
+        default:        return h.strs[heap::BuiltinStr.UNDEFINED];
     }
 }
 
@@ -377,21 +378,22 @@ fn HString* intern_string(Vm* vm, char[] data) {
 
 /// Return the interned typeof string for a TVal per ES spec.
 fn HString* typeof_string(Vm* vm, TVal* val) {
+    Heap* h = vm.heap;
     switch (val.get_tag()) {
-        case UNDEFINED: return intern_string(vm, "undefined");
-        case NULL_VAL:  return intern_string(vm, "object");
-        case BOOLEAN:   return intern_string(vm, "boolean");
-        case NUMBER:    return intern_string(vm, "number");
-        case FASTINT:   return intern_string(vm, "number");
-        case STRING:    return intern_string(vm, "string");
+        case UNDEFINED: return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
+        case NULL_VAL:  return (HString*)h.strs[heap::BuiltinStr.OBJECT];
+        case BOOLEAN:   return (HString*)h.strs[heap::BuiltinStr.BOOLEAN];
+        case NUMBER:    return (HString*)h.strs[heap::BuiltinStr.NUMBER];
+        case FASTINT:   return (HString*)h.strs[heap::BuiltinStr.NUMBER];
+        case STRING:    return (HString*)h.strs[heap::BuiltinStr.STRING];
         case OBJECT:
             HObject* hobj = (HObject*)val.get_heapptr();
             if (hobj != null && hobj.is_callable()) {
-                return intern_string(vm, "function");
+                return (HString*)h.strs[heap::BuiltinStr.FUNCTION];
             }
-            return intern_string(vm, "object");
-        case LIGHTFUNC: return intern_string(vm, "function");
-        default:        return intern_string(vm, "undefined");
+            return (HString*)h.strs[heap::BuiltinStr.OBJECT];
+        case LIGHTFUNC: return (HString*)h.strs[heap::BuiltinStr.FUNCTION];
+        default:        return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
     }
 }
 
@@ -468,6 +470,7 @@ fn HString*? vm_fastint_to_string(Vm* vm, long val) {
 
 /// Convert a TVal to an interned HString*.
 fn HString*? vm_to_string(Vm* vm, TVal* val) {
+    Heap* h = vm.heap;
     switch (val.get_tag()) {
         case STRING:
             return (HString*)val.get_heapptr();
@@ -477,19 +480,19 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
             return vm_fastint_to_string(vm, val.get_fastint());
         case BOOLEAN:
             if (val.get_boolean()) {
-                return intern_string(vm, "true");
+                return (HString*)h.strs[heap::BuiltinStr.TRUE];
             }
-            return intern_string(vm, "false");
+            return (HString*)h.strs[heap::BuiltinStr.FALSE];
         case UNDEFINED:
-            return intern_string(vm, "undefined");
+            return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
         case NULL_VAL:
-            return intern_string(vm, "null");
+            return (HString*)h.strs[heap::BuiltinStr.NULL_STR];
         case OBJECT:
             return intern_string(vm, "[object Object]");
         case LIGHTFUNC:
             return intern_string(vm, "[function]");
         default:
-            return intern_string(vm, "undefined");
+            return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
     }
 }
 
@@ -1191,15 +1194,33 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HString*? left_str = vm_to_string(vm, rb);
                 HString*? right_str = vm_to_string(vm, rc);
                 if (try ls = left_str && try rs = right_str) {
-                    HString*? concat = hstring::hstring_concat(vm.heap, ls, rs);
-                    if (try cs = concat) {
-                        char[] cd = cs.get_data();
-                        HString* interned = intern_string(vm, cd);
-                        hstring::hstring_free(cs);
-                        ra.set_string(interned);
+                    uint a_len = ls.blen;
+                    uint b_len = rs.blen;
+                    uint total = a_len + b_len;
+
+                    // Use stack buffer for small strings, heap for large
+                    char[512] stack_buf;
+                    char* buf;
+                    bool heap_allocated = false;
+                    if (total <= 512) {
+                        buf = &stack_buf;
                     } else {
-                        ra.set_undefined();
+                        buf = (char*)libc::malloc(total);
+                        if (buf == null) { ra.set_undefined(); break; }
+                        heap_allocated = true;
                     }
+
+                    // Copy both halves directly into buffer
+                    if (a_len > 0) {
+                        libc::memcpy(buf, ls.get_cstr(), a_len);
+                    }
+                    if (b_len > 0) {
+                        libc::memcpy(buf + a_len, rs.get_cstr(), b_len);
+                    }
+
+                    HString* interned = intern_string(vm, buf[:total]);
+                    if (heap_allocated) libc::free(buf);
+                    ra.set_string(interned);
                 } else {
                     ra.set_undefined();
                 }
@@ -1538,7 +1559,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                     HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not an object");
                     TVal msg_tv;
                     msg_tv.set_string(msg_val);
@@ -1560,7 +1581,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                     HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not callable");
                     TVal msg_tv;
                     msg_tv.set_string(msg_val);
@@ -1582,7 +1603,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             }
 
             // Get rval.prototype
-            HString* proto_key_str = intern_string(vm, "prototype");
+            HString* proto_key_str = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
             TVal proto_val = get_prop_with_proto(rfunc, proto_key_str);
             if (!proto_val.is_object()) {
                 // ES5 §15.3.5.3 step 3: If Type(O) is not Object, throw a TypeError.
@@ -1617,7 +1638,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = intern_string(vm, "message");
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                     HString* msg_val = intern_string(vm, "in requires an object");
                     TVal msg_tv;
                     msg_tv.set_string(msg_val);
@@ -1716,7 +1737,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
-                            HString* msg_key = intern_string(vm, "message");
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
@@ -1892,7 +1913,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                                 if (try err = err_raw) {
                                     err.prototype = vm.heap.type_err_proto;
-                                    HString* msg_key = intern_string(vm, "message");
+                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                     HString* msg_val = intern_string(vm, "Cannot assign to read only property");
                                     TVal msg_tv;
                                     msg_tv.set_string(msg_val);
@@ -1937,7 +1958,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
-                            HString* msg_key = intern_string(vm, "message");
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                     }
@@ -2117,7 +2138,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 uint count = insn.get_bc();
-                HString* len_str = intern_string(vm, "length");
+                HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_val;
                 len_val.set_fastint((long)count);
                 hobj.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
@@ -2132,7 +2153,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* source = (HObject*)rc.get_heapptr();
                 if (source != null) {
                     // Get source .length
-                    HString* len_key = intern_string(vm, "length");
+                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_tv = get_prop_with_proto(source, len_key);
                     long src_len = 0;
                     if (len_tv.is_fastint()) {
@@ -2182,7 +2203,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 HObject* source = (HObject*)rc.get_heapptr();
                 if (source != null) {
                     // Get source .length
-                    HString* len_key = intern_string(vm, "length");
+                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_tv = get_prop_with_proto(source, len_key);
                     long src_len = 0;
                     if (len_tv.is_fastint()) {
@@ -2350,7 +2371,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 }
                             }
                             // Set .length property
-                            HString* len_key = intern_string(vm, "length");
+                            HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                             if (len_key != null) {
                                 TVal len_tv;
                                 len_tv.set_fastint((long)nargs);
@@ -2359,7 +2380,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             // Set .arguments on prototype to undefined (prevent recursive access)
                             args_obj.prototype = null;
                             // Declare 'arguments' in the function's var_env
-                            HString* args_name = intern_string(vm, "arguments");
+                            HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                             if (args_name != null) {
                                 TVal args_tv;
                                 args_tv.set_object(args_obj);
@@ -2422,7 +2443,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
@@ -2451,7 +2472,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
@@ -2519,7 +2540,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
-                            HString* msg_key = intern_string(vm, "message");
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                             err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                         }
                         TVal err_val2;
@@ -2672,7 +2693,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 }
                             }
                         }
-                        HString* len_str = intern_string(vm, "length");
+                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                         TVal len_val;
                         len_val.set_fastint((long)overflow);
                         a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
@@ -2771,7 +2792,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                     }
                     // Set .length
-                    HString* len_str = intern_string(vm, "length");
+                    HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val;
                     len_val.set_fastint((long)overflow);
                     a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
@@ -2859,7 +2880,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
@@ -2885,7 +2906,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len2]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
@@ -2992,7 +3013,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         }
                     }
                     // Set .length
-                    HString* len_key = intern_string(vm, "length");
+                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val;
                     len_val.set_fastint(0);
                     new_regs[rest_idx].set_object(rest_obj);
@@ -3077,7 +3098,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val;
@@ -3105,7 +3126,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
@@ -3158,7 +3179,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val2;
@@ -3187,7 +3208,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
-                        HString* msg_key = intern_string(vm, "message");
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                         err3.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val3;
@@ -3210,7 +3231,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             HObject* new_obj = new_obj_raw;
 
             // Step 2: Set prototype from constructor.prototype
-            HString* proto_key = intern_string(vm, "prototype");
+            HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
             TVal? proto_val = hobj.get_prop_proto(proto_key);
             if (try pv = proto_val) {
                 if (pv.is_object() && pv.get_heapptr() != null) {
@@ -3282,7 +3303,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             }
                         }
                     }
-                    HString* len_str2 = intern_string(vm, "length");
+                    HString* len_str2 = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val2;
                     len_val2.set_fastint((long)overflow);
                     a2.put_prop(len_str2, len_val2, hobject::PROP_FLAGS_WEC);
@@ -3463,9 +3484,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     TVal wrapped_val;
                     if (try robj = robj_raw) {
                         robj.prototype = vm.heap.object_proto;
-                        HString* val_key = intern_string(vm, "value");
+                        HString* val_key = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
                         if (val_key != null) robj.put_prop(val_key, gs.return_value, hobject::PROP_FLAGS_WEC);
-                        HString* done_key = intern_string(vm, "done");
+                        HString* done_key = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
                         TVal done_val;
                         done_val.set_boolean(true);
                         if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
@@ -3510,9 +3531,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 TVal wrapped_val;
                 if (try robj = result_obj_raw) {
                     robj.prototype = vm.heap.object_proto;
-                    HString* val_key = intern_string(vm, "value");
+                    HString* val_key = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
                     if (val_key != null) robj.put_prop(val_key, vm.heap.yield_value, hobject::PROP_FLAGS_WEC);
-                    HString* done_key = intern_string(vm, "done");
+                    HString* done_key = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
                     TVal done_val;
                     done_val.set_boolean(false);
                     if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
@@ -3550,48 +3571,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         // === RETURNS ===
 
         case Opcode.RET:
-            // If we're in a generator, mark as completed
-            if (vm.heap.resume_gen != null) {
-                GeneratorState* gs = vm.heap.resume_gen;
-                gs.state = GEN_COMPLETED;
-                vm.heap.yield_value = ra[0];
-                vm.heap.did_yield = false;  // completed, not yielded
-                vm.heap.resume_gen = null;
-
-                // Wrap in IteratorResult {value: returnVal, done: true}
-                HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-                TVal wrapped_val;
-                if (try robj = robj_raw) {
-                    robj.prototype = vm.heap.object_proto;
-                    HString* val_key = intern_string(vm, "value");
-                    if (val_key != null) robj.put_prop(val_key, ra[0], hobject::PROP_FLAGS_WEC);
-                    HString* done_key = intern_string(vm, "done");
-                    TVal done_val;
-                    done_val.set_boolean(true);
-                    if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-                    wrapped_val.set_object(robj);
-                } else {
-                    wrapped_val = ra[0];
-                }
-
-                // Write wrapped result to caller's frame
-                Activation* ret_act = &vm.activations[vm.activation_count - 1];
-                uint ret_byteoff = ret_act.retval_byteoff;
-                TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
-                ret_slot[0] = wrapped_val;
-
-                vm.activation_count--;
-                if (vm.activation_count > 0) {
-                    Activation* caller_act3 = &vm.activations[vm.activation_count - 1];
-                    vm.valstack_bottom = caller_act3.bottom_byteoff;
-                    if (caller_act3.func != null) {
-                        CompiledFunction* caller_func3 = (CompiledFunction*)caller_act3.func;
-                        vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act3.bottom_byteoff) + caller_func3.num_regs;
-                    }
-                }
-                needs_restart = true;
-                break;
-            }
             handle_return(vm, *ra);
             if (vm.activation_count == 0) {
                 return vm.return_val;
@@ -3612,32 +3591,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             TVal undef_val;
             undef_val.set_undefined();
 
-            // If we're in a generator, mark as completed
-            if (vm.heap.resume_gen != null) {
-                GeneratorState* gs2 = vm.heap.resume_gen;
-                gs2.state = GEN_COMPLETED;
-                vm.heap.yield_value = undef_val;
-                vm.heap.did_yield = false;  // completed, not yielded
-                vm.heap.resume_gen = null;
-
-                Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
-                uint ret_byteoff2 = ret_act2.retval_byteoff;
-                TVal* ret_slot2 = ptr_from_byteoff(vm.valstack, ret_byteoff2);
-                ret_slot2[0] = undef_val;
-
-                vm.activation_count--;
-                if (vm.activation_count > 0) {
-                    Activation* caller_act4 = &vm.activations[vm.activation_count - 1];
-                    vm.valstack_bottom = caller_act4.bottom_byteoff;
-                    if (caller_act4.func != null) {
-                        CompiledFunction* caller_func4 = (CompiledFunction*)caller_act4.func;
-                        vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act4.bottom_byteoff) + caller_func4.num_regs;
-                    }
-                }
-                needs_restart = true;
-                break;
-            }
-
             handle_return(vm, undef_val);
             if (vm.activation_count == 0) {
                 return vm.return_val;
@@ -3653,6 +3606,76 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             curr_pc = act.curr_pc;
             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
             continue;
+        }
+
+        case Opcode.RET_GEN: {
+            // Generator return: mark completed, wrap in IteratorResult
+            GeneratorState* gs = vm.heap.resume_gen;
+            gs.state = GEN_COMPLETED;
+            vm.heap.yield_value = ra[0];
+            vm.heap.did_yield = false;
+            vm.heap.resume_gen = null;
+
+            HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+            TVal wrapped_val;
+            if (try robj = robj_raw) {
+                robj.prototype = vm.heap.object_proto;
+                HString* val_key = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                if (val_key != null) robj.put_prop(val_key, ra[0], hobject::PROP_FLAGS_WEC);
+                HString* done_key = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                TVal done_val;
+                done_val.set_boolean(true);
+                if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+                wrapped_val.set_object(robj);
+            } else {
+                wrapped_val = ra[0];
+            }
+
+            Activation* ret_act = &vm.activations[vm.activation_count - 1];
+            uint ret_byteoff = ret_act.retval_byteoff;
+            TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+            ret_slot[0] = wrapped_val;
+
+            vm.activation_count--;
+            if (vm.activation_count > 0) {
+                Activation* caller_act = &vm.activations[vm.activation_count - 1];
+                vm.valstack_bottom = caller_act.bottom_byteoff;
+                if (caller_act.func != null) {
+                    CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
+                }
+            }
+            needs_restart = true;
+            break;
+        }
+
+        case Opcode.RETUNDEF_GEN: {
+            // Generator return undefined: mark completed
+            TVal undef_val;
+            undef_val.set_undefined();
+
+            GeneratorState* gs2 = vm.heap.resume_gen;
+            gs2.state = GEN_COMPLETED;
+            vm.heap.yield_value = undef_val;
+            vm.heap.did_yield = false;
+            vm.heap.resume_gen = null;
+
+            Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
+            uint ret_byteoff2 = ret_act2.retval_byteoff;
+            TVal* ret_slot2 = ptr_from_byteoff(vm.valstack, ret_byteoff2);
+            ret_slot2[0] = undef_val;
+
+            vm.activation_count--;
+            if (vm.activation_count > 0) {
+                Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
+                vm.valstack_bottom = caller_act2.bottom_byteoff;
+                if (caller_act2.func != null) {
+                    CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
+                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
+                }
+            }
+            needs_restart = true;
+            break;
         }
 
         // === VARIABLE ACCESS ===
@@ -3681,7 +3704,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
                                     msg_val.set_string(msg_str);
-                                    HString* msg_key = intern_string(vm, "message");
+                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                     err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                                 }
                                 TVal err_val;
@@ -3719,7 +3742,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
                                 msg_val.set_string(msg_str);
-                                HString* msg_key = intern_string(vm, "message");
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                             }
                             TVal err_val;
@@ -3767,7 +3790,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
                                     msg_val.set_string(msg_str);
-                                    HString* msg_key = intern_string(vm, "message");
+                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                     err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                                 }
                                 TVal err_val;
@@ -3790,7 +3813,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             ra.set_string(ts);
                         } else {
                             // Unresolvable reference → "undefined" (no error)
-                            HString* ts = intern_string(vm, "undefined");
+                            HString* ts = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
                             ra.set_string(ts);
                         }
                     }
@@ -3824,7 +3847,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
                                 msg_val.set_string(msg_str);
-                                HString* msg_key = intern_string(vm, "message");
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                             }
                             TVal err_val;
@@ -3908,7 +3931,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     func_obj.lex_env = act.lex_env;
 
                     // Set .length property (ES5 §15.3.5.1)
-                    HString* len_key = intern_string(vm, "length");
+                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val;
                     len_val.set_fastint((long)template.num_formals);
                     func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
@@ -3920,12 +3943,12 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (try proto_obj = proto_obj_raw) {
                             proto_obj.prototype = vm.heap.object_proto;
                             // Set .constructor on the prototype object
-                            HString* constr_key = intern_string(vm, "constructor");
+                            HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
                             TVal constr_val;
                             constr_val.set_object(func_obj);
                             proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
                             // Set .prototype on the function
-                            HString* proto_key = intern_string(vm, "prototype");
+                            HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
                             TVal proto_tv;
                             proto_tv.set_object(proto_obj);
                             func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
@@ -4216,7 +4239,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 obj = (HObject*)obj_val.get_heapptr();
             } else if (obj_val.is_null() || obj_val.is_undefined()) {
                 // TypeError: with cannot be applied to null/undefined
-                HString* msg_key = intern_string(vm, "message");
+                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;

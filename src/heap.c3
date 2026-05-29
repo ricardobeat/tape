@@ -202,6 +202,32 @@ struct Heap {
 }
 
 // ============================================================================
+// Built-in string cache — pre-interned at heap creation
+// ============================================================================
+
+/// Indices into Heap.strs[] for frequently-used interned strings.
+/// Eliminates repeated hash+lookup for these strings on every property
+/// access, typeof, and error path.
+enum BuiltinStr : uint {
+    UNDEFINED,   // "undefined"
+    OBJECT,      // "object"
+    BOOLEAN,     // "boolean"
+    NUMBER,      // "number"
+    STRING,      // "string"
+    FUNCTION,    // "function"
+    TRUE,        // "true"
+    FALSE,       // "false"
+    NULL_STR,    // "null"
+    MESSAGE,     // "message"
+    PROTOTYPE,   // "prototype"
+    CONSTRUCTOR, // "constructor"
+    LENGTH,      // "length"
+    VALUE,       // "value"
+    DONE,        // "done"
+    ARGUMENTS,   // "arguments"
+}
+
+// ============================================================================
 // Default allocator functions (libc-backed)
 // ============================================================================
 
@@ -291,7 +317,39 @@ fn Heap*? create(
     h.str_table_size = INITIAL_STR_TABLE_SIZE;
     h.str_table_used = 0;
 
+    // Pre-intern well-known strings
+    h.init_builtin_strs();
+
     return h;
+}
+
+/// Pre-intern frequently-used strings into Heap.strs[].
+/// Called once during heap creation.  Each string is hashed, looked up in
+/// the string table, and allocated only if not already present — so this
+/// is safe to call multiple times.
+fn void Heap.init_builtin_strs(&self) {
+    // Each entry: (ZString literal, byte length)
+    ZString[16] literals = {
+        "undefined", "object", "boolean", "number", "string", "function",
+        "true", "false", "null", "message", "prototype", "constructor",
+        "length", "value", "done", "arguments"
+    };
+    uint[16] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9 };
+    for (uint i = 0; i < 16; i++) {
+        char* ptr = (char*)literals[i];
+        char[] data = ptr[:lengths[i]];
+        uint h = self.hash_string(data);
+        HString* existing = self.str_table_lookup(data, h);
+        if (existing != null) {
+            self.strs[i] = existing;
+        } else {
+            HString*? ns = hstring::hstring_alloc(self, data, h);
+            if (try s = ns) {
+                self.str_table_insert(s);
+                self.strs[i] = s;
+            }
+        }
+    }
 }
 
 /**
