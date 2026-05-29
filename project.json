@@ -10,15 +10,18 @@
     },
     "test_vm": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner/test_vm.c3" ]
+      "sources": [ "src", "test_vm_runner/test_vm.c3" ],
+      "opt": "O2"
     },
     "batch_test_vm": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ]
+      "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
+      "opt": "O2"
     },
     "bench_run": {
       "type": "executable",
       "sources": [ "src", "benchmarks/bench_run.c3" ],
+      "opt": "O2",
       "optlevel": "max",
       "safe": false
     }
