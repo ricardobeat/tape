@@ -2966,6 +2966,9 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     Opcode compound_op;
     bool is_compound = false;
     bool is_assign = false;
+    bool is_logical_and_assign = false;
+    bool is_logical_or_assign = false;
+    bool is_nullish_assign = false;
 
     switch (tt) {
         case TokenType.ASSIGN:
@@ -3007,14 +3010,11 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             is_compound = true;
             compound_op = Opcode.BXOR;
         case TokenType.LOG_AND_ASSIGN:
-            is_compound = true;
-            compound_op = Opcode.BAND;  // logical, handled differently at runtime
+            is_logical_and_assign = true;
         case TokenType.LOG_OR_ASSIGN:
-            is_compound = true;
-            compound_op = Opcode.BOR;   // logical, handled differently at runtime
+            is_logical_or_assign = true;
         case TokenType.NULLISH_ASSIGN:
-            is_compound = true;
-            compound_op = Opcode.BOR;   // nullish, handled differently at runtime
+            is_nullish_assign = true;
         default:
             return left;
     }
@@ -3028,6 +3028,95 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     bool lhs_was_member = self.last_was_member;
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
+
+    // Handle logical assignment operators with short-circuit semantics
+    // x ||= expr  →  if (x) return x; x = expr; return expr;
+    // x &&= expr  →  if (!x) return x; x = expr; return expr;
+    // x ??= expr  →  if (x != null && x != undefined) return x; x = expr; return expr;
+    if (is_logical_and_assign || is_logical_or_assign || is_nullish_assign) {
+        // For member expressions, allocate a result register for the assigned value.
+        // The short-circuit path returns the original LHS (left); the assign path returns RHS.
+        ushort la_result = left;
+        if (lhs_was_member) {
+            la_result = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)left, 0);
+        }
+
+        if (is_logical_or_assign) {
+            // x ||= expr: skip RHS if left is truthy
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
+            ushort right = self.assignment_expr()!;
+            if (lhs_was_member) {
+                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.free_reg(lhs_member_prop);
+                self.free_reg(lhs_member_obj);
+                self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
+                self.free_reg(right);
+            } else {
+                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                self.free_reg(right);
+                if (lhs_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                }
+            }
+            self.patch_jump(skip_jump);
+            return la_result;
+        }
+        if (is_logical_and_assign) {
+            // x &&= expr: skip RHS if left is falsy
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
+            ushort right = self.assignment_expr()!;
+            if (lhs_was_member) {
+                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.free_reg(lhs_member_prop);
+                self.free_reg(lhs_member_obj);
+                self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
+                self.free_reg(right);
+            } else {
+                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                self.free_reg(right);
+                if (lhs_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                }
+            }
+            self.patch_jump(skip_jump);
+            return la_result;
+        }
+        if (is_nullish_assign) {
+            // x ??= expr: skip RHS if left is NOT null/undefined
+            ushort cmp_reg = self.alloc_reg();
+            // Check null
+            self.emit_abc(Opcode.LDNULL, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)left, (uint)cmp_reg);
+            uint null_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            // Check undefined
+            self.emit_abc(Opcode.LDUNDEF, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)left, (uint)cmp_reg);
+            uint undef_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            // Not nullish — skip RHS
+            self.free_reg(cmp_reg);
+            uint skip_jump = self.emit_jump(Opcode.JUMP);
+            self.patch_jump(null_jump);
+            self.patch_jump(undef_jump);
+            // Nullish — evaluate RHS and assign
+            ushort right = self.assignment_expr()!;
+            if (lhs_was_member) {
+                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.free_reg(lhs_member_prop);
+                self.free_reg(lhs_member_obj);
+                self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
+                self.free_reg(right);
+            } else {
+                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                self.free_reg(right);
+                if (lhs_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                }
+            }
+            self.patch_jump(skip_jump);
+            return la_result;
+        }
+    }
 
     // Compile right-hand side
     ushort right = self.assignment_expr()!;

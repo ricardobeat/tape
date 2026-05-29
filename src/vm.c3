@@ -3223,11 +3223,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             if (vm.activation_count > 0) {
                                 Activation* caller_act = &vm.activations[vm.activation_count - 1];
                                 vm.valstack_bottom = caller_act.bottom_byteoff;
-                                uint caller_bottom_idx = caller_act.bottom_byteoff / TVal::size;
                                 if (caller_act.func != null) {
                                     CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                                    vm.valstack_top = (TVal*)((usz)vm.valstack
-                                        + (usz)(caller_bottom_idx + caller_func.num_regs) * TVal::size);
+                                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
                                 }
 
                                 // Try to find a catcher in the caller's chain
@@ -3261,11 +3259,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (vm.activation_count > 0) {
                             Activation* caller_act = &vm.activations[vm.activation_count - 1];
                             vm.valstack_bottom = caller_act.bottom_byteoff;
-                            uint caller_bottom_idx = caller_act.bottom_byteoff / TVal::size;
                             if (caller_act.func != null) {
                                 CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                                vm.valstack_top = (TVal*)((usz)vm.valstack
-                                    + (usz)(caller_bottom_idx + caller_func.num_regs) * TVal::size);
+                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
                             }
 
                             // Write return value to caller's return slot
@@ -3327,11 +3323,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (vm.activation_count > 0) {
                             Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
                             vm.valstack_bottom = caller_act2.bottom_byteoff;
-                            uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
                             if (caller_act2.func != null) {
                                 CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                                vm.valstack_top = (TVal*)((usz)vm.valstack
-                                    + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
                             }
                         }
                     }
@@ -3371,11 +3365,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         if (vm.activation_count > 0) {
                             Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
                             vm.valstack_bottom = caller_act2.bottom_byteoff;
-                            uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
                             if (caller_act2.func != null) {
                                 CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                                vm.valstack_top = (TVal*)((usz)vm.valstack
-                                    + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
                             }
                         }
                     }
@@ -3418,11 +3410,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 if (vm.activation_count > 0) {
                     Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
                     vm.valstack_bottom = caller_act2.bottom_byteoff;
-                    uint caller_bottom_idx2 = caller_act2.bottom_byteoff / TVal::size;
                     if (caller_act2.func != null) {
                         CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                        vm.valstack_top = (TVal*)((usz)vm.valstack
-                            + (usz)(caller_bottom_idx2 + caller_func2.num_regs) * TVal::size);
+                        vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
                     }
                 }
             }

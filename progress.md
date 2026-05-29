@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 82 (Macro conversion of bytecode/hstring fn @inline methods, remove @likely hints)
+**Last Updated:** Session 83 (Logical assignment operators — &&=, ||=, ??=)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -420,6 +420,7 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Session | Key Features |
 |---|---|
 | 1 | Core VM, calling convention, closures, basic comparisons |
+| 83 | **Logical assignment operators (&&=, ||=, ??=)** — Implemented ES2021 logical assignment operators in the compiler with proper short-circuit semantics. Lexer tokens (LOG_AND_ASSIGN, LOG_OR_ASSIGN, NULLISH_ASSIGN) already existed. Added compiler support: `||=` skips RHS when LHS is truthy, `&&=` skips RHS when LHS is falsy, `??=` skips RHS when LHS is not null/undefined. Handles both simple variable and member expression LHS. Member expression case allocates a separate result register to correctly return the original LHS value on short-circuit. Also simplified valstack_top computation in vm.c3 (5 call sites) using `ptr_from_byteoff` helper. Test262: 16/78 logical-assignment tests passing. |
 | 72 | **Memory leak fix**: `Heap.destroy` now frees HString objects in the string table and CompiledFunction objects. Full test262 re-run: **5,464 pass / 24,907 fail (18.0%)** |
 | 73 | **Session 73: String.prototype + Array.prototype methods** — Implemented `includes`, `startsWith`, `endsWith`, `repeat`, `trimStart`, `trimEnd`, `codePointAt`, `at`, `padStart`, `padEnd`, `lastIndexOf` on String.prototype. Implemented `fill`, `includes`, `at`, `copyWithin` on Array.prototype. New constants 170-187, dispatch cases, and registrations. Test262: Phase 5 +66 (1,608→1,674), Phase 6 +66 (443→509), overall **5,596 pass / 24,775 fail (18.4%)** — +132 new passing tests. |
 | 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |
