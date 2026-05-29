@@ -401,6 +401,137 @@ fn void Heap.destroy(&self) {
     ffn(udata, self);
 }
 
+/**
+ * Reset the heap to a clean state without freeing the heap struct itself.
+ * Frees all GC objects, compiled functions, interned strings, symbol registry,
+ * and checkpoint data. Reinitialises the string table and builtin string cache
+ * in-place, reusing existing backing arrays where possible.
+ *
+ * After this call the heap is ready to host a fresh VM, with no memory from
+ * the previous test run retained — avoiding the create/destroy churn that
+ * causes allocator fragmentation and RSS bloat.
+ */
+fn void Heap.reset(&self) {
+    // Free all tracked HObjects
+    for (uint i = 0; i < self.gc_obj_count; i++) {
+        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
+        if (cur != null && cur.is_object()) {
+            hobject::hobject_free((HObject*)cur);
+        }
+    }
+    self.gc_obj_count = 0;
+    // Keep gc_objects array allocated — just reset the count
+
+    // Free all tracked CompiledFunctions
+    for (uint i = 0; i < self.compiled_func_count; i++) {
+        bytecode::CompiledFunction* cf = (bytecode::CompiledFunction*)self.compiled_funcs[i];
+        if (cf != null) {
+            if (cf.code != null) { libc::free(cf.code); }
+            if (cf.constants != null) { libc::free(cf.constants); }
+            if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
+            if (cf.line_table != null) { libc::free(cf.line_table); }
+            libc::free(cf);
+        }
+    }
+    self.compiled_func_count = 0;
+    // Keep compiled_funcs array allocated — just reset the count
+
+    // Free all interned HStrings and reset the string table to empty
+    if (self.str_table != null) {
+        for (uint i = 0; i < self.str_table_size; i++) {
+            hstring::HString* s = self.str_table[i];
+            if (s != null) {
+                hstring::hstring_free(s);
+                self.str_table[i] = null;
+            }
+        }
+        // If the table grew very large, shrink back to the initial size
+        if (self.str_table_size > INITIAL_STR_TABLE_SIZE * 8) {
+            self.free_func(self.heap_udata, self.str_table);
+            usz tbl_bytes = HString*::size * INITIAL_STR_TABLE_SIZE;
+            void* new_tbl = self.alloc_func(self.heap_udata, tbl_bytes);
+            if (new_tbl != null) {
+                libc::memset(new_tbl, 0, tbl_bytes);
+                self.str_table      = (HString**)new_tbl;
+                self.str_table_size = INITIAL_STR_TABLE_SIZE;
+            }
+        }
+        self.str_table_used = 0;
+    }
+
+    // Free symbol registry
+    if (self.symbol_registry_keys != null) {
+        libc::free(self.symbol_registry_keys);
+        self.symbol_registry_keys = null;
+    }
+    if (self.symbol_registry_syms != null) {
+        libc::free(self.symbol_registry_syms);
+        self.symbol_registry_syms = null;
+    }
+    self.symbol_registry_count = 0;
+    self.symbol_registry_cap   = 0;
+
+    // Free checkpoint state
+    if (self.checkpoint_keys != null) {
+        libc::free(self.checkpoint_keys);
+        self.checkpoint_keys = null;
+    }
+    if (self.checkpoint_vals != null) {
+        libc::free(self.checkpoint_vals);
+        self.checkpoint_vals = null;
+    }
+    self.checkpoint_count = 0;
+    self.checkpoint_cap   = 0;
+
+    // Clear all other heap state (prototypes, GC roots, execution state)
+    self.heap_allocated   = null;
+    self.finalize_list    = null;
+    self.flags            = 0;
+    self.curr_thread      = null;
+    self.resume_gen       = null;
+    self.did_yield        = false;
+    self.gc_root_count    = 0;
+    self.gc_running       = false;
+    self.gc_trigger_counter = GC_INITIAL_TRIGGER;
+    self.gc_mark_recurse_limit = GC_MARK_RECURSE_LIMIT;
+
+    // Clear builtin prototype pointers
+    self.err_proto        = null;
+    self.type_err_proto   = null;
+    self.range_err_proto  = null;
+    self.ref_err_proto    = null;
+    self.syntax_err_proto = null;
+    self.eval_err_proto   = null;
+    self.uri_err_proto    = null;
+    self.object_proto     = null;
+    self.bool_proto       = null;
+    self.string_proto     = null;
+    self.number_proto     = null;
+    self.array_proto      = null;
+    self.function_proto   = null;
+    self.date_proto       = null;
+    self.regexp_proto     = null;
+    self.map_proto        = null;
+    self.set_proto        = null;
+    self.weakmap_proto    = null;
+    self.weakset_proto    = null;
+    self.symbol_proto     = null;
+    self.promise_proto    = null;
+    self.generator_proto  = null;
+
+    // Clear builtin string cache
+    for (usz i = 0; i < STRS_CACHE_SIZE; i++) {
+        self.strs[i] = null;
+    }
+
+    // Clear longjmp state
+    self.lj.lj_type = LjType.UNKNOWN;
+    self.lj.iserror = false;
+
+    // Reintern builtin strings into the now-empty string table
+    self.init_builtin_strs();
+}
+
 // ============================================================================
 // CompiledFunction tracking
 // ============================================================================
