@@ -2370,30 +2370,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
                     // Create arguments object if the function references 'arguments'
                     if (target_fast.uses_arguments()) {
-                        // Arguments are in the caller's frame at caller_regs[callee_reg + 2..]
-                        // We must read them BEFORE the activation switch, but we switched already.
-                        // Fortunately, the callee frame starts at the same position, so
-                        // callee_regs[0..nargs-1] = caller's args.
-                        // BUT: the function body may overwrite callee_regs via PUTVAR.
-                        // Solution: the arguments were stored by the caller before CALL,
-                        // and we read them right after activation setup, before function body runs.
-                        // At this point, regs_base[0..nargs-1] still holds the original args.
-
                         HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try args_obj = args_obj_raw) {
-                            // Set indexed properties from actual arguments
+                            // Store arguments in dense array_part (avoids O(argc) string key allocs)
                             for (uint ai = 0; ai < nargs; ai++) {
-                                TVal arg_val = regs_base[ai];
-                                // Create numeric key string
-                                char[32] num_buf;
-                                int num_len = int_to_buf((long)ai, &num_buf[0], 32);
-                                if (num_len > 0) {
-                                    HString*? num_key = hstring::hstring_alloc(vm.heap, num_buf[:num_len], vm.heap.hash_string(num_buf[:num_len]));
-                                    if (try nk = num_key) {
-                                        vm.heap.str_table_insert(nk);
-                                        args_obj.put_prop(nk, arg_val, hobject::PROP_FLAGS_WEC);
-                                    }
-                                }
+                                args_obj.set_array_idx(ai, regs_base[ai]);
                             }
                             // Set .length property
                             HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
@@ -2402,7 +2383,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                                 len_tv.set_fastint((long)nargs);
                                 args_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
                             }
-                            // Set .arguments on prototype to undefined (prevent recursive access)
                             args_obj.prototype = null;
                             // Declare 'arguments' in the function's var_env
                             HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
