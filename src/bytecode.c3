@@ -765,6 +765,13 @@ struct CompiledFunction {
     /// Optional per-instruction line-number table.  When non-null the
     /// table has `code_count` entries, one per instruction.
     uint*           line_table;
+
+    // ---- Inline Cache (IC) entries ----------------------------------------
+    /// Per-GETPROP/PUTPROP site inline cache.  Parallel to the instruction
+    /// stream: `ic_entries[pc_offset]` is the cache for the instruction at
+    /// `code[pc_offset]`.
+    void*           ic_entries;  // ICEntry* (opaque to avoid import cycle)
+    uint            ic_count;
 }
 
 // ============================================================================

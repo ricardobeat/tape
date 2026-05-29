@@ -14,6 +14,7 @@ import duktape::types;
 import duktape::lexer;
 import duktape::bytecode;
 import duktape::hstring;
+import duktape::hobject;
 import duktape::heap;
 import libc;
 
@@ -383,6 +384,17 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         func.num_formals = self.rest_formal_count;
     } else {
         func.num_formals = self.num_args;
+    }
+
+    // Allocate Inline Cache array — one entry per instruction, zeroed.
+    if (func.code_count > 0) {
+        usz ic_bytes = (usz)func.code_count * hobject::ICEntry::size;
+        void* ic_raw = libc::malloc(ic_bytes);
+        if (ic_raw != null) {
+            libc::memset(ic_raw, 0, ic_bytes);
+            func.ic_entries = ic_raw;
+            func.ic_count = func.code_count;
+        }
     }
 
     // Track the CompiledFunction for cleanup when the heap is destroyed

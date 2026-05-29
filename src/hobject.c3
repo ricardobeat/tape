@@ -307,6 +307,11 @@ struct HObject {
     /// Number of slots actually holding a defined value.
     uint          array_used;
 
+    // --- Shape (hidden class) -----------------------------------------------
+    /// Shape ID for inline cache support.  Identifies the object's current
+    /// property layout.  0 = root shape (empty object).
+    uint          shape_id;
+
     // --- Unified property allocation block --------------------------------
     /// Single allocation that holds props, hash_table, and array_part
     /// contiguously (see update_prop_pointers for layout).
@@ -936,6 +941,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 
     obj.builtin_fn_index = -1;
     obj.regexp_data = null;
+    obj.shape_id = 0;  // Start with root shape
     return obj;
 }
 
@@ -1052,10 +1058,77 @@ enum PropLookupKind {
     PROP_NOT_FOUND
 }
 
+// ============================================================================
+// Shape (Hidden Class) — tracks object property layout for inline caches
+// ============================================================================
+
+/// A Shape describes the named-property structure of an object: which
+/// properties exist, at what indices, and with what flags.  Shapes form a
+/// transition tree: adding a property to an object transitions its shape
+/// from parent → child.  Multiple objects that gain the same properties in
+/// the same order share the same shape, enabling inline caches to predict
+/// property offsets.
+struct Shape {
+    /// The property key that was added when transitioning to this shape
+    /// (null for the root shape).
+    void*     key;
+    /// Index in the props array for the added property (0 for root).
+    ushort    prop_idx;
+    /// Parent shape ID (0xFFFF_FFFF for the root shape).
+    uint      parent;
+    /// Generation counter — bumped when a shape is re-targeted as a
+    /// transition destination (e.g., after delete/seal/freeze).  Inline
+    /// caches store the generation they saw; a mismatch invalidates the
+    /// cache entry.
+    uint      generation;
+    /// Hash table of child transitions: key → child shape index.
+    /// Open-addressing with linear probing.  0xFFFF_FFFF = unused slot.
+    uint*     children;
+    /// Number of slots in the children hash table (0 = no table yet).
+    uint      children_size;
+    /// Number of child transitions stored.
+    uint      children_count;
+}
+
+// ============================================================================
+// ICEntry — per-site inline cache entry (monomorphic)
+// ============================================================================
+
+/// A single inline cache entry, one per GETPROP/PUTPROP instruction site.
+/// Stores the result of the last property lookup so that subsequent
+/// accesses with the same object shape can skip the full prototype-chain
+/// walk.
+struct ICEntry {
+    /// Shape ID of the object when this entry was populated.
+    uint   shape_id;
+    /// Prototype pointer where the property was found (null = own property).
+    void*  proto;
+    /// Packed: low 32 bits = generation, high 32 bits = prop_idx.
+    ulong  gen_and_idx;
+    /// The interned key (HString*) this entry was populated for.
+    /// Pointer equality is sufficient (interned strings).
+    void*  key;
+}
+
+/// Pack generation and property index into a single ulong.
+macro ulong ic_pack(uint gen, ushort idx) {
+    return ((ulong)idx << 32) | (ulong)gen;
+}
+
+/// Extract generation from packed ICEntry value.
+macro uint ic_gen(ulong v) {
+    return (uint)(v & 0xFFFFFFFF);
+}
+
+/// Extract property index from packed ICEntry value.
+macro ushort ic_idx(ulong v) {
+    return (ushort)(v >> 32);
+}
+
 /// Single-pass prototype chain search: finds either an accessor or data property.
 /// Returns the kind found. For accessors, sets `acc_out`; for data, sets `data_out`.
-/// This avoids walking the chain twice (once for accessor, once for data).
-fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want_getter, AccessorResult* acc_out, TVal* data_out) {
+/// If `owner_out` is non-null, sets it to the object owning the found property.
+fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want_getter, AccessorResult* acc_out, TVal* data_out, HObject** owner_out) {
     const uint MAX_PROTO_DEPTH = 256;
     HObject* cur = self;
     uint depth = 0;
@@ -1072,6 +1145,7 @@ fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want
                 return PropLookupKind.PROP_ACCESSOR;
             }
             *data_out = pe.value;
+            if (owner_out != null) *owner_out = cur;
             return PropLookupKind.PROP_DATA;
         }
         cur = cur.prototype;

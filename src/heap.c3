@@ -199,6 +199,12 @@ struct Heap {
 
     // GC re-entrancy guard
     bool                gc_running;
+
+    // Shape (hidden class) system for inline cache support.
+    hobject::Shape*     shapes;
+    uint                shape_count;
+    uint                shape_capacity;
+    uint                shape_gen;
 }
 
 // ============================================================================
@@ -320,6 +326,9 @@ fn Heap*? create(
     // Pre-intern well-known strings
     h.init_builtin_strs();
 
+    // Initialize shape system
+    h.init_shapes();
+
     return h;
 }
 
@@ -352,6 +361,124 @@ fn void Heap.init_builtin_strs(&self) {
     }
 }
 
+// ============================================================================
+// Shape (hidden class) system
+// ============================================================================
+
+const uint SHAPE_INITIAL_CAP      = 64;
+const uint SHAPE_CHILDREN_INITIAL = 4;
+const uint SHAPE_NONE             = 0xFFFF_FFFF;
+
+fn void Heap.init_shapes(&self) {
+    self.shape_capacity = SHAPE_INITIAL_CAP;
+    self.shape_count    = 1;  // slot 0 = root shape
+    self.shape_gen      = 0;
+    usz bytes = (usz)SHAPE_INITIAL_CAP * hobject::Shape::size;
+    self.shapes = (hobject::Shape*)libc::malloc(bytes);
+    libc::memset(self.shapes, 0, bytes);
+    hobject::Shape* root = &self.shapes[0];
+    root.key            = null;
+    root.prop_idx       = 0;
+    root.parent         = SHAPE_NONE;
+    root.generation     = 0;
+    root.children       = null;
+    root.children_size  = 0;
+    root.children_count = 0;
+}
+
+fn uint Heap.alloc_shape(&self) {
+    if (self.shape_count >= self.shape_capacity) {
+        uint new_cap = self.shape_capacity * 2;
+        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * hobject::Shape::size);
+        if (new_raw == null) return SHAPE_NONE;
+        usz old_bytes = (usz)self.shape_capacity * hobject::Shape::size;
+        libc::memset((char*)new_raw + old_bytes, 0, (usz)new_cap * hobject::Shape::size - old_bytes);
+        self.shapes = (hobject::Shape*)new_raw;
+        self.shape_capacity = new_cap;
+    }
+    uint id = self.shape_count;
+    self.shape_count++;
+    return id;
+}
+
+fn uint hash_key_ptr(void* key) @inline {
+    uint h = (uint)((usz)key);
+    h ^= h >> 16; h *= 0x85EB_CA6B;
+    h ^= h >> 13; h *= 0xC2B2_AE35;
+    h ^= h >> 16;
+    return h;
+}
+
+fn uint Heap.find_child_shape(&self, uint parent_idx, void* key) {
+    hobject::Shape* s = &self.shapes[parent_idx];
+    if (s.children == null || s.children_size == 0) return SHAPE_NONE;
+    uint mask = s.children_size - 1;
+    uint slot = hash_key_ptr(key) & mask;
+    for (uint i = 0; i < s.children_size; i++) {
+        uint ci = s.children[slot];
+        if (ci == SHAPE_NONE) return SHAPE_NONE;
+        if (ci < self.shape_count && self.shapes[ci].key == key) return ci;
+        slot = (slot + 1) & mask;
+    }
+    return SHAPE_NONE;
+}
+
+fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key, ushort prop_idx) {
+    if (cur_shape_id >= self.shape_count) return cur_shape_id;
+    uint child_idx = self.find_child_shape(cur_shape_id, key);
+    if (child_idx != SHAPE_NONE) return child_idx;
+
+    uint new_id = self.alloc_shape();
+    if (new_id == SHAPE_NONE) return cur_shape_id;
+
+    hobject::Shape* ns = &self.shapes[new_id];
+    ns.key            = key;
+    ns.prop_idx       = prop_idx;
+    ns.parent         = cur_shape_id;
+    ns.generation     = 0;
+    ns.children       = null;
+    ns.children_size  = 0;
+    ns.children_count = 0;
+
+    hobject::Shape* parent = &self.shapes[cur_shape_id];
+    if (parent.children == null) {
+        parent.children_size = SHAPE_CHILDREN_INITIAL;
+        parent.children = (uint*)libc::malloc((usz)SHAPE_CHILDREN_INITIAL * uint::size);
+        if (parent.children == null) return cur_shape_id;
+        libc::memset(parent.children, 0xFF, (usz)SHAPE_CHILDREN_INITIAL * uint::size);
+    } else if (parent.children_count * 10 > parent.children_size * 7) {
+        uint new_sz = parent.children_size * 2;
+        uint* new_tbl = (uint*)libc::malloc((usz)new_sz * uint::size);
+        if (new_tbl == null) return cur_shape_id;
+        libc::memset(new_tbl, 0xFF, (usz)new_sz * uint::size);
+        uint mask = new_sz - 1;
+        for (uint i = 0; i < parent.children_size; i++) {
+            uint ci = parent.children[i];
+            if (ci != SHAPE_NONE) {
+                uint h = hash_key_ptr(self.shapes[ci].key) & mask;
+                while (new_tbl[h] != SHAPE_NONE) h = (h + 1) & mask;
+                new_tbl[h] = ci;
+            }
+        }
+        libc::free(parent.children);
+        parent.children = new_tbl;
+        parent.children_size = new_sz;
+    }
+    uint mask = parent.children_size - 1;
+    uint h = hash_key_ptr(key) & mask;
+    while (parent.children[h] != SHAPE_NONE) h = (h + 1) & mask;
+    parent.children[h] = new_id;
+    parent.children_count++;
+    return new_id;
+}
+
+fn void Heap.bump_shape_gen(&self, uint shape_id) {
+    if (shape_id < self.shape_count) {
+        self.shapes[shape_id].generation++;
+        self.shape_gen++;
+    }
+}
+
 /**
  * Destroy the heap: walk every managed object and release it, then free
  * the heap struct itself.
@@ -376,6 +503,7 @@ fn void Heap.destroy(&self) {
                 if (cf.constants != null) { libc::free(cf.constants); }
                 if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
                 if (cf.line_table != null) { libc::free(cf.line_table); }
+                if (cf.ic_entries != null) { libc::free(cf.ic_entries); }
                 libc::free(cf);
             }
         }
@@ -393,6 +521,17 @@ fn void Heap.destroy(&self) {
         }
         self.free_func(self.heap_udata, self.str_table);
         self.str_table = null;
+    }
+
+    // Free shape system
+    if (self.shapes != null) {
+        for (uint i = 0; i < self.shape_count; i++) {
+            if (self.shapes[i].children != null) {
+                libc::free(self.shapes[i].children);
+            }
+        }
+        libc::free(self.shapes);
+        self.shapes = null;
     }
 
     // Finally free the Heap struct itself

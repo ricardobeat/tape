@@ -1122,6 +1122,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     Activation* act;
     Instruction* curr_pc;
     bool needs_restart;
+    hobject::ICEntry* ic_base;
 
     // Outer restart loop: on ECMAScript-to-ECMAScript calls, reload state
     needs_restart = true;
@@ -1136,6 +1137,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         code_base = vm.current_func.code;
         code_count = vm.current_func.code_count;
         constants = vm.current_func.constants;
+        ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
         nregs = vm.current_func.num_regs;
 
         curr_pc = act.curr_pc;
@@ -1737,12 +1739,37 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     }
                 }
 
+                // Inline Cache fast path: check shape + key + generation
+                if (ic_base != null) {
+                    uint pc_off = (uint)(curr_pc - 1 - code_base);
+                    hobject::ICEntry* ic = ic_base + pc_off;
+                    void* lookup_key = null;
+                    if (rc.is_string()) lookup_key = rc.get_heapptr();
+                    if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
+                        uint pi = hobject::ic_idx(ic.gen_and_idx);
+                        uint gen = hobject::ic_gen(ic.gen_and_idx);
+                        if (ic.proto == null) {
+                            if (pi < hobj.prop_count
+                                && gen == vm.heap.shapes[hobj.shape_id].generation) {
+                                *ra = hobj.props[pi].value;
+                                break;
+                            }
+                        } else if (gen == vm.heap.shapes[ic.shape_id].generation) {
+                            HObject* proto = (HObject*)ic.proto;
+                            if (pi < proto.prop_count) {
+                                *ra = proto.props[pi].value;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    // Single-pass: check accessor and data property in one chain walk
                     hobject::AccessorResult acc;
                     TVal data_val;
-                    hobject::PropLookupKind kind = hobj.get_prop_or_accessor_proto(key, true, &acc, &data_val);
+                    HObject* owner = null;
+                    hobject::PropLookupKind kind = hobj.get_prop_or_accessor_proto(key, true, &acc, &data_val, &owner);
                     if (kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                         TVal obj_val;
                         obj_val.set_object(hobj);
@@ -1751,10 +1778,21 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
                             break;
                         }
-                        // If invoke_getter returned false, result was set to undefined
                         break;
                     } else if (kind == hobject::PropLookupKind.PROP_DATA) {
                         *ra = data_val;
+                        // Populate IC for this site
+                        if (owner != null && ic_base != null) {
+                            uint pc_off = (uint)(curr_pc - 1 - code_base);
+                            hobject::ICEntry* ic = ic_base + pc_off;
+                            int owner_idx = owner.find_prop_idx(key);
+                            if (owner_idx >= 0) {
+                                ic.shape_id = hobj.shape_id;
+                                ic.proto = owner == hobj ? null : (void*)owner;
+                                ic.gen_and_idx = hobject::ic_pack(vm.heap.shapes[hobj.shape_id].generation, (ushort)owner_idx);
+                                ic.key = key;
+                            }
+                        }
                     } else {
                         ra.set_undefined();
                     }
@@ -1900,6 +1938,24 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     }
                 }
 
+                // Inline Cache fast path for own property writes (string keys only)
+                if (ic_base != null && rb.is_string()) {
+                    uint pc_off = (uint)(curr_pc - 1 - code_base);
+                    hobject::ICEntry* ic = ic_base + pc_off;
+                    void* wkey = rb.get_heapptr();
+                    if (wkey != null && ic.key == wkey && ic.shape_id == hobj.shape_id && ic.proto == null) {
+                        uint pi = hobject::ic_idx(ic.gen_and_idx);
+                        uint gen = hobject::ic_gen(ic.gen_and_idx);
+                        if (pi < hobj.prop_count
+                            && gen == vm.heap.shapes[hobj.shape_id].generation
+                            && !hobj.props[pi].flags.is_accessor
+                            && hobj.props[pi].flags.writable) {
+                            hobj.props[pi].value = *rc;
+                            break;
+                        }
+                    }
+                }
+
                 void* key = get_prop_key(vm, rb);
                 if (key != null) {
                     // Save the value before ensure_valstack may reallocate
@@ -1986,7 +2042,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                         } else {
                             // Property doesn't exist: check extensibility
                             if (hobj.flags.extensible) {
+                                uint old_count = hobj.prop_count;
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
+                                // Transition shape if property was actually added
+                                if (hobj.prop_count > old_count) {
+                                    hobj.shape_id = vm.heap.transition_shape(
+                                        hobj.shape_id, key, (ushort)(hobj.prop_count - 1));
+                                }
                             }
                             // If not extensible, silently ignore in non-strict, but we're strict-only
                             // so we could throw. For now, silently ignore.
