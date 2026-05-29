@@ -58,15 +58,22 @@ echo "------------------------------------------------------------"
 for f in "$BENCH_DIR"/bench_*.js; do
     name=$(basename "$f" .js)
     echo -n "  $name ... "
-    result=$("$C3_RUNNER" "$f" "$ITERATIONS" 2>/dev/null)
-    line=$(echo "$result" | grep "^BENCH_RESULT" | tail -1)
-    if [ -n "$line" ]; then
-        avg=$(echo "$line" | awk '{print $4}')
-        echo "$avg" > "$TMPDIR_BENCH/c3_$name"
-        echo "${avg}ms"
-    else
+    total=0
+    count=0
+    failed=false
+    for ((i=0; i<ITERATIONS; i++)); do
+        ms=$(time_ms "$C3_RUNNER" "$f" 1)
+        if [ $? -ne 0 ]; then failed=true; break; fi
+        total=$((total + ms))
+        count=$((count + 1))
+    done
+    if [ "$failed" = true ] || [ $count -eq 0 ]; then
         echo "FAILED"
         echo "N/A" > "$TMPDIR_BENCH/c3_$name"
+    else
+        avg=$((total / count))
+        echo "$avg" > "$TMPDIR_BENCH/c3_$name"
+        echo "${avg}ms"
     fi
 done
 
