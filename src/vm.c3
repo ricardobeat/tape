@@ -1695,6 +1695,20 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.GETPROP:
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
+
+                // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
+                if (hobj.get_class() == hobject::ObjClass.ARRAY && hobj.array_part != null && (rc.is_fastint() || rc.is_number())) {
+                    long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
+                    if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
+                        TVal? av = hobj.get_array_idx((uint)idx_long);
+                        if (try v = av) {
+                            *ra = v;
+                            break;
+                        }
+                        // Array hole — fall through to prototype chain lookup
+                    }
+                }
+
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
                     // Single-pass: check accessor and data property in one chain walk
@@ -1847,6 +1861,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         case Opcode.PUTPROP:
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
+
+                // Fast path: dense array indexed store (a[i] = v where i is a non-negative integer)
+                // Only for ARRAY-class objects — plain arrays don't have setters on numeric indices.
+                if (hobj.get_class() == hobject::ObjClass.ARRAY && hobj.array_part != null && (rb.is_fastint() || rb.is_number())) {
+                    long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
+                    if (idx_long >= 0) {
+                        hobj.set_array_idx((uint)idx_long, *rc);
+                        break;
+                    }
+                }
+
                 void* key = get_prop_key(vm, rb);
                 if (key != null) {
                     // Save the value before ensure_valstack may reallocate
