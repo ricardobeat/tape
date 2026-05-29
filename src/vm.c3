@@ -3970,9 +3970,37 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
             break;
         }
 
-        case Opcode.GETBOUND:
-            ra.set_undefined();
+        case Opcode.GETBOUND: {
+            uint bc = insn.get_bc();
+            // Constants[bc] = FASTINT depth, constants[bc+1] = STRING name
+            if (bc + 1 < vm.current_func.const_count) {
+                TVal depth_val = constants[bc];
+                TVal name_val = constants[bc + 1];
+                if ((depth_val.is_fastint() || depth_val.is_number()) && name_val.is_string()) {
+                    uint depth = (uint)(depth_val.is_fastint() ? depth_val.get_fastint() : (long)depth_val.get_number());
+                    void* key = name_val.get_heapptr();
+                    TVal? result = env::env_get_at_depth(act.lex_env, depth, key);
+                    if (try v = result) {
+                        *ra = v;
+                    } else {
+                        // Also check var_env if different
+                        if (act.lex_env != act.var_env) {
+                            result = env::env_get_at_depth(act.var_env, depth, key);
+                            if (try v2 = result) {
+                                *ra = v2;
+                                break;
+                            }
+                        }
+                        ra.set_undefined();
+                    }
+                } else {
+                    ra.set_undefined();
+                }
+            } else {
+                ra.set_undefined();
+            }
             break;
+        }
 
         // === ITEraTOR ===
 

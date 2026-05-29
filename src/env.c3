@@ -291,6 +291,38 @@ fn bool env_has_lex(EnvRecord* lex_env, void* key) @inline {
     return false;
 }
 
+/// Look up a binding at a specific depth in the scope chain.
+/// Walks `depth` parent pointers from `env`, then does a single
+/// hash lookup by name.  Used by GETBOUND for pre-resolved captures.
+fn TVal? env_get_at_depth(EnvRecord* env, uint depth, void* key) {
+    EnvRecord* cur = env;
+    for (uint i = 0; i < depth && cur != null; i++) {
+        cur = cur.parent;
+    }
+    if (cur == null) return hobject::PROP_NOT_FOUND~;
+    int idx = cur.bindings.find_prop_idx(key);
+    if (idx >= 0) {
+        return cur.bindings.props[idx].value;
+    }
+    return hobject::PROP_NOT_FOUND~;
+}
+
+/// Store a binding at a specific depth in the scope chain.
+fn bool env_put_at_depth(EnvRecord* env, uint depth, void* key, TVal val) {
+    EnvRecord* cur = env;
+    for (uint i = 0; i < depth && cur != null; i++) {
+        cur = cur.parent;
+    }
+    if (cur == null) return false;
+    int idx = cur.bindings.find_prop_idx(key);
+    if (idx >= 0) {
+        if (!cur.bindings.props[idx].flags.writable) return false;
+        cur.bindings.props[idx].value = val;
+        return true;
+    }
+    return cur.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+}
+
 /// Check if a binding in the lexical environment chain is writable.
 /// Returns true if the binding does not exist anywhere in the chain
 /// (it can be created), or if it exists and is writable.
