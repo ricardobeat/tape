@@ -13,6 +13,9 @@ fi
 
 HARNESS_ASSERT="$SCRIPT_DIR/../test262/harness/assert.js"
 
+# Source shared skip list (defines should_skip(), SKIP_DIRS, SKIP_FEATURES_PATTERN)
+source "$SCRIPT_DIR/../scripts/test262_skip.cfg"
+
 make_harness() {
   cat "$HARNESS_STA"
   cat "$HARNESS_ASSERT"
@@ -25,30 +28,12 @@ function $DONOTEVALUATE() { print("SKIP: $DONOTEVALUATE"); }
 WRAPPER
 }
 
-# Features we definitely don't support
-UNSUPPORTED_FEATURES="class|proxy|Symbol|BigInt|Promise|generator|async|module|Reflect|Proxy|WeakMap|WeakSet|Map|Set|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|new\.Target|import\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry"
-
 run_test() {
   local test_file="$1"
   local test_name="$(basename "$(dirname "$test_file")")/$(basename "$test_file" .js)"
 
-  # Skip tests requiring features we don't support
-  if grep -qE "features:.*\[($UNSUPPORTED_FEATURES)" "$test_file" 2>/dev/null; then
-    return 2
-  fi
-  # Skip tests using $DONOTEVALUATE
-  if grep -q '\$DONOTEVALUATE' "$test_file" 2>/dev/null; then
-    return 2
-  fi
-  # Skip tests that obviously require built-in constructors we lack
-  if grep -qE "new (Object|Number|String|Boolean|Date|RegExp|Function|Array)\(\)" "$test_file" 2>/dev/null; then
-    return 2
-  fi
-  # Skip tests using Math, JSON, Error constructors we don't have
-  if grep -qE "Math\.(PI|E|exp|abs|floor|sqrt|sin|cos|tan)" "$test_file" 2>/dev/null; then
-    return 2
-  fi
-  if grep -qE "Error\b|TypeError|RangeError|EvalError|SyntaxError|ReferenceError" "$test_file" 2>/dev/null; then
+  # Skip tests requiring features we don't support (uses shared skip list)
+  if should_skip "$test_file"; then
     return 2
   fi
 

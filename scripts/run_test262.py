@@ -29,8 +29,64 @@ VM_BINARY = os.path.join(PROJECT_DIR, "out", "batch_test_vm")
 TEST_TIMEOUT = 10
 
 # ---------------------------------------------------------------------------
-# Phase definitions (mirrors run_test262_per_phase.sh)
+# Skip list — see test262_relevance_report.md for rationale
 # ---------------------------------------------------------------------------
+
+# Directories to skip entirely (relative to test262/test/)
+SKIP_DIRS = {
+    "annexB",                          # 1,086 — legacy browser quirks
+    "intl402",                         # 3,337 — ECMA-402 (separate spec)
+    "staging",                         # 1,493 — unstandardized proposals
+    "harness",                         # 116   — test harness self-tests
+    "built-ins/Temporal",              # 4,603 — Stage 3 proposal
+    "built-ins/ShadowRealm",           # 67    — Stage 3 proposal
+    "built-ins/DisposableStack",       # 93    — Stage 3
+    "built-ins/AsyncDisposableStack",  # 104   — Stage 3
+    "built-ins/SuppressedError",       # 22    — Stage 3
+    "built-ins/AbstractModuleSource",  # 8     — Stage 3
+    "built-ins/SharedArrayBuffer",     # 104   — platform-dependent
+    "built-ins/Atomics",               # 390   — platform-dependent
+    "built-ins/Proxy",                 # 311   — extreme complexity
+    "built-ins/WeakRef",               # 29    — GC-dependent
+    "built-ins/FinalizationRegistry",  # 47    — GC-dependent
+    "built-ins/BigInt",                # 77    — defer
+}
+
+# Feature flags to skip (matched against test metadata `features: [...]`)
+UNSUPPORTED_PATTERN = re.compile(
+    r"features:\s*\[.*\b(?:"
+    # Engine quirks / non-standard
+    r"IsHTMLDDA|host-gc-required|cross-realm|tail-call-optimization|"
+    r"legacy-regexp|caller|"
+    # Annex B property features
+    r"__proto__|__getter__|__setter__|"
+    # Stage 3 proposals
+    r"Temporal|ShadowRealm|decorators|explicit-resource-management|"
+    r"source-phase-imports|source-phase-imports-module-source|"
+    r"import-defer|export-defer|import-attributes|import-text|import-bytes|"
+    r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
+    r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
+    r"promise-try|iterator-sequencing|Error\.isError|upsert|array-grouping|"
+    r"Math\.sumPrecise|RegExp\.escape|json-parse-with-source|"
+    r"regexp-modifiers|regexp-duplicate-named-groups|"
+    r"uint8array-base64|Float16Array|resizable-arraybuffer|"
+    r"joint-iteration|iterator-helpers|"
+    # ES2024+ features (implement later)
+    r"Array\.fromAsync|set-methods|promise-with-resolvers|"
+    r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
+    # Complex features deferred
+    r"SharedArrayBuffer|Atomics|Proxy|BigInt|WeakRef|FinalizationRegistry|"
+    r"structured-clone|import\.meta|dynamic-import|"
+    # Class features not yet implemented
+    r"class-methods-private|class-static-methods-private|"
+    r"class-fields-private|class-fields-public|"
+    r"class-static-fields-private|class-static-fields-public|"
+    r"class-static-block|"
+    # Other unimplemented ES features
+    r"object-rest|optional-chaining|logical-assignment|"
+    r"Promise\.allSettled|Promise\.any"
+    r")\b"
+)
 
 PHASES = [
     {
@@ -211,7 +267,13 @@ UNSUPPORTED_PATTERN = re.compile(
 
 
 def should_skip(path):
-    """Check if a test should be skipped based on header metadata."""
+    """Check if a test should be skipped based on directory or header metadata."""
+    # Skip tests in excluded directories
+    rel = os.path.relpath(path, TEST262_DIR)
+    for skip_dir in SKIP_DIRS:
+        if rel.startswith(skip_dir + os.sep) or rel.startswith(skip_dir + "/"):
+            return True
+
     try:
         with open(path) as f:
             header = f.read(2000)

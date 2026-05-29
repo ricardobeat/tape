@@ -11,16 +11,8 @@ if [ ! -f "$VM" ]; then
   cd "$SCRIPT_DIR" && c3c build batch_test_vm 2>&1 | grep -v "ld: warning"
 fi
 
-UNSUPPORTED_FEATURES="proxy|BigInt|async|module|Reflect|SharedArrayBuffer|Atomics|Intl|TypedArray|DataView|structured-clone|import\\.meta|dynamic-import|Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|FinalizationRegistry|WeakRef|class-methods-private|class-static-methods-private|class-fields-private|class-fields-public|class-static-fields-private|class-static-fields-public|class-static-block|object-rest|explicit-resource-management|optional-chaining|logical-assignment|resizable-arraybuffer|array-grouping|upsert|set-methods|symbols-as-weakmap-keys|cross-realm|await-dictionary|Promise\.allSettled|Promise\.any"
-
-should_skip() {
-  local f="$1"
-  if grep -qE "features:.*\[($UNSUPPORTED_FEATURES)" "$f" 2>/dev/null; then return 0; fi
-  if grep -q '\$DONOTEVALUATE' "$f" 2>/dev/null; then return 0; fi
-  # Strict-only engine: skip tests that explicitly require non-strict (sloppy) mode
-  if grep -qE 'flags:.*\[.*noStrict' "$f" 2>/dev/null; then return 0; fi
-  return 1
-}
+# Source shared skip list (defines should_skip(), SKIP_DIRS, SKIP_FEATURES_PATTERN)
+source "$SCRIPT_DIR/scripts/test262_skip.cfg"
 
 declare -A PHASE_LABELS PHASE_DIRS
 PHASE_LABELS[0]="Phase 0-1: Core VM"

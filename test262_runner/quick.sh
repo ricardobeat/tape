@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM="$SCRIPT_DIR/../out/test_vm"
 
+# Source shared skip list (defines should_skip())
+source "$SCRIPT_DIR/../scripts/test262_skip.cfg"
+
 make_harness() {
   cat "$SCRIPT_DIR/../test262/harness/sta.js"
   echo 'var __test262_pass = 0, __test262_fail = 0;'
@@ -44,12 +47,8 @@ P=0; F=0; S=0
 for cat in "${CATS[@]}"; do
   for f in "$SCRIPT_DIR/../$cat"/*.js; do
     [ -f "$f" ] || continue
-    # Skip bigint/symbol/proxy tests
-    if grep -qE "BigInt|Symbol|Proxy|Proxy|Map\b|Set\b" "$f" 2>/dev/null; then
-      S=$((S+1)); continue
-    fi
-    # Skip $DONOTEVALUATE
-    if grep -q '\$DONOTEVALUATE' "$f" 2>/dev/null; then
+    # Skip using shared skip list
+    if should_skip "$f"; then
       S=$((S+1)); continue
     fi
     r="$(run_one "$f")"

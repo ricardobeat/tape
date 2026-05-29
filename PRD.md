@@ -22,4 +22,11 @@ Leverage C3's native features for memory safety and it's stdlib; use Duktape's a
 
 - ignore *staging* features in the ECMAScript spec, focus on ES5/ES6 core
 
+- **test262 skip list** — ~60% of test262 is irrelevant for a clean-slate engine targeting
+  Node/Bun/browser compatibility (Annex B, ECMA-402, Stage 3 proposals, engine quirks).
+  The full analysis and rationale is in `test262_relevance_report.md`. All test runners
+  (`scripts/test262_skip.cfg`, `scripts/run_test262.py`, `scripts/run_test262_per_phase.sh`,
+  `test262_runner/run_real.sh`, `test262_runner/quick.sh`) use a shared skip list derived
+  from that report. Update the skip list there when implementing new features.
+
 ( DO NOT EDIT )
