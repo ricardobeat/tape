@@ -268,7 +268,9 @@ $endif
 
 macro bool TVal.is_nullish(&self) {
 $if USE_NANBOX:
-    return self.is_undefined() || self.is_null();
+    // undefined=0xFFF3..., null=0xFFF4... — consecutive tags, both zero payload
+    ulong tag = self.bits >> 48;
+    return tag >= TAG_UNDEFINED && tag <= TAG_NULL_VAL && (self.bits & NANBOX_PAYLOAD_MASK) == 0;
 $else
     return self.tag == UNDEFINED || self.tag == NULL_VAL;
 $endif
@@ -482,7 +484,11 @@ $endif
 macro TVal make_number(double val) {
     TVal tv;
 $if USE_NANBOX:
-    tv.bits = bitcast(val, ulong);
+    ulong bits = bitcast(val, ulong);
+    if (bits >> 48 >= TAG_FASTINT) {
+        bits = 0x7FF8000000000000;
+    }
+    tv.bits = bits;
 $else
     tv.tag    = NUMBER;
     tv.number = val;

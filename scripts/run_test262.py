@@ -9,6 +9,7 @@ Usage:
     python3 scripts/run_test262.py              # all phases
     python3 scripts/run_test262.py --phase 2    # single phase
     python3 scripts/run_test262.py --workers 8  # override worker count
+    python3 scripts/run_test262.py --es5        # ES5-only (skip tests with feature flags)
 """
 
 import argparse
@@ -266,7 +267,12 @@ UNSUPPORTED_PATTERN = re.compile(
 )
 
 
-def should_skip(path):
+# Match ANY test that declares feature flags — used by --es5 mode to skip
+# all post-ES5 tests.  Tests without `features:` are baseline ES5 behavior.
+ANY_FEATURES_PATTERN = re.compile(r"^features:\s*\[", re.MULTILINE)
+
+
+def should_skip(path, es5_only=False):
     """Check if a test should be skipped based on directory or header metadata."""
     # Skip tests in excluded directories
     rel = os.path.relpath(path, TEST262_DIR)
@@ -283,6 +289,8 @@ def should_skip(path):
     if "$DONOTEVALUATE" in header:
         return True
     if UNSUPPORTED_PATTERN.search(header):
+        return True
+    if es5_only and ANY_FEATURES_PATTERN.search(header):
         return True
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return True
@@ -389,7 +397,7 @@ class Worker:
 # ---------------------------------------------------------------------------
 
 
-def build_phase_tests(phase_idx):
+def build_phase_tests(phase_idx, es5_only=False):
     """Collect test files for a phase, applying skip filter. Recurses into subdirs."""
     phase = PHASES[phase_idx]
     tests = []
@@ -403,17 +411,17 @@ def build_phase_tests(phase_idx):
                 if not entry.endswith(".js"):
                     continue
                 path = os.path.join(dirpath, entry)
-                if should_skip(path):
+                if should_skip(path, es5_only=es5_only):
                     skipped += 1
                     continue
                 tests.append(path)
     return tests, skipped
 
 
-def run_phase(phase_idx, num_workers, test_timeout):
+def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     """Run a single phase and return (pass_count, fail_count, skip_count, total_count)."""
     phase = PHASES[phase_idx]
-    tests, skipped = build_phase_tests(phase_idx)
+    tests, skipped = build_phase_tests(phase_idx, es5_only=es5_only)
     total = len(tests) + skipped
 
     if not tests:
@@ -524,6 +532,11 @@ def main():
         default=TEST_TIMEOUT,
         help=f"Per-test timeout in seconds (default: {TEST_TIMEOUT})",
     )
+    parser.add_argument(
+        "--es5",
+        action="store_true",
+        help="ES5-only mode: skip all tests with feature flags (post-ES5 features)",
+    )
     args = parser.parse_args()
 
     # Build if needed
@@ -542,11 +555,14 @@ def main():
     phases = [args.phase] if args.phase is not None else range(len(PHASES))
     grand_pass = grand_fail = grand_skip = grand_total = 0
 
+    if args.es5:
+        print("Mode: ES5-only (skipping tests with post-ES5 feature flags)\n")
+
     print("Phase | Total | Pass | Fail | Skip")
     print("------|-------|------|------|-----")
     for p in phases:
         p_pass, p_fail, p_skip, p_total = run_phase(
-            p, args.workers, args.timeout
+            p, args.workers, args.timeout, es5_only=args.es5
         )
         print(
             f"{PHASES[p]['label']} | {p_total} | {p_pass} | {p_fail} | {p_skip}"

@@ -245,6 +245,18 @@ macro double num_val(TVal* val) {
 
 /// ECMAScript truthiness.
 macro bool is_truthy(TVal* val) {
+$if types::USE_NANBOX:
+    if (val.bits == (types::TAG_UNDEFINED << 48) ||
+        val.bits == (types::TAG_NULL_VAL << 48) ||
+        val.bits == (types::TAG_BOOLEAN << 48)) {
+        return false;
+    }
+    if (types::nanbox_is_double(val.bits)) {
+        double d = bitcast(val.bits, double);
+        return d != 0.0 && !math::is_nan(d);
+    }
+    return true;
+$else
     switch (val.get_tag()) {
         case UNDEFINED: return false;
         case NULL_VAL:  return false;
@@ -256,6 +268,7 @@ macro bool is_truthy(TVal* val) {
         case LIGHTFUNC: return true;
         default:        return true;
     }
+$endif
 }
 
 /// Ensure the value stack has room for `needed` more slots.
@@ -299,15 +312,23 @@ fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
 }
 
 /// Convert a TVal to an interned string key for property access.
+/// Uses a single tag extraction via switch to avoid redundant checks.
 fn void* get_prop_key(Vm* vm, TVal* val) {
-    if (val.is_string()) {
-        return val.get_heapptr();
+    switch (val.get_tag()) {
+        case STRING:    return val.get_heapptr();
+        case FASTINT:
+            if (try s = vm_fastint_to_string(vm, val.get_fastint())) return s;
+            return null;
+        case NUMBER:
+            if (try s = vm_number_to_string(vm, val.get_number())) return s;
+            return null;
+        case BOOLEAN:
+            if (val.get_boolean()) return intern_string(vm, "true");
+            return intern_string(vm, "false");
+        case UNDEFINED: return intern_string(vm, "undefined");
+        case NULL_VAL:  return intern_string(vm, "null");
+        default:        return intern_string(vm, "undefined");
     }
-    HString*? s = vm_to_string(vm, val);
-    if (try h = s) {
-        return h;
-    }
-    return null;
 }
 
 /// Look up a property on an object, walking the prototype chain.
@@ -1149,18 +1170,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         // === ARITHMETIC ===
 
-        case Opcode.ADD:
-            // String concatenation check
-            if (rb.is_string() || rc.is_string()) {
+        case Opcode.ADD: {
+            TValTag tag_b = rb.get_tag();
+            TValTag tag_c = rc.get_tag();
+            if (tag_b == STRING || tag_c == STRING) {
                 HString*? left_str = vm_to_string(vm, rb);
                 HString*? right_str = vm_to_string(vm, rc);
                 if (try ls = left_str && try rs = right_str) {
                     HString*? concat = hstring::hstring_concat(vm.heap, ls, rs);
                     if (try cs = concat) {
-                        // Intern the concatenated string for pointer dedup
                         char[] cd = cs.get_data();
                         HString* interned = intern_string(vm, cd);
-                        // Free the raw concat result (not tracked by heap)
                         hstring::hstring_free(cs);
                         ra.set_string(interned);
                     } else {
@@ -1169,8 +1189,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 } else {
                     ra.set_undefined();
                 }
-            } else if (rb.is_fastint() && rc.is_fastint()) {
-                // Both operands are fast integers — keep as fastint if result fits
+            } else if (tag_b == FASTINT && tag_c == FASTINT) {
                 long sum = rb.get_fastint() + rc.get_fastint();
                 if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
                     ra.set_fastint(sum);
@@ -1178,11 +1197,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ra.set_number((double)sum);
                 }
             } else {
-                double add_b = num_val(rb);
-                double add_c = num_val(rc);
+                double add_b = (tag_b == FASTINT) ? (double)rb.get_fastint() : rb.get_number();
+                double add_c = (tag_c == FASTINT) ? (double)rc.get_fastint() : rc.get_number();
                 ra.set_number(add_b + add_c);
             }
-            break;
+        }
 
         case Opcode.SUB:
             if (rb.is_fastint() && rc.is_fastint()) {
@@ -1348,13 +1367,14 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.SEQ: {
             bool seq_r = false;
-            if (rb.get_tag() == rc.get_tag()) {
-                switch (rb.get_tag()) {
+            TValTag tag_b = rb.get_tag();
+            TValTag tag_c = rc.get_tag();
+            if (tag_b == tag_c) {
+                switch (tag_b) {
                     case UNDEFINED: seq_r = true; break;
                     case NULL_VAL:  seq_r = true; break;
                     case BOOLEAN:   seq_r = (rb.get_boolean() == rc.get_boolean()); break;
                     case NUMBER:
-                        // NaN !== NaN per IEEE 754 / ES spec
                         if (math::is_nan(rb.get_number()) || math::is_nan(rc.get_number())) {
                             seq_r = false;
                         } else {
@@ -1369,10 +1389,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     case BUFFER:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
                     default: break;
                 }
-            } else if ((rb.is_number() && rc.is_fastint()) ||
-                       (rb.is_fastint() && rc.is_number())) {
-                // NUMBER and FASTINT are the same ES type — compare by value
-                seq_r = (num_val(rb) == num_val(rc));
+            } else if ((tag_b == NUMBER && tag_c == FASTINT) ||
+                       (tag_b == FASTINT && tag_c == NUMBER)) {
+                double nb = (tag_b == FASTINT) ? (double)rb.get_fastint() : rb.get_number();
+                double nc = (tag_c == FASTINT) ? (double)rc.get_fastint() : rc.get_number();
+                seq_r = (nb == nc);
             }
             ra.set_boolean(seq_r);
             break;
@@ -1380,15 +1401,16 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
         case Opcode.SNEQ: {
             bool sneq_r = true;
-            if (rb.get_tag() == rc.get_tag()) {
-                switch (rb.get_tag()) {
+            TValTag tag_b = rb.get_tag();
+            TValTag tag_c = rc.get_tag();
+            if (tag_b == tag_c) {
+                switch (tag_b) {
                     case UNDEFINED: sneq_r = false; break;
                     case NULL_VAL:  sneq_r = false; break;
                     case BOOLEAN:   sneq_r = (rb.get_boolean() != rc.get_boolean()); break;
                     case NUMBER:
-                        // NaN !== NaN per IEEE 754
-                        if (math::is_nan(rb.get_number()) && math::is_nan(rc.get_number())) {
-                            sneq_r = true;  // NaN !== NaN
+                        if (math::is_nan(rb.get_number()) || math::is_nan(rc.get_number())) {
+                            sneq_r = true;
                         } else {
                             sneq_r = (rb.get_number() != rc.get_number());
                         }
@@ -1399,11 +1421,13 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     case LIGHTFUNC: sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
                     case POINTER:   sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
                     case BUFFER:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
-                    default: sneq_r = true; break;
+                    default: break;
                 }
-            } else if ((rb.is_number() && rc.is_fastint()) ||
-                       (rb.is_fastint() && rc.is_number())) {
-                sneq_r = (num_val(rb) != num_val(rc));
+            } else if ((tag_b == NUMBER && tag_c == FASTINT) ||
+                       (tag_b == FASTINT && tag_c == NUMBER)) {
+                double nb = (tag_b == FASTINT) ? (double)rb.get_fastint() : rb.get_number();
+                double nc = (tag_c == FASTINT) ? (double)rc.get_fastint() : rc.get_number();
+                sneq_r = (nb != nc);
             }
             ra.set_boolean(sneq_r);
             break;
