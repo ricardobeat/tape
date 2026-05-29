@@ -1048,6 +1048,34 @@ fn void vm_destroy(Vm* vm) {
     libc::free(vm);
 }
 
+/// Reset a VM for reuse with a freshly-reset heap.
+/// Call heap.reset() first, then vm_reset() to reinitialise global env and
+/// builtins. The valstack backing buffer is reused; only its top is rewound.
+/// Returns false on failure (treat like vm_create failing).
+fn bool vm_reset(Vm* vm, Heap* heap) {
+    if (vm == null || heap == null) { return false; }
+
+    // Rewind the value stack — no free/realloc needed
+    vm.valstack_top    = vm.valstack;
+    vm.valstack_bottom = 0;
+    vm.activation_count = 0;
+    vm.has_error        = false;
+    vm.current_func     = null;
+    vm.curr_pc          = null;
+    vm.return_val.set_undefined();
+
+    // Fresh global environment on the reset heap
+    EnvRecord*? global = env::env_create(heap, null);
+    if (catch err = global) { return false; }
+    vm.global_env = global;
+
+    heap.register_gc_root(global.bindings.as_header());
+
+    if (!builtins::register_builtins(global, heap)) { return false; }
+
+    return true;
+}
+
 // ============================================================================
 // Main execution loop
 // ============================================================================
