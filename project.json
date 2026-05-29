@@ -18,12 +18,10 @@
       "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
       "opt": "O2"
     },
-    "bench_run": {
+    "duktape_c3": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/bench_run.c3" ],
-      "opt": "O2",
-      "optlevel": "max",
-      "safe": false
+      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "opt": "O2"
     }
   }
 }

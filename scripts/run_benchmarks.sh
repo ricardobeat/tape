@@ -9,7 +9,7 @@ set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH_DIR="$PROJ_DIR/benchmarks"
-C3_RUNNER="$PROJ_DIR/out/bench_run"
+C3_RUNNER="$PROJ_DIR/out/duktape_c3"
 DUKTAPE="$PROJ_DIR/out/duktape_orig"
 QJS="$PROJ_DIR/out/qjs"
 ITERATIONS="${1:-3}"
@@ -19,7 +19,7 @@ trap 'rm -rf "$TMPDIR_BENCH"' EXIT
 
 if [ ! -f "$C3_RUNNER" ]; then
     echo "ERROR: C3 runner not found at $C3_RUNNER"
-    echo "Run: c3c build bench_run"
+    echo "Run: c3c build duktape_c3"
     exit 1
 fi
 
@@ -58,16 +58,16 @@ echo "------------------------------------------------------------"
 for f in "$BENCH_DIR"/bench_*.js; do
     name=$(basename "$f" .js)
     echo -n "  $name ... "
-    result=$("$C3_RUNNER" "$f" "$ITERATIONS" 2>/dev/null)
-    line=$(echo "$result" | grep "^BENCH_RESULT" | tail -1)
-    if [ -n "$line" ]; then
-        avg=$(echo "$line" | awk '{print $4}')
-        echo "$avg" > "$TMPDIR_BENCH/c3_$name"
-        echo "${avg}ms"
-    else
-        echo "FAILED"
-        echo "N/A" > "$TMPDIR_BENCH/c3_$name"
-    fi
+    total=0
+    count=0
+    for ((i=0; i<ITERATIONS; i++)); do
+        ms=$(time_ms "$C3_RUNNER" "$f")
+        total=$((total + ms))
+        count=$((count + 1))
+    done
+    avg=$((total / count))
+    echo "$avg" > "$TMPDIR_BENCH/c3_$name"
+    echo "${avg}ms"
 done
 
 echo ""

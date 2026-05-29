@@ -18,9 +18,9 @@ build-vm:
 build-batch:
     c3c build batch_test_vm
 
-# Build the benchmark runner
+# Build the C3 Duktape CLI (for benchmarks)
 build-bench:
-    c3c build bench_run
+    c3c build duktape_c3
 
 # Build original Duktape v2.7.0 for comparison benchmarks
 build-orig-duktape:
@@ -62,22 +62,22 @@ test262-phase phase="0":
 
 # Run all benchmarks without rebuilding (default: 3 iterations)
 bench n="3":
-	@test -f out/bench_run || { echo "ERROR: out/bench_run not found — run: c3c build bench_run"; exit 1; }
+	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
 	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_benchmarks.sh {{n}}
 
-# Rebuild bench_run and run all benchmarks
+# Rebuild duktape_c3 and run all benchmarks
 bench-rebuild n="3":
-	c3c build bench_run
+	c3c build duktape_c3
 	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_benchmarks.sh {{n}}
 
 # Run a single benchmark file: `just bench-one benchmarks/bench_loop.js`
 bench-one file n="3":
-    @test -f out/bench_run || { echo "ERROR: out/bench_run not found"; exit 1; }
-    ./out/bench_run {{file}} {{n}}
+    @test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found"; exit 1; }
+    ./out/duktape_c3 {{file}}
 
 # Run a single benchmark on original Duktape
 bench-orig file:
