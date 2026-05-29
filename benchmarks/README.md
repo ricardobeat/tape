@@ -6,7 +6,7 @@ Simple performance benchmarks comparing the C3 port against original Duktape v2.
 
 ```
 benchmarks/
-├── bench_run.c3              C3 benchmark runner (compiled to out/bench_run)
+├── duktape_c3.c3             C3 CLI runner (compiled to out/duktape_c3)
 ├── bench_loop.js             Loop overhead (for/while)
 ├── bench_arithmetic.js       Arithmetic operations (+, -, *, /, %, bitwise)
 ├── bench_function_call.js    Function call overhead (empty, identity, 2-arg)
@@ -21,14 +21,14 @@ benchmarks/
 ## Running
 
 ```bash
-# Build the C3 benchmark runner
-c3c build bench_run
+# Build the C3 CLI runner
+c3c build duktape_c3
 
 # Run the full comparison
 scripts/run_benchmarks.sh [iterations]
 
 # Run individual benchmarks
-out/bench_run benchmarks/bench_loop.js 5      # C3 port, 5 iterations
+out/duktape_c3 benchmarks/bench_loop.js      # C3 port
 out/duktape_orig benchmarks/bench_loop.js      # Original Duktape
 ```
 
@@ -43,6 +43,6 @@ A ratio of ~5x means the C3 port is about 5× slower than the optimized C implem
 
 ## Notes
 
-- Each benchmark iteration creates a fresh heap + VM to ensure clean state
+- Each benchmark iteration spawns a fresh process for all engines (C3, Duktape, QuickJS)
 - Timing includes both compilation and execution (actual workload dominates)
 - The `duktape_orig` binary is built from Duktape v2.7.0 source

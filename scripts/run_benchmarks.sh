@@ -9,7 +9,7 @@ set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH_DIR="$PROJ_DIR/benchmarks"
-C3_RUNNER="$PROJ_DIR/out/bench_run"
+C3_RUNNER="$PROJ_DIR/out/duktape_c3"
 DUKTAPE="$PROJ_DIR/out/duktape_orig"
 QJS="$PROJ_DIR/out/qjs"
 ITERATIONS="${1:-3}"
@@ -19,7 +19,7 @@ trap 'rm -rf "$TMPDIR_BENCH"' EXIT
 
 if [ ! -f "$C3_RUNNER" ]; then
     echo "ERROR: C3 runner not found at $C3_RUNNER"
-    echo "Run: c3c build bench_run"
+    echo "Run: c3c build duktape_c3"
     exit 1
 fi
 
@@ -62,7 +62,7 @@ for f in "$BENCH_DIR"/bench_*.js; do
     count=0
     failed=false
     for ((i=0; i<ITERATIONS; i++)); do
-        ms=$(time_ms "$C3_RUNNER" "$f" 1)
+        ms=$(time_ms "$C3_RUNNER" "$f")
         if [ $? -ne 0 ]; then failed=true; break; fi
         total=$((total + ms))
         count=$((count + 1))
