@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 83 (Logical assignment operators — &&=, ||=, ??=)
+**Last Updated:** Session 84 (Date prototype methods — UTC getters, setters, toISOString, toUTCString)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
 | Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 7,182 |
-| Currently failing (test262) | 23,264 |
-| Pass rate (of run tests) | 23.6% |
+| Currently passing (test262) | 7,234 |
+| Currently failing (test262) | 23,212 |
+| Pass rate (of run tests) | 23.8% |
 
 ## Refreshing test pass rate
 
@@ -96,14 +96,14 @@ These are all legitimately large functions that cannot be macroized. The functio
 | 5: Built-in Constructors | 8,615 | 2,265 | 5,867 | 483 |
 | 6: Prototype Methods | 4,713 | 922 | 3,485 | 306 |
 | 7: ES5 Features | 1,240 | 212 | 401 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 495 | 1,964 | 288 |
+| 8: ES5 Built-in Objects | 2,747 | 547 | 1,912 | 288 |
 | 11: Arrow/Templates | 427 | 61 | 226 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
 | 15: Classes | 8,520 | 146 | 2,149 | 6,225 |
 | 17-20: Map/Set/Symbol/Promise | 1,588 | 164 | 821 | 603 |
 | 21: Generators | 619 | 6 | 483 | 130 |
-| **Overall** | **30,446** | **7,182** | **23,264** | **11,541** |
+| **Overall** | **30,446** | **7,234** | **23,212** | **11,541** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 573 pass / 554 fail (skip: 1,058)**
@@ -240,11 +240,11 @@ These are all legitimately large functions that cannot be macroized. The functio
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 495 pass / 1,964 fail (skip: 288)**
+**test262: 2,747 files — 547 pass / 1,912 fail (skip: 288)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
-| Date | ✅ |
+| Date (constructors, getters, setters, UTC methods, toISOString, toUTCString) | ✅ (Session 84 — 86/594 Date tests passing) |
 | RegExp | ✅ (engine integrated + prototype chain wired, SyntaxError on invalid pattern/flags, .constructor on error prototypes — 144 test262 passing) |
 | Object.keys, getPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions, getOwnPropertyNames | ✅ (Session 67-68, 70) |
 | **Object.defineProperty** | **✅ (Session 69)** |
@@ -420,7 +420,8 @@ These are all legitimately large functions that cannot be macroized. The functio
 | Session | Key Features |
 |---|---|
 | 1 | Core VM, calling convention, closures, basic comparisons |
-| 83 | **Logical assignment operators (&&=, ||=, ??=)** — Implemented ES2021 logical assignment operators in the compiler with proper short-circuit semantics. Lexer tokens (LOG_AND_ASSIGN, LOG_OR_ASSIGN, NULLISH_ASSIGN) already existed. Added compiler support: `||=` skips RHS when LHS is truthy, `&&=` skips RHS when LHS is falsy, `??=` skips RHS when LHS is not null/undefined. Handles both simple variable and member expression LHS. Member expression case allocates a separate result register to correctly return the original LHS value on short-circuit. Also simplified valstack_top computation in vm.c3 (5 call sites) using `ptr_from_byteoff` helper. Test262: 16/78 logical-assignment tests passing. |
+| 83 | **Logical assignment operators (&&=, ||=, ??=)** — Implemented ES2021 logical assignment operators in the compiler with proper short-circuit semantics. Lexer tokens (LOG_AND_ASSIGN, LOG_OR_ASSIGN, NULLISH_ASSIGN) already existed. Added compiler support: `\|\|=` skips RHS when LHS is truthy, `&&=` skips RHS when LHS is falsy, `??=` skips RHS when LHS is not null/undefined. Handles both simple variable and member expression LHS. Member expression case allocates a separate result register to correctly return the original LHS value on short-circuit. Also simplified valstack_top computation in vm.c3 (5 call sites) using `ptr_from_byteoff` helper. Test262: 16/78 logical-assignment tests passing. |
+| 84 | **Session 84: Date prototype methods** — Implemented 29 Date.prototype methods: UTC getters (getUTCFullYear, getUTCMonth, getUTCDate, getUTCDay, getUTCHours, getUTCMinutes, getUTCSeconds, getUTCMilliseconds), getTimezoneOffset, setters (setTime, setMilliseconds, setSeconds, setMinutes, setHours, setDate, setMonth, setFullYear), UTC setters (setUTCMilliseconds, setUTCSeconds, setUTCMinutes, setUTCHours, setUTCDate, setUTCMonth, setUTCFullYear), and formatting (toISOString, toUTCString, toGMTString). Added `date_break_time_utc` (gmtime_r), `date_utc_to_ms` (UTC epoch calculation), `date_time_clip`, `date_set_ms` helpers. Constants 100, 235-260. Updated BUILTIN_COUNT from 111 to 261. Test262: Date tests improved from 34 → 86 pass (+52). Phase 8: 495 → 547 pass. Overall **7,234 pass / 23,212 fail (23.8%)** — +52 new passing tests. |
 | 72 | **Memory leak fix**: `Heap.destroy` now frees HString objects in the string table and CompiledFunction objects. Full test262 re-run: **5,464 pass / 24,907 fail (18.0%)** |
 | 73 | **Session 73: String.prototype + Array.prototype methods** — Implemented `includes`, `startsWith`, `endsWith`, `repeat`, `trimStart`, `trimEnd`, `codePointAt`, `at`, `padStart`, `padEnd`, `lastIndexOf` on String.prototype. Implemented `fill`, `includes`, `at`, `copyWithin` on Array.prototype. New constants 170-187, dispatch cases, and registrations. Test262: Phase 5 +66 (1,608→1,674), Phase 6 +66 (443→509), overall **5,596 pass / 24,775 fail (18.4%)** — +132 new passing tests. |
 | 74 | **Session 74: Object.entries, Object.values, Object.assign** — Implemented `Object.entries()` (ES2017 §19.1.2.21), `Object.values()` (ES2017 §19.1.2.22), and `Object.assign()` (ES2015 §19.1.2.2) as static methods on the Object constructor. Proper TypeError on null/undefined. New constants 188-190. Test262: Phase 5 +10 (1,674→1,684), overall **5,606 pass / 24,765 fail (18.5%)** — +10 new passing tests. |

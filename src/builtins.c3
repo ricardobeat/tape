@@ -133,6 +133,7 @@ const uint BUILTIN_DATE_PROTO_GETHOURS     = 96;
 const uint BUILTIN_DATE_PROTO_GETMINUTES   = 97;
 const uint BUILTIN_DATE_PROTO_GETSECONDS   = 98;
 const uint BUILTIN_DATE_PROTO_GETMILLISECONDS = 99;
+const uint BUILTIN_DATE_PROTO_GETTIMEZONEOFFSET = 100;
 const uint BUILTIN_FUNCTION              = 101;
 const uint BUILTIN_RESET_GLOBALS             = 102;
 const uint BUILTIN_REGEXP                    = 103;
@@ -143,7 +144,7 @@ const uint BUILTIN_OBJECT_PROTO_HASOWNPROPERTY  = 108;
 const uint BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE = 109;
 const uint BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF  = 107;
 const uint BUILTIN_OBJECT_PROTO_TOLOCALESTRING = 110;
-const uint BUILTIN_COUNT                         = 111;
+const uint BUILTIN_COUNT                         = 261;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -278,6 +279,32 @@ const uint BUILTIN_ARRAY_PROTO_FINDINDEX = 184;
 const uint BUILTIN_ARRAY_PROTO_INCLUDES  = 185;
 const uint BUILTIN_ARRAY_PROTO_AT        = 186;
 const uint BUILTIN_ARRAY_PROTO_COPYWITHIN = 187;
+const uint BUILTIN_DATE_PROTO_GETUTCFULLYEAR = 235;
+const uint BUILTIN_DATE_PROTO_GETUTCMONTH    = 236;
+const uint BUILTIN_DATE_PROTO_GETUTCDATE     = 237;
+const uint BUILTIN_DATE_PROTO_GETUTCDAY      = 238;
+const uint BUILTIN_DATE_PROTO_GETUTCHOURS    = 239;
+const uint BUILTIN_DATE_PROTO_GETUTCMINUTES  = 240;
+const uint BUILTIN_DATE_PROTO_GETUTCSECONDS  = 241;
+const uint BUILTIN_DATE_PROTO_GETUTCMILLISECONDS = 242;
+const uint BUILTIN_DATE_PROTO_SETTIME        = 243;
+const uint BUILTIN_DATE_PROTO_SETMILLISECONDS = 244;
+const uint BUILTIN_DATE_PROTO_SETSECONDS     = 245;
+const uint BUILTIN_DATE_PROTO_SETMINUTES     = 246;
+const uint BUILTIN_DATE_PROTO_SETHOURS       = 247;
+const uint BUILTIN_DATE_PROTO_SETDATE        = 248;
+const uint BUILTIN_DATE_PROTO_SETMONTH       = 249;
+const uint BUILTIN_DATE_PROTO_SETFULLYEAR    = 250;
+const uint BUILTIN_DATE_PROTO_SETUTCMILLISECONDS = 251;
+const uint BUILTIN_DATE_PROTO_SETUTCSECONDS  = 252;
+const uint BUILTIN_DATE_PROTO_SETUTCMINUTES  = 253;
+const uint BUILTIN_DATE_PROTO_SETUTCHOURS    = 254;
+const uint BUILTIN_DATE_PROTO_SETUTCDATE     = 255;
+const uint BUILTIN_DATE_PROTO_SETUTCMONTH    = 256;
+const uint BUILTIN_DATE_PROTO_SETUTCFULLYEAR = 257;
+const uint BUILTIN_DATE_PROTO_TOISOSTRING    = 258;
+const uint BUILTIN_DATE_PROTO_TOUTCSTRING    = 259;
+const uint BUILTIN_DATE_PROTO_TOGMTSTRING    = 260;
 
 struct BuiltinContext {
     void* vm;
@@ -6079,6 +6106,241 @@ fn bool array_strict_equals(TVal a, TVal b) {
     return false;
 }
 
+/// Metadata for LIGHTFUNC builtins: name and expected arity.
+/// Used by GETPROP to resolve `.name` and `.length` on LIGHTFUNC values.
+struct BuiltinMeta {
+    char[] name;
+    int arity;
+}
+
+fn BuiltinMeta builtin_get_metadata(uint idx) {
+    switch (idx) {
+        case 0:  return { "print", 1 };
+        case 1:  return { "log", 1 };
+        case 2:  return { "parseInt", 2 };
+        case 3:  return { "parseFloat", 1 };
+        case 4:  return { "isNaN", 1 };
+        case 5:  return { "isFinite", 1 };
+        case 6:  return { "Error", 1 };
+        case 7:  return { "TypeError", 1 };
+        case 8:  return { "RangeError", 1 };
+        case 9:  return { "ReferenceError", 1 };
+        case 10: return { "SyntaxError", 1 };
+        case 11: return { "EvalError", 1 };
+        case 12: return { "toString", 0 };
+        case 13: return { "Boolean", 1 };
+        case 14: return { "toString", 0 };
+        case 15: return { "valueOf", 0 };
+        case 16: return { "String", 1 };
+        case 17: return { "toString", 0 };
+        case 18: return { "valueOf", 0 };
+        case 19: return { "Number", 1 };
+        case 20: return { "toString", 0 };
+        case 21: return { "valueOf", 0 };
+        case 22: return { "Object", 1 };
+        case 23: return { "toString", 0 };
+        case 24: return { "valueOf", 0 };
+        case 25: return { "Array", 0 };
+        case 26: return { "abs", 1 };
+        case 27: return { "floor", 1 };
+        case 28: return { "ceil", 1 };
+        case 29: return { "round", 1 };
+        case 30: return { "max", 2 };
+        case 31: return { "min", 2 };
+        case 32: return { "pow", 2 };
+        case 33: return { "sqrt", 1 };
+        case 34: return { "exp", 1 };
+        case 35: return { "log", 1 };
+        case 36: return { "sin", 1 };
+        case 37: return { "cos", 1 };
+        case 38: return { "tan", 1 };
+        case 39: return { "random", 0 };
+        case 40: return { "charAt", 1 };
+        case 41: return { "charCodeAt", 1 };
+        case 42: return { "indexOf", 2 };
+        case 43: return { "slice", 2 };
+        case 44: return { "substring", 2 };
+        case 45: return { "substr", 2 };
+        case 46: return { "toUpperCase", 0 };
+        case 47: return { "toLowerCase", 0 };
+        case 48: return { "trim", 0 };
+        case 49: return { "split", 2 };
+        case 50: return { "concat", 1 };
+        case 51: return { "replace", 2 };
+        case 52: return { "toString", 0 };
+        case 53: return { "join", 1 };
+        case 54: return { "pop", 0 };
+        case 55: return { "push", 1 };
+        case 56: return { "reverse", 0 };
+        case 57: return { "shift", 0 };
+        case 58: return { "slice", 2 };
+        case 59: return { "sort", 1 };
+        case 60: return { "splice", 2 };
+        case 61: return { "unshift", 1 };
+        case 62: return { "indexOf", 2 };
+        case 63: return { "lastIndexOf", 2 };
+        case 64: return { "concat", 1 };
+        case 73: return { "toFixed", 1 };
+        case 74: return { "toExponential", 1 };
+        case 75: return { "toPrecision", 1 };
+        case 77: return { "call", 1 };
+        case 78: return { "apply", 2 };
+        case 79: return { "bind", 1 };
+        case 80: return { "bind", 1 };
+        case 81: return { "eval", 1 };
+        case 82: return { "parse", 2 };
+        case 83: return { "stringify", 3 };
+        case 84: return { "Date", 7 };
+        case 85: return { "now", 0 };
+        case 86: return { "UTC", 7 };
+        case 87: return { "parse", 1 };
+        case 88: return { "toString", 0 };
+        case 89: return { "toJSON", 1 };
+        case 90: return { "valueOf", 0 };
+        case 91: return { "getTime", 0 };
+        case 92: return { "getFullYear", 0 };
+        case 93: return { "getMonth", 0 };
+        case 94: return { "getDate", 0 };
+        case 95: return { "getDay", 0 };
+        case 96: return { "getHours", 0 };
+        case 97: return { "getMinutes", 0 };
+        case 98: return { "getSeconds", 0 };
+        case 99: return { "getMilliseconds", 0 };
+        case 101: return { "Function", 1 };
+        case 103: return { "RegExp", 2 };
+        case 104: return { "test", 1 };
+        case 105: return { "exec", 1 };
+        case 106: return { "toString", 0 };
+        case 107: return { "isPrototypeOf", 1 };
+        case 108: return { "hasOwnProperty", 1 };
+        case 109: return { "propertyIsEnumerable", 1 };
+        case 112: return { "Map", 0 };
+        case 113: return { "set", 2 };
+        case 114: return { "get", 1 };
+        case 115: return { "has", 1 };
+        case 116: return { "delete", 1 };
+        case 117: return { "clear", 0 };
+        case 118: return { "keys", 0 };
+        case 119: return { "values", 0 };
+        case 120: return { "entries", 0 };
+        case 121: return { "forEach", 1 };
+        case 122: return { "Set", 0 };
+        case 123: return { "add", 1 };
+        case 124: return { "has", 1 };
+        case 125: return { "delete", 1 };
+        case 126: return { "clear", 0 };
+        case 127: return { "keys", 0 };
+        case 128: return { "values", 0 };
+        case 129: return { "entries", 0 };
+        case 130: return { "forEach", 1 };
+        case 131: return { "WeakMap", 0 };
+        case 132: return { "set", 2 };
+        case 133: return { "get", 1 };
+        case 134: return { "has", 1 };
+        case 135: return { "delete", 1 };
+        case 136: return { "WeakSet", 0 };
+        case 137: return { "add", 1 };
+        case 138: return { "has", 1 };
+        case 139: return { "delete", 1 };
+        case 140: return { "Symbol", 1 };
+        case 141: return { "for", 1 };
+        case 142: return { "keyFor", 1 };
+        case 143: return { "toString", 0 };
+        case 144: return { "valueOf", 0 };
+        case 145: return { "Promise", 1 };
+        case 146: return { "then", 2 };
+        case 147: return { "catch", 1 };
+        case 148: return { "finally", 1 };
+        case 149: return { "resolve", 1 };
+        case 150: return { "reject", 1 };
+        case 151: return { "all", 1 };
+        case 152: return { "race", 1 };
+        case 153: return { "Function", 1 };
+        case 154: return { "next", 1 };
+        case 155: return { "throw", 1 };
+        case 156: return { "return", 1 };
+        case 157: return { "keys", 1 };
+        case 158: return { "getPrototypeOf", 1 };
+        case 159: return { "isExtensible", 1 };
+        case 160: return { "preventExtensions", 1 };
+        case 161: return { "getOwnPropertyDescriptor", 2 };
+        case 162: return { "defineProperty", 3 };
+        case 163: return { "getOwnPropertyNames", 1 };
+        case 164: return { "defineProperties", 2 };
+        case 165: return { "create", 1 };
+        case 166: return { "seal", 1 };
+        case 167: return { "freeze", 1 };
+        case 168: return { "isSealed", 1 };
+        case 169: return { "isFrozen", 1 };
+        case 170: return { "includes", 2 };
+        case 171: return { "startsWith", 2 };
+        case 172: return { "endsWith", 2 };
+        case 173: return { "repeat", 1 };
+        case 174: return { "trimStart", 0 };
+        case 175: return { "trimEnd", 0 };
+        case 176: return { "codePointAt", 1 };
+        case 177: return { "at", 1 };
+        case 178: return { "padStart", 2 };
+        case 179: return { "padEnd", 2 };
+        case 180: return { "lastIndexOf", 2 };
+        case 181: return { "of", 0 };
+        case 182: return { "fill", 1 };
+        case 183: return { "find", 1 };
+        case 184: return { "findIndex", 1 };
+        case 185: return { "includes", 1 };
+        case 186: return { "at", 1 };
+        case 187: return { "copyWithin", 1 };
+        case 188: return { "entries", 1 };
+        case 189: return { "values", 1 };
+        case 190: return { "assign", 2 };
+        case 191: return { "isNaN", 1 };
+        case 192: return { "isFinite", 1 };
+        case 193: return { "isInteger", 1 };
+        case 194: return { "isSafeInteger", 1 };
+        case 195: return { "acos", 1 };
+        case 196: return { "asin", 1 };
+        case 197: return { "atan", 1 };
+        case 198: return { "atan2", 2 };
+        case 199: return { "cosh", 1 };
+        case 200: return { "sinh", 1 };
+        case 201: return { "tanh", 1 };
+        case 202: return { "acosh", 1 };
+        case 203: return { "asinh", 1 };
+        case 204: return { "atanh", 1 };
+        case 205: return { "log2", 1 };
+        case 206: return { "log10", 1 };
+        case 207: return { "log1p", 1 };
+        case 208: return { "expm1", 1 };
+        case 209: return { "cbrt", 1 };
+        case 210: return { "hypot", 2 };
+        case 211: return { "trunc", 1 };
+        case 212: return { "sign", 1 };
+        case 213: return { "fround", 1 };
+        case 214: return { "clz32", 1 };
+        case 215: return { "imul", 2 };
+        case 216: return { "isArray", 1 };
+        case 217: return { "fromCharCode", 1 };
+        case 218: return { "is", 2 };
+        case 219: return { "hasOwn", 2 };
+        case 220: return { "setPrototypeOf", 2 };
+        case 221: return { "flat", 0 };
+        case 222: return { "flatMap", 1 };
+        case 223: return { "fromCodePoint", 1 };
+        case 224: return { "encodeURI", 1 };
+        case 225: return { "encodeURIComponent", 1 };
+        case 226: return { "decodeURI", 1 };
+        case 227: return { "decodeURIComponent", 1 };
+        case 228: return { "URIError", 1 };
+        case 229: return { "toReversed", 0 };
+        case 230: return { "toSorted", 1 };
+        case 231: return { "toSpliced", 2 };
+        case 232: return { "with", 2 };
+        case 233: return { "match", 1 };
+        case 234: return { "search", 1 };
+        default: return { "", -1 };
+    }
+}
+
 /// Helper: register a method on Array.prototype.
 fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uint fn_index) {
     uint hash = heap.hash_string(name);
@@ -9244,6 +9506,511 @@ fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
     ctx.result.set_fastint(ms);
 }
 
+/// Helper: break a time value into UTC time components via gmtime_r.
+fn void date_break_time_utc(double time_val, long* year, long* month, long* day,
+                            long* wday, long* hour, long* minute, long* second) {
+    if (math::is_nan(time_val)) {
+        *year = *month = *day = *wday = *hour = *minute = *second = 0;
+        return;
+    }
+    long t_sec = (long)(time_val / 1000.0);
+    Tm result;
+    libc::gmtime_r(&t_sec, &result);
+    *year   = (long)(result.tm_year) + 1900L;
+    *month  = (long)(result.tm_mon);
+    *day    = (long)(result.tm_mday);
+    *wday   = (long)(result.tm_wday);
+    *hour   = result.tm_hour;
+    *minute = result.tm_min;
+    *second = result.tm_sec;
+}
+
+/// Helper: convert UTC time components to epoch ms (no timezone adjustment).
+fn double date_utc_to_ms(long year, long month, long day,
+                         long hour, long minute, long second, long ms) {
+    long y = year;
+    long m = month + 1;  // JS months are 0-based, calculation uses 1-based
+    if (m < 3) { y--; m += 12; }
+    long era = (y >= 0 ? y : y - 399) / 400;
+    long yoe = y - era * 400;
+    long doy = (153 * (m - 3) + 2) / 5 + day - 1;
+    long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long epoch_day = era * 146097 + doe - 719468;
+    double t = (double)epoch_day * 86400000.0;
+    t += (double)hour * 3600000.0 + (double)minute * 60000.0 + (double)second * 1000.0 + (double)ms;
+    return t;
+}
+
+/// Helper: TimeClip — clamp time value to ±8.64e15 ms per ES5 §15.9.1.14.
+fn double date_time_clip(double t) {
+    if (math::is_nan(t)) return t;
+    if (t > 8.64e15 || t < -8.64e15) return double::nan;
+    return t;
+}
+
+/// Helper: set the ms value on a Date object.
+fn void date_set_ms(HObject* obj, double new_ms) {
+    obj.primitive_value.set_number(new_ms);
+}
+
+/// Date.prototype.getTimezoneOffset() — ES5 §15.9.5.26
+fn void builtin_date_proto_getTimezoneOffset(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    // local and UTC components
+    long ly, lm, ld, lwday, lh, lmin, lsec;
+    long uy, um, ud, uwday, uh, umin, usec;
+    date_break_time(tv, &ly, &lm, &ld, &lwday, &lh, &lmin, &lsec);
+    date_break_time_utc(tv, &uy, &um, &ud, &uwday, &uh, &umin, &usec);
+    double local_ms = date_local_to_ms(ly, lm, ld, lh, lmin, lsec, 0);
+    double utc_ms   = date_utc_to_ms(uy, um, ud, uh, umin, usec, 0);
+    long offset = (long)((local_ms - utc_ms) / 60000.0);
+    ctx.result.set_fastint(offset);
+}
+
+/// Date.prototype.getUTCFullYear() — ES5 §15.9.5.41
+fn void builtin_date_proto_getUTCFullYear(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(year);
+}
+
+/// Date.prototype.getUTCMonth() — ES5 §15.9.5.42
+fn void builtin_date_proto_getUTCMonth(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(month);
+}
+
+/// Date.prototype.getUTCDate() — ES5 §15.9.5.43
+fn void builtin_date_proto_getUTCDate(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(day);
+}
+
+/// Date.prototype.getUTCDay() — ES5 §15.9.5.44
+fn void builtin_date_proto_getUTCDay(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(wday);
+}
+
+/// Date.prototype.getUTCHours() — ES5 §15.9.5.45
+fn void builtin_date_proto_getUTCHours(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(hour);
+}
+
+/// Date.prototype.getUTCMinutes() — ES5 §15.9.5.46
+fn void builtin_date_proto_getUTCMinutes(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(min);
+}
+
+/// Date.prototype.getUTCSeconds() — ES5 §15.9.5.47
+fn void builtin_date_proto_getUTCSeconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    ctx.result.set_fastint(sec);
+}
+
+/// Date.prototype.getUTCMilliseconds() — ES5 §15.9.5.48
+fn void builtin_date_proto_getUTCMilliseconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    long ms = (long)tv % 1000;
+    if (ms < 0) ms += 1000;
+    ctx.result.set_fastint(ms);
+}
+
+/// Date.prototype.setTime(time) — ES5 §15.9.5.27
+fn void builtin_date_proto_setTime(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double t = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    double clipped = date_time_clip(t);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setMilliseconds(ms) — ES5 §15.9.5.28
+fn void builtin_date_proto_setMilliseconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double ms = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(ms)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_local_to_ms(year, month, day, hour, min, sec, (long)ms);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setSeconds(sec[, ms]) — ES5 §15.9.5.29
+fn void builtin_date_proto_setSeconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double sec_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    double ms_arg  = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (long)tv % 1000;
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_local_to_ms(year, month, day, hour, min, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setMinutes(min[, sec[, ms]]) — ES5 §15.9.5.30
+fn void builtin_date_proto_setMinutes(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double min_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
+    long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
+    double sec_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)sec_cur;
+    double ms_arg  = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)ms_cur;
+    if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_local_to_ms(year, month, day, hour, (long)min_arg, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setHours(hour[, min[, sec[, ms]]]) — ES5 §15.9.5.31
+fn void builtin_date_proto_setHours(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double hour_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long min_cur = (long)tv / 60000 % 60; if (min_cur < 0) min_cur += 60;
+    long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
+    long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
+    double min_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)min_cur;
+    double sec_arg = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)sec_cur;
+    double ms_arg  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : (double)ms_cur;
+    if (math::is_nan(hour_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_local_to_ms(year, month, day, (long)hour_arg, (long)min_arg, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setDate(date) — ES5 §15.9.5.32
+fn void builtin_date_proto_setDate(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double date_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_local_to_ms(year, month, (long)date_arg, hour, min, sec, (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setMonth(month[, date]) — ES5 §15.9.5.33
+fn void builtin_date_proto_setMonth(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double month_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double date_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)day;
+    if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    double new_ms = date_local_to_ms(year, (long)month_arg, (long)date_arg, hour, min, sec, (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setFullYear(year[, month[, date]]) — ES5 §15.9.5.40
+fn void builtin_date_proto_setFullYear(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    double year_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(year_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long y, m, d, wday, h, min, s;
+    if (math::is_nan(tv)) { y = 1970; m = 0; d = 1; h = 0; min = 0; s = 0; }
+    else { date_break_time(tv, &y, &m, &d, &wday, &h, &min, &s); }
+    double month_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)m;
+    double date_arg  = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)d;
+    double new_ms = date_local_to_ms((long)year_arg, (long)month_arg, (long)date_arg, h, min, s, math::is_nan(tv) ? 0 : (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCMilliseconds(ms) — ES5 §15.9.5.49
+fn void builtin_date_proto_setUTCMilliseconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double ms = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(ms)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_utc_to_ms(year, month, day, hour, min, sec, (long)ms);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCSeconds(sec[, ms]) — ES5 §15.9.5.50
+fn void builtin_date_proto_setUTCSeconds(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double sec_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    double ms_arg  = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (long)tv % 1000;
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_utc_to_ms(year, month, day, hour, min, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCMinutes(min[, sec[, ms]]) — ES5 §15.9.5.51
+fn void builtin_date_proto_setUTCMinutes(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double min_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
+    long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
+    double sec_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)sec_cur;
+    double ms_arg  = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)ms_cur;
+    if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_utc_to_ms(year, month, day, hour, (long)min_arg, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCHours(hour[, min[, sec[, ms]]]) — ES5 §15.9.5.52
+fn void builtin_date_proto_setUTCHours(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double hour_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long min_cur = (long)tv / 60000 % 60; if (min_cur < 0) min_cur += 60;
+    long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
+    long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
+    double min_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)min_cur;
+    double sec_arg = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)sec_cur;
+    double ms_arg  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : (double)ms_cur;
+    if (math::is_nan(hour_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_utc_to_ms(year, month, day, (long)hour_arg, (long)min_arg, (long)sec_arg, (long)ms_arg);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCDate(date) — ES5 §15.9.5.53
+fn void builtin_date_proto_setUTCDate(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double date_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double new_ms = date_utc_to_ms(year, month, (long)date_arg, hour, min, sec, (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCMonth(month[, date]) — ES5 §15.9.5.54
+fn void builtin_date_proto_setUTCMonth(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
+    double month_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    double date_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)day;
+    if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    double new_ms = date_utc_to_ms(year, (long)month_arg, (long)date_arg, hour, min, sec, (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Date.prototype.setUTCFullYear(year[, month[, date]]) — ES5 §15.9.5.55
+fn void builtin_date_proto_setUTCFullYear(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
+    double tv = date_get_time_value(&this_val);
+    double year_arg = (ctx.argc > 0) ? ctx.regs[ctx.base_reg].get_number_or_fastint() : double::nan;
+    if (math::is_nan(year_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    long y, m, d, wday, h, min, s;
+    if (math::is_nan(tv)) { y = 1970; m = 0; d = 1; h = 0; min = 0; s = 0; }
+    else { date_break_time_utc(tv, &y, &m, &d, &wday, &h, &min, &s); }
+    double month_arg = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1].get_number_or_fastint() : (double)m;
+    double date_arg  = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : (double)d;
+    double new_ms = date_utc_to_ms((long)year_arg, (long)month_arg, (long)date_arg, h, min, s, math::is_nan(tv) ? 0 : (long)tv % 1000);
+    double clipped = date_time_clip(new_ms);
+    date_set_ms(obj, clipped);
+    ctx.result.set_number(clipped);
+}
+
+/// Helper: pad integer to 2 digits
+fn void date_pad2(char* buf, long val) {
+    if (val < 10) { buf[0] = '0'; buf[1] = (char)(val + 48); }
+    else { buf[0] = (char)(val / 10 + 48); buf[1] = (char)(val % 10 + 48); }
+}
+
+/// Helper: pad integer to 4 digits
+fn void date_pad4(char* buf, long val) {
+    buf[0] = (char)(val / 1000 + 48);
+    buf[1] = (char)(val / 100 % 10 + 48);
+    buf[2] = (char)(val / 10 % 10 + 48);
+    buf[3] = (char)(val % 10 + 48);
+}
+
+/// Date.prototype.toISOString() — ES5 §15.9.5.41
+fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_string(builtin_intern_string(ctx.heap, "Invalid Date")); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    long ms = (long)tv % 1000; if (ms < 0) ms += 1000;
+    char[24] buf;
+    date_pad4(&buf[0], year);
+    buf[4] = '-';
+    date_pad2(&buf[5], month + 1);
+    buf[7] = '-';
+    date_pad2(&buf[8], day);
+    buf[10] = 'T';
+    date_pad2(&buf[11], hour);
+    buf[13] = ':';
+    date_pad2(&buf[14], min);
+    buf[16] = ':';
+    date_pad2(&buf[17], sec);
+    buf[19] = '.';
+    buf[20] = (char)(ms / 100 + 48);
+    buf[21] = (char)(ms / 10 % 10 + 48);
+    buf[22] = (char)(ms % 10 + 48);
+    buf[23] = 'Z';
+    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:24]));
+}
+
+/// Date.prototype.toUTCString() — ES5 §15.9.5.44
+fn void builtin_date_proto_toUTCString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double tv = date_get_time_value(&this_val);
+    if (math::is_nan(tv)) { ctx.result.set_string(builtin_intern_string(ctx.heap, "Invalid Date")); return; }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
+    char[7][] day_names = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    char[7][] mon_names = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    char[32] buf;
+    // "Thu, 01 Jan 1970 00:00:00 GMT"
+    buf[0] = day_names[wday][0]; buf[1] = day_names[wday][1]; buf[2] = day_names[wday][2];
+    buf[3] = ','; buf[4] = ' ';
+    date_pad2(&buf[5], day);
+    buf[7] = ' ';
+    buf[8] = mon_names[month][0]; buf[9] = mon_names[month][1]; buf[10] = mon_names[month][2];
+    buf[11] = ' ';
+    date_pad4(&buf[12], year);
+    buf[16] = ' ';
+    date_pad2(&buf[17], hour);
+    buf[19] = ':';
+    date_pad2(&buf[20], min);
+    buf[22] = ':';
+    date_pad2(&buf[23], sec);
+    buf[25] = ' '; buf[26] = 'G'; buf[27] = 'M'; buf[28] = 'T';
+    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:29]));
+}
+
 // ============================================================================
 // RegExp constructor builtins
 // ============================================================================
@@ -12379,6 +13146,60 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_date_proto_getSeconds(ctx);
         case BUILTIN_DATE_PROTO_GETMILLISECONDS:
             builtin_date_proto_getMilliseconds(ctx);
+        case BUILTIN_DATE_PROTO_GETTIMEZONEOFFSET:
+            builtin_date_proto_getTimezoneOffset(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCFULLYEAR:
+            builtin_date_proto_getUTCFullYear(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCMONTH:
+            builtin_date_proto_getUTCMonth(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCDATE:
+            builtin_date_proto_getUTCDate(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCDAY:
+            builtin_date_proto_getUTCDay(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCHOURS:
+            builtin_date_proto_getUTCHours(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCMINUTES:
+            builtin_date_proto_getUTCMinutes(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCSECONDS:
+            builtin_date_proto_getUTCSeconds(ctx);
+        case BUILTIN_DATE_PROTO_GETUTCMILLISECONDS:
+            builtin_date_proto_getUTCMilliseconds(ctx);
+        case BUILTIN_DATE_PROTO_SETTIME:
+            builtin_date_proto_setTime(ctx);
+        case BUILTIN_DATE_PROTO_SETMILLISECONDS:
+            builtin_date_proto_setMilliseconds(ctx);
+        case BUILTIN_DATE_PROTO_SETSECONDS:
+            builtin_date_proto_setSeconds(ctx);
+        case BUILTIN_DATE_PROTO_SETMINUTES:
+            builtin_date_proto_setMinutes(ctx);
+        case BUILTIN_DATE_PROTO_SETHOURS:
+            builtin_date_proto_setHours(ctx);
+        case BUILTIN_DATE_PROTO_SETDATE:
+            builtin_date_proto_setDate(ctx);
+        case BUILTIN_DATE_PROTO_SETMONTH:
+            builtin_date_proto_setMonth(ctx);
+        case BUILTIN_DATE_PROTO_SETFULLYEAR:
+            builtin_date_proto_setFullYear(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCMILLISECONDS:
+            builtin_date_proto_setUTCMilliseconds(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCSECONDS:
+            builtin_date_proto_setUTCSeconds(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCMINUTES:
+            builtin_date_proto_setUTCMinutes(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCHOURS:
+            builtin_date_proto_setUTCHours(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCDATE:
+            builtin_date_proto_setUTCDate(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCMONTH:
+            builtin_date_proto_setUTCMonth(ctx);
+        case BUILTIN_DATE_PROTO_SETUTCFULLYEAR:
+            builtin_date_proto_setUTCFullYear(ctx);
+        case BUILTIN_DATE_PROTO_TOISOSTRING:
+            builtin_date_proto_toISOString(ctx);
+        case BUILTIN_DATE_PROTO_TOUTCSTRING:
+            builtin_date_proto_toUTCString(ctx);
+        case BUILTIN_DATE_PROTO_TOGMTSTRING:
+            builtin_date_proto_toUTCString(ctx);
         case BUILTIN_REGEXP:
             builtin_regexp(ctx);
         case BUILTIN_REGEXP_PROTO_TEST:
@@ -13817,6 +14638,87 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add Date.prototype.getMilliseconds()
     if (!register_string_proto_method(proto, heap, "getMilliseconds", BUILTIN_DATE_PROTO_GETMILLISECONDS)) return false;
+
+    // Add Date.prototype.getTimezoneOffset()
+    if (!register_string_proto_method(proto, heap, "getTimezoneOffset", BUILTIN_DATE_PROTO_GETTIMEZONEOFFSET)) return false;
+
+    // Add Date.prototype.getUTCFullYear()
+    if (!register_string_proto_method(proto, heap, "getUTCFullYear", BUILTIN_DATE_PROTO_GETUTCFULLYEAR)) return false;
+
+    // Add Date.prototype.getUTCMonth()
+    if (!register_string_proto_method(proto, heap, "getUTCMonth", BUILTIN_DATE_PROTO_GETUTCMONTH)) return false;
+
+    // Add Date.prototype.getUTCDate()
+    if (!register_string_proto_method(proto, heap, "getUTCDate", BUILTIN_DATE_PROTO_GETUTCDATE)) return false;
+
+    // Add Date.prototype.getUTCDay()
+    if (!register_string_proto_method(proto, heap, "getUTCDay", BUILTIN_DATE_PROTO_GETUTCDAY)) return false;
+
+    // Add Date.prototype.getUTCHours()
+    if (!register_string_proto_method(proto, heap, "getUTCHours", BUILTIN_DATE_PROTO_GETUTCHOURS)) return false;
+
+    // Add Date.prototype.getUTCMinutes()
+    if (!register_string_proto_method(proto, heap, "getUTCMinutes", BUILTIN_DATE_PROTO_GETUTCMINUTES)) return false;
+
+    // Add Date.prototype.getUTCSeconds()
+    if (!register_string_proto_method(proto, heap, "getUTCSeconds", BUILTIN_DATE_PROTO_GETUTCSECONDS)) return false;
+
+    // Add Date.prototype.getUTCMilliseconds()
+    if (!register_string_proto_method(proto, heap, "getUTCMilliseconds", BUILTIN_DATE_PROTO_GETUTCMILLISECONDS)) return false;
+
+    // Add Date.prototype.setTime()
+    if (!register_string_proto_method(proto, heap, "setTime", BUILTIN_DATE_PROTO_SETTIME)) return false;
+
+    // Add Date.prototype.setMilliseconds()
+    if (!register_string_proto_method(proto, heap, "setMilliseconds", BUILTIN_DATE_PROTO_SETMILLISECONDS)) return false;
+
+    // Add Date.prototype.setSeconds()
+    if (!register_string_proto_method(proto, heap, "setSeconds", BUILTIN_DATE_PROTO_SETSECONDS)) return false;
+
+    // Add Date.prototype.setMinutes()
+    if (!register_string_proto_method(proto, heap, "setMinutes", BUILTIN_DATE_PROTO_SETMINUTES)) return false;
+
+    // Add Date.prototype.setHours()
+    if (!register_string_proto_method(proto, heap, "setHours", BUILTIN_DATE_PROTO_SETHOURS)) return false;
+
+    // Add Date.prototype.setDate()
+    if (!register_string_proto_method(proto, heap, "setDate", BUILTIN_DATE_PROTO_SETDATE)) return false;
+
+    // Add Date.prototype.setMonth()
+    if (!register_string_proto_method(proto, heap, "setMonth", BUILTIN_DATE_PROTO_SETMONTH)) return false;
+
+    // Add Date.prototype.setFullYear()
+    if (!register_string_proto_method(proto, heap, "setFullYear", BUILTIN_DATE_PROTO_SETFULLYEAR)) return false;
+
+    // Add Date.prototype.setUTCMilliseconds()
+    if (!register_string_proto_method(proto, heap, "setUTCMilliseconds", BUILTIN_DATE_PROTO_SETUTCMILLISECONDS)) return false;
+
+    // Add Date.prototype.setUTCSeconds()
+    if (!register_string_proto_method(proto, heap, "setUTCSeconds", BUILTIN_DATE_PROTO_SETUTCSECONDS)) return false;
+
+    // Add Date.prototype.setUTCMinutes()
+    if (!register_string_proto_method(proto, heap, "setUTCMinutes", BUILTIN_DATE_PROTO_SETUTCMINUTES)) return false;
+
+    // Add Date.prototype.setUTCHours()
+    if (!register_string_proto_method(proto, heap, "setUTCHours", BUILTIN_DATE_PROTO_SETUTCHOURS)) return false;
+
+    // Add Date.prototype.setUTCDate()
+    if (!register_string_proto_method(proto, heap, "setUTCDate", BUILTIN_DATE_PROTO_SETUTCDATE)) return false;
+
+    // Add Date.prototype.setUTCMonth()
+    if (!register_string_proto_method(proto, heap, "setUTCMonth", BUILTIN_DATE_PROTO_SETUTCMONTH)) return false;
+
+    // Add Date.prototype.setUTCFullYear()
+    if (!register_string_proto_method(proto, heap, "setUTCFullYear", BUILTIN_DATE_PROTO_SETUTCFULLYEAR)) return false;
+
+    // Add Date.prototype.toISOString()
+    if (!register_string_proto_method(proto, heap, "toISOString", BUILTIN_DATE_PROTO_TOISOSTRING)) return false;
+
+    // Add Date.prototype.toUTCString()
+    if (!register_string_proto_method(proto, heap, "toUTCString", BUILTIN_DATE_PROTO_TOUTCSTRING)) return false;
+
+    // Add Date.prototype.toGMTString() (alias for toUTCString)
+    if (!register_string_proto_method(proto, heap, "toGMTString", BUILTIN_DATE_PROTO_TOGMTSTRING)) return false;
 
     // Register Date as a global constructor (proper function object for static methods)
     HObject*? date_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
