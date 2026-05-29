@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
 | Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 7,621 |
-| Currently failing (test262) | 22,825 |
-| Pass rate (of run tests) | 25.0% |
+| Currently passing (test262) | 9,652 |
+| Currently failing (test262) | 20,794 |
+| Pass rate (of run tests) | 31.7% |
 
 ## Refreshing test pass rate
 
@@ -32,25 +32,25 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 | Phase | Total | Pass | Fail | Skip |
 |-------|-------|------|------|------|
-| 0-1: Core VM | 2,185 | 564 | 563 | 1,058 |
-| 1: Calling Convention | 426 | 21 | 321 | 84 |
-| 2: Basic Operators | 1,969 | 409 | 1,003 | 557 |
-| 3: Object System | 7,766 | 1,969 | 5,009 | 788 |
-| 4: Error Handling | 402 | 66 | 272 | 64 |
-| 5: Built-in Constructors | 8,615 | 2,436 | 5,696 | 483 |
-| 6: Prototype Methods | 4,713 | 1,065 | 3,342 | 306 |
-| 7: ES5 Features | 1,240 | 194 | 419 | 627 |
-| 8: ES5 Built-in Objects | 2,747 | 552 | 1,907 | 288 |
-| 11: Arrow/Templates | 427 | 58 | 229 | 140 |
+| 0-1: Core VM | 2,185 | 589 | 538 | 1,058 |
+| 1: Calling Convention | 426 | 25 | 317 | 84 |
+| 2: Basic Operators | 1,969 | 411 | 1,001 | 557 |
+| 3: Object System | 7,766 | 2,729 | 4,249 | 788 |
+| 4: Error Handling | 402 | 67 | 271 | 64 |
+| 5: Built-in Constructors | 8,615 | 3,253 | 4,879 | 483 |
+| 6: Prototype Methods | 4,713 | 1,216 | 3,191 | 306 |
+| 7: ES5 Features | 1,240 | 195 | 418 | 627 |
+| 8: ES5 Built-in Objects | 2,747 | 669 | 1,790 | 288 |
+| 11: Arrow/Templates | 427 | 61 | 226 | 140 |
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
-| 15: Classes | 8,520 | 145 | 2,150 | 6,225 |
-| 17-20: Map/Set/Symbol/Promise | 1,588 | 134 | 851 | 603 |
-| 21: Generators | 619 | 5 | 484 | 130 |
-| **Overall** | **30,446** | **7,621** | **22,825** | **11,541** |
+| 15: Classes | 8,520 | 203 | 2,092 | 6,225 |
+| 17-20: Map/Set/Symbol/Promise | 1,588 | 220 | 765 | 603 |
+| 21: Generators | 619 | 11 | 478 | 130 |
+| **Overall** | **30,446** | **9,652** | **20,794** | **11,541** |
 
 ### Phase 0-1: Core VM
-**test262: 2,185 files — 564 pass / 563 fail (skip: 1,058)**
+**test262: 2,185 files — 589 pass / 538 fail (skip: 1,058)**
 | Component | Status |
 |---|---|
 | TVal tagged values | ✅ |
@@ -62,7 +62,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | Built-in print/console.log | ✅ |
 
 ### Phase 1: Calling Convention & Closures
-**test262: 426 files — 21 pass / 321 fail (skip: 84)**
+**test262: 426 files — 25 pass / 317 fail (skip: 84)**
 | Component | Status |
 |---|---|
 | Register-based call convention | ✅ |
@@ -71,7 +71,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | Nested calls | ✅ |
 
 ### Phase 2: Basic Operators
-**test262: 1,969 files — 409 pass / 1,003 fail (skip: 557)**
+**test262: 1,969 files — 411 pass / 1,001 fail (skip: 557)**
 | Component | Status |
 |---|---|
 | Addition (+) | ✅ |
@@ -97,7 +97,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | NaN semantics | ✅ |
 
 ### Phase 3: Object System
-**test262: 7,766 files — 1,969 pass / 5,009 fail (skip: 788)**
+**test262: 7,766 files — 2,729 pass / 4,249 fail (skip: 788)**
 | Component | Status |
 |---|---|
 | Object literals | ✅ |
@@ -110,7 +110,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | Member LHS assignment | ✅ |
 
 ### Phase 4: Error Handling & References
-**test262: 402 files — 66 pass / 272 fail (skip: 64)**
+**test262: 402 files — 67 pass / 271 fail (skip: 64)**
 | Component | Status |
 |---|---|
 | Error constructors | ✅ |
@@ -123,7 +123,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | FINALLY block support | ✅ |
 
 ### Phase 5: Built-in Constructors
-**test262: 8,615 files — 2,436 pass / 5,696 fail (skip: 483)**
+**test262: 8,615 files — 3,253 pass / 4,879 fail (skip: 483)**
 | Component | Status |
 |---|---|
 | Boolean constructor | ✅ |
@@ -148,7 +148,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | Function constructor | ✅ |
 
 ### Phase 6: Built-in Prototype Methods
-**test262: 4,713 files — 1,065 pass / 3,342 fail (skip: 306)**
+**test262: 4,713 files — 1,216 pass / 3,191 fail (skip: 306)**
 | Component | Status |
 |---|---|
 | Math methods | ✅ |
@@ -159,7 +159,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | Function.prototype | ✅ |
 
 ### Phase 7: Remaining ES5 Features
-**test262: 1,240 files — 194 pass / 419 fail (skip: 627)**
+**test262: 1,240 files — 195 pass / 418 fail (skip: 627)**
 | Feature | Files | Pass | Fail |
 |---|---|---|---|
 | instanceof | 43 | 16 | 27 |
@@ -184,7 +184,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | eval | ✅ |
 
 ### Phase 8: ES5 Built-in Objects
-**test262: 2,747 files — 552 pass / 1,907 fail (skip: 288)**
+**test262: 2,747 files — 669 pass / 1,790 fail (skip: 288)**
 | Component | Status |
 |---|---|
 | JSON (parse, stringify) | ✅ |
@@ -230,7 +230,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | for-in/for-of with let/const | 🚫 Deferred |
 
 ### Phase 11: ES6+ — Arrow Functions, Templates, Default/Rest Parameters
-**test262: 427 files — 58 pass / 229 fail (skip: 140)**
+**test262: 427 files — 61 pass / 226 fail (skip: 140)**
 ||  | | _Tagged templates now implemented (Session 45); remaining test failures due to unrelated VM limitations._ |
 || Component | Status |
 ||---|---|
@@ -261,7 +261,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 
 ### Phase 20: ES6+ — Promise
-**test262: 1,588 files — 134 pass / 851 fail (skip: 603)**
+**test262: 1,588 files — 220 pass / 765 fail (skip: 603)**
 *(includes Map, Set, Symbol, WeakMap, WeakSet)*
 || Component | Status |
 ||---|---|
@@ -325,7 +325,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 ||| for-of in for-in | 🚫 Deferred |
 
 ### Phase 15: ES6+ — Classes
-**test262: 8,520 files — 145 pass / 2,150 fail (skip: 6,225)**
+**test262: 8,520 files — 203 pass / 2,092 fail (skip: 6,225)**
 | Component | Status |
 |---|---|
 | Class declarations (`class Name { }`) | ✅ |
@@ -357,5 +357,17 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 ||| Object literals in nested expressions | ✅ |
 
 ### Phase 21: ES6+ — Generators
-**test262: 619 files — 5 pass / 484 fail (skip: 130)**
+**test262: 619 files — 11 pass / 478 fail (skip: 130)**
+
+### Session 67: Fix bracket assignment lhs_mode clobbering
+
+**Bug**: `obj[key] = value` in bracket notation compiled to GETPROP (read) instead of PUTPROP (write). Caused ~1000+ test262 timeouts including number ranges (8.5.1), try/finally, for-loops, and object system tests.
+
+**Root cause**: In `member_expr()`, the bracket handler calls `self.expression()` to parse the index. `expression()` → `assignment_expr()` unconditionally resets `self.lhs_mode = false` (line 2947). This clobbered the outer `lhs_mode = true` needed for PUTPROP emission, so the compiler treated `obj[key] = value` as a simple variable assignment instead of a property write.
+
+**Fix**: Save/restore `lhs_mode` around the inner `expression()` call in `member_expr()` at line 4039 (4 lines: 2 code + 2 comment).
+
+**Impact** (test262 overall): Pass 8619 → 9652 (+1033). Largest gains: Object System +813, Core VM +108, Basic Operators +55, Remaining ES5 +53.
+
+**Remaining timeouts**: Only generator/yield tests (ES6, not implemented) and some `let` block-scope tests.
 

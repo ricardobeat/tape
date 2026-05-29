@@ -4037,7 +4037,11 @@ fn ushort? CompilerContext.member_expr(&self) {
             }
             obj = result;
         } else if (self.match(TokenType.LBRACKET)) {
+            // Save lhs_mode: the inner expression() calls assignment_expr()
+            // which resets lhs_mode to false, clobbering the outer mode.
+            bool saved_lhs = self.lhs_mode;
             ushort idx_reg = self.expression()!;
+            self.lhs_mode = saved_lhs;
             self.expect(TokenType.RBRACKET)!;
 
             ushort result = self.alloc_reg();
