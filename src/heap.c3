@@ -159,6 +159,7 @@ struct Heap {
     HObject* syntax_err_proto;
     HObject* eval_err_proto;
     HObject* uri_err_proto;
+    HObject* aggregate_err_proto;
 
     // Built-in constructor prototypes
     HObject* object_proto;
@@ -712,6 +713,7 @@ fn void Heap.reset(&self) {
     self.syntax_err_proto = null;
     self.eval_err_proto   = null;
     self.uri_err_proto    = null;
+    self.aggregate_err_proto = null;
     self.object_proto     = null;
     self.bool_proto       = null;
     self.string_proto     = null;
@@ -1028,6 +1030,7 @@ fn void Heap.mark_roots(&self) {
     if (self.syntax_err_proto != null) { self.mark_object(self.syntax_err_proto, 0); }
     if (self.eval_err_proto != null) { self.mark_object(self.eval_err_proto, 0); }
     if (self.uri_err_proto != null) { self.mark_object(self.uri_err_proto, 0); }
+    if (self.aggregate_err_proto != null) { self.mark_object(self.aggregate_err_proto, 0); }
 
     // Mark built-in constructor prototypes
     if (self.object_proto != null) { self.mark_object(self.object_proto, 0); }

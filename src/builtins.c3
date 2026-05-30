@@ -149,7 +149,7 @@ const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
 const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
 const uint BUILTIN_PROMISE_RESOLVE_CALLBACK     = 264;
 const uint BUILTIN_PROMISE_REJECT_CALLBACK      = 265;
-const uint BUILTIN_COUNT                         = 267;
+const uint BUILTIN_COUNT                         = 269;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -198,6 +198,9 @@ const uint BUILTIN_PROMISE_REJECT            = 150;
 const uint BUILTIN_PROMISE_ALL               = 151;
 const uint BUILTIN_PROMISE_RACE              = 152;
 const uint BUILTIN_PROMISE_ALLSETTLED         = 266;
+
+const uint BUILTIN_PROMISE_ANY                = 267;
+const uint BUILTIN_AGGREGATE_ERROR            = 268;
 
 const uint BUILTIN_GENERATOR_FUNCTION        = 153;
 const uint BUILTIN_GENERATOR_PROTO_NEXT      = 154;
@@ -1016,6 +1019,59 @@ fn void builtin_eval_error(BuiltinContext* ctx) {
 
 fn void builtin_uri_error(BuiltinContext* ctx) {
     builtin_error_constructor_shared(ctx, ctx.heap.uri_err_proto);
+}
+
+// ============================================================================
+// AggregateError constructor — ES2021 §28.1.1.1
+// ============================================================================
+
+fn void builtin_aggregate_error(BuiltinContext* ctx) {
+    // Get errors argument
+    TVal errors_val;
+    errors_val.set_undefined();
+    if (ctx.argc >= 1) errors_val = ctx.regs[ctx.base_reg];
+
+    // Get message argument (optional)
+    TVal msg_val;
+    msg_val.set_undefined();
+    if (ctx.argc >= 2) msg_val = ctx.regs[ctx.base_reg + 1];
+
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err = err_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* err = err_raw;
+    err.prototype = ctx.heap.aggregate_err_proto;
+
+    // Set .message if provided and not undefined
+    if (!msg_val.is_undefined()) {
+        HString* msg_str = builtin_to_string(ctx.heap, &msg_val);
+        if (msg_str != null) {
+            TVal msg_prop;
+            msg_prop.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_prop, hobject::PROP_FLAGS_WC);
+        }
+    }
+
+    // Set .errors array
+    HString* errors_key = builtin_intern_string(ctx.heap, "errors");
+    if (!errors_val.is_undefined()) {
+        err.put_prop(errors_key, errors_val, hobject::PROP_FLAGS_WC);
+    } else {
+        HObject*? empty_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (try arr = empty_arr) {
+            arr.prototype = ctx.heap.array_proto;
+            TVal arr_tv;
+            arr_tv.set_object(arr);
+            err.put_prop(errors_key, arr_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+
+    ctx.result.set_object(null);
+    ctx.result.set_fastint(0);
+    ctx.result.set_object(err);
 }
 
 // ============================================================================
@@ -6382,6 +6438,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 262: return { "toLocaleDateString", 0 };
         case 263: return { "toLocaleTimeString", 0 };
         case 266: return { "allSettled", 1 };
+        case 267: return { "any", 1 };
+        case 268: return { "AggregateError", 2 };
         default: return { "", -1 };
     }
 }
@@ -12755,6 +12813,166 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Promise.any(iterable) — ES2021 §25.6.4.3
+// ============================================================================
+
+fn void builtin_promise_any(BuiltinContext* ctx) {
+    // Get the iterable argument
+    TVal iterable;
+    iterable.set_undefined();
+    if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Create the result promise
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* promise = prom_raw;
+
+    // Get .length from iterable
+    usz len = 0;
+    bool has_len = false;
+    HObject* obj = null;
+
+    if (iterable.is_object() && iterable.get_heapptr() != null) {
+        obj = (HObject*)iterable.get_heapptr();
+        HString* length_key = builtin_intern_string(ctx.heap, "length");
+        if (try len_tv = obj.get_prop(length_key)) {
+            if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+                len = (usz)len_tv.get_fastint();
+                has_len = true;
+            }
+        }
+    }
+
+    // Empty iterable or non-iterable — reject with AggregateError
+    if (!has_len || len == 0) {
+        TVal errors_tv;
+        errors_tv.set_undefined();
+        HString* msg = builtin_intern_string(ctx.heap, "All promises were rejected");
+        TVal msg_tv;
+        msg_tv.set_string(msg);
+
+        // Create AggregateError with empty errors array
+        HObject*? agg_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try agg = agg_raw) {
+            agg.prototype = ctx.heap.aggregate_err_proto;
+            HString* errors_key = builtin_intern_string(ctx.heap, "errors");
+            HObject*? empty_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (try arr = empty_arr) {
+                arr.prototype = ctx.heap.array_proto;
+                TVal arr_tv;
+                arr_tv.set_object(arr);
+                agg.put_prop(errors_key, arr_tv, hobject::PROP_FLAGS_WEC);
+            }
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        }
+
+        TVal agg_tv;
+        agg_tv.set_undefined();
+        if (try agg2 = agg_raw) {
+            agg_tv.set_object(agg2);
+        }
+        promise_set_state(promise, PROMISE_REJECTED);
+        promise_set_result(promise, &agg_tv);
+        ctx.result.set_object(promise);
+        return;
+    }
+
+    usz remaining = len;
+    usz rejected_count = 0;
+    HObject*? errors_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    HObject* errors_arr = null;
+    if (try arr = errors_arr_raw) {
+        arr.prototype = ctx.heap.array_proto;
+        errors_arr = arr;
+    }
+
+    for (usz i = 0; i < len; i++) {
+        TVal idx_tv;
+        idx_tv.set_fastint((long)i);
+
+        TVal elem;
+        if (try e = obj.get_prop(&idx_tv)) {
+            elem = e;
+        } else {
+            elem.set_undefined();
+        }
+
+        // Check if element is a Promise
+        if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* elem_obj = (HObject*)elem.get_heapptr();
+            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
+                if (state == PROMISE_FULFILLED) {
+                    // Fulfilled — resolve with value
+                    promise_set_state(promise, PROMISE_FULFILLED);
+                    promise_set_result(promise, &elem_obj.array_part[1]);
+                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+                    ctx.result.set_object(promise);
+                    return;
+                } else if (state == PROMISE_REJECTED) {
+                    // Track rejection reason
+                    if (errors_arr != null) {
+                        errors_arr.set_array_idx((uint)(rejected_count), elem_obj.array_part[1]);
+                    }
+                    rejected_count++;
+                } else {
+                    // Pending — accumulate as rejected with undefined reason
+                    if (errors_arr != null) {
+                        TVal undef;
+                        undef.set_undefined();
+                        errors_arr.set_array_idx((uint)(rejected_count), undef);
+                    }
+                    rejected_count++;
+                }
+                remaining--;
+                continue;
+            }
+        }
+
+        // Not a promise — resolve with this value immediately
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &elem);
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+        ctx.result.set_object(promise);
+        return;
+    }
+
+    // All rejected — create AggregateError
+    if (remaining == 0) {
+        TVal errors_val;
+        if (errors_arr != null) {
+            errors_val.set_object(errors_arr);
+        } else {
+            errors_val.set_undefined();
+        }
+
+        HObject*? agg_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        TVal agg_tv;
+        agg_tv.set_undefined();
+        if (try agg = agg_raw) {
+            agg.prototype = ctx.heap.aggregate_err_proto;
+            HString* errors_key = builtin_intern_string(ctx.heap, "errors");
+            agg.put_prop(errors_key, errors_val, hobject::PROP_FLAGS_WEC);
+            HString* msg = builtin_intern_string(ctx.heap, "All promises were rejected");
+            TVal msg_tv;
+            msg_tv.set_string(msg);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            agg_tv.set_object(agg);
+        }
+        promise_set_state(promise, PROMISE_REJECTED);
+        promise_set_result(promise, &agg_tv);
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+    }
+
+    ctx.result.set_object(promise);
+}
+
+// ============================================================================
 // Promise.race(iterable) — ES6 §25.4.4.3
 // ============================================================================
 
@@ -12918,6 +13136,11 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     TVal allsettled_tv;
     allsettled_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ALLSETTLED);
     ctor.put_prop(allsettled_key, allsettled_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* any_key = builtin_intern_string(heap, "any");
+    TVal any_tv;
+    any_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ANY);
+    ctor.put_prop(any_key, any_tv, hobject::PROP_FLAGS_WEC);
 
     // Register "Promise" in global environment
     uint hash = heap.hash_string("Promise");
@@ -13283,6 +13506,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_eval_error(ctx);
         case BUILTIN_URI_ERROR:
             builtin_uri_error(ctx);
+        case BUILTIN_AGGREGATE_ERROR:
+            builtin_aggregate_error(ctx);
         case BUILTIN_ERROR_PROTO_TOSTRING:
             builtin_error_prototype_to_string(ctx);
         case BUILTIN_BOOLEAN:
@@ -13747,6 +13972,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_promise_race(ctx);
         case BUILTIN_PROMISE_ALLSETTLED:
             builtin_promise_allsettled(ctx);
+        case BUILTIN_PROMISE_ANY:
+            builtin_promise_any(ctx);
         case BUILTIN_PROMISE_RESOLVE_CALLBACK:
             builtin_promise_resolve_callback(ctx);
         case BUILTIN_PROMISE_REJECT_CALLBACK:
@@ -14688,6 +14915,16 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
 
     // --- Register URIError ---
     if (!register_simple_builtin(global_env, heap, "URIError", BUILTIN_URI_ERROR)) return false;
+
+    // --- Create AggregateError.prototype (parent = err_proto) ---
+    HObject* aggregate_err_proto = register_error_prototype(heap, err_proto, "AggregateError");
+    if (aggregate_err_proto == null) return false;
+    TVal aggregate_err_constr;
+    aggregate_err_constr.set_lightfunc((void*)(usz)BUILTIN_AGGREGATE_ERROR);
+    aggregate_err_proto.put_prop(constructor_key, aggregate_err_constr, hobject::PROP_FLAGS_WC);
+    heap.aggregate_err_proto = aggregate_err_proto;
+
+    if (!register_simple_builtin(global_env, heap, "AggregateError", BUILTIN_AGGREGATE_ERROR)) return false;
 
     return true;
 }

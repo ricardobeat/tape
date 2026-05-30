@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 89 (Promise.allSettled — Phase 17-20 +2 pass, -2 skip)
+**Last Updated:** Session 89 (AggregateError + Promise.any — Phase 17-20 +2 pass, -1 skip)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -9,8 +9,8 @@
 |---|---|
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
-| Skipped (unsupported features) | 11,539 |
-| Currently passing (test262) | 9,765 |
+| Skipped (unsupported features) | 11,538 |
+| Currently passing (test262) | 9,767 |
 | Currently failing (test262) | 20,683 |
 | Pass rate (of run tests) | 32.1% |
 
@@ -277,6 +277,9 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 || Internal state machine (pending/fulfilled/rejected) | ✅ |
 || Reaction queue for .then() chaining | ✅ |
 || Class name [object Promise] | ✅ |
+|| Promise.allSettled(iterable) | ✅ (Session 89) |
+|| Promise.any(iterable) | ✅ (Session 90) |
+|| AggregateError | ✅ (Session 90) |
 || Async microtask scheduling | 🚫 Deferred |
 
 
@@ -403,3 +406,15 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 ---
 
 **NEXT TASK**: Implement `Promise.any(iterable)` — similar to `Promise.allSettled` but resolves with the first fulfilled value and rejects with an AggregateError if all reject. Currently ~100 test262 tests skipped.~ Or fix the `typeof X.y` compiler bug to unblock the remaining sync Promise.allSettled tests.
+
+### Session 90: AggregateError + Promise.any(iterable)
+
+**Task**: Implement `AggregateError` constructor (ES2021 §28.1.1.1) and `Promise.any(iterable)` (ES2021 §25.6.4.3). Promise.any resolves with the first fulfilled value, rejects with AggregateError containing all rejection reasons if all reject.
+
+**Changes**: Added `BUILTIN_PROMISE_ANY=267`, `BUILTIN_AGGREGATE_ERROR=268`, `BUILTIN_COUNT=269`. Added `aggregate_err_proto` field to Heap. Created AggregateError constructor and prototype (inherits from Error.prototype, has `.errors` property on instances). Implemented `builtin_promise_any` with synchronous iteration + AggregateError creation on all-reject. Removed `Promise.any` from test262 skip list.
+
+**Impact** (test262 Phase 17-20): 2 more tests pass. AggregateError created as a built-in error type (23 test262 tests in built-ins/AggregateError).
+
+---
+
+**NEXT TASK**: Implement `Array.prototype.flat` and `Array.prototype.flatMap` — ES2019 methods that flatten arrays. About 100 test262 tests exist. Estimated impact: moderate pass increase.~ Or fix the `typeof X.y` compiler bug to unblock sync property access tests across the board.
