@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 87 (Add Date.prototype.toLocaleString/toLocaleDateString/toLocaleTimeString — Phase 8 +36 tests)
+**Last Updated:** Session 88 (Fix Promise.prototype.catch onRejected argument — Phase 17-20 +75 tests)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -10,9 +10,9 @@
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
 | Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 9,688 |
-| Currently failing (test262) | 20,758 |
-| Pass rate (of run tests) | 31.8% |
+| Currently passing (test262) | 9,763 |
+| Currently failing (test262) | 20,683 |
+| Pass rate (of run tests) | 32.1% |
 
 ## Refreshing test pass rate
 
@@ -45,9 +45,9 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 | 12-13: Destructuring | 19 | 0 | 17 | 2 |
 | 14: for-of | 751 | 3 | 562 | 186 |
 | 15: Classes | 8,520 | 203 | 2,092 | 6,225 |
-| 17-20: Map/Set/Symbol/Promise | 1,588 | 220 | 765 | 603 |
+| 17-20: Map/Set/Symbol/Promise | 1,588 | 295 | 690 | 603 |
 | 21: Generators | 619 | 11 | 478 | 130 |
-| **Overall** | **30,446** | **9,688** | **20,758** | **11,541** |
+| **Overall** | **30,446** | **9,763** | **20,683** | **11,541** |
 
 ### Phase 0-1: Core VM
 **test262: 2,185 files — 589 pass / 538 fail (skip: 1,058)**
@@ -262,7 +262,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 
 ### Phase 20: ES6+ — Promise
-**test262: 1,588 files — 220 pass / 765 fail (skip: 603)**
+**test262: 1,588 files — 295 pass / 690 fail (skip: 603)**
 *(includes Map, Set, Symbol, WeakMap, WeakSet)*
 || Component | Status |
 ||---|---|
@@ -380,6 +380,16 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 **Impact** (test262 Phase 8): 669 → 705 (+36). All 12 toLocaleString/toLocaleDateString/toLocaleTimeString tests pass (length, name, prop-desc) except 3 not-a-constructor tests (require Reflect.construct).
 
+### Session 88: Fix Promise.prototype.catch onRejected argument
+
+**Task**: Fix `.catch()` which was silently dropping the onRejected handler.
+
+**Root cause**: `builtin_promise_proto_catch` in `src/builtins.c3:12415` saved `arg0`, set it to `undefined`, then called `then()` with `argc=1`. Since `.then()` checks `argc >= 2` to read `onRejected`, the handler was always lost — `.catch(fn)` was equivalent to `.then(undefined, undefined)`.
+
+**Fix**: Set `arg0 = undefined`, place the saved handler in `arg1`, set `argc = 2`, then call `then()`. 7 lines changed.
+
+**Impact** (test262 Phase 17-20): 220 → 295 (+75). No regressions in Phases 0-2, 5, or 8.
+
 ---
 
-**NEXT TASK**: Fix Promise `call_handler` to actually invoke handler callbacks through the VM. The current stub in `src/builtins.c3:11989` returns `undefined` without executing the handler, which kills all Promise chaining tests (.then/.catch/.finally chains). Requires plumbing `Vm*` through `promise_trigger_reactions` → `call_handler` and setting up activation frames like `invoke_getter` does. Estimated impact: 300-500 additional test262 passes across Phase 17-20.
+**NEXT TASK**: Implement `Promise.allSettled(iterable)` — the test runner already skips `Promise.allSettled` feature-flagged tests, but the implementation itself is missing. Requires iterating the iterable, tracking each promise's settlement state/value, and resolving when all are settled. Estimated impact: 50-100 test262 passes.

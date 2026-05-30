@@ -147,7 +147,9 @@ const uint BUILTIN_OBJECT_PROTO_TOLOCALESTRING = 110;
 const uint BUILTIN_DATE_PROTO_TOLOCALESTRING   = 261;
 const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
 const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
-const uint BUILTIN_COUNT                         = 264;
+const uint BUILTIN_PROMISE_RESOLVE_CALLBACK     = 264;
+const uint BUILTIN_PROMISE_REJECT_CALLBACK      = 265;
+const uint BUILTIN_COUNT                         = 266;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -330,6 +332,8 @@ struct BuiltinContext {
     bool  should_throw;
     /// The value to throw (only valid when should_throw is true).
     TVal  throw_value;
+    /// The function object being called (for builtins that need to access their own properties).
+    HObject* callee_obj;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
@@ -3162,17 +3166,17 @@ fn void builtin_array_proto_at(BuiltinContext* ctx) {
     *ctx.result = array_get_elem(obj, (uint)idx, ctx.heap);
 }
 
-/// Array.prototype.copyWithin(target, start, end) — ES6 §22.1.3.3
+/// Array.prototype.copyWithin(downstream, start, end) — ES6 §22.1.3.3
 fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
     uint len = array_get_length(obj, ctx.heap);
 
-    double target_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    int target_i = (int)(long)target_d;
-    if (target_i < 0) target_i = (int)len + target_i < 0 ? 0 : (int)len + target_i;
-    if (target_i > (int)len) target_i = (int)len;
+    double downstream_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    int downstream_i = (int)(long)downstream_d;
+    if (downstream_i < 0) downstream_i = (int)len + downstream_i < 0 ? 0 : (int)len + downstream_i;
+    if (downstream_i > (int)len) downstream_i = (int)len;
 
     int start_i = 0;
     if (ctx.argc > 1) {
@@ -3191,17 +3195,17 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     }
 
     int count = end_i - start_i;
-    if (count > (int)len - target_i) count = (int)len - target_i;
+    if (count > (int)len - downstream_i) count = (int)len - downstream_i;
     if (count <= 0) { ctx.result.set_object(obj); return; }
 
-    // Forward copy is safe when target < start; otherwise copy backwards
-    if (target_i < start_i) {
+    // Forward copy is safe when downstream < start; otherwise copy backwards
+    if (downstream_i < start_i) {
         for (int i = 0; i < count; i++) {
-            array_set_elem(obj, (uint)(target_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
+            array_set_elem(obj, (uint)(downstream_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
         }
     } else {
         for (int i = count - 1; i >= 0; i--) {
-            array_set_elem(obj, (uint)(target_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
+            array_set_elem(obj, (uint)(downstream_i + i), array_get_elem(obj, (uint)(start_i + i), ctx.heap), ctx.heap);
         }
     }
     ctx.result.set_object(obj);
@@ -3239,22 +3243,22 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
     ctx.result.set_boolean(false);
 }
 
-/// Helper: flatten source array into target array recursively.
-/// Returns the next target index after all elements are inserted.
-fn uint flatten_into(HObject* target, HObject* source, uint source_len, uint target_idx, double depth, Heap* heap) {
+/// Helper: flatten source array into downstream array recursively.
+/// Returns the next downstream index after all elements are inserted.
+fn uint flatten_into(HObject* downstream, HObject* source, uint source_len, uint downstream_idx, double depth, Heap* heap) {
     for (uint i = 0; i < source_len; i++) {
         TVal elem = array_get_elem(source, i, heap);
         if (elem.is_object() && elem.get_heapptr() != null &&
             ((HObject*)elem.get_heapptr()).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
             HObject* inner = (HObject*)elem.get_heapptr();
             uint inner_len = array_get_length(inner, heap);
-            target_idx = flatten_into(target, inner, inner_len, target_idx, depth - 1, heap);
+            downstream_idx = flatten_into(downstream, inner, inner_len, downstream_idx, depth - 1, heap);
         } else {
-            array_set_elem(target, target_idx, elem, heap);
-            target_idx++;
+            array_set_elem(downstream, downstream_idx, elem, heap);
+            downstream_idx++;
         }
     }
-    return target_idx;
+    return downstream_idx;
 }
 
 /// Array.prototype.flat(depth) — ES2019 §22.1.3.10
@@ -5523,15 +5527,15 @@ fn void builtin_object_values(BuiltinContext* ctx) {
 // ============================================================================
 // Object.assign — ES2015 §19.1.2.2
 // ============================================================================
-/// Copies enumerable own properties from source objects to a target object.
+/// Copies enumerable own properties from source objects to a downstream object.
 fn void builtin_object_assign(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
         ctx.result.set_undefined();
         return;
     }
-    TVal target_val = ctx.regs[ctx.base_reg];
-    // TypeError if target is null or undefined
-    if (target_val.is_null() || target_val.is_undefined()) {
+    TVal downstream_val = ctx.regs[ctx.base_reg];
+    // TypeError if downstream is null or undefined
+    if (downstream_val.is_null() || downstream_val.is_undefined()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
         HObject* err = err_raw;
@@ -5545,15 +5549,15 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         ctx.throw_value.set_object(err);
         return;
     }
-    // ToObject on target
-    HObject* target;
-    if (target_val.is_object()) {
-        target = (HObject*)target_val.get_heapptr();
+    // ToObject on downstream
+    HObject* downstream;
+    if (downstream_val.is_object()) {
+        downstream = (HObject*)downstream_val.get_heapptr();
     } else {
         HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
-        target = wrapped;
-        target.prototype = ctx.heap.object_proto;
+        downstream = wrapped;
+        downstream.prototype = ctx.heap.object_proto;
     }
     // Copy properties from each source (args 1..N)
     for (uint s = 1; s < ctx.argc; s++) {
@@ -5565,17 +5569,17 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         // Copy enumerable own named properties
         for (uint i = 0; i < src_obj.prop_count; i++) {
             if (src_obj.props[i].flags.enumerable && src_obj.props[i].key != null) {
-                target.put_prop(src_obj.props[i].key, src_obj.props[i].value, hobject::PROP_FLAGS_WEC);
+                downstream.put_prop(src_obj.props[i].key, src_obj.props[i].value, hobject::PROP_FLAGS_WEC);
             }
         }
         // Copy enumerable own dense array indices
         for (uint i = 0; i < src_obj.array_size; i++) {
             if (!src_obj.array_part[i].is_undefined()) {
-                array_set_elem(target, i, src_obj.array_part[i], ctx.heap);
+                array_set_elem(downstream, i, src_obj.array_part[i], ctx.heap);
             }
         }
     }
-    ctx.result.set_object(target);
+    ctx.result.set_object(downstream);
 }
 
 // ============================================================================
@@ -7685,19 +7689,19 @@ fn TVal builtin_arg(BuiltinContext* ctx, uint idx) {
 
 /// Function.prototype.call(thisArg, ...args)
 ///
-/// Calls `this` (the target function) with `thisArg` as `this` and the
+/// Calls `this` (the downstream function) with `thisArg` as `this` and the
 /// remaining arguments passed individually.
 ///
 /// ES5 §15.3.4.4
 fn void builtin_function_proto_call(BuiltinContext* ctx) {
-    TVal target = ctx.this_val;
+    TVal downstream = ctx.this_val;
 
-    // Validate target is callable
+    // Validate downstream is callable
     bool callable = false;
-    if (target.is_lightfunc()) {
+    if (downstream.is_lightfunc()) {
         callable = true;
-    } else if (target.is_object()) {
-        HObject* hobj = (HObject*)target.get_heapptr();
+    } else if (downstream.is_object()) {
+        HObject* hobj = (HObject*)downstream.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
@@ -7725,9 +7729,9 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     // Number of remaining args after thisArg
     ushort remaining = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
 
-    // For LIGHTFUNC targets, dispatch directly after shifting args
-    if (target.is_lightfunc()) {
-        uint fn_idx = (uint)target.get_fastint();
+    // For LIGHTFUNC downstreams, dispatch directly after shifting args
+    if (downstream.is_lightfunc()) {
+        uint fn_idx = (uint)downstream.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -7750,10 +7754,10 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         return;
     }
 
-    // For OBJECT targets, use re-dispatch mechanism
-    if (target.is_object()) {
-        // Replace the function slot with target
-        ctx.regs[ctx.base_reg - 2] = target;
+    // For OBJECT downstreams, use re-dispatch mechanism
+    if (downstream.is_object()) {
+        // Replace the function slot with downstream
+        ctx.regs[ctx.base_reg - 2] = downstream;
         // Replace the this slot with new_this
         ctx.regs[ctx.base_reg - 1] = new_this;
         // Shift remaining args to start at base_reg
@@ -7770,19 +7774,19 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
 
 /// Function.prototype.apply(thisArg, argArray)
 ///
-/// Calls `this` (the target function) with `thisArg` as `this` and the
+/// Calls `this` (the downstream function) with `thisArg` as `this` and the
 /// elements of `argArray` passed as individual arguments.
 ///
 /// ES5 §15.3.4.3
 fn void builtin_function_proto_apply(BuiltinContext* ctx) {
-    TVal target = ctx.this_val;
+    TVal downstream = ctx.this_val;
 
-    // Validate target is callable
+    // Validate downstream is callable
     bool callable = false;
-    if (target.is_lightfunc()) {
+    if (downstream.is_lightfunc()) {
         callable = true;
-    } else if (target.is_object()) {
-        HObject* hobj = (HObject*)target.get_heapptr();
+    } else if (downstream.is_object()) {
+        HObject* hobj = (HObject*)downstream.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
@@ -7813,8 +7817,8 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
 
     if (!has_array) {
         // Call with no args
-        if (target.is_lightfunc()) {
-            uint fn_idx = (uint)target.get_fastint();
+        if (downstream.is_lightfunc()) {
+            uint fn_idx = (uint)downstream.get_fastint();
             builtins::BuiltinContext inner_ctx;
             inner_ctx.vm = ctx.vm;
             inner_ctx.regs = ctx.regs;
@@ -7830,8 +7834,8 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
             return;
         }
-        if (target.is_object()) {
-            ctx.regs[ctx.base_reg - 2] = target;
+        if (downstream.is_object()) {
+            ctx.regs[ctx.base_reg - 2] = downstream;
             ctx.regs[ctx.base_reg - 1] = new_this;
             ctx.needs_re_dispatch = true;
             ctx.re_nargs = 0;
@@ -7902,8 +7906,8 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         if (actual_count < max_extract) extracted_args[actual_count++] = elem;
     }
 
-    if (target.is_lightfunc()) {
-        uint fn_idx = (uint)target.get_fastint();
+    if (downstream.is_lightfunc()) {
+        uint fn_idx = (uint)downstream.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -7927,8 +7931,8 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         return;
     }
 
-    if (target.is_object()) {
-        ctx.regs[ctx.base_reg - 2] = target;
+    if (downstream.is_object()) {
+        ctx.regs[ctx.base_reg - 2] = downstream;
         ctx.regs[ctx.base_reg - 1] = new_this;
         for (uint i = 0; i < actual_count; i++) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
@@ -7943,17 +7947,17 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
 }
 
 /// Helper for extracting bound function data from internal properties.
-fn void bound_get_data(HObject* bound_obj, TVal* target, TVal* bound_this,
+fn void bound_get_data(HObject* bound_obj, TVal* downstream, TVal* bound_this,
                        TVal* bound_args, uint* bound_argc) {
-    HString* target_key = null;
+    HString* downstream_key = null;
     HString* this_key = null;
     {
-        char[50] buf1 = "\\x00bound_target";
+        char[50] buf1 = "\\x00bound_downstream";
         // Use a simple approach — keyed by pointer stored as internal property
     }
     // For simplicity, we store bound data in special internal properties.
     // These are non-enumerable, non-writable, non-configurable properties.
-    HString* key_target = null;
+    HString* key_downstream = null;
     // We'll use the property table directly via known interned strings
 }
 
@@ -7964,14 +7968,14 @@ fn void bound_get_data(HObject* bound_obj, TVal* target, TVal* bound_this,
 ///
 /// ES5 §15.3.4.5
 fn void builtin_function_proto_bind(BuiltinContext* ctx) {
-    TVal target = ctx.this_val;
+    TVal downstream = ctx.this_val;
 
-    // Validate target is callable
+    // Validate downstream is callable
     bool callable = false;
-    if (target.is_lightfunc()) {
+    if (downstream.is_lightfunc()) {
         callable = true;
-    } else if (target.is_object()) {
-        HObject* hobj = (HObject*)target.get_heapptr();
+    } else if (downstream.is_object()) {
+        HObject* hobj = (HObject*)downstream.get_heapptr();
         if (hobj != null) {
             callable = hobj.is_callable();
         }
@@ -8020,17 +8024,17 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.prototype = ctx.heap.function_proto;
     bound_obj.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
 
-    // Also maintain constructable flag if target is constructable
-    bool target_constructable = false;
-    if (target.is_object()) {
-        HObject* tobj = (HObject*)target.get_heapptr();
-        if (tobj != null) target_constructable = tobj.flags.constructable;
+    // Also maintain constructable flag if downstream is constructable
+    bool downstream_constructable = false;
+    if (downstream.is_object()) {
+        HObject* tobj = (HObject*)downstream.get_heapptr();
+        if (tobj != null) downstream_constructable = tobj.flags.constructable;
     }
-    bound_obj.flags.constructable = target_constructable;
+    bound_obj.flags.constructable = downstream_constructable;
 
     // Store bound data as internal properties (non-enumerable, non-writable, non-configurable)
-    // Key: use special strings "\x00bound_target", "\x00bound_this", "\x00bound_args"
-    HString* key_target = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+    // Key: use special strings "\x00bound_downstream", "\x00bound_this", "\x00bound_args"
+    HString* key_downstream = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
     HString* key_this   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'h', 'i', 's' });
     HString* key_args   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 'a', 'r', 'g', 's' });
 
@@ -8040,7 +8044,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     internal_flags.configurable = false;
     internal_flags.is_accessor = false;
 
-    bound_obj.put_prop(key_target, target, internal_flags);
+    bound_obj.put_prop(key_downstream, downstream, internal_flags);
     bound_obj.put_prop(key_this, bound_this, internal_flags);
 
     // Store bound args as a JS array
@@ -8076,16 +8080,16 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.put_prop(key_args, args_tv, internal_flags);
 
     // Set .length on the bound function
-    // Length = max(0, target.length - bound_argc)
-    int target_len = 0;
-    if (target.is_object()) {
-        HObject* tobj = (HObject*)target.get_heapptr();
+    // Length = max(0, downstream.length - bound_argc)
+    int downstream_len = 0;
+    if (downstream.is_object()) {
+        HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null && tobj.comp_func != null) {
-            target_len = (int)tobj.comp_func.num_formals;
+            downstream_len = (int)tobj.comp_func.num_formals;
         }
     }
 
-    int bound_len = target_len - (int)bound_argc;
+    int bound_len = downstream_len - (int)bound_argc;
     if (bound_len < 0) bound_len = 0;
 
     HString* len_key = builtin_intern_string(ctx.heap, "length");
@@ -8114,17 +8118,17 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     }
 
     // Extract bound data from internal properties
-    HString* key_target = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+    HString* key_downstream = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
     HString* key_this   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'h', 'i', 's' });
     HString* key_args   = builtin_intern_string(ctx.heap, { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 'a', 'r', 'g', 's' });
 
-    TVal? target_val = bound_obj.get_prop_proto(key_target);
+    TVal? downstream_val = bound_obj.get_prop_proto(key_downstream);
     TVal? this_val   = bound_obj.get_prop_proto(key_this);
     TVal? args_val   = bound_obj.get_prop_proto(key_args);
 
-    TVal target;
+    TVal downstream;
     TVal bound_this;
-    if (try tv = target_val) { target = tv; }
+    if (try tv = downstream_val) { downstream = tv; }
     else { ctx.result.set_undefined(); return; }
     if (try tv = this_val) { bound_this = tv; }
     else { bound_this.set_undefined(); }
@@ -8180,9 +8184,9 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         all_args[bound_argc + i] = ctx.regs[ctx.base_reg + i];
     }
 
-    // Determine if target is LIGHTFUNC or OBJECT
-    if (target.is_lightfunc()) {
-        uint fn_idx = (uint)target.get_fastint();
+    // Determine if downstream is LIGHTFUNC or OBJECT
+    if (downstream.is_lightfunc()) {
+        uint fn_idx = (uint)downstream.get_fastint();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -8203,10 +8207,10 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         return;
     }
 
-    if (target.is_object()) {
-        HObject* tobj = (HObject*)target.get_heapptr();
+    if (downstream.is_object()) {
+        HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null && tobj.is_callable()) {
-            ctx.regs[ctx.base_reg - 2] = target;
+            ctx.regs[ctx.base_reg - 2] = downstream;
             ctx.regs[ctx.base_reg - 1] = bound_this;
             for (uint i = 0; i < total_argc && i < 65535; i++) {
                 ctx.regs[ctx.base_reg + i] = all_args[i];
@@ -11952,6 +11956,12 @@ fn uint promise_get_state(HObject* promise, uint default_state) {
 }
 
 /// Set the promise state in array_part.
+/// Layout: array[0]=state, array[1]=result, array[2+]=reactions.
+/// We must ensure array_used >= 2 so that reactions start at index 2.
+/// set_array_idx's undefined-based tracking only counts index 0 (state)
+/// as used, leaving index 1 (result=undef) uncounted. Without the fix,
+/// promise_add_reaction writes to index 1, clobbering the result slot,
+/// and promise_trigger_reactions finds zero reactions.
 fn void promise_set_state(HObject* promise, uint state) {
     TVal state_tv;
     state_tv.set_fastint((long)state);
@@ -11959,11 +11969,19 @@ fn void promise_set_state(HObject* promise, uint state) {
     TVal undef;
     undef.set_undefined();
     promise.set_array_idx(1, undef);
+    if (promise.array_used < 2) {
+        promise.array_used = 2;
+    }
 }
 
 /// Set the promise result in array_part.
+/// Writes directly to array_part[1] — the slot is already accounted for in
+/// array_used by promise_set_state, so using set_array_idx would incorrectly
+/// increment array_used when transitioning from undefined to non-undefined.
 fn void promise_set_result(HObject* promise, TVal* val) {
-    promise.set_array_idx(1, *val);
+    if (promise.array_part != null && promise.array_size > 1) {
+        promise.array_part[1] = *val;
+    }
 }
 
 /// Check that `this` is a Promise object.
@@ -11992,14 +12010,14 @@ fn HObject* check_promise(BuiltinContext* ctx) {
 }
 
 /// Trigger all pending reactions for a settled promise.
-fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
+fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state == PROMISE_PENDING) return;
 
     TVal result = promise.array_part[1];
 
     // Iterate reactions stored in array_part starting at index 2
-    // Each reaction occupies one slot (an OBJECT with handler/capability props)
+    // Each reaction occupies one slot (an OBJECT with handler/downstream props)
     uint num_reactions = 0;
     if (promise.array_used > 2) {
         num_reactions = promise.array_used - 2;
@@ -12021,80 +12039,174 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap) {
             handler.set_undefined();
         }
 
-        // Get capability resolve/reject
-        HString* cap_resolve_key = builtin_intern_string(heap, "capResolve");
-        HString* cap_reject_key = builtin_intern_string(heap, "capReject");
-        TVal? cap_resolve_opt = reaction.get_prop(cap_resolve_key);
-        TVal? cap_reject_opt = reaction.get_prop(cap_reject_key);
-        TVal cap_resolve;
-        if (try cr = cap_resolve_opt) {
-            cap_resolve = cr;
-        } else {
-            cap_resolve.set_undefined();
-        }
-        TVal cap_reject;
-        if (try cj = cap_reject_opt) {
-            cap_reject = cj;
-        } else {
-            cap_reject.set_undefined();
+        // Get the downstream promise to resolve/reject
+        HString* downstream_key = builtin_intern_string(heap, "downstream");
+        TVal downstream_val;
+        downstream_val.set_undefined();
+        HObject* downstream = null;
+        if (try dv = reaction.get_prop(downstream_key)) {
+            if (dv.is_object() && dv.get_heapptr() != null) {
+                HObject* d = (HObject*)dv.get_heapptr();
+                if (d.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    downstream = d;
+                    downstream_val = dv;
+                }
+            }
         }
 
         if (state == PROMISE_FULFILLED) {
             if (handler.is_undefined()) {
-                // No onFulfilled — pass through
-                call_capability(cap_resolve, cap_reject, &result, heap, true);
+                // No onFulfilled — pass through to downstream
+                if (downstream != null) {
+                    promise_set_state(downstream, PROMISE_FULFILLED);
+                    promise_set_result(downstream, &result);
+                    promise_trigger_reactions(downstream, heap, vm);
+                }
             } else {
-                // Call handler with result
-                TVal ret = call_handler(handler, &result, heap);
-                call_capability(cap_resolve, cap_reject, &ret, heap, true);
+                // Enqueue microtask — handler will be called asynchronously,
+                // downstream will be resolved with handler's return value by drain
+                heap.enqueue_microtask(handler, result, downstream_val);
             }
         } else {
             if (handler.is_undefined()) {
-                // No onRejected — pass through
-                call_capability(cap_resolve, cap_reject, &result, heap, false);
+                // No onRejected — pass through rejection to downstream
+                if (downstream != null) {
+                    promise_set_state(downstream, PROMISE_REJECTED);
+                    promise_set_result(downstream, &result);
+                    promise_trigger_reactions(downstream, heap, vm);
+                }
             } else {
-                TVal ret = call_handler(handler, &result, heap);
-                call_capability(cap_resolve, cap_reject, &ret, heap, true);
+                // Enqueue microtask — handler will be called asynchronously,
+                // downstream will be resolved with handler's return value by drain
+                heap.enqueue_microtask(handler, result, downstream_val);
             }
         }
     }
 }
 
 /// Call a handler function with one argument.
-fn TVal call_handler(TVal handler, TVal* arg, Heap* heap) {
+fn TVal call_handler(TVal handler, TVal* arg, Heap* heap, void* vm) {
+    if (heap.call_handler_fn != null && vm != null) {
+        return heap.call_handler_fn(vm, handler, arg);
+    }
     TVal result;
     result.set_undefined();
-
-    if (handler.is_object() && handler.get_heapptr() != null) {
-        HObject* func = (HObject*)handler.get_heapptr();
-        if (func.comp_func != null) {
-            // We need a VM to execute. Call via the heap's thread if available.
-            // For now, return undefined if we can't execute.
-            // This is a stub — real async execution requires VM integration.
-            return result;
-        }
-    }
-    if (handler.is_lightfunc()) {
-        // Call builtin — but we need the VM. Stub for now.
-        return result;
-    }
     return result;
 }
 
-/// Resolve or reject a capability.
-fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool is_resolve) {
+/// Microtask completion callback — resolves the downstream promise with the
+/// handler's return value.  Registered as heap.microtask_after_fn during init.
+fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal downstream) {
+    Heap* heap = (Heap*)heap_raw;
+    if (!downstream.is_object() || downstream.get_heapptr() == null) return;
+    HObject* ds = (HObject*)downstream.get_heapptr();
+    if (ds.flags.obj_class != hobject::ObjClass.PROMISE) return;
+
+    // Check if downstream is already settled (shouldn't be, but guard)
+    uint state = promise_get_state(ds, PROMISE_PENDING);
+    if (state != PROMISE_PENDING) return;
+
+    // Resolve the downstream promise with the handler's return value.
+    // If the result is a thenable, we should follow it (Promise Resolution
+    // Function).  For now, do a simple resolve.
+    promise_set_state(ds, PROMISE_FULFILLED);
+    promise_set_result(ds, &result);
+    promise_trigger_reactions(ds, heap, vm);
+}
+
+/// Resolve or reject a capability's downstream promise.
+fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool is_resolve, void* vm) {
     TVal callee = is_resolve ? resolve : reject;
     if (callee.is_undefined()) return;
 
-    // For now, direct synchronous handling of chained promises
     if (callee.is_object() && callee.get_heapptr() != null) {
-        HObject* cap = (HObject*)callee.get_heapptr();
-        if (cap.flags.obj_class == hobject::ObjClass.PROMISE) {
-            promise_set_state(cap, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
-            promise_set_result(cap, val);
-            promise_trigger_reactions(cap, heap);
+        HObject* obj = (HObject*)callee.get_heapptr();
+        // If it's a PROMISE directly, resolve/reject it
+        if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+            promise_set_state(obj, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
+            promise_set_result(obj, val);
+            promise_trigger_reactions(obj, heap, vm);
+            return;
+        }
+        // If it's a capability object, look up the "promise" property
+        HString* promise_key = builtin_intern_string(heap, "promise");
+        if (try pv = obj.get_prop(promise_key)) {
+            if (pv.is_object() && pv.get_heapptr() != null) {
+                HObject* prom = (HObject*)pv.get_heapptr();
+                if (prom.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    promise_set_state(prom, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
+                    promise_set_result(prom, val);
+                    promise_trigger_reactions(prom, heap, vm);
+                }
+            }
         }
     }
+}
+
+fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Try to get promise from the function object's stored property
+    HObject* promise = null;
+    if (ctx.callee_obj != null) {
+        HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
+        if (try pv = ctx.callee_obj.get_prop(promise_key)) {
+            if (pv.is_object() && pv.get_heapptr() != null) {
+                HObject* obj = (HObject*)pv.get_heapptr();
+                if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    promise = obj;
+                }
+            }
+        }
+    }
+    // Fallback to promise_resolve_stack
+    if (promise == null && heap.promise_resolve_top > 0 && heap.promise_resolve_stack != null) {
+        promise = heap.promise_resolve_stack[heap.promise_resolve_top - 1];
+    }
+    if (promise == null) return;
+
+    uint state = promise_get_state(promise, PROMISE_PENDING);
+    if (state != PROMISE_PENDING) return;
+
+    TVal value;
+    value.set_undefined();
+    if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
+
+    promise_set_state(promise, PROMISE_FULFILLED);
+    promise_set_result(promise, &value);
+    promise_trigger_reactions(promise, heap, ctx.vm);
+}
+
+fn void builtin_promise_reject_callback(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    HObject* promise = null;
+    if (ctx.callee_obj != null) {
+        HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
+        if (try pv = ctx.callee_obj.get_prop(promise_key)) {
+            if (pv.is_object() && pv.get_heapptr() != null) {
+                HObject* obj = (HObject*)pv.get_heapptr();
+                if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    promise = obj;
+                }
+            }
+        }
+    }
+    if (promise == null && heap.promise_resolve_top > 0 && heap.promise_resolve_stack != null) {
+        promise = heap.promise_resolve_stack[heap.promise_resolve_top - 1];
+    }
+    if (promise == null) return;
+
+    uint state = promise_get_state(promise, PROMISE_PENDING);
+    if (state != PROMISE_PENDING) return;
+
+    TVal reason;
+    reason.set_undefined();
+    if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
+
+    promise_set_state(promise, PROMISE_REJECTED);
+    promise_set_result(promise, &reason);
+    promise_trigger_reactions(promise, heap, ctx.vm);
 }
 
 /// Create a new Promise with the given internal structure.
@@ -12152,7 +12264,6 @@ fn void builtin_promise(BuiltinContext* ctx) {
 
     TVal executor = ctx.regs[ctx.base_reg];
     if (!executor.is_object() || executor.get_heapptr() == null) {
-        // Type error: executor must be callable
         ctx.result.set_object(promise);
         return;
     }
@@ -12163,25 +12274,76 @@ fn void builtin_promise(BuiltinContext* ctx) {
         return;
     }
 
-    // Create resolve/reject callbacks
-    HObject*? cap_raw = promise_create_capability(ctx.heap, promise);
-    if (catch err = cap_raw) {
+    // Push promise onto resolve stack so resolve/reject callbacks can find it
+    Heap* heap = ctx.heap;
+    if (heap.promise_resolve_top >= heap.promise_resolve_cap) {
+        uint new_cap = heap.promise_resolve_cap == 0 ? 16 : heap.promise_resolve_cap * 2;
+        void*? new_raw = heap.alloc((usz)(HObject*::size * new_cap));
+        HObject** new_stack;
+        if (try p = new_raw) {
+            new_stack = (HObject**)p;
+        } else {
+            ctx.result.set_object(promise);
+            return;
+        }
+        if (heap.promise_resolve_stack != null) {
+            libc::memcpy(new_stack, heap.promise_resolve_stack, (usz)(HObject*::size * heap.promise_resolve_top));
+            heap.free(heap.promise_resolve_stack);
+        } else {
+            libc::memset(new_stack, 0, (usz)(HObject*::size * new_cap));
+        }
+        heap.promise_resolve_stack = new_stack;
+        heap.promise_resolve_cap = new_cap;
+    }
+    if (heap.promise_resolve_stack != null) {
+        heap.promise_resolve_stack[heap.promise_resolve_top] = promise;
+        heap.promise_resolve_top++;
+    }
+
+    // Create resolve/reject function objects that carry the promise reference
+    HObject*? resolve_func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = resolve_func_raw) {
         ctx.result.set_object(promise);
         return;
     }
+    HObject* resolve_func = resolve_func_raw;
+    resolve_func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
+    resolve_func.flags.callable = true;
+    resolve_func.prototype = heap.function_proto;
+    // Store promise reference on the function object
+    HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
+    TVal promise_ref;
+    promise_ref.set_object(promise);
+    resolve_func.put_prop(promise_key, promise_ref, hobject::PROP_FLAGS_WEC);
 
-    // Call executor(resolve, reject)
-    // Store params on value stack and call
+    HObject*? reject_func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = reject_func_raw) {
+        ctx.result.set_object(promise);
+        return;
+    }
+    HObject* reject_func = reject_func_raw;
+    reject_func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
+    reject_func.flags.callable = true;
+    reject_func.prototype = heap.function_proto;
+    reject_func.put_prop(promise_key, promise_ref, hobject::PROP_FLAGS_WEC);
+
     TVal resolve_tv;
-    resolve_tv.set_object(cap_raw);
-
+    resolve_tv.set_object(resolve_func);
     TVal reject_tv;
-    reject_tv.set_object(cap_raw);
+    reject_tv.set_object(reject_func);
 
-    // We need the VM to call the executor. For now, mark the promise
-    // and let the capability handle resolution later.
-    // Store the capability in array_part after state/result
-    promise.set_array_idx(2, resolve_tv);
+    // Call executor(resolve, reject) via the VM
+    TVal[2] exec_args;
+    exec_args[0] = resolve_tv;
+    exec_args[1] = reject_tv;
+    if (heap.call_fn != null && ctx.vm != null) {
+        heap.call_fn(ctx.vm, executor, &exec_args[0], 2, ctx.this_val);
+    }
+
+    // Pop from resolve stack
+    if (heap.promise_resolve_top > 0) {
+        heap.promise_resolve_top--;
+    }
 
     ctx.result.set_object(promise);
 }
@@ -12209,14 +12371,6 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     }
     HObject* new_promise = new_prom_raw;
 
-    // Create capability for new promise
-    HObject*? cap_raw = promise_create_capability(ctx.heap, new_promise);
-    if (catch err = cap_raw) {
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* cap = cap_raw;
-
     // Build reaction object
     HObject*? reaction_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = reaction_raw) {
@@ -12232,14 +12386,11 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     HString* onr_key = builtin_intern_string(ctx.heap, "onRejected");
     reaction.put_prop(onr_key, on_rejected, hobject::PROP_FLAGS_WEC);
 
-    // Store capability resolve/reject as properties
-    HString* cap_res_key = builtin_intern_string(ctx.heap, "capResolve");
-    HString* cap_rej_key = builtin_intern_string(ctx.heap, "capReject");
-
-    TVal cap_val;
-    cap_val.set_object(cap);
-    reaction.put_prop(cap_res_key, cap_val, hobject::PROP_FLAGS_WEC);
-    reaction.put_prop(cap_rej_key, cap_val, hobject::PROP_FLAGS_WEC);
+    // Store the downstream promise directly on the reaction
+    HString* downstream_key = builtin_intern_string(ctx.heap, "downstream");
+    TVal downstream_val;
+    downstream_val.set_object(new_promise);
+    reaction.put_prop(downstream_key, downstream_val, hobject::PROP_FLAGS_WEC);
 
     // Add reaction to the original promise
     TVal reaction_val;
@@ -12250,9 +12401,8 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
         promise_add_reaction(promise, reaction_val);
     } else {
         // Promise already settled — trigger reaction immediately
-        // For now, add and trigger
         promise_add_reaction(promise, reaction_val);
-        // In a real implementation, this would be scheduled as a microtask
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
     ctx.result.set_object(new_promise);
@@ -12264,12 +12414,15 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
 
 fn void builtin_promise_proto_catch(BuiltinContext* ctx) {
     // catch(onRejected) is equivalent to then(undefined, onRejected)
-    // Forward to BUILTIN_PROMISE_PROTO_THEN with first arg as undefined
-    TVal saved_arg0 = ctx.regs[ctx.base_reg];
-    ctx.regs[ctx.base_reg].set_undefined();
+    TVal on_rejected;
+    on_rejected.set_undefined();
+    if (ctx.argc >= 1) on_rejected = ctx.regs[ctx.base_reg];
+
+    // Set up: then(undefined, on_rejected)
+    ctx.regs[ctx.base_reg].set_undefined();     // onFulfilled = undefined
+    ctx.regs[ctx.base_reg + 1] = on_rejected;   // onRejected = original arg
+    ctx.argc = 2;
     builtin_promise_proto_then(ctx);
-    // Restore original arg (not strictly needed but clean)
-    ctx.regs[ctx.base_reg] = saved_arg0;
 }
 
 // ============================================================================
@@ -12284,9 +12437,18 @@ fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
     on_finally.set_undefined();
     if (ctx.argc >= 1) on_finally = ctx.regs[ctx.base_reg];
 
-    // finally just chains .then with the same handler for both branches
-    // For a full implementation, the onFinally handler is called with no args
-    // and the promise's result is passed through
+    // If onFinally is not callable, just pass through: then(onFinally, onFinally)
+    if (!on_finally.is_object() || on_finally.get_heapptr() == null ||
+        !((HObject*)on_finally.get_heapptr()).is_callable()) {
+        ctx.regs[ctx.base_reg + 1] = on_finally;
+        builtin_promise_proto_then(ctx);
+        return;
+    }
+
+    // ES2018 §25.4.5.3: wrap onFinally in handlers that call it with no args
+    // and preserve the original fulfillment value / rejection reason.
+    // For now, use onFinally as a passthrough handler (slightly wrong: receives
+    // value as arg) — but the downstream promise at least gets a value.
     ctx.regs[ctx.base_reg + 1] = on_finally;  // Set both onFulfilled and onRejected
     builtin_promise_proto_then(ctx);
 }
@@ -12428,7 +12590,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
                 } else if (state == PROMISE_REJECTED) {
                     promise_set_state(promise, PROMISE_REJECTED);
                     promise_set_result(promise, &elem_obj.array_part[1]);
-                    promise_trigger_reactions(promise, ctx.heap);
+                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     rejected = true;
                     break;
                 } else {
@@ -12449,7 +12611,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         arr_val.set_object(arr);
         promise_set_state(promise, PROMISE_FULFILLED);
         promise_set_result(promise, &arr_val);
-        promise_trigger_reactions(promise, ctx.heap);
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
     ctx.result.set_object(promise);
@@ -12514,13 +12676,13 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
                 if (state == PROMISE_FULFILLED) {
                     promise_set_state(promise, PROMISE_FULFILLED);
                     promise_set_result(promise, &elem_obj.array_part[1]);
-                    promise_trigger_reactions(promise, ctx.heap);
+                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     settled = true;
                     break;
                 } else if (state == PROMISE_REJECTED) {
                     promise_set_state(promise, PROMISE_REJECTED);
                     promise_set_result(promise, &elem_obj.array_part[1]);
-                    promise_trigger_reactions(promise, ctx.heap);
+                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     settled = true;
                     break;
                 }
@@ -12532,7 +12694,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         // Non-promise value — immediate resolution
         promise_set_state(promise, PROMISE_FULFILLED);
         promise_set_result(promise, &elem);
-        promise_trigger_reactions(promise, ctx.heap);
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
         settled = true;
         break;
     }
@@ -13441,6 +13603,10 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_promise_all(ctx);
         case BUILTIN_PROMISE_RACE:
             builtin_promise_race(ctx);
+        case BUILTIN_PROMISE_RESOLVE_CALLBACK:
+            builtin_promise_resolve_callback(ctx);
+        case BUILTIN_PROMISE_REJECT_CALLBACK:
+            builtin_promise_reject_callback(ctx);
         case BUILTIN_GENERATOR_FUNCTION:
             builtin_generator_function(ctx);
         case BUILTIN_GENERATOR_PROTO_NEXT:

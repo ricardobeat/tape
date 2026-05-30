@@ -816,10 +816,12 @@ fn void HObject.grow_array(&self, uint new_size) {
     // Recompute pointers
     self.update_prop_pointers();
 
-    // Initialise new slots to undefined
-    usz added_bytes = (usz)(new_size - old_array_size) * TVal::size;
-    void* start = (void*)((char*)self.array_part + (usz)old_array_size * TVal::size);
-    libc::memset(start, 0, added_bytes);
+    // Initialise new slots to the proper undefined representation
+    usz added = (usz)(new_size - old_array_size);
+    ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
+    for (usz i = 0; i < added; i++) {
+        self.array_part[old_array_size + i].bits = undef_bits;
+    }
 }
 
 /// Rebuild (or create) the hash table from scratch.

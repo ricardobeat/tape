@@ -5,6 +5,8 @@ Worker-mode test262 runner.
 Spawns N parallel batch_test_vm --worker processes, feeds tests via stdin,
 collects PASS/FAIL results, enforces per-test timeouts via SIGKILL+restart.
 
+Default: 3 workers (max 4) to avoid OOM from multiple VM heaps.
+
 Usage:
     python3 scripts/run_test262.py              # all phases
     python3 scripts/run_test262.py --phase 2    # single phase
@@ -523,8 +525,8 @@ def main():
     parser.add_argument(
         "--workers",
         type=int,
-        default=os.cpu_count() or 4,
-        help="Number of parallel workers (default: CPU count)",
+        default=3,
+        help="Number of parallel workers (default: 3, max: 4)",
     )
     parser.add_argument(
         "--timeout",
@@ -538,6 +540,11 @@ def main():
         help="ES5-only mode: skip all tests with feature flags (post-ES5 features)",
     )
     args = parser.parse_args()
+
+    # Cap workers to avoid OOM — each worker is a full VM process with its own heap
+    if args.workers > 4:
+        print(f"Warning: capping --workers from {args.workers} to 4 (memory limit)", file=sys.stderr)
+        args.workers = 4
 
     # Build if needed
     if not os.path.isfile(VM_BINARY):

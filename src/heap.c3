@@ -18,6 +18,20 @@ alias ReallocFunc = fn void*(void* udata, void* ptr, usz size);
 alias FreeFunc    = fn void(void* udata, void* ptr);
 alias FatalFunc   = fn void(void* udata, char* msg);
 
+/// Function pointer type for calling a JS handler function from builtins.
+/// Takes an opaque VM pointer, the handler TVal, an argument TVal pointer.
+/// Returns the result TVal.
+alias VmCallHandlerFn = fn TVal(void* vm, TVal handler, TVal* arg);
+
+/// Callback invoked after a microtask handler completes.  Receives the heap,
+/// VM, handler return value, and the downstream promise to resolve.
+alias MicrotaskAfterFn = fn void(void* heap, void* vm, TVal result, TVal downstream);
+
+/// Function pointer type for calling a JS function with multiple arguments.
+/// Takes an opaque VM pointer, the function TVal, args array, arg count, and this TVal.
+/// Returns the result TVal.
+alias VmCallFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs, TVal this_val);
+
 // --- Faults ---------------------------------------------------------------
 
 faultdef HEAP_ALLOC_FAULT;
@@ -200,6 +214,29 @@ struct Heap {
     // GC re-entrancy guard
     bool                gc_running;
 
+    // VM callback for calling JS functions from builtins (set by vm_create)
+    VmCallHandlerFn     call_handler_fn;
+    VmCallFn            call_fn;
+
+    // Microtask completion callback (set by builtins init, resolves downstream promises)
+    MicrotaskAfterFn    microtask_after_fn;
+
+    // Promise resolve/reject target stack (synchronous executor calls only).
+    // Before calling a Promise executor, push the target promise; resolve/reject
+    // lightfuncs read from the top; pop after the executor returns.
+    HObject**  promise_resolve_stack;
+    uint       promise_resolve_top;
+    uint       promise_resolve_cap;
+
+    // Microtask queue — enqueued by promise_trigger_reactions, drained after
+    // each top-level script execution and after vm_call_fn_impl returns.
+    // Each entry is 3 TVal slots: [handler, arg, downstream].
+    // downstream is the promise to resolve with the handler's return value (or undefined).
+    TVal*     microtask_queue;
+    uint      microtask_count;
+    uint      microtask_capacity;
+    bool      microtask_draining;  // re-entrancy guard
+
     // Shape (hidden class) system for inline cache support.
     hobject::Shape*     shapes;
     uint                shape_count;
@@ -328,6 +365,23 @@ fn Heap*? create(
 
     // Initialize shape system
     h.init_shapes();
+
+    // Allocate Promise resolve/reject target stack (16 slots initial)
+    h.promise_resolve_cap = 16;
+    h.promise_resolve_stack = (HObject**)afn(udata, HObject*::size * 16);
+    if (h.promise_resolve_stack != null) {
+        libc::memset(h.promise_resolve_stack, 0, HObject*::size * 16);
+    }
+    h.promise_resolve_top = 0;
+
+    // Allocate microtask queue (32 entries initial = 16 handler+arg pairs)
+    h.microtask_capacity = 16;
+    h.microtask_queue = (TVal*)afn(udata, TVal::size * 32);
+    if (h.microtask_queue != null) {
+        libc::memset(h.microtask_queue, 0, TVal::size * 32);
+    }
+    h.microtask_count = 0;
+    h.microtask_draining = false;
 
     return h;
 }
@@ -523,6 +577,18 @@ fn void Heap.destroy(&self) {
         self.str_table = null;
     }
 
+    // Free microtask queue
+    if (self.microtask_queue != null) {
+        libc::free(self.microtask_queue);
+        self.microtask_queue = null;
+    }
+
+    // Free promise resolve stack
+    if (self.promise_resolve_stack != null) {
+        libc::free(self.promise_resolve_stack);
+        self.promise_resolve_stack = null;
+    }
+
     // Free shape system
     if (self.shapes != null) {
         for (uint i = 0; i < self.shape_count; i++) {
@@ -621,6 +687,10 @@ fn void Heap.reset(&self) {
     }
     self.checkpoint_count = 0;
     self.checkpoint_cap   = 0;
+
+    // Reset microtask queue (keep allocation, zero count)
+    self.microtask_count    = 0;
+    self.microtask_draining = false;
 
     // Clear all other heap state (prototypes, GC roots, execution state)
     self.heap_allocated   = null;
@@ -1235,5 +1305,75 @@ fn void Heap.free_header_list(&self, HeapHeader* list) {
         // free type-specific payloads first.
         self.free_func(self.heap_udata, cur);
         cur = nxt;
+    }
+}
+
+// ============================================================================
+// Microtask queue — PromiseJobs job queue
+// ============================================================================
+
+/// Enqueue a microtask (Promise reaction job).  Each entry stores a
+/// (handler, argument, downstream) triple.  The queue is drained after each
+/// top-level script execution and after vm_call_fn_impl returns for compiled
+/// functions.
+fn void Heap.enqueue_microtask(&self, TVal handler, TVal arg, TVal downstream) {
+    // Grow if needed (each entry = 3 TVal slots)
+    uint needed = self.microtask_count + 1;
+    if (needed > self.microtask_capacity) {
+        uint new_cap = self.microtask_capacity == 0 ? 16 : self.microtask_capacity * 2;
+        usz new_bytes = (usz)new_cap * TVal::size * 3;
+        TVal* new_q = (TVal*)libc::realloc(self.microtask_queue, new_bytes);
+        if (new_q == null) { return; }
+        // Zero the new slots
+        libc::memset(new_q + self.microtask_capacity * 3, 0,
+                     (long)(new_cap - self.microtask_capacity) * TVal::size * 3);
+        self.microtask_queue = new_q;
+        self.microtask_capacity = new_cap;
+    }
+    uint idx = self.microtask_count * 3;
+    self.microtask_queue[idx]     = handler;
+    self.microtask_queue[idx + 1] = arg;
+    self.microtask_queue[idx + 2] = downstream;
+    self.microtask_count++;
+}
+
+/// Drain the microtask queue.  Processes all currently-enqueued entries,
+/// and continues draining if new entries are added during execution
+/// (e.g. a handler resolves another promise).  Uses a re-entrancy guard
+/// to prevent infinite loops.
+fn void Heap.drain_microtasks(&self, void* vm) {
+    if (self.microtask_draining) return;
+    if (self.microtask_count == 0) return;
+    self.microtask_draining = true;
+    defer self.microtask_draining = false;
+
+    for (;;) {
+        uint count = self.microtask_count;
+        if (count == 0) break;
+
+        // Snapshot current count — new entries may be added during processing
+        self.microtask_count = 0;
+
+        for (uint i = 0; i < count; i++) {
+            uint base = i * 3;
+            TVal handler    = self.microtask_queue[base];
+            TVal arg        = self.microtask_queue[base + 1];
+            TVal downstream = self.microtask_queue[base + 2];
+
+            // Call handler(arg) through the VM
+            TVal result;
+            if (self.call_handler_fn != null && vm != null) {
+                result = self.call_handler_fn(vm, handler, &arg);
+            } else {
+                result = arg;
+            }
+
+            // Resolve downstream promise with handler's return value
+            if (downstream.is_object() && downstream.get_heapptr() != null &&
+                self.microtask_after_fn != null && vm != null) {
+                self.microtask_after_fn((void*)self, vm, result, downstream);
+            }
+        }
+        // Loop continues if new microtasks were enqueued during processing
     }
 }

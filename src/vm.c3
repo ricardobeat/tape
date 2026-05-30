@@ -1033,6 +1033,10 @@ fn Vm*? vm_create(Heap* heap) {
     vm.current_func = null;
     vm.curr_pc = null;
 
+    heap.call_handler_fn = &vm_call_handler_fn_impl;
+    heap.call_fn = &vm_call_fn_impl;
+    heap.microtask_after_fn = &builtins::promise_microtask_after;
+
     return vm;
 }
 
@@ -1082,6 +1086,194 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
 
 /// Execute a compiled function from the start.
 /// Matches duk_js_execute_bytecode() outer/inner pattern.
+/// Implementation of Heap.call_fn — calls a JS function with N arguments through the VM.
+fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal this_val) {
+    Vm* vm = (Vm*)vm_ptr;
+    TVal undef;
+    undef.set_undefined();
+
+    // Case 1: lightfunc — dispatch directly via BuiltinContext
+    if (func.is_lightfunc()) {
+        uint fn_idx = (uint)(usz)func.get_heapptr();
+
+        // Temporary register layout: [this, arg0, arg1, ...]
+        // Use stack-allocated array for up to 8 args
+        uint total = 1 + nargs;
+        if (total > 16) total = 16;
+
+        TVal[16] temp_regs;
+        temp_regs[0] = this_val;
+        for (uint i = 0; i < nargs && i < 16; i++) {
+            temp_regs[1 + i] = args[i];
+        }
+
+        builtins::BuiltinContext ctx;
+        ctx.vm = vm;
+        ctx.regs = &temp_regs;
+        ctx.base_reg = 1;
+        ctx.argc = (ushort)nargs;
+        ctx.result = &temp_regs[0];
+        ctx.heap = vm.heap;
+        ctx.this_val = this_val;
+        ctx.is_constructor = false;
+        ctx.needs_re_dispatch = false;
+        ctx.re_nargs = 0;
+        ctx.global_env = vm.global_env;
+        ctx.should_throw = false;
+        ctx.callee_obj = null;
+
+        builtins::dispatch_builtin(fn_idx, &ctx);
+        return *ctx.result;
+    }
+
+    // Case 2: HObject with builtin_fn_index — dispatch via BuiltinContext
+    if (func.is_object() && func.get_heapptr() != null) {
+        HObject* hobj = (HObject*)func.get_heapptr();
+        if (hobj != null && hobj.is_callable() && hobj.comp_func == null && hobj.builtin_fn_index >= 0) {
+            uint fn_idx = (uint)hobj.builtin_fn_index;
+
+            uint total = 1 + nargs;
+            if (total > 16) total = 16;
+
+            TVal[16] temp_regs;
+            temp_regs[0] = this_val;
+            for (uint i = 0; i < nargs && i < 16; i++) {
+                temp_regs[1 + i] = args[i];
+            }
+
+            builtins::BuiltinContext ctx;
+            ctx.vm = vm;
+            ctx.regs = &temp_regs;
+            ctx.base_reg = 1;
+            ctx.argc = (ushort)nargs;
+            ctx.result = &temp_regs[0];
+            ctx.heap = vm.heap;
+            ctx.this_val = this_val;
+            ctx.is_constructor = false;
+            ctx.needs_re_dispatch = false;
+            ctx.re_nargs = 0;
+            ctx.global_env = vm.global_env;
+            ctx.should_throw = false;
+            ctx.callee_obj = hobj;
+
+            builtins::dispatch_builtin(fn_idx, &ctx);
+            return *ctx.result;
+        }
+    }
+
+    // Case 3: compiled function on HObject
+    if (func.is_object() && func.get_heapptr() != null) {
+        HObject* hobj = (HObject*)func.get_heapptr();
+        if (hobj != null && hobj.is_callable() && hobj.comp_func != null) {
+            CompiledFunction* target = hobj.comp_func;
+
+            // Save current VM state
+            uint saved_act_count = vm.activation_count;
+            uint saved_valstack_bottom = vm.valstack_bottom;
+            TVal* saved_valstack_top = vm.valstack_top;
+            TVal* saved_valstack = vm.valstack;
+            uint saved_valstack_size = vm.valstack_size;
+            TVal* saved_valstack_end = vm.valstack_end;
+            CompiledFunction* saved_current_func = vm.current_func;
+
+            Activation[MAX_CALLS] saved_acts;
+            libc::memcpy(&saved_acts, &vm.activations, saved_act_count * TVal::size * 5);
+
+            // Save valstack content
+            uint used_slots = 0;
+            if (saved_valstack_top > saved_valstack) {
+                used_slots = (uint)((usz)saved_valstack_top - (usz)saved_valstack) / (uint)TVal::size;
+            }
+            TVal* saved_content = null;
+            if (used_slots > 0) {
+                saved_content = (TVal*)libc::malloc(used_slots * TVal::size);
+                if (saved_content != null) {
+                    libc::memcpy(saved_content, saved_valstack, used_slots * TVal::size);
+                }
+            }
+
+            // Set up activation[0] for the function
+            Activation* act = &vm.activations[0];
+            vm.activation_count = 1;
+            act.func = target;
+            act.parent = null;
+            act.var_env = hobj.var_env;
+            act.lex_env = hobj.lex_env;
+            act.cat = null;
+            act.curr_pc = target.code;
+            act.bottom_byteoff = 0;
+            act.retval_byteoff = 0;
+            act.flags = ACT_FLAG_STRICT;
+            act.this_binding = this_val;
+
+            // Allocate value stack for function
+            uint nregs = target.num_regs;
+            if (!ensure_valstack(vm, nregs)) {
+                if (saved_content != null) libc::free(saved_content);
+                return undef;
+            }
+
+            // Initialize registers and copy args
+            for (uint i = 0; i < nregs; i++) {
+                vm.valstack[i].set_undefined();
+            }
+            uint copy_n = nargs < nregs ? nargs : nregs;
+            for (uint i = 0; i < copy_n; i++) {
+                vm.valstack[i] = args[i];
+            }
+            vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
+            vm.valstack_bottom = 0;
+            vm.current_func = target;
+
+            // Run the function via Vm.run (skip Vm.execute init — we already set up state)
+            TVal? result_opt = Vm.run(vm);
+            TVal result;
+            if (try r = result_opt) {
+                result = r;
+            } else {
+                result = vm.return_val;
+            }
+
+            // Capture potentially-reallocated valstack pointer
+            TVal* cur_valstack = vm.valstack;
+            uint cur_valstack_size = vm.valstack_size;
+            TVal* cur_valstack_end = vm.valstack_end;
+
+            // Restore VM state
+            vm.activation_count = saved_act_count;
+            vm.current_func = saved_current_func;
+            libc::memcpy(&vm.activations, &saved_acts, saved_act_count * TVal::size * 5);
+            vm.valstack_bottom = saved_valstack_bottom;
+            vm.valstack_top = saved_valstack_top;
+            vm.valstack = cur_valstack;
+            vm.valstack_size = cur_valstack_size;
+            vm.valstack_end = cur_valstack_end;
+
+            // Restore valstack content
+            if (saved_content != null) {
+                if (used_slots <= cur_valstack_size) {
+                    libc::memcpy(cur_valstack, saved_content, used_slots * TVal::size);
+                }
+                libc::free(saved_content);
+            }
+
+            // Drain microtasks after callback execution
+            vm.heap.drain_microtasks((void*)vm);
+
+            return result;
+        }
+    }
+
+    return undef;
+}
+
+/// Implementation of Heap.call_handler_fn — delegates to vm_call_fn_impl.
+fn TVal vm_call_handler_fn_impl(void* vm_ptr, TVal handler, TVal* arg) {
+    TVal undef;
+    undef.set_undefined();
+    return vm_call_fn_impl(vm_ptr, handler, arg, 1, undef);
+}
+
 fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     // Set up initial activation (matches outer executor setup)
     Activation* entry_act = &vm.activations[0];
@@ -1116,6 +1308,17 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
     vm.current_func = func;
 
+    TVal? result = Vm.run(vm);
+
+    // Drain microtask queue after top-level script execution
+    vm.heap.drain_microtasks((void*)vm);
+
+    return result;
+}
+
+/// Execute the bytecode dispatch loop. Assumes activation stack and registers
+/// are already set up by the caller.
+fn TVal? Vm.run(Vm* vm) {
     Instruction* code_base;
     uint code_count;
     TVal* constants;
@@ -1123,6 +1326,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     Instruction* curr_pc;
     bool needs_restart;
     hobject::ICEntry* ic_base;
+    uint nregs;
 
     // Outer restart loop: on ECMAScript-to-ECMAScript calls, reload state
     needs_restart = true;
@@ -2505,6 +2709,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                 ctx.re_nargs = 0;
                 ctx.global_env = vm.global_env;
                 ctx.should_throw = false;
+                ctx.callee_obj = null;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
 
@@ -2598,6 +2803,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
                     ctx.re_nargs = 0;
                     ctx.global_env = vm.global_env;
                     ctx.should_throw = false;
+                    ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
 
                     if (ctx.should_throw) {
