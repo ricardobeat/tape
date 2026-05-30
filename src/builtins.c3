@@ -13528,8 +13528,6 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_fromcodepoint(ctx);
         case BUILTIN_ARRAY_PROTO_FLAT:
             builtin_array_proto_flat(ctx);
-        case BUILTIN_ARRAY_PROTO_FLATMAP:
-            builtin_array_proto_flatMap(ctx);
         case BUILTIN_ARRAY_PROTO_TOREVERSED:
             builtin_array_proto_toReversed(ctx);
         case BUILTIN_ARRAY_PROTO_TOSORTED:
@@ -15171,7 +15169,8 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_compiled_proto_method(proto, heap, global_env, "findIndex",
         "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return k;k++}return -1}")) return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
-    if (!register_array_proto_method(proto, heap, "flatMap",   BUILTIN_ARRAY_PROTO_FLATMAP))   return false;
+    if (!register_compiled_proto_method(proto, heap, global_env, "flatMap",
+        "(callback,thisArg){var O=Object(this);var len=O.length;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;while(j<mapped.length){A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;
     if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
     if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
     if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;

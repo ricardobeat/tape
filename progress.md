@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 89 (AggregateError + Promise.any — Phase 17-20 +2 pass, -1 skip)
+**Last Updated:** Session 91 (Array.prototype.flat/flatMap — Phase 5/6 pass increase)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -417,4 +417,23 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 ---
 
-**NEXT TASK**: Implement `Array.prototype.flat` and `Array.prototype.flatMap` — ES2019 methods that flatten arrays. About 100 test262 tests exist. Estimated impact: moderate pass increase.~ Or fix the `typeof X.y` compiler bug to unblock sync property access tests across the board.
+### Session 91: Array.prototype.flat/flatMap
+
+**Task**: Implement `Array.prototype.flat(depth)` (ES2019 §22.1.3.10) and `Array.prototype.flatMap(callback, thisArg)` (ES2019 §22.1.3.11). `flat()` flattens array elements up to `depth` levels. `flatMap()` maps each element through `callback` then flattens by 1.
+
+**Changes**:
+- `flat()`: C implementation (`builtin_array_proto_flat`) with `flatten_into()` helper — recursively flattens arrays checking `ObjClass.ARRAY`. Works with `depth=0`, negative (treated as 0), positive, Infinity.
+- `flatMap()`: Changed from C stub (ignored callback) to a compiled JS source string via `register_compiled_proto_method` (same as `map`, `forEach`). Calls `callback.call(thisArg, ...)`, checks `Array.isArray(result)`, spreads arrays element-by-element.
+- Removed `case BUILTIN_ARRAY_PROTO_FLATMAP:` from dispatch (dead code — compiled JS doesn't use lightfunc dispatch).
+
+**Impact**: Core flat/flatMap behavior works. ~44 test files. Most blocked by pre-existing issues:
+- `typeof` dotted expression → compiler bug
+- `verifyProperty` descriptors → lightfunc limitation
+- `thisArg` → pre-existing VM `LDTHIS` bug (affects all array methods)
+- Species/proxy → not implemented
+
+---
+
+**NEXT TASK**: Fix the `typeof X.y` compiler bug to unblock sync property access tests across the board (~100 tests impacted across Promise.allSettled, Promise.any, flat, flatMap, and any builtin using dot-access typeof checks). The bug is in `src/compiler.c3` where `TYPEOFIDENT` is emitted for dotted member expressions instead of `TYPEOF` + `GETPROP`.
+
+After the compiler fix, re-run the test262 runner to measure pass rate improvements across all builtins.
