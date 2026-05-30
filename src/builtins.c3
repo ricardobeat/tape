@@ -144,7 +144,10 @@ const uint BUILTIN_OBJECT_PROTO_HASOWNPROPERTY  = 108;
 const uint BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE = 109;
 const uint BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF  = 107;
 const uint BUILTIN_OBJECT_PROTO_TOLOCALESTRING = 110;
-const uint BUILTIN_COUNT                         = 261;
+const uint BUILTIN_DATE_PROTO_TOLOCALESTRING   = 261;
+const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
+const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
+const uint BUILTIN_COUNT                         = 264;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -6344,6 +6347,35 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 232: return { "with", 2 };
         case 233: return { "match", 1 };
         case 234: return { "search", 1 };
+        case 235: return { "getUTCFullYear", 0 };
+        case 236: return { "getUTCMonth", 0 };
+        case 237: return { "getUTCDate", 0 };
+        case 238: return { "getUTCDay", 0 };
+        case 239: return { "getUTCHours", 0 };
+        case 240: return { "getUTCMinutes", 0 };
+        case 241: return { "getUTCSeconds", 0 };
+        case 242: return { "getUTCMilliseconds", 0 };
+        case 243: return { "setTime", 1 };
+        case 244: return { "setMilliseconds", 1 };
+        case 245: return { "setSeconds", 2 };
+        case 246: return { "setMinutes", 3 };
+        case 247: return { "setHours", 4 };
+        case 248: return { "setDate", 1 };
+        case 249: return { "setMonth", 2 };
+        case 250: return { "setFullYear", 3 };
+        case 251: return { "setUTCMilliseconds", 1 };
+        case 252: return { "setUTCSeconds", 2 };
+        case 253: return { "setUTCMinutes", 3 };
+        case 254: return { "setUTCHours", 4 };
+        case 255: return { "setUTCDate", 1 };
+        case 256: return { "setUTCMonth", 2 };
+        case 257: return { "setUTCFullYear", 3 };
+        case 258: return { "toISOString", 0 };
+        case 259: return { "toUTCString", 0 };
+        case 260: return { "toGMTString", 0 };
+        case 261: return { "toLocaleString", 0 };
+        case 262: return { "toLocaleDateString", 0 };
+        case 263: return { "toLocaleTimeString", 0 };
         default: return { "", -1 };
     }
 }
@@ -9420,6 +9452,48 @@ fn void builtin_date_proto_toString(BuiltinContext* ctx) {
     double time_val = date_get_time_value(&this_val);
     char[128] buf;
     usz len = date_format_to_string(time_val, &buf, 128);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.set_string(result);
+}
+
+/// Date.prototype.toLocaleString() — ES5 §15.9.5.5
+/// Falls back to toString() (no locale-specific formatting).
+fn void builtin_date_proto_toLocaleString(BuiltinContext* ctx) {
+    builtin_date_proto_toString(ctx);
+}
+
+/// Date.prototype.toLocaleDateString() — ES5 §15.9.5.6
+/// Returns the date portion only (YYYY-MM-DD style).
+fn void builtin_date_proto_toLocaleDateString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    if (math::is_nan(time_val)) {
+        HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
+        ctx.result.set_string(inv);
+        return;
+    }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
+    char[32] buf;
+    usz len = (usz)libc::snprintf(&buf, 32, "%04d-%02d-%02d", (int)year, (int)(month + 1), (int)day);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.set_string(result);
+}
+
+/// Date.prototype.toLocaleTimeString() — ES5 §15.9.5.7
+/// Returns the time portion only (HH:MM:SS style).
+fn void builtin_date_proto_toLocaleTimeString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    if (math::is_nan(time_val)) {
+        HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
+        ctx.result.set_string(inv);
+        return;
+    }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
+    char[32] buf;
+    usz len = (usz)libc::snprintf(&buf, 32, "%02d:%02d:%02d", (int)hour, (int)min, (int)sec);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
     ctx.result.set_string(result);
 }
@@ -13269,6 +13343,12 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_date_proto_toUTCString(ctx);
         case BUILTIN_DATE_PROTO_TOGMTSTRING:
             builtin_date_proto_toUTCString(ctx);
+        case BUILTIN_DATE_PROTO_TOLOCALESTRING:
+            builtin_date_proto_toLocaleString(ctx);
+        case BUILTIN_DATE_PROTO_TOLOCALEDATESTRING:
+            builtin_date_proto_toLocaleDateString(ctx);
+        case BUILTIN_DATE_PROTO_TOLOCALETIMESTRING:
+            builtin_date_proto_toLocaleTimeString(ctx);
         case BUILTIN_REGEXP:
             builtin_regexp(ctx);
         case BUILTIN_REGEXP_PROTO_TEST:
@@ -14817,6 +14897,15 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add Date.prototype.toGMTString() (alias for toUTCString)
     if (!register_string_proto_method(proto, heap, "toGMTString", BUILTIN_DATE_PROTO_TOGMTSTRING)) return false;
+
+    // Add Date.prototype.toLocaleString() — ES5 §15.9.5.5
+    if (!register_string_proto_method(proto, heap, "toLocaleString", BUILTIN_DATE_PROTO_TOLOCALESTRING)) return false;
+
+    // Add Date.prototype.toLocaleDateString() — ES5 §15.9.5.6
+    if (!register_string_proto_method(proto, heap, "toLocaleDateString", BUILTIN_DATE_PROTO_TOLOCALEDATESTRING)) return false;
+
+    // Add Date.prototype.toLocaleTimeString() — ES5 §15.9.5.7
+    if (!register_string_proto_method(proto, heap, "toLocaleTimeString", BUILTIN_DATE_PROTO_TOLOCALETIMESTRING)) return false;
 
     // Register Date as a global constructor (proper function object for static methods)
     HObject*? date_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
