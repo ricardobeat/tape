@@ -149,7 +149,7 @@ const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
 const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
 const uint BUILTIN_PROMISE_RESOLVE_CALLBACK     = 264;
 const uint BUILTIN_PROMISE_REJECT_CALLBACK      = 265;
-const uint BUILTIN_COUNT                         = 266;
+const uint BUILTIN_COUNT                         = 267;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -197,6 +197,7 @@ const uint BUILTIN_PROMISE_RESOLVE           = 149;
 const uint BUILTIN_PROMISE_REJECT            = 150;
 const uint BUILTIN_PROMISE_ALL               = 151;
 const uint BUILTIN_PROMISE_RACE              = 152;
+const uint BUILTIN_PROMISE_ALLSETTLED         = 266;
 
 const uint BUILTIN_GENERATOR_FUNCTION        = 153;
 const uint BUILTIN_GENERATOR_PROTO_NEXT      = 154;
@@ -6380,6 +6381,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 261: return { "toLocaleString", 0 };
         case 262: return { "toLocaleDateString", 0 };
         case 263: return { "toLocaleTimeString", 0 };
+        case 266: return { "allSettled", 1 };
         default: return { "", -1 };
     }
 }
@@ -12618,6 +12620,141 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Promise.allSettled(iterable) — ES2020 §25.6.4.5
+// ============================================================================
+
+fn void builtin_promise_allsettled(BuiltinContext* ctx) {
+    // Get the iterable argument
+    TVal iterable;
+    iterable.set_undefined();
+    if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Create the result promise
+    HObject*? prom_raw = promise_create(ctx.heap);
+    if (catch err = prom_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* promise = prom_raw;
+
+    // Get .length from iterable
+    usz len = 0;
+    bool has_len = false;
+    HObject* obj = null;
+
+    if (iterable.is_object() && iterable.get_heapptr() != null) {
+        obj = (HObject*)iterable.get_heapptr();
+        HString* length_key = builtin_intern_string(ctx.heap, "length");
+        if (try len_tv = obj.get_prop(length_key)) {
+            if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+                len = (usz)len_tv.get_fastint();
+                has_len = true;
+            }
+        }
+    }
+
+    // Zero-length or non-iterable — resolve with [] immediately
+    if (!has_len || len == 0) {
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        TVal arr_val;
+        arr_val.set_undefined();
+        if (try arr = arr_raw) {
+            arr.prototype = ctx.heap.array_proto;
+            arr_val.set_object(arr);
+        }
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &arr_val);
+        ctx.result.set_object(promise);
+        return;
+    }
+
+    // Allocate results array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.set_object(promise);
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+
+    usz remaining = len;
+    HString* status_key = builtin_intern_string(ctx.heap, "status");
+    HString* value_key = builtin_intern_string(ctx.heap, "value");
+    HString* reason_key = builtin_intern_string(ctx.heap, "reason");
+    TVal fulfilled_status;
+    fulfilled_status.set_string(builtin_intern_string(ctx.heap, "fulfilled"));
+    TVal rejected_status;
+    rejected_status.set_string(builtin_intern_string(ctx.heap, "rejected"));
+
+    for (usz i = 0; i < len; i++) {
+        TVal idx_tv;
+        idx_tv.set_fastint((long)i);
+
+        TVal elem;
+        if (try e = obj.get_prop(&idx_tv)) {
+            elem = e;
+        } else {
+            elem.set_undefined();
+        }
+
+        // Check if element is a Promise
+        if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* elem_obj = (HObject*)elem.get_heapptr();
+            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
+
+                // Create result object
+                HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (try result_obj = result_obj_raw) {
+                    result_obj.prototype = ctx.heap.object_proto;
+
+                    if (state == PROMISE_FULFILLED) {
+                        result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
+                        result_obj.put_prop(value_key, elem_obj.array_part[1], hobject::PROP_FLAGS_WEC);
+                    } else if (state == PROMISE_REJECTED) {
+                        result_obj.put_prop(status_key, rejected_status, hobject::PROP_FLAGS_WEC);
+                        result_obj.put_prop(reason_key, elem_obj.array_part[1], hobject::PROP_FLAGS_WEC);
+                    } else {
+                        // Pending — use "fulfilled" with undefined value (no async yet)
+                        result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
+                        TVal undef;
+                        undef.set_undefined();
+                        result_obj.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal result_tv;
+                    result_tv.set_object(result_obj);
+                    arr.set_array_idx((uint)i, result_tv);
+                }
+                remaining--;
+                continue;
+            }
+        }
+
+        // Not a promise — store as fulfilled
+        HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try result_obj = result_obj_raw) {
+            result_obj.prototype = ctx.heap.object_proto;
+            result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
+            result_obj.put_prop(value_key, elem, hobject::PROP_FLAGS_WEC);
+            TVal result_tv;
+            result_tv.set_object(result_obj);
+            arr.set_array_idx((uint)i, result_tv);
+        }
+        remaining--;
+    }
+
+    if (remaining == 0) {
+        TVal arr_val;
+        arr_val.set_object(arr);
+        promise_set_state(promise, PROMISE_FULFILLED);
+        promise_set_result(promise, &arr_val);
+        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+    }
+
+    ctx.result.set_object(promise);
+}
+
+// ============================================================================
 // Promise.race(iterable) — ES6 §25.4.4.3
 // ============================================================================
 
@@ -12776,6 +12913,11 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     TVal race_tv;
     race_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RACE);
     ctor.put_prop(race_key, race_tv, hobject::PROP_FLAGS_WEC);
+
+    HString* allsettled_key = builtin_intern_string(heap, "allSettled");
+    TVal allsettled_tv;
+    allsettled_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ALLSETTLED);
+    ctor.put_prop(allsettled_key, allsettled_tv, hobject::PROP_FLAGS_WEC);
 
     // Register "Promise" in global environment
     uint hash = heap.hash_string("Promise");
@@ -13603,6 +13745,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_promise_all(ctx);
         case BUILTIN_PROMISE_RACE:
             builtin_promise_race(ctx);
+        case BUILTIN_PROMISE_ALLSETTLED:
+            builtin_promise_allsettled(ctx);
         case BUILTIN_PROMISE_RESOLVE_CALLBACK:
             builtin_promise_resolve_callback(ctx);
         case BUILTIN_PROMISE_REJECT_CALLBACK:

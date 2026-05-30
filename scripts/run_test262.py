@@ -87,7 +87,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-block|"
     # Other unimplemented ES features
     r"object-rest|optional-chaining|logical-assignment|"
-    r"Promise\.allSettled|Promise\.any"
+    r"Promise\.any"
     r")\b"
 )
 
@@ -264,7 +264,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"array-grouping|upsert|set-methods|"
     r"symbols-as-weakmap-keys|cross-realm|"
     r"await-dictionary|"
-    r"Promise\.allSettled|Promise\.any"
+    r"Promise\.any"
     r")\b"
 )
 

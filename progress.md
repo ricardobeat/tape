@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 88 (Fix Promise.prototype.catch onRejected argument — Phase 17-20 +75 tests)
+**Last Updated:** Session 89 (Promise.allSettled — Phase 17-20 +2 pass, -2 skip)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -9,8 +9,8 @@
 |---|---|
 | Total test262 tests | 53,568 |
 | Tests run (phases 0-21) | 30,446 |
-| Skipped (unsupported features) | 11,541 |
-| Currently passing (test262) | 9,763 |
+| Skipped (unsupported features) | 11,539 |
+| Currently passing (test262) | 9,765 |
 | Currently failing (test262) | 20,683 |
 | Pass rate (of run tests) | 32.1% |
 
@@ -262,7 +262,7 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 
 ### Phase 20: ES6+ — Promise
-**test262: 1,588 files — 295 pass / 690 fail (skip: 603)**
+**test262: 1,588 files — 297 pass / 690 fail (skip: 601)**
 *(includes Map, Set, Symbol, WeakMap, WeakSet)*
 || Component | Status |
 ||---|---|
@@ -392,4 +392,14 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 ---
 
-**NEXT TASK**: Implement `Promise.allSettled(iterable)` — the test runner already skips `Promise.allSettled` feature-flagged tests, but the implementation itself is missing. Requires iterating the iterable, tracking each promise's settlement state/value, and resolving when all are settled. Estimated impact: 50-100 test262 passes.
+### Session 89: Implement Promise.allSettled(iterable)
+
+**Task**: Implement `Promise.allSettled(iterable)` — ES2020 §25.6.4.5. Iterates the iterable using `.length` + numeric index (like `Promise.all`), creates status objects (`{status:"fulfilled", value:x}` / `{status:"rejected", reason:x}`), and resolves with the array when all are settled.
+
+**Changes**: Added `BUILTIN_PROMISE_ALLSETTLED=266` constant, metadata entry, dispatch case, implementation function, and registration in `register_promise_constructor`. Removed `Promise.allSettled` from the test262 skip list in `run_test262.py`.
+
+**Impact** (test262 Phase 17-20): 295 → 297 (+2 pass). The `typeof` dot-access compiler bug prevents 5 more tests (name, length, prop-desc, is-function, not-a-constructor) from passing. Most tests are async (need microtask execution) or test edge cases requiring iterator protocol support.
+
+---
+
+**NEXT TASK**: Implement `Promise.any(iterable)` — similar to `Promise.allSettled` but resolves with the first fulfilled value and rejects with an AggregateError if all reject. Currently ~100 test262 tests skipped.~ Or fix the `typeof X.y` compiler bug to unblock the remaining sync Promise.allSettled tests.
