@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 92 (GC linked-list + EnvRecord pool — infrastructure cleanup)
+**Last Updated:** Session 93 (iterative GC marking + iterative env_destroy — stack safety)
 **Target:** Full test262 conformance
 
 ## Summary

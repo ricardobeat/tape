@@ -42,7 +42,8 @@ const uint  INITIAL_STR_TABLE_SIZE  = 256;
 const float STR_TABLE_LOAD_FACTOR   = 0.70;
 const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
-const int   GC_MARK_RECURSE_LIMIT   = 256;
+/// Initial capacity for the gray object stack (grows as needed).
+const uint  GRAY_STACK_INITIAL_CAP  = 1024;
 const usz   STRS_CACHE_SIZE         = 256;
 const uint  GC_MAX_ROOTS            = 128;
 
@@ -134,10 +135,14 @@ struct Heap {
     void*[STRS_CACHE_SIZE]  strs;
 
     // GC state
-    int   gc_mark_recurse_depth;
-    int   gc_mark_recurse_limit;
     long  gc_trigger_counter;
     uint  live_obj_count;
+
+    // Gray set for iterative mark — dynamic array of HObject* pointers.
+    // Avoids C-stack overflow on deep object graphs.
+    void** gray_objects;
+    uint   gray_count;
+    uint   gray_capacity;
 
     // Current execution thread (HThread*)
     void* curr_thread;
@@ -337,8 +342,17 @@ fn Heap*? create(
     h.fatal_func   = fatfn;
 
     // GC tunables
-    h.gc_mark_recurse_limit = GC_MARK_RECURSE_LIMIT;
     h.gc_trigger_counter    = GC_INITIAL_TRIGGER;
+
+    // Allocate gray object stack
+    void* gray_raw = afn(udata, void*::size * GRAY_STACK_INITIAL_CAP);
+    if (gray_raw == null) {
+        ffn(udata, raw);
+        return HEAP_ALLOC_FAULT~;
+    }
+    h.gray_objects   = (void**)gray_raw;
+    h.gray_count     = 0;
+    h.gray_capacity  = GRAY_STACK_INITIAL_CAP;
 
     // PRNG seed (non-zero required for xorshift32)
     h.rnd_state = 0xDEAD_BEEF;
@@ -595,6 +609,12 @@ fn void Heap.destroy(&self) {
         self.microtask_queue = null;
     }
 
+    // Free gray stack
+    if (self.gray_objects != null) {
+        libc::free(self.gray_objects);
+        self.gray_objects = null;
+    }
+
     // Free promise resolve stack
     if (self.promise_resolve_stack != null) {
         libc::free(self.promise_resolve_stack);
@@ -715,7 +735,7 @@ fn void Heap.reset(&self) {
     self.gc_root_count    = 0;
     self.gc_running       = false;
     self.gc_trigger_counter = GC_INITIAL_TRIGGER;
-    self.gc_mark_recurse_limit = GC_MARK_RECURSE_LIMIT;
+    self.gray_count       = 0;
 
     // Clear builtin prototype pointers
     self.err_proto        = null;
@@ -925,87 +945,134 @@ fn void Heap.register_gc_root(&self, HeapHeader* hdr) {
 }
 
 // ============================================================================
-// GC marking helpers
+// GC marking helpers — tri-color marking with explicit gray stack
 // ============================================================================
 
 /**
- * Mark a TVal value as reachable.  If the value holds a heap-allocated
- * object (OBJECT or STRING tag), the pointed-to object is marked.
+ * Push an object onto the gray stack for later child processing.
+ * Grows the stack dynamically when full.
  */
-fn void Heap.mark_tval(&self, TVal* v, int depth) {
+fn void Heap.gray_push(&self, HObject* obj) {
+    if (self.gray_count >= self.gray_capacity) {
+        usz new_cap = self.gray_capacity > 0
+                      ? (usz)self.gray_capacity * 2
+                      : (usz)GRAY_STACK_INITIAL_CAP;
+        void* new_arr = libc::realloc(self.gray_objects, void*::size * new_cap);
+        if (new_arr == null) {
+            self.fatal_func(self.heap_udata, "gray stack OOM during GC marking");
+            return;
+        }
+        self.gray_objects  = (void**)new_arr;
+        self.gray_capacity = (uint)new_cap;
+    }
+    self.gray_objects[self.gray_count++] = obj;
+}
+
+/**
+ * Pop an object from the gray stack.  Returns null when the stack
+ * is empty.
+ */
+fn HObject* Heap.gray_pop(&self) {
+    if (self.gray_count == 0) { return null; }
+    self.gray_count--;
+    return (HObject*)self.gray_objects[self.gray_count];
+}
+
+/**
+ * Mark a TVal value as reachable.
+ *
+ * If the value holds a heap-allocated object (OBJECT tag), marks the
+ * object reachable and pushes it onto the gray stack for later child
+ * processing.  Strings are marked directly (they have no outgoing edges).
+ */
+fn void Heap.mark_tval(&self, TVal* v) {
     if (v.is_object()) {
         HObject* obj = (HObject*)v.get_heapptr();
         if (obj != null) {
-            self.mark_object(obj, depth + 1);
+            HeapHeader* hdr = (HeapHeader*)obj;
+            if (!hdr.is_reachable()) {
+                hdr.set_reachable();
+                self.gray_push(obj);
+            }
         }
     } else if (v.is_string()) {
         HString* s = (HString*)v.get_heapptr();
         if (s != null) {
-            HeapHeader* hdr = (HeapHeader*)s;
-            hdr.set_reachable();
+            ((HeapHeader*)s).set_reachable();
         }
     }
 }
 
 /**
- * Recursively mark an HObject and all objects reachable from it.
- * Uses a depth limit to prevent C-stack overflow on deeply nested
- * prototype chains or property graphs.
+ * Mark an HObject pointer as reachable and schedule it for child
+ * processing via the gray stack.  No-op when already reachable.
  */
-fn void Heap.mark_object(&self, HObject* obj, int depth) {
+fn void Heap.mark_hobject(&self, HObject* obj) {
     if (obj == null) { return; }
-
     HeapHeader* hdr = (HeapHeader*)obj;
-    if (hdr.is_reachable()) { return; }
-    hdr.set_reachable();
-
-    if (depth > GC_MARK_RECURSE_LIMIT) { return; }
-
-    // Mark prototype chain
-    if (obj.prototype != null) {
-        self.mark_object(obj.prototype, depth + 1);
+    if (!hdr.is_reachable()) {
+        hdr.set_reachable();
+        self.gray_push(obj);
     }
+}
 
-    // Mark property keys (HString*) and values (TVal)
-    for (uint i = 0; i < obj.prop_count; i++) {
-        HString* key = (HString*)obj.props[i].key;
-        if (key != null) {
-            ((HeapHeader*)key).set_reachable();
+/**
+ * Drain the gray stack by popping objects and processing their
+ * outgoing references (prototype, properties, array elements,
+ * primitive wrapper value, environment bindings).
+ *
+ * Each newly discovered object is pushed onto the gray stack via
+ * mark_tval / mark_hobject, so the loop eventually reaches
+ * the transitive closure of all reachable objects.
+ *
+ * Iterative — no recursion, no depth cap, no C-stack overflow.
+ */
+fn void Heap.drain_gray(&self) {
+    while (self.gray_count > 0) {
+        HObject* obj = self.gray_pop();
+
+        // --- Prototype chain ---
+        if (obj.prototype != null) {
+            self.mark_hobject(obj.prototype);
         }
-        self.mark_tval(&obj.props[i].value, depth);
-        self.mark_tval(&obj.props[i].getter, depth);
-        self.mark_tval(&obj.props[i].setter, depth);
-    }
 
-    // Mark array part values
-    if (obj.array_part != null) {
-        for (uint i = 0; i < obj.array_size; i++) {
-            self.mark_tval(&obj.array_part[i], depth);
+        // --- Named properties ---
+        for (uint i = 0; i < obj.prop_count; i++) {
+            HString* key = (HString*)obj.props[i].key;
+            if (key != null) {
+                ((HeapHeader*)key).set_reachable();
+            }
+            self.mark_tval(&obj.props[i].value);
+            self.mark_tval(&obj.props[i].getter);
+            self.mark_tval(&obj.props[i].setter);
         }
-    }
 
-    // Mark primitive value (wrapper objects like Boolean, Number, String)
-    self.mark_tval(&obj.primitive_value, depth);
+        // --- Array part ---
+        if (obj.array_part != null) {
+            for (uint i = 0; i < obj.array_size; i++) {
+                self.mark_tval(&obj.array_part[i]);
+            }
+        }
 
-    // Mark environment bindings (var_env and lex_env)
-    if (obj.var_env != null && obj.var_env.bindings != null) {
-        self.mark_object(obj.var_env.bindings, depth + 1);
-    }
-    if (obj.lex_env != null && obj.lex_env.bindings != null) {
-        self.mark_object(obj.lex_env.bindings, depth + 1);
-    }
+        // --- Primitive value (wrapper objects) ---
+        self.mark_tval(&obj.primitive_value);
 
-    // Mark CompiledFunction constants (may contain objects/strings).
-    // The comp_func field type (CompiledFunction*) is defined in bytecode.c3
-    // and its fields are not directly accessible here without circular imports.
-    // Constants are typically numbers/booleans/strings; string constants are
-    // already reachable through the string table marking below.
-    // TODO: add a helper in bytecode.c3 to mark constants and inner funcs.
+        // --- Environment bindings (var_env, lex_env) ---
+        if (obj.var_env != null && obj.var_env.bindings != null) {
+            self.mark_hobject(obj.var_env.bindings);
+        }
+        if (obj.lex_env != null && obj.lex_env.bindings != null) {
+            self.mark_hobject(obj.lex_env.bindings);
+        }
+
+        // TODO: mark CompiledFunction constants (bytecode.c3 helper)
+    }
 }
 
 /**
  * Mark all GC roots: registered roots, built-in prototypes, and the
- * entire string table (to keep interned strings alive).
+ * entire string table (to keep interned strings alive).  Uses the gray
+ * stack for iterative transitive marking — no recursion, no depth cap.
  */
 fn void Heap.mark_roots(&self) {
     // Mark all registered roots
@@ -1013,7 +1080,7 @@ fn void Heap.mark_roots(&self) {
         HeapHeader* hdr = (HeapHeader*)self.gc_roots[i];
         if (hdr != null) {
             if (hdr.is_object()) {
-                self.mark_object((HObject*)hdr, 0);
+                self.mark_hobject((HObject*)hdr);
             } else {
                 hdr.set_reachable();
             }
@@ -1021,31 +1088,31 @@ fn void Heap.mark_roots(&self) {
     }
 
     // Mark built-in error prototypes
-    if (self.err_proto != null) { self.mark_object(self.err_proto, 0); }
-    if (self.type_err_proto != null) { self.mark_object(self.type_err_proto, 0); }
-    if (self.range_err_proto != null) { self.mark_object(self.range_err_proto, 0); }
-    if (self.ref_err_proto != null) { self.mark_object(self.ref_err_proto, 0); }
-    if (self.syntax_err_proto != null) { self.mark_object(self.syntax_err_proto, 0); }
-    if (self.eval_err_proto != null) { self.mark_object(self.eval_err_proto, 0); }
-    if (self.uri_err_proto != null) { self.mark_object(self.uri_err_proto, 0); }
-    if (self.aggregate_err_proto != null) { self.mark_object(self.aggregate_err_proto, 0); }
+    if (self.err_proto != null) { self.mark_hobject(self.err_proto); }
+    if (self.type_err_proto != null) { self.mark_hobject(self.type_err_proto); }
+    if (self.range_err_proto != null) { self.mark_hobject(self.range_err_proto); }
+    if (self.ref_err_proto != null) { self.mark_hobject(self.ref_err_proto); }
+    if (self.syntax_err_proto != null) { self.mark_hobject(self.syntax_err_proto); }
+    if (self.eval_err_proto != null) { self.mark_hobject(self.eval_err_proto); }
+    if (self.uri_err_proto != null) { self.mark_hobject(self.uri_err_proto); }
+    if (self.aggregate_err_proto != null) { self.mark_hobject(self.aggregate_err_proto); }
 
     // Mark built-in constructor prototypes
-    if (self.object_proto != null) { self.mark_object(self.object_proto, 0); }
-    if (self.array_proto != null) { self.mark_object(self.array_proto, 0); }
-    if (self.function_proto != null) { self.mark_object(self.function_proto, 0); }
-    if (self.string_proto != null) { self.mark_object(self.string_proto, 0); }
-    if (self.number_proto != null) { self.mark_object(self.number_proto, 0); }
-    if (self.bool_proto != null) { self.mark_object(self.bool_proto, 0); }
-    if (self.date_proto != null) { self.mark_object(self.date_proto, 0); }
-    if (self.regexp_proto != null) { self.mark_object(self.regexp_proto, 0); }
-    if (self.map_proto != null) { self.mark_object(self.map_proto, 0); }
-    if (self.set_proto != null) { self.mark_object(self.set_proto, 0); }
-    if (self.weakmap_proto != null) { self.mark_object(self.weakmap_proto, 0); }
-    if (self.weakset_proto != null) { self.mark_object(self.weakset_proto, 0); }
-    if (self.symbol_proto != null) { self.mark_object(self.symbol_proto, 0); }
-    if (self.promise_proto != null) { self.mark_object(self.promise_proto, 0); }
-    if (self.generator_proto != null) { self.mark_object(self.generator_proto, 0); }
+    if (self.object_proto != null) { self.mark_hobject(self.object_proto); }
+    if (self.array_proto != null) { self.mark_hobject(self.array_proto); }
+    if (self.function_proto != null) { self.mark_hobject(self.function_proto); }
+    if (self.string_proto != null) { self.mark_hobject(self.string_proto); }
+    if (self.number_proto != null) { self.mark_hobject(self.number_proto); }
+    if (self.bool_proto != null) { self.mark_hobject(self.bool_proto); }
+    if (self.date_proto != null) { self.mark_hobject(self.date_proto); }
+    if (self.regexp_proto != null) { self.mark_hobject(self.regexp_proto); }
+    if (self.map_proto != null) { self.mark_hobject(self.map_proto); }
+    if (self.set_proto != null) { self.mark_hobject(self.set_proto); }
+    if (self.weakmap_proto != null) { self.mark_hobject(self.weakmap_proto); }
+    if (self.weakset_proto != null) { self.mark_hobject(self.weakset_proto); }
+    if (self.symbol_proto != null) { self.mark_hobject(self.symbol_proto); }
+    if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }
+    if (self.generator_proto != null) { self.mark_hobject(self.generator_proto); }
 
     // Mark all strings in the string table as reachable
     // (prevents string collection — can be refined later)
@@ -1077,6 +1144,9 @@ fn void Heap.mark_roots(&self) {
         HString* key = (HString*)self.checkpoint_keys[i];
         if (key != null) { ((HeapHeader*)key).set_reachable(); }
     }
+
+    // Drain the gray stack — transitively marks all reachable objects
+    self.drain_gray();
 }
 
 // ============================================================================

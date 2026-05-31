@@ -139,13 +139,14 @@ fn EnvRecord*? env_create_declarative(Heap* heap, EnvRecord* parent) {
 }
 
 /// Destroy an environment record and all its owned resources.
+/// Iterative traversal — avoids C-stack overflow on deep scope chains.
 fn void env_destroy(Heap* heap, EnvRecord* env) {
-    if (env == null) { return; }
-    // Free parent chain first
-    if (env.parent != null) {
-        env_destroy(heap, env.parent);
+    EnvRecord* cur = env;
+    while (cur != null) {
+        EnvRecord* next = cur.parent;
+        env_pool_free(heap, cur);
+        cur = next;
     }
-    env_pool_free(heap, env);
 }
 
 // ============================================================================
