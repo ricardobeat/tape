@@ -27,6 +27,7 @@ import duktape::hstring;
 import duktape::bytecode;
 import duktape::env;
 import duktape::re_bindings;
+import duktape::heap;
 import libc;
 
 // Faults for optional returns
@@ -927,7 +928,7 @@ fn void HObject.rebuild_hash(&self) {
 ///
 /// Returns `null` on allocation failure.
 fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
-    void* raw = libc::malloc(HObject::size);
+    void* raw = ((heap::Heap*)heap_ptr).alloc(HObject::size) ?? null;
     if (raw == null) {
         return OBJ_ALLOC_FAULT~;
     }

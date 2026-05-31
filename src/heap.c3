@@ -42,6 +42,7 @@ const uint  INITIAL_STR_TABLE_SIZE  = 256;
 const float STR_TABLE_LOAD_FACTOR   = 0.70;
 const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
+const long  GC_MAX_TRIGGER          = 4096;
 /// Initial capacity for the gray object stack (grows as needed).
 const uint  GRAY_STACK_INITIAL_CAP  = 1024;
 const usz   STRS_CACHE_SIZE         = 256;
@@ -137,6 +138,8 @@ struct Heap {
     // GC state
     long  gc_trigger_counter;
     uint  live_obj_count;
+    uint  peak_live_obj_count;   /// High-water mark for live objects
+    uint  peak_str_gc_count;     /// High-water mark for tracked strings
 
     // Gray set for iterative mark — dynamic array of HObject* pointers.
     // Avoids C-stack overflow on deep object graphs.
@@ -214,6 +217,20 @@ struct Heap {
     // GC root registration (pointers to always-reachable HeapHeader*)
     void*[GC_MAX_ROOTS] gc_roots;
     uint                gc_root_count;
+
+    // VM valstack pointers for GC root scanning.
+    // valstack_base is updated on VM create / resize.
+    // valstack_top_ptr is a pointer to vm.valstack_top so GC always
+    // reads the current value (no sync needed on push/pop).
+    TVal*      valstack_base;    /// VM's valstack base pointer
+    TVal**     valstack_top_ptr; /// Points to vm.valstack_top
+
+    // GC string tracking — dynamic array of all allocated HString*.
+    // Strings can't use the heap_allocated doubly-linked list because
+    // HString lacks a `prev` field (its layout differs from HeapHeader).
+    void**     str_gc_array;
+    uint       str_gc_count;
+    uint       str_gc_capacity;
 
     // GC re-entrancy guard
     bool                gc_running;
@@ -372,6 +389,17 @@ fn Heap*? create(
     h.str_table      = (HString**)tbl_raw;
     h.str_table_size = INITIAL_STR_TABLE_SIZE;
     h.str_table_used = 0;
+
+    // Allocate string GC tracking array (must be before init_builtin_strs)
+    h.str_gc_capacity = INITIAL_STR_TABLE_SIZE;
+    h.str_gc_count    = 0;
+    void* str_gc_raw = afn(udata, void*::size * INITIAL_STR_TABLE_SIZE);
+    if (str_gc_raw == null) {
+        ffn(udata, tbl_raw);
+        ffn(udata, raw);
+        return HEAP_ALLOC_FAULT~;
+    }
+    h.str_gc_array = (void**)str_gc_raw;
 
     // Pre-intern well-known strings
     h.init_builtin_strs();
@@ -591,14 +619,20 @@ fn void Heap.destroy(&self) {
         self.compiled_funcs = null;
     }
 
-    // Free all interned HStrings in the string table before freeing the table itself
-    if (self.str_table != null) {
-        for (uint i = 0; i < self.str_table_size; i++) {
-            hstring::HString* s = self.str_table[i];
+    // Free all interned HStrings via the GC tracking array
+    if (self.str_gc_array != null) {
+        for (uint i = 0; i < self.str_gc_count; i++) {
+            hstring::HString* s = (hstring::HString*)self.str_gc_array[i];
             if (s != null) {
-                hstring::hstring_free(s);
+                self.free_string(s);
             }
         }
+        self.free_func(self.heap_udata, self.str_gc_array);
+        self.str_gc_array = null;
+    }
+
+    // Free the string table (just the pointer array, strings freed above)
+    if (self.str_table != null) {
         self.free_func(self.heap_udata, self.str_table);
         self.str_table = null;
     }
@@ -674,15 +708,30 @@ fn void Heap.reset(&self) {
     self.compiled_func_count = 0;
     // Keep compiled_funcs array allocated — just reset the count
 
-    // Free all interned HStrings and reset the string table to empty
-    if (self.str_table != null) {
-        for (uint i = 0; i < self.str_table_size; i++) {
-            hstring::HString* s = self.str_table[i];
+    // Free all tracked HStrings via GC tracking array and reset
+    if (self.str_gc_array != null) {
+        for (uint i = 0; i < self.str_gc_count; i++) {
+            hstring::HString* s = (hstring::HString*)self.str_gc_array[i];
             if (s != null) {
-                hstring::hstring_free(s);
-                self.str_table[i] = null;
+                self.free_string(s);
             }
         }
+        // Shrink if it grew very large
+        if (self.str_gc_capacity > INITIAL_STR_TABLE_SIZE * 8) {
+            self.free_func(self.heap_udata, self.str_gc_array);
+            usz arr_bytes = void*::size * INITIAL_STR_TABLE_SIZE;
+            void* new_arr = self.alloc_func(self.heap_udata, arr_bytes);
+            if (new_arr != null) {
+                self.str_gc_array = (void**)new_arr;
+                self.str_gc_capacity = INITIAL_STR_TABLE_SIZE;
+            }
+        }
+        self.str_gc_count = 0;
+    }
+
+    // Reset the string table to empty
+    if (self.str_table != null) {
+        libc::memset(self.str_table, 0, HString*::size * self.str_table_size);
         // If the table grew very large, shrink back to the initial size
         if (self.str_table_size > INITIAL_STR_TABLE_SIZE * 8) {
             self.free_func(self.heap_udata, self.str_table);
@@ -730,6 +779,8 @@ fn void Heap.reset(&self) {
     self.finalize_list    = null;
     self.flags            = 0;
     self.curr_thread      = null;
+    self.valstack_base    = null;
+    self.valstack_top_ptr = null;
     self.resume_gen       = null;
     self.did_yield        = false;
     self.gc_root_count    = 0;
@@ -840,6 +891,9 @@ fn HObject*? Heap.alloc_object(&self, hobject::ObjClass cls) {
         // already set by hobject_alloc).
         self.insert_into_heap_allocated_preserve_flags((HeapHeader*)obj);
         self.live_obj_count++;
+        if (self.live_obj_count > self.peak_live_obj_count) {
+            self.peak_live_obj_count = self.live_obj_count;
+        }
     }
     return result;
 }
@@ -869,6 +923,34 @@ fn void*? Heap.realloc(&self, void* ptr, usz new_size) {
  */
 fn void Heap.free(&self, void* ptr) {
     self.free_func(self.heap_udata, ptr);
+}
+
+/**
+ * Track an allocated HString for GC purposes.  Strings can't use the
+ * heap_allocated doubly-linked list (HString lacks prev/next HeapHeader
+ * fields), so we maintain a separate dynamic array.
+ */
+fn void Heap.track_string(&self, void* str_ptr) {
+    if (self.str_gc_count >= self.str_gc_capacity) {
+        uint new_cap = self.str_gc_capacity * 2;
+        usz new_bytes = (usz)new_cap * void*::size;
+        void* new_arr = libc::realloc(self.str_gc_array, new_bytes);
+        if (new_arr == null) { return; }  // best effort
+        self.str_gc_array = (void**)new_arr;
+        self.str_gc_capacity = new_cap;
+    }
+    self.str_gc_array[self.str_gc_count++] = str_ptr;
+    if (self.str_gc_count > self.peak_str_gc_count) {
+        self.peak_str_gc_count = self.str_gc_count;
+    }
+}
+
+/**
+ * Free an HString through the heap's allocator (matches Heap.alloc).
+ */
+fn void Heap.free_string(&self, hstring::HString* s) {
+    if (s == null) { return; }
+    self.free_func(self.heap_udata, s);
 }
 
 // ============================================================================
@@ -1070,9 +1152,10 @@ fn void Heap.drain_gray(&self) {
 }
 
 /**
- * Mark all GC roots: registered roots, built-in prototypes, and the
- * entire string table (to keep interned strings alive).  Uses the gray
- * stack for iterative transitive marking — no recursion, no depth cap.
+ * Mark all GC roots: registered roots, built-in prototypes, the VM
+ * value stack, and individual string references found during tracing.
+ * Uses the gray stack for iterative transitive marking — no recursion,
+ * no depth cap.
  */
 fn void Heap.mark_roots(&self) {
     // Mark all registered roots
@@ -1114,12 +1197,14 @@ fn void Heap.mark_roots(&self) {
     if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }
     if (self.generator_proto != null) { self.mark_hobject(self.generator_proto); }
 
-    // Mark all strings in the string table as reachable
-    // (prevents string collection — can be refined later)
-    for (uint i = 0; i < self.str_table_size; i++) {
-        HString* s = self.str_table[i];
-        if (s != null) {
-            ((HeapHeader*)s).set_reachable();
+    // Scan the VM value stack as a GC root — all live TVal slots
+    // (from base to top) may reference heap objects or strings.
+    if (self.valstack_base != null && self.valstack_top_ptr != null) {
+        TVal* top = *self.valstack_top_ptr;
+        TVal* scan = self.valstack_base;
+        while (scan < top) {
+            self.mark_tval(scan);
+            scan++;
         }
     }
 
@@ -1136,6 +1221,18 @@ fn void Heap.mark_roots(&self) {
         HString* s = (HString*)self.strs[i];
         if (s != null) {
             ((HeapHeader*)s).set_reachable();
+        }
+    }
+
+    // Mark strings in CompiledFunction constant pools.
+    // CompiledFunctions are not GC-tracked objects — they live in a
+    // separate tracking array.  Their constants may reference interned
+    // HStrings that would otherwise be swept.
+    for (uint fi = 0; fi < self.compiled_func_count; fi++) {
+        bytecode::CompiledFunction* cf = (bytecode::CompiledFunction*)self.compiled_funcs[fi];
+        if (cf == null || cf.constants == null) { continue; }
+        for (uint ci = 0; ci < cf.const_count; ci++) {
+            self.mark_tval(&cf.constants[ci]);
         }
     }
 
@@ -1195,9 +1292,36 @@ fn void Heap.sweep(&self) {
     self.live_obj_count = kept;
 }
 
-// ============================================================================
-// Garbage collection — mark-and-sweep
-// ============================================================================
+/**
+ * Sweep the string tracking array: free unreachable strings, compact
+ * the array, and remove dead entries from the string table (rebuilt
+ * as a side effect).
+ */
+fn void Heap.sweep_strings(&self) {
+    uint write = 0;
+    for (uint i = 0; i < self.str_gc_count; i++) {
+        hstring::HString* s = (hstring::HString*)self.str_gc_array[i];
+        if (s == null) { continue; }
+        if (((HeapHeader*)s).is_reachable()) {
+            // Keep — compact in place
+            self.str_gc_array[write++] = s;
+        } else {
+            // Dead string — free it
+            self.free_string(s);
+        }
+    }
+    self.str_gc_count = write;
+
+    // Rebuild the string table from the surviving strings
+    if (self.str_table != null) {
+        libc::memset(self.str_table, 0, HString*::size * self.str_table_size);
+        self.str_table_used = 0;
+        for (uint i = 0; i < write; i++) {
+            hstring::HString* s = (hstring::HString*)self.str_gc_array[i];
+            self.str_table_insert(s);
+        }
+    }
+}
 
 /**
  * Run a full mark-and-sweep garbage collection.
@@ -1221,18 +1345,31 @@ fn void Heap.mark_and_sweep(&self) {
             cur.clear_reachable();
             cur = cur.next;
         }
+        // Also clear flags on tracked strings
+        for (uint i = 0; i < self.str_gc_count; i++) {
+            hstring::HString* s = (hstring::HString*)self.str_gc_array[i];
+            if (s != null) {
+                ((HeapHeader*)s).clear_reachable();
+            }
+        }
     }
 
     // --- Phase 2: Mark from roots ---
     self.mark_roots();
 
-    // --- Phase 3: Sweep ---
+    // --- Phase 3: Sweep objects ---
     self.sweep();
 
-    // --- Phase 4: Reset trigger counter ---
+    // --- Phase 3b: Sweep unreachable strings ---
+    self.sweep_strings();
+
+    // --- Phase 4: Reset trigger counter (capped) ---
     long new_trigger = (long)self.live_obj_count * GC_TRIGGER_GROW_FACTOR;
     if (new_trigger < GC_INITIAL_TRIGGER) {
         new_trigger = GC_INITIAL_TRIGGER;
+    }
+    if (new_trigger > GC_MAX_TRIGGER) {
+        new_trigger = GC_MAX_TRIGGER;
     }
     self.gc_trigger_counter = new_trigger;
     self.gc_running = false;

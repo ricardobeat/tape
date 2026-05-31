@@ -14,6 +14,7 @@
 module duktape::hstring;
 
 import duktape::types;
+import duktape::heap;
 import std::core::mem;
 import libc;
 
@@ -291,7 +292,7 @@ fn uint HString.decref(&self) {
 fn HString*? hstring_alloc(void* heap_ptr, char[] data, uint hash) {
     usz total = HSTRING_HDR_SIZE + (usz)data.len + 1;  // +1 for NUL
 
-    void* raw = mem::malloc((sz)total);
+    void* raw = ((heap::Heap*)heap_ptr).alloc(total) ?? null;
     if (raw == null) {
         return duktape::types::ALLOC_ERROR~;
     }
@@ -347,6 +348,9 @@ fn HString*? hstring_alloc(void* heap_ptr, char[] data, uint hash) {
     }
     dest[data.len] = 0;  // NUL terminator
 
+    // Register with heap's GC string tracking
+    ((heap::Heap*)heap_ptr).track_string(raw);
+
     return s;
 }
 
@@ -359,7 +363,7 @@ fn HString*? hstring_concat(void* heap_ptr, HString* a, HString* b) {
     usz b_len = (usz)b.blen;
     usz total = HSTRING_HDR_SIZE + a_len + b_len + 1;
 
-    void* raw = mem::malloc((sz)total);
+    void* raw = ((heap::Heap*)heap_ptr).alloc(total) ?? null;
     if (raw == null) {
         return duktape::types::ALLOC_ERROR~;
     }
@@ -388,6 +392,9 @@ fn HString*? hstring_concat(void* heap_ptr, HString* a, HString* b) {
         libc::memcpy(dest + a_len, src_b, b_len);
     }
     dest[a_len + b_len] = 0;
+
+    // Register with heap's GC string tracking
+    ((heap::Heap*)heap_ptr).track_string(raw);
 
     return s;
 }

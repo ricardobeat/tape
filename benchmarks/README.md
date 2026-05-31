@@ -46,3 +46,26 @@ A ratio of ~5x means the C3 port is about 5× slower than the optimized C implem
 - Each benchmark iteration spawns a fresh process for all engines (C3, Duktape, QuickJS)
 - Timing includes both compilation and execution (actual workload dominates)
 - The `duktape_orig` binary is built from Duktape v2.7.0 source
+
+## Size & Memory Benchmark
+
+To compare binary sizes and peak memory usage:
+
+```bash
+just bench-sizes
+```
+
+This runs `scripts/run_sizes_bench.sh` which measures:
+- **Binary size (KB)** — file size of each compiled engine
+- **Peak RSS (KB)** — maximum resident set size when executing `benchmarks/memory_test.js` (a stress script that allocates many objects, arrays, and strings)
+
+Results table:
+
+| Engine                   | Binary (KB) | Peak RSS (KB) |
+|--------------------------|-------------|---------------|
+| duktape_c3 (C3 port)     | ...         | ...           |
+| duktape_orig (Duktape)   | ...         | ...           |
+| qjs (QuickJS)            | ...         | ...           |
+
+QuickJS is optional (skip row if not built). Ratios vs Duktape and QuickJS are printed at the bottom.
+
