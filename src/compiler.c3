@@ -3373,6 +3373,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
             // ES5 §11.4.3: typeof on an unresolvable reference returns "undefined"
             // (does NOT throw ReferenceError).  For bare identifiers we emit a
             // dedicated TYPEOFIDENT opcode that handles the not-found case.
+            // For dotted/computed/call expressions (X.y, X[y], X()), fall through
+            // to normal expression parsing so the member chain is fully consumed.
             {
                 Token? peeked = self.lexer.peek();
                 if (try idTok = peeked) {
@@ -3382,10 +3384,24 @@ fn ushort? CompilerContext.unary_expr(&self) {
                         !str_eq(idTok.str_value, "null") &&
                         !str_eq(idTok.str_value, "undefined")) {
                         self.advance()!;  // consume the identifier
-                        uint name_idx = self.add_string_constant(idTok.str_value);
-                        ushort res_typeof = self.alloc_reg();
-                        self.emit(bytecode::make_a_bc(Opcode.TYPEOFIDENT, (uint)res_typeof, name_idx));
-                        return res_typeof;
+                        // Peek one more token to check for member/call access
+                        Token? peeked2 = self.lexer.peek();
+                        bool is_member = false;
+                        if (try tok2 = peeked2) {
+                            is_member = tok2.type == TokenType.DOT ||
+                                        tok2.type == TokenType.LBRACKET ||
+                                        tok2.type == TokenType.LPAREN;
+                        }
+                        if (is_member) {
+                            // Not a bare identifier — push back and fall through
+                            // to normal typeof expr (will parse the member expr)
+                            self.pushback(idTok);
+                        } else {
+                            uint name_idx = self.add_string_constant(idTok.str_value);
+                            ushort res_typeof = self.alloc_reg();
+                            self.emit(bytecode::make_a_bc(Opcode.TYPEOFIDENT, (uint)res_typeof, name_idx));
+                            return res_typeof;
+                        }
                     }
                 }
             }

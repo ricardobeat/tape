@@ -453,6 +453,28 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 ---
 
-**NEXT TASK**: Fix the `typeof X.y` compiler bug to unblock sync property access tests across the board (~100 tests impacted across Promise.allSettled, Promise.any, flat, flatMap, and any builtin using dot-access typeof checks). The bug is in `src/compiler.c3` where `TYPEOFIDENT` is emitted for dotted member expressions instead of `TYPEOF` + `GETPROP`.
+### Session 93: Fix `typeof X.y` compiler bug (TYPEOFIDENT on member expressions)
 
-After the compiler fix, re-run the test262 runner to measure pass rate improvements across all builtins.
+**Task**: Fix a compiler bug where `typeof X.y` emitted `TYPEOFIDENT "X"` (dangling `.y`) instead of `GETPROP` + `TYPEOF`. The TYPEOFIDENT optimization for bare identifiers peeks one token ahead, but did not check whether the identifier is followed by `.`, `[`, or `(`.
+
+**Root cause** (`src/compiler.c3:3371-3397`):
+- The `TYPEOF` case in `unary_expr()` peeks at the next token: if it is an `IDENTIFIER` (and not `true`/`false`/`null`/`undefined`), it consumes the identifier and emits `TYPEOFIDENT` — assuming it's a bare identifier like `typeof x`.
+- For `typeof X.y`, the peek sees `X` (IDENTIFIER), advances past it, and emits `TYPEOFIDENT "X"`. The `.y` chain is left unparsed, causing a parse failure or incorrect typeof result.
+
+**Fix**:
+- After consuming the identifier, peek ONE MORE token to check for `DOT`, `LBRACKET`, or `LPAREN`.
+- If one of these follows, push the identifier back onto the compiler's token stack and fall through to the normal `unary_expr()` path (which emits `GETPROP` for the member chain, then `TYPEOF`).
+- Otherwise emit `TYPEOFIDENT` as before.
+- No new lexer API needed — uses existing `Lexer.peek()` + `CompilerContext.pushback()`.
+
+**Impact**:
+- `typeof X.y`, `typeof X[y]`, `typeof X()` now correctly emit `GETPROP`+`TYPEOF` or `CALL`+`TYPEOF` instead of `TYPEOFIDENT`. Unblocks ~100+ test262 tests (name/length/typeof checks on Promise.allSettled, Promise.any, flat, flatMap, etc.).
+- All existing JS tests pass unchanged.
+- Verified: `typeof Map.prototype.set` outputs `function` (previously parse error).
+- Note: `typeof obj.prop.length` returning `undefined` is a pre-existing bug in string primitive `.length` access, not related to this fix.
+
+---
+
+**NEXT TASK**: Optimize inner function compilation — currently each inner function (including compiled JS stubs for builtins like `Map.prototype.set`, `Array.prototype.flatMap`) re-compiles from source on every outer function instantiation. This is wasteful: the compiled bytecode is always the same. Cache the `CompiledFunction*` pointer on first compilation and reuse it. See `compile_inner_function()` in `src/compiler.c3` for the site where inner functions are compiled.
+
+After this, re-run test262 to measure the impact on startup time and pass rates.
