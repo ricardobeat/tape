@@ -658,8 +658,8 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
         // Own named properties
         for (uint i = 0; i < cur.prop_count; i++) {
-            if (cur.props[i].flags.enumerable && cur.props[i].key != null) {
-                HString* k = (HString*)cur.props[i].key;
+            if (cur.prop_values[i].flags.enumerable && cur.shape.props()[i].key != null) {
+                HString* k = (HString*)cur.shape.props()[i].key;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
                     libc::free(seen);
@@ -1957,13 +1957,13 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.proto == null) {
                             if (pi < hobj.prop_count
                                 && gen == vm.heap.shapes[hobj.shape_id].generation) {
-                                *ra = hobj.props[pi].value;
+                                *ra = hobj.prop_values[pi].data.value;
                                 break;
                             }
                         } else if (gen == vm.heap.shapes[ic.shape_id].generation) {
                             HObject* proto = (HObject*)ic.proto;
                             if (pi < proto.prop_count) {
-                                *ra = proto.props[pi].value;
+                                *ra = proto.prop_values[pi].data.value;
                                 break;
                             }
                         }
@@ -2155,9 +2155,9 @@ fn TVal? Vm.run(Vm* vm) {
                         uint gen = hobject::ic_gen(ic.gen_and_idx);
                         if (pi < hobj.prop_count
                             && gen == vm.heap.shapes[hobj.shape_id].generation
-                            && !hobj.props[pi].flags.is_accessor
-                            && hobj.props[pi].flags.writable) {
-                            hobj.props[pi].value = *rc;
+                            && !hobj.prop_values[pi].flags.is_accessor
+                            && hobj.prop_values[pi].flags.writable) {
+                            hobj.prop_values[pi].data.value = *rc;
                             break;
                         }
                     }
@@ -2223,7 +2223,7 @@ fn TVal? Vm.run(Vm* vm) {
                         // Check if property exists and is writable
                         int exist_idx = hobj.find_prop_idx(key);
                         if (exist_idx >= 0) {
-                            hobject::PropEntry* entry = &hobj.props[exist_idx];
+                            hobject::PropValue* entry = &hobj.prop_values[exist_idx];
                             if (!entry.flags.is_accessor && !entry.flags.writable) {
                                 // Non-writable data property — TypeError in strict mode
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -2245,17 +2245,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 break;
                             }
                             // Update value, preserve existing flags
-                            entry.value = put_val;
+                            entry.data.value = put_val;
                         } else {
                             // Property doesn't exist: check extensibility
                             if (hobj.flags.extensible) {
-                                uint old_count = hobj.prop_count;
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
-                                // Transition shape if property was actually added
-                                if (hobj.prop_count > old_count) {
-                                    hobj.shape_id = vm.heap.transition_shape(
-                                        hobj.shape_id, key, (ushort)(hobj.prop_count - 1));
-                                }
                             }
                             // If not extensible, silently ignore in non-strict, but we're strict-only
                             // so we could throw. For now, silently ignore.
@@ -2332,6 +2326,8 @@ fn TVal? Vm.run(Vm* vm) {
             if (try a = new_arr) {
                 a.prototype = vm.heap.array_proto;
                 ra.set_object(a);
+                if (insn.a == 251) {
+                }
             } else {
                 ra.set_undefined();
             }
@@ -4496,9 +4492,9 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.prop_values[idx].flags.is_accessor) {
                         // Update existing accessor's getter
-                        hobj.props[idx].getter = getter_val;
+                        hobj.prop_values[idx].data.getter = getter_val;
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -4507,8 +4503,8 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.props[new_idx].getter = getter_val;
-                            hobj.props[new_idx].setter = undef;
+                            hobj.prop_values[new_idx].data.getter = getter_val;
+                            hobj.prop_values[new_idx].setter = undef;
                         }
                     }
                 }
@@ -4526,9 +4522,9 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.prop_values[idx].flags.is_accessor) {
                         // Update existing accessor's setter
-                        hobj.props[idx].setter = setter_val;
+                        hobj.prop_values[idx].setter = setter_val;
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -4537,8 +4533,8 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.props[new_idx].getter = undef;
-                            hobj.props[new_idx].setter = setter_val;
+                            hobj.prop_values[new_idx].data.getter = undef;
+                            hobj.prop_values[new_idx].setter = setter_val;
                         }
                     }
                 }

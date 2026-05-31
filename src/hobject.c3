@@ -249,25 +249,38 @@ struct AccessorResult {
 }
 
 // ============================================================================
-// PropEntry — a single named property
+// PropValue — per-object property value storage (QuickJS-style)
 // ============================================================================
 
-/// A named property stored in the object's property table.
+/// A property value slot in the object's prop_values array.
 ///
-/// For data properties, `value` holds the property value and `getter` /
-/// `setter` are unused (left as undefined).  For accessor properties
-/// (flags.is_accessor == true), `getter` and `setter` hold the accessor
-/// functions and `value` is unused.
-struct PropEntry {
-    /// Interned property key (HString*).  Pointer equality is sufficient
-    /// for comparison because all keys are interned.
-    void*     key;
-    /// Data property value, or undefined for accessor properties.
+/// Property names and flags live in the Shape (shared across objects).
+/// Objects only store values.  For accessor properties, both getter and
+/// setter are stored; for data properties, only `value` is meaningful.
+union PropData {
+    /// Data property: single value.
     TVal      value;
-    /// Getter function (only meaningful when flags.is_accessor is true).
+    /// Accessor property: getter at index 0, setter at next TVal.
+    /// Stored as getter; the setter follows at (&getter + 1) in memory.
     TVal      getter;
-    /// Setter function (only meaningful when flags.is_accessor is true).
+}
+struct PropValue {
+    PropData  data;
+    /// For accessor properties, the setter lives here.
+    /// For data properties, this is unused.
     TVal      setter;
+    PropFlags flags;
+}
+
+// ============================================================================
+// ShapeProperty — property descriptor inside a Shape
+// ============================================================================
+
+/// A single property descriptor stored in the Shape's property array.
+/// Contains the property key and flags, but NO value (values are per-object).
+struct ShapeProperty {
+    /// Interned property key (HString*).  Pointer equality for comparison.
+    void*     key;
     /// Property attribute flags.
     PropFlags flags;
 }
@@ -281,82 +294,55 @@ struct PropEntry {
 /// Memory layout is chosen so that the first four fields (flags, refcount,
 /// next, prev) are binary-compatible with HeapHeader, allowing a raw cast
 /// for the GC's linked-list walk.
+///
+/// Property storage uses QuickJS-style shapes: property names and flags
+/// live in the shared Shape, objects only store values.
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
-    /// Combined HeapHeader-compatible + object-specific flags.
     ObjFlags      flags;
-    /// Reference count.
     uint          refcount;
-    /// Next heap object in the GC linked list.
     HeapHeader*   next;
-    /// Previous heap object in the GC linked list.
     HeapHeader*   prev;
 
     // --- Prototype --------------------------------------------------------
-    /// Prototype object ([[Prototype]] internal slot).  null for the root
-    /// of the prototype chain (e.g., Object.prototype).
     HObject*      prototype;
 
-    // --- Named property storage ------------------------------------------
-    /// Flat array of property entries.
-    PropEntry*    props;
-    /// Hash lookup table: each slot holds an index into `props`, or one of
-    /// the HASH_UNUSED / HASH_DELETED sentinels.
-    uint*         hash_table;
-    /// Number of property entries currently in use.
-    uint          prop_count;
-    /// Allocated capacity of the `props` array.
+    // --- Shape (shared property layout) ------------------------------------
+    /// Shape ID for inline cache support (index into Heap.shapes[]).
+    uint          shape_id;
+    /// Pointer to the shared Shape describing this object's property layout.
+    /// Property names, flags, and the hash table live here.
+    Shape*        shape;
+    /// Back-pointer to the heap for shape transitions.
+    void*         heap_ptr;
+
+    // --- Per-object property values ----------------------------------------
+    /// Flat array of property values, indexed by shape property index.
+    PropValue*    prop_values;
+    /// Allocated capacity of prop_values (>= shape->prop_count).
     uint          prop_capacity;
-    /// Number of slots in `hash_table` (0 means no hash — use linear scan).
-    uint          hash_size;
+    /// Number of properties currently in use (synced with shape->prop_count).
+    uint          prop_count;
 
     // --- Dense array part ------------------------------------------------
-    /// Dense array storage for integer-indexed properties [0, array_size).
     TVal*         array_part;
-    /// Allocated size (in TVal slots) of `array_part`.
     uint          array_size;
-    /// Number of slots actually holding a defined value.
     uint          array_used;
 
-    // --- Shape (hidden class) -----------------------------------------------
-    /// Shape ID for inline cache support.  Identifies the object's current
-    /// property layout.  0 = root shape (empty object).
-    uint          shape_id;
-
     // --- Unified property allocation block --------------------------------
-    /// Single allocation that holds props, hash_table, and array_part
-    /// contiguously (see update_prop_pointers for layout).
+    /// Single allocation that holds prop_values and array_part contiguously.
     void*         prop_alloc;
 
     // --- Primitive wrapper storage (for Boolean, Number, String objects) ---
-    /// Stores the [[PrimitiveValue]] for wrapper/exotic objects.
-    /// For BOOLEAN: tag=BOOLEAN, .boolean = value.
-    /// For NUMBER: tag=NUMBER/.FASTINT, .number/.fastint = value.
-    /// For STRING: tag=STRING, .pointer = HString*.
     TVal          primitive_value;
 
     // --- Compiled function support (non-null for JS functions) -----------
-    /// The compiled function template (null for non-function objects).
     CompiledFunction* comp_func;
-    /// Captured variable environment (for closures).
     EnvRecord*    var_env;
-    /// Captured lexical environment (for closures).
     EnvRecord*    lex_env;
-
-    /// Builtin function index for native built-in functions (e.g., Number, Object).
-    /// -1 when this object is not a native builtin function.
     int           builtin_fn_index;
-
-    /// Discriminator for this callable's invocation kind (meaningful only
-    /// when flags.callable is true).
     CallableKind  callable_kind;
-
-    /// Compiled regexp bytecode pointer (only for REGEXP class objects).
-    /// Allocated by libregexp, freed via re_free().
     void*         regexp_data;
-
-    /// Generator state pointer (only for GENERATOR class objects).
-    /// Points to a GeneratorState struct allocated separately.
     void*         generator_data;
 }
 
@@ -366,26 +352,22 @@ struct HObject {
 
 /// Compute total size of the property allocation block.
 fn usz HObject.prop_alloc_size(&self) {
-    usz size = (usz)self.prop_capacity * PropEntry::size;
-    size += (usz)self.hash_size * uint::size;
+    usz size = (usz)self.prop_capacity * PropValue::size;
     size += (usz)self.array_size * TVal::size;
     return size;
 }
 
-/// Recompute props, hash_table, array_part pointers from prop_alloc.
+/// Recompute prop_values, array_part pointers from prop_alloc.
 fn void HObject.update_prop_pointers(&self) {
     if (self.prop_alloc == null) {
-        self.props = null;
-        self.hash_table = null;
-        self.array_part = null;
+        self.prop_values = null;
+        self.array_part  = null;
         return;
     }
     char* base = (char*)self.prop_alloc;
     usz offs = 0;
-    self.props = (PropEntry*)(base + offs);
-    offs += (usz)self.prop_capacity * PropEntry::size;
-    self.hash_table = self.hash_size > 0 ? (uint*)(base + offs) : null;
-    offs += (usz)self.hash_size * uint::size;
+    self.prop_values = (PropValue*)(base + offs);
+    offs += (usz)self.prop_capacity * PropValue::size;
     self.array_part = self.array_size > 0 ? (TVal*)(base + offs) : null;
 }
 
@@ -432,17 +414,21 @@ fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 /// non-configurable.
 fn void HObject.seal(&self) {
     self.flags.extensible = false;
+    ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
-        self.props[i].flags.configurable = false;
+        self.prop_values[i].flags.configurable = false;
+        if (sp != null) sp[i].flags.configurable = false;
     }
 }
 
 /// Freeze the object: seal + mark all data properties non-writable.
 fn void HObject.freeze(&self) {
     self.seal();
+    ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
-        if (!self.props[i].flags.is_accessor) {
-            self.props[i].flags.writable = false;
+        if (!self.prop_values[i].flags.is_accessor) {
+            self.prop_values[i].flags.writable = false;
+            if (sp != null) sp[i].flags.writable = false;
         }
     }
 }
@@ -471,61 +457,26 @@ fn uint hash_key(void* key) @inline {
 // HObject — property index lookup
 // ============================================================================
 
-/// Find the index of the property with the given interned key in the props
-/// array.
+/// Find the index of the property with the given interned key.
 ///
+/// Delegates to the shared Shape's hash table for O(1) lookup.
 /// Returns the index (≥ 0) on success, or -1 if the key is not found.
-/// Uses the hash table when available, otherwise falls back to linear scan.
 fn int HObject.find_prop_idx(&self, void* key) {
-    if (key == null) {
+    if (key == null || self.shape == null) {
         return -1;
     }
-
-    // --- Hash table path ---
-    if (self.hash_table != null && self.hash_size > 0) {
-        uint h    = hash_key(key);
-        uint mask = self.hash_size - 1;  // hash_size is always a power of 2
-        uint slot = h & mask;
-
-        for (uint probes = 0; probes < self.hash_size; probes++) {
-            uint idx = self.hash_table[slot];
-
-            if (idx == HASH_UNUSED) {
-                // Empty slot — key is definitely not present.
-                return -1;
-            }
-
-            if (idx != HASH_DELETED && idx < self.prop_count) {
-                if (self.props[idx].key == key) {
-                    return (int)idx;
-                }
-            }
-
-            slot = (slot + 1) & mask;
-        }
-
-        return -1;
-    }
-
-    // --- Linear scan fallback ---
-    for (uint i = 0; i < self.prop_count; i++) {
-        if (self.props[i].key == key) {
-            return (int)i;
-        }
-    }
-
-    return -1;
+    return self.shape.find_prop_idx(key);
 }
 
-/// Find the PropEntry for the given interned key.
+/// Find the PropValue for the given interned key.
 ///
-/// Returns a pointer to the entry, or `null` if not found.
-fn PropEntry*? HObject.find_prop(&self, void* key) {
+/// Returns a pointer to the value slot, or `null` if not found.
+fn PropValue*? HObject.find_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
         return PROP_NOT_FOUND~;
     }
-    return &self.props[idx];
+    return &self.prop_values[idx];
 }
 
 // ============================================================================
@@ -533,19 +484,12 @@ fn PropEntry*? HObject.find_prop(&self, void* key) {
 // ============================================================================
 
 /// Look up a named property by its interned string key.
-///
-/// Returns the property's TVal on success.  For accessor properties this
-/// returns the raw data-slot value — the caller (e.g. the [[Get]] algorithm)
-/// is responsible for invoking the getter.
-///
-/// Returns `null` (Optional failure) when the property is not found on this
-/// object.  Prototype chain walking is the caller's responsibility.
 fn TVal? HObject.get_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
         return PROP_NOT_FOUND~;
     }
-    return self.props[idx].value;
+    return self.prop_values[idx].data.value;
 }
 
 /// Check whether the object has an own property with the given key.
@@ -554,66 +498,51 @@ fn bool HObject.has_prop(&self, void* key) {
 }
 
 /// Check whether a property is writable.
-/// Returns true if the property does not exist (can be created) or
-/// if it exists and its writable flag is set.
 fn bool HObject.is_prop_writable(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) return true;
-    return self.props[idx].flags.writable;
+    return self.prop_values[idx].flags.writable;
 }
 
 /// Set (create or update) a named property.
 ///
 /// If the property already exists its value and flags are updated.
 /// If it does not exist a new entry is appended (growing the table if
-/// necessary).  Returns `true` on success, `false` on allocation failure.
+/// necessary).  The caller is responsible for updating the shape
+/// (via Heap.transition_shape) when a new property is added.
+/// Returns `true` on success, `false` on allocation failure.
 fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // --- Update existing property ---
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
-        self.props[idx].value = val;
-        self.props[idx].flags = pflags;
+        self.prop_values[idx].data.value = val;
+        self.prop_values[idx].flags = pflags;
         return true;
     }
 
     // --- Grow if necessary ---
     if (self.prop_count >= self.prop_capacity) {
         self.grow_props();
-        // If grow_props failed (capacity unchanged) and we are still full,
-        // report failure.
         if (self.prop_count >= self.prop_capacity) {
             return false;
         }
     }
 
-    // --- Append new entry ---
+    // --- Append new value at the next slot ---
     uint new_idx = self.prop_count;
-    self.props[new_idx].key    = key;
-    self.props[new_idx].value  = val;
-    self.props[new_idx].flags  = pflags;
-    self.props[new_idx].getter = types::make_undefined();
-    self.props[new_idx].setter = types::make_undefined();
+    libc::memset(&self.prop_values[new_idx], 0, PropValue::size);
+    self.prop_values[new_idx].data.value = val;
+    self.prop_values[new_idx].flags = pflags;
     self.prop_count++;
 
-    // --- Insert into hash table (if present) ---
-    if (self.hash_table != null && self.hash_size > 0) {
-        // Check if we should rebuild (load factor exceeded).
-        if (self.prop_count * HASH_LOAD_DEN > self.hash_size * HASH_LOAD_NUM) {
-            self.rebuild_hash();
-        } else {
-            // Fast insert into existing table.
-            uint h    = hash_key(key);
-            uint mask = self.hash_size - 1;
-            uint slot = h & mask;
-            while (self.hash_table[slot] != HASH_UNUSED &&
-                   self.hash_table[slot] != HASH_DELETED) {
-                slot = (slot + 1) & mask;
-            }
-            self.hash_table[slot] = new_idx;
+    // --- Transition shape to include the new property ---
+    if (self.heap_ptr != null) {
+        heap::Heap* h = (heap::Heap*)self.heap_ptr;
+        uint new_shape_id = h.transition_shape(self.shape_id, key);
+        if (new_shape_id != self.shape_id) {
+            self.shape_id = new_shape_id;
+            self.shape = h.get_shape(new_shape_id);
         }
-    } else if (self.prop_count >= HASH_MIN_PROPS) {
-        // Threshold crossed — build the hash table for the first time.
-        self.rebuild_hash();
     }
 
     return true;
@@ -621,12 +550,10 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
 
 /// Delete an own property by interned key.
 ///
-/// Returns `true` if the property was found and removed, `false` if it was
-/// not present (or was non-configurable — the caller should check that
-/// before calling if strict-mode semantics apply).
-///
-/// The deletion compacts the props array by swapping the last entry into
-/// the vacated slot, then updates the hash table accordingly.
+/// Removes the key from the shape's hash table (tombstone) and clears
+/// the value slot.  Does NOT compact or decrement prop_count — shape
+/// indices must remain stable.  The caller should bump the shape
+/// generation after deletion.
 fn bool HObject.delete_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
@@ -634,56 +561,27 @@ fn bool HObject.delete_prop(&self, void* key) {
     }
 
     uint ui = (uint)idx;
-    uint last = self.prop_count - 1;
 
-    // Remove from hash table first.
-    if (self.hash_table != null && self.hash_size > 0) {
-        // Mark the deleted key's slot as a tombstone.
-        uint h    = hash_key(key);
-        uint mask = self.hash_size - 1;
+    // Remove key from shape's hash table (mark as deleted = 0).
+    if (self.shape != null) {
+        uint* ht = self.shape.hash_table();
+        uint mask = self.shape.hash_mask;
+        uint h = hash_key(key);
         uint slot = h & mask;
-
-        for (uint probes = 0; probes < self.hash_size; probes++) {
-            uint si = self.hash_table[slot];
-            if (si == HASH_UNUSED) {
-                break;  // shouldn't happen, but be safe
-            }
-            if (si == ui) {
-                self.hash_table[slot] = HASH_DELETED;
+        for (uint probes = 0; probes <= mask; probes++) {
+            uint entry = ht[slot];
+            if (entry == 0) break;
+            if (entry - 1 == ui) {
+                ht[slot] = 0;  // mark deleted
                 break;
             }
             slot = (slot + 1) & mask;
         }
     }
 
-    // Compact: swap last entry into the gap.
-    if (ui != last) {
-        self.props[ui] = self.props[last];
-
-        // Update the hash table to reflect the moved entry's new index.
-        if (self.hash_table != null && self.hash_size > 0) {
-            void* moved_key = self.props[ui].key;
-            uint h    = hash_key(moved_key);
-            uint mask = self.hash_size - 1;
-            uint slot = h & mask;
-
-            for (uint probes = 0; probes < self.hash_size; probes++) {
-                uint si = self.hash_table[slot];
-                if (si == HASH_UNUSED) {
-                    break;
-                }
-                if (si == last) {
-                    self.hash_table[slot] = ui;
-                    break;
-                }
-                slot = (slot + 1) & mask;
-            }
-        }
-    }
-
-    // Zero-out the vacated last slot for safety.
-    libc::memset(&self.props[last], 0, PropEntry::size);
-    self.prop_count--;
+    // Clear the value slot but do NOT decrement prop_count.
+    // Shape indices must remain stable.
+    libc::memset(&self.prop_values[ui], 0, PropValue::size);
 
     return true;
 }
@@ -742,10 +640,7 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
 // HObject — growth / rehash
 // ============================================================================
 
-/// Grow the property entry table when it is full.
-///
-/// The new capacity is max(PROPS_INITIAL_CAPACITY, old * 3/2).  The hash
-/// table is rebuilt after growth to account for the new capacity.
+/// Grow the property value table when it is full.
 fn void HObject.grow_props(&self) {
     uint new_cap;
     if (self.prop_capacity == 0) {
@@ -753,17 +648,13 @@ fn void HObject.grow_props(&self) {
     } else {
         new_cap = self.prop_capacity * PROPS_GROW_NUM / PROPS_GROW_DEN;
         if (new_cap <= self.prop_capacity) {
-            new_cap = self.prop_capacity + 4;  // ensure progress
+            new_cap = self.prop_capacity + 4;
         }
     }
 
-    // Save old sizes
     usz old_size = self.prop_alloc_size();
-    usz old_hash_bytes = (usz)self.hash_size * uint::size;
-
-    // New total size with new prop capacity
-    usz new_size = old_size - (usz)self.prop_capacity * PropEntry::size
-                 + (usz)new_cap * PropEntry::size;
+    usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
+    usz new_size = old_size - old_prop_bytes + (usz)new_cap * PropValue::size;
 
     void* new_raw;
     if (self.prop_alloc == null) {
@@ -771,28 +662,31 @@ fn void HObject.grow_props(&self) {
     } else {
         new_raw = libc::realloc(self.prop_alloc, new_size);
     }
-
-    if (new_raw == null) {
-        return;
-    }
+    if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
     uint old_prop_capacity = self.prop_capacity;
     self.prop_capacity = new_cap;
 
-    // Recompute pointers into the new block
-    self.update_prop_pointers();
-
-    // Zero-initialise the newly added property slots
-    if (new_cap > old_prop_capacity) {
-        usz added_bytes = (usz)(new_cap - old_prop_capacity) * PropEntry::size;
-        void* start = (void*)((char*)self.props + (usz)old_prop_capacity * PropEntry::size);
-        libc::memset(start, 0, added_bytes);
+    // Move the dense array part to its new position before updating pointers.
+    // When prop_capacity grows, the array data shifts right by the capacity
+    // difference — realloc preserves old bytes in place, so we must move them.
+    if (self.array_size > 0 && self.array_part != null) {
+        usz old_arr_off = (usz)old_prop_capacity * PropValue::size;
+        usz new_arr_off = (usz)new_cap * PropValue::size;
+        if (old_arr_off != new_arr_off) {
+            libc::memmove((char*)self.prop_alloc + new_arr_off,
+                          (char*)self.prop_alloc + old_arr_off,
+                          (usz)self.array_size * TVal::size);
+        }
     }
 
-    // Rebuild hash table so that it tracks the new capacity
-    if (self.prop_count >= HASH_MIN_PROPS) {
-        self.rebuild_hash();
+    self.update_prop_pointers();
+
+    if (new_cap > old_prop_capacity) {
+        usz added_bytes = (usz)(new_cap - old_prop_capacity) * PropValue::size;
+        void* start = (void*)((char*)self.prop_values + (usz)old_prop_capacity * PropValue::size);
+        libc::memset(start, 0, added_bytes);
     }
 }
 
@@ -800,19 +694,12 @@ fn void HObject.grow_props(&self) {
 ///
 /// New slots are initialised to undefined.
 fn void HObject.grow_array(&self, uint new_size) {
-    if (new_size <= self.array_size) {
-        return;
-    }
+    if (new_size <= self.array_size) return;
 
-    // Save old sizes
-    usz old_prop_capacity = self.prop_capacity;
-    usz old_hash_size     = self.hash_size;
-    usz old_array_size    = self.array_size;
+    usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
+    usz old_array_size = self.array_size;
 
-    // New total with grown array
-    usz new_bytes = (usz)old_prop_capacity * PropEntry::size
-                  + (usz)old_hash_size * uint::size
-                  + (usz)new_size * TVal::size;
+    usz new_bytes = old_prop_bytes + (usz)new_size * TVal::size;
 
     void* new_raw;
     if (self.prop_alloc == null) {
@@ -820,18 +707,12 @@ fn void HObject.grow_array(&self, uint new_size) {
     } else {
         new_raw = libc::realloc(self.prop_alloc, new_bytes);
     }
-
-    if (new_raw == null) {
-        return;
-    }
+    if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
     self.array_size = new_size;
-
-    // Recompute pointers
     self.update_prop_pointers();
 
-    // Initialise new slots to the proper undefined representation
     usz added = (usz)(new_size - old_array_size);
     ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
     for (usz i = 0; i < added; i++) {
@@ -839,76 +720,7 @@ fn void HObject.grow_array(&self, uint new_size) {
     }
 }
 
-/// Rebuild (or create) the hash table from scratch.
-///
-/// The new hash_size is the smallest power-of-two such that the load factor
-/// stays below the threshold.  All live property entries are re-inserted.
-fn void HObject.rebuild_hash(&self) {
-    // Compute desired hash table size (power of 2, >= 2× prop_count).
-    uint desired = self.prop_count * 2;
-    if (desired < 16) {
-        desired = 16;
-    }
-    // Round up to next power of 2.
-    uint new_hash_size = next_power_of_two(desired);
-
-    // Save old sizes
-    usz old_prop_bytes = (usz)self.prop_capacity * PropEntry::size;
-    usz old_array_bytes = (usz)self.array_size * TVal::size;
-
-    // New total with grown hash
-    usz new_bytes = old_prop_bytes
-                  + (usz)new_hash_size * uint::size
-                  + old_array_bytes;
-
-    void* new_raw;
-    if (self.prop_alloc == null) {
-        new_raw = libc::malloc(new_bytes);
-    } else {
-        // Always allocate fresh because we re-insert everything
-        new_raw = libc::malloc(new_bytes);
-        if (new_raw != null) {
-            // Copy old props
-            if (self.props != null && old_prop_bytes > 0) {
-                libc::memcpy(new_raw, self.props, old_prop_bytes);
-            }
-            // Copy old array part
-            if (self.array_part != null && old_array_bytes > 0) {
-                char* dst = (char*)new_raw + old_prop_bytes
-                          + (usz)new_hash_size * uint::size;
-                libc::memcpy(dst, self.array_part, old_array_bytes);
-            }
-            libc::free(self.prop_alloc);
-        }
-    }
-
-    if (new_raw == null) {
-        return;  // allocation failure — hash stays as-is
-    }
-
-    self.prop_alloc = new_raw;
-    self.hash_size  = new_hash_size;
-
-    // Recompute pointers
-    self.update_prop_pointers();
-
-    // Fill with HASH_UNUSED sentinel.
-    libc::memset(self.hash_table, 0xFF, (usz)new_hash_size * uint::size);
-
-    // Re-insert every live property.
-    uint mask = new_hash_size - 1;
-    for (uint i = 0; i < self.prop_count; i++) {
-        if (self.props[i].key == null) {
-            continue;
-        }
-        uint h    = hash_key(self.props[i].key);
-        uint slot = h & mask;
-        while (self.hash_table[slot] != HASH_UNUSED) {
-            slot = (slot + 1) & mask;
-        }
-        self.hash_table[slot] = i;
-    }
-}
+// rebuild_hash removed — hash table now lives in the shared Shape.
 
 // ============================================================================
 // Allocation / deallocation
@@ -939,12 +751,10 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 
     obj.prop_alloc = null;
 
-    // Set up flags.
     obj.flags.htype      = HType.OBJECT;
     obj.flags.extensible = true;
     obj.flags.obj_class  = cls;
 
-    // Specific class defaults.
     if (cls == ObjClass.FUNCTION) {
         obj.flags.callable      = true;
         obj.flags.constructable = true;
@@ -959,7 +769,12 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     obj.builtin_fn_index = -1;
     obj.callable_kind = CallableKind.OTHER;
     obj.regexp_data = null;
-    obj.shape_id = 0;  // Start with root shape
+    obj.shape_id = 0;
+    obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
+    obj.heap_ptr = heap_ptr;
+    obj.prop_values = null;
+    obj.prop_capacity = 0;
+    obj.prop_count = 0;
     return obj;
 }
 
@@ -971,13 +786,13 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 fn void hobject_free(HObject* obj) {
     if (obj == null) { return; }
 
-    // Free compiled regexp bytecode if present
     if (obj.regexp_data != null) {
         re_bindings::re_free(obj.regexp_data);
         obj.regexp_data = null;
     }
 
-    // Free the unified property allocation block (props + hash + array)
+    // Free the unified property allocation block (prop_values + array_part).
+    // Shape is shared and managed by the heap — do NOT free it here.
     if (obj.prop_alloc != null) {
         libc::free(obj.prop_alloc);
         obj.prop_alloc = null;
@@ -994,7 +809,7 @@ fn void hobject_free(HObject* obj) {
 fn uint HObject.enumerable_count(&self) {
     uint count = 0;
     for (uint i = 0; i < self.prop_count; i++) {
-        if (self.props[i].flags.enumerable) {
+        if (self.prop_values[i].flags.enumerable) {
             count++;
         }
     }
@@ -1003,11 +818,11 @@ fn uint HObject.enumerable_count(&self) {
 
 /// Returns the property entry at the given raw index, or `null` if `idx`
 /// is out of range.  Intended for iteration over own properties.
-fn PropEntry*? HObject.get_prop_at(&self, uint idx) {
+fn PropValue*? HObject.get_prop_at(&self, uint idx) {
     if (idx >= self.prop_count) {
         return PROP_NOT_FOUND~;
     }
-    return &self.props[idx];
+    return &self.prop_values[idx];
 }
 
 // ============================================================================
@@ -1027,7 +842,7 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.props[idx].value;
+            return cur.prop_values[idx].data.value;
         }
         cur = cur.prototype;
         depth++;
@@ -1048,16 +863,13 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            PropEntry* pe = &cur.props[idx];
-            if (pe.flags.is_accessor) {
-                TVal accessor_fn = want_getter ? pe.getter : pe.setter;
+            if (cur.prop_values[idx].flags.is_accessor) {
+                TVal accessor_fn = want_getter ? cur.prop_values[idx].data.getter : cur.prop_values[idx].setter;
                 if (accessor_fn.is_object() && accessor_fn.get_heapptr() != null) {
                     return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
                 }
-                // Accessor exists but the specific getter/setter is undefined
                 return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
             }
-            // Data property found — stop searching
             return { .found = false };
         }
         cur = cur.prototype;
@@ -1098,26 +910,147 @@ struct PropLookupResult {
 /// from parent → child.  Multiple objects that gain the same properties in
 /// the same order share the same shape, enabling inline caches to predict
 /// property offsets.
+///
+/// QuickJS-style layout: the Shape is a single allocation containing
+/// [hash_table | Shape header | ShapeProperty[]].  Property names and
+/// flags live here (shared); values live per-object in PropValue[].
 struct Shape {
-    /// The property key that was added when transitioning to this shape
-    /// (null for the root shape).
-    void*     key;
-    /// Index in the props array for the added property (0 for root).
-    ushort    prop_idx;
-    /// Parent shape ID (0xFFFF_FFFF for the root shape).
-    uint      parent;
-    /// Generation counter — bumped when a shape is re-targeted as a
-    /// transition destination (e.g., after delete/seal/freeze).  Inline
-    /// caches store the generation they saw; a mismatch invalidates the
-    /// cache entry.
+    /// Generation counter — bumped on delete/seal/freeze to invalidate ICs.
     uint      generation;
-    /// Hash table of child transitions: key → child shape index.
-    /// Open-addressing with linear probing.  0xFFFF_FFFF = unused slot.
-    uint*     children;
-    /// Number of slots in the children hash table (0 = no table yet).
-    uint      children_size;
-    /// Number of child transitions stored.
-    uint      children_count;
+    /// Parent shape index (0xFFFF_FFFF for root).
+    uint      parent;
+    /// Number of properties in this shape.
+    uint      prop_count;
+    /// Hash table mask (hash_table has hash_mask+1 slots, all uint32).
+    /// 0 means 1 slot (hash_mask=0 → 2 slots).  Stored as mask for fast &.
+    uint      hash_mask;
+}
+
+// ============================================================================
+// Shape — memory layout helpers
+// ============================================================================
+
+/// Compute the byte offset of the hash table from the shape base.
+/// Hash table is always the first thing in the allocation.
+fn usz shape_hash_offset() @inline {
+    return 0;
+}
+
+/// Compute the byte offset of the Shape header from the shape base.
+fn usz shape_header_offset(Shape* sh) @inline {
+    return ((usz)sh.hash_mask + 1) * uint::size;
+}
+
+/// Get pointer to the hash table (uint32 array) for this shape.
+fn uint* Shape.hash_table(&self) {
+    return (uint*)((char*)self - (sz)shape_header_offset(self));
+}
+
+/// Get pointer to the ShapeProperty array (immediately after the header).
+fn ShapeProperty* Shape.props(&self) {
+    return (ShapeProperty*)((char*)self + Shape::size);
+}
+
+/// Look up a property key in the shape's hash table.
+/// Returns the property index (≥ 0) on success, or -1 if not found.
+fn int Shape.find_prop_idx(&self, void* key) {
+    if (key == null || self.prop_count == 0) return -1;
+    uint* ht = self.hash_table();
+    uint mask = self.hash_mask;
+    uint h = hash_key(key);
+    uint slot = h & mask;
+    ShapeProperty* sp = self.props();
+    for (uint probes = 0; probes <= mask; probes++) {
+        uint entry = ht[slot];
+        if (entry == 0) return -1;  // empty slot
+        uint idx = entry - 1;
+        if (idx < self.prop_count && sp[idx].key == key) {
+            return (int)idx;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return -1;
+}
+
+/// Return the total byte size of a shape allocation.
+fn usz shape_alloc_size(uint prop_count, uint hash_mask) {
+    return ((usz)hash_mask + 1) * uint::size     // hash table
+         + Shape::size                            // header
+         + (usz)prop_count * ShapeProperty::size; // properties
+}
+
+/// Choose a hash mask for a given property count.
+/// Hash table has (mask+1) slots; we want load factor < 70%.
+fn uint shape_hash_mask_for(uint prop_count) {
+    // Minimum 2 slots (mask=0), grow so that prop_count / (mask+1) < 0.7
+    uint slots = 2;
+    while (prop_count * 10 > slots * 7) {
+        slots *= 2;
+    }
+    return slots - 1;
+}
+
+/// Create a new empty shape for the given parent.
+/// Returns a heap-allocated Shape block, or null on failure.
+fn Shape* shape_create(uint prop_count, uint parent) {
+    uint hm = shape_hash_mask_for(prop_count > 0 ? prop_count : 1);
+    usz bytes = shape_alloc_size(prop_count, hm);
+    void* raw = libc::malloc(bytes);
+    if (raw == null) return null;
+    libc::memset(raw, 0, bytes);
+
+    Shape* sh = (Shape*)((char*)raw + (usz)(hm + 1) * uint::size);
+    sh.generation = 0;
+    sh.parent     = parent;
+    sh.prop_count = prop_count;
+    sh.hash_mask  = hm;
+
+    // Fill hash table with 0 (empty sentinel).
+    uint* ht = (uint*)raw;
+    libc::memset(ht, 0, ((usz)hm + 1) * uint::size);
+
+    return sh;
+}
+
+/// Create a new shape that extends `parent` by adding one property.
+/// Copies all existing properties from parent and appends the new one.
+/// Returns null on allocation failure.
+fn Shape* shape_extend(Shape* parent, uint parent_id, void* new_key) {
+    uint old_count = parent.prop_count;
+    uint new_count = old_count + 1;
+    Shape* ns = shape_create(new_count, parent_id);
+    if (ns == null) return null;
+
+    // Copy old properties
+    ShapeProperty* old_sp = parent.props();
+    ShapeProperty* new_sp = ns.props();
+    for (uint i = 0; i < old_count; i++) {
+        new_sp[i].key   = old_sp[i].key;
+        new_sp[i].flags = old_sp[i].flags;
+    }
+
+    // Add new property at the end
+    new_sp[old_count].key   = new_key;
+    new_sp[old_count].flags = PROP_FLAGS_WEC;
+
+    // Rehash all properties into new hash table
+    uint* ht = ns.hash_table();
+    uint mask = ns.hash_mask;
+    for (uint i = 0; i < new_count; i++) {
+        uint h = hash_key(new_sp[i].key);
+        uint slot = h & mask;
+        while (ht[slot] != 0) slot = (slot + 1) & mask;
+        ht[slot] = i + 1;  // 1-indexed (0 = empty)
+    }
+
+    return ns;
+}
+
+/// Free a shape allocation.  Computes the base pointer from the Shape pointer.
+fn void shape_free(Shape* sh) {
+    if (sh == null) return;
+    void* base = (char*)sh - (sz)shape_header_offset(sh);
+    libc::free(base);
 }
 
 // ============================================================================
@@ -1165,9 +1098,8 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            PropEntry* pe = &cur.props[idx];
-            if (pe.flags.is_accessor) {
-                TVal accessor_fn = want_getter ? pe.getter : pe.setter;
+            if (cur.prop_values[idx].flags.is_accessor) {
+                TVal accessor_fn = want_getter ? cur.prop_values[idx].data.getter : cur.prop_values[idx].setter;
                 return {
                     .kind = PropLookupKind.PROP_ACCESSOR,
                     .acc = {
@@ -1179,7 +1111,7 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
             }
             return {
                 .kind = PropLookupKind.PROP_DATA,
-                .data_val = pe.value,
+                .data_val = cur.prop_values[idx].data.value,
                 .owner = cur
             };
         }
@@ -1228,7 +1160,7 @@ fn bool HObject.es_delete_prop(&self, void* key) {
     if (idx < 0) {
         return true;  // Not found → [[Delete]] returns true.
     }
-    if (!self.props[idx].flags.configurable) {
+    if (!self.prop_values[idx].flags.configurable) {
         return false;  // Non-configurable → [[Delete]] returns false.
     }
     return self.delete_prop(key);

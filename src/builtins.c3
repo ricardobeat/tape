@@ -1095,7 +1095,6 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
         HString* name_key = builtin_intern_string(ctx.heap, "name");
         TVal? name_prop = obj.get_prop_proto(name_key);
         if (try nv = name_prop) {
-            io::eprintfn("DEBUG toString: name found tag=%d", nv.get_tag());
             if (!nv.is_undefined()) {
                 HString* tmp = builtin_to_string(ctx.heap, &nv);
                 if (tmp != null) name_str = tmp;
@@ -1181,7 +1180,7 @@ fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
     ctx.result.set_string(s);
 }
 
-/// Boolean.prototype.valueOf — returns the wrapped boolean value
+/// Boolean.prototype.data.valueOf — returns the wrapped boolean value
 // ============================================================================
 // String constructor builtins
 // ============================================================================
@@ -1754,7 +1753,7 @@ fn void builtin_string_proto_toString(BuiltinContext* ctx) {
     ctx.result.set_undefined();
 }
 
-/// String.prototype.valueOf — returns the wrapped string primitive
+/// String.prototype.data.valueOf — returns the wrapped string primitive
 fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_object() && this_val.get_heapptr() != null) {
@@ -3736,7 +3735,7 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     ctx.result.set_string(s);
 }
 
-/// Number.prototype.valueOf — returns the wrapped number primitive
+/// Number.prototype.data.valueOf — returns the wrapped number primitive
 fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_object() && this_val.get_heapptr() != null) {
@@ -3969,7 +3968,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // First pass: count enumerable own properties (both named and dense array indices)
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) {
             count++;
         }
     }
@@ -3990,8 +3989,8 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // Fill array with keys: named properties first, then dense indices
     uint idx = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
-            HString* key = (HString*)obj.props[i].key;
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) {
+            HString* key = (HString*)obj.shape.props()[i].key;
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -4060,7 +4059,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // First pass: count all own properties (named, both enumerable and non-enumerable)
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null) {
+        if (obj.shape.props()[i].key != null) {
             count++;
         }
     }
@@ -4081,8 +4080,8 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // Fill array with property names: named properties first, then dense indices
     uint idx = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null) {
-            HString* key = (HString*)obj.props[i].key;
+        if (obj.shape.props()[i].key != null) {
+            HString* key = (HString*)obj.shape.props()[i].key;
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -4384,7 +4383,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         return;
     }
 
-    hobject::PropEntry* entry = &obj.props[idx];
+    hobject::PropValue* entry = &obj.prop_values[idx];
 
     // Build the descriptor object
     HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -4398,7 +4397,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     if (entry.flags.is_accessor) {
         // Accessor descriptor: { get, set, enumerable, configurable }
         HString* get_key = builtin_intern_string(ctx.heap, "get");
-        desc.put_prop(get_key, entry.getter, hobject::PROP_FLAGS_WEC);
+        desc.put_prop(get_key, entry.data.getter, hobject::PROP_FLAGS_WEC);
 
         HString* set_key = builtin_intern_string(ctx.heap, "set");
         desc.put_prop(set_key, entry.setter, hobject::PROP_FLAGS_WEC);
@@ -4415,7 +4414,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     } else {
         // Data descriptor: { value, writable, enumerable, configurable }
         HString* value_key = builtin_intern_string(ctx.heap, "value");
-        desc.put_prop(value_key, entry.value, hobject::PROP_FLAGS_WEC);
+        desc.put_prop(value_key, entry.data.value, hobject::PROP_FLAGS_WEC);
 
         HString* writable_key = builtin_intern_string(ctx.heap, "writable");
         TVal w_tv;
@@ -4766,17 +4765,17 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             obj.put_prop(key, desc_vals[0], desc_flags);
             int idx = obj.find_prop_idx(key);
             if (idx >= 0) {
-                obj.props[idx].getter = desc_vals[0];
-                obj.props[idx].setter = desc_vals[1];
+                obj.prop_values[idx].data.getter = desc_vals[0];
+                obj.prop_values[idx].setter = desc_vals[1];
             }
         } else {
             obj.put_prop(key, desc_vals[0], desc_flags);
         }
     } else {
         // Property exists — validate changes per ES5 §8.12.9
-        hobject::PropEntry* current = &obj.props[existing_idx];
+        hobject::PropValue* current = &obj.prop_values[existing_idx];
         hobject::PropFlags cur_flags = current.flags;
-        TVal cur_value = current.value;
+        TVal cur_value = current.data.value;
 
         // Check if descriptor is empty (generic, no fields)
         bool has_value_field   = (ctx.regs[ctx.base_reg + 2].is_object()); // already validated
@@ -4841,7 +4840,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (get_k != null) has_get_in_desc = desc_obj.find_prop_idx(get_k) >= 0;
             if (set_k != null) has_set_in_desc = desc_obj.find_prop_idx(set_k) >= 0;
 
-            if (has_get_in_desc) current.getter = desc_vals[0];
+            if (has_get_in_desc) current.data.getter = desc_vals[0];
             if (has_set_in_desc) current.setter = desc_vals[1];
 
             // Update flags
@@ -4904,7 +4903,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                     ctx.throw_value.set_object(err);
                     return;
                 }
-                current.value = desc_vals[0];
+                current.data.value = desc_vals[0];
             }
 
             if (has_wrt_in_desc)  current.flags.writable     = desc_flags.writable;
@@ -4962,8 +4961,8 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     HString*[256] keys_arr;
     uint keys_count = 0;
     for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-        if (props.props[i].key != null) {
-            keys_arr[keys_count] = (HString*)props.props[i].key;
+        if (props.shape.props()[i].key != null) {
+            keys_arr[keys_count] = (HString*)props.shape.props()[i].key;
             keys_count++;
         }
     }
@@ -4971,9 +4970,9 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     for (uint k = 0; k < keys_count; k++) {
         HString* p_key = keys_arr[k];
         // Get descObj = props.[[GetOwnProperty]](p_key).value
-        PropEntry*? prop_entry = props.find_prop(p_key);
+        PropValue*? prop_entry = props.find_prop(p_key);
         if (try pe = prop_entry) {
-            TVal desc_obj_val = pe.value;
+            TVal desc_obj_val = pe.data.value;
 
             // ToPropertyDescriptor(desc_obj)
             if (!desc_obj_val.is_object()) {
@@ -5028,15 +5027,15 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     obj.put_prop(p_key, desc_vals[0], desc_flags);
                     int idx = obj.find_prop_idx(p_key);
                     if (idx >= 0) {
-                        obj.props[idx].getter = desc_vals[0];
-                        obj.props[idx].setter = desc_vals[1];
+                        obj.prop_values[idx].data.getter = desc_vals[0];
+                        obj.prop_values[idx].setter = desc_vals[1];
                     }
                 } else {
                     obj.put_prop(p_key, desc_vals[0], desc_flags);
                 }
             } else {
                 // Property exists — validate changes
-                hobject::PropEntry* current = &obj.props[existing_idx];
+                hobject::PropValue* current = &obj.prop_values[existing_idx];
                 hobject::PropFlags cur_flags = current.flags;
                 if (!cur_flags.configurable) {
                     if (desc_flags.configurable != cur_flags.configurable ||
@@ -5058,7 +5057,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 }
 
                 if (is_accessor) {
-                    if (has_get_in_desc_helper(ctx.heap, desc_obj)) current.getter = desc_vals[0];
+                    if (has_get_in_desc_helper(ctx.heap, desc_obj)) current.data.getter = desc_vals[0];
                     if (has_set_in_desc_helper(ctx.heap, desc_obj)) current.setter = desc_vals[1];
                     current.flags.is_accessor = true;
                     current.flags.enumerable = desc_flags.enumerable;
@@ -5081,7 +5080,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                             ctx.throw_value.set_object(err);
                             return;
                         }
-                        current.value = desc_vals[0];
+                        current.data.value = desc_vals[0];
                     }
                     if (has_writable_in_desc_helper(ctx.heap, desc_obj)) current.flags.writable = desc_flags.writable;
                     if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) current.flags.enumerable = desc_flags.enumerable;
@@ -5199,17 +5198,17 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                 HString*[256] keys_arr;
                 uint keys_count = 0;
                 for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-                    if (props.props[i].key != null) {
-                        keys_arr[keys_count] = (HString*)props.props[i].key;
+                    if (props.shape.props()[i].key != null) {
+                        keys_arr[keys_count] = (HString*)props.shape.props()[i].key;
                         keys_count++;
                     }
                 }
 
                 for (uint k = 0; k < keys_count; k++) {
                     HString* pk_key = keys_arr[k];
-                    PropEntry*? prop_entry = props.find_prop(pk_key);
+                    PropValue*? prop_entry = props.find_prop(pk_key);
                     if (try pe = prop_entry) {
-                        TVal desc_obj_val = pe.value;
+                        TVal desc_obj_val = pe.data.value;
                         if (!desc_obj_val.is_object()) {
                             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (catch err4 = err_raw) { ctx.result.set_undefined(); return; }
@@ -5242,8 +5241,8 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                             obj.put_prop(pk_key, desc_vals[0], desc_flags);
                             int idx = obj.find_prop_idx(pk_key);
                             if (idx >= 0) {
-                                obj.props[idx].getter = desc_vals[0];
-                                obj.props[idx].setter = desc_vals[1];
+                                obj.prop_values[idx].data.getter = desc_vals[0];
+                                obj.prop_values[idx].setter = desc_vals[1];
                             }
                         } else {
                             obj.put_prop(pk_key, desc_vals[0], desc_flags);
@@ -5347,7 +5346,7 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
 
     // Check if any own property is configurable
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null && obj.props[i].flags.configurable) {
+        if (obj.shape.props()[i].key != null && obj.prop_values[i].flags.configurable) {
             ctx.result.set_boolean(false);
             return;
         }
@@ -5391,12 +5390,12 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
 
     // Check if any own property is configurable or data property writable
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null) {
-            if (obj.props[i].flags.configurable) {
+        if (obj.shape.props()[i].key != null) {
+            if (obj.prop_values[i].flags.configurable) {
                 ctx.result.set_boolean(false);
                 return;
             }
-            if (!obj.props[i].flags.is_accessor && obj.props[i].flags.writable) {
+            if (!obj.prop_values[i].flags.is_accessor && obj.prop_values[i].flags.writable) {
                 ctx.result.set_boolean(false);
                 return;
             }
@@ -5451,7 +5450,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part[i].is_undefined()) count++;
@@ -5464,8 +5463,8 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties → [key, value] pairs
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
-            HString* key = (HString*)obj.props[i].key;
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) {
+            HString* key = (HString*)obj.shape.props()[i].key;
             // Create pair array [key, value]
             HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
@@ -5473,7 +5472,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
             pair.prototype = ctx.heap.array_proto;
             TVal key_tv; key_tv.set_string(key);
             array_set_elem(pair, 0, key_tv, ctx.heap);
-            array_set_elem(pair, 1, obj.props[i].value, ctx.heap);
+            array_set_elem(pair, 1, obj.prop_values[i].data.value, ctx.heap);
             TVal len_tv; len_tv.set_fastint(2);
             HString* len_key = builtin_intern_string(ctx.heap, "length");
             pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
@@ -5551,7 +5550,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) count++;
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part[i].is_undefined()) count++;
@@ -5564,8 +5563,8 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].flags.enumerable && obj.props[i].key != null) {
-            array_set_elem(arr, idx, obj.props[i].value, ctx.heap);
+        if (obj.prop_values[i].flags.enumerable && obj.shape.props()[i].key != null) {
+            array_set_elem(arr, idx, obj.prop_values[i].data.value, ctx.heap);
             idx++;
         }
     }
@@ -5627,8 +5626,8 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         HObject* src_obj = (HObject*)source.get_heapptr();
         // Copy enumerable own named properties
         for (uint i = 0; i < src_obj.prop_count; i++) {
-            if (src_obj.props[i].flags.enumerable && src_obj.props[i].key != null) {
-                downstream.put_prop(src_obj.props[i].key, src_obj.props[i].value, hobject::PROP_FLAGS_WEC);
+            if (src_obj.prop_values[i].flags.enumerable && src_obj.shape.props()[i].key != null) {
+                downstream.put_prop(src_obj.shape.props()[i].key, src_obj.prop_values[i].data.value, hobject::PROP_FLAGS_WEC);
             }
         }
         // Copy enumerable own dense array indices
@@ -5710,7 +5709,7 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         ctx.result.set_boolean(false);
         return;
     }
-    PropEntry*? entry = obj.find_prop(key);
+    PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(true);
     } else {
@@ -5879,7 +5878,7 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
         return;
     }
     // Check own property
-    PropEntry*? entry = obj.find_prop(key);
+    PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(true);
     } else {
@@ -5911,7 +5910,7 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
         return;
     }
     // Find own property descriptor
-    PropEntry*? entry = obj.find_prop(key);
+    PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(e.flags.enumerable);
     } else {
@@ -5919,7 +5918,7 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     }
 }
 
-/// Object.prototype.valueOf — returns 'this'
+/// Object.prototype.data.valueOf — returns 'this'
 fn void builtin_object_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     ctx.result.set_fastint(this_val.get_fastint());
@@ -5971,9 +5970,9 @@ fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
 
     // Call toString() on the object
     HString* ts_key = builtin_intern_string(ctx.heap, "toString");
-    PropEntry*? entry = obj.find_prop(ts_key);
+    PropValue*? entry = obj.find_prop(ts_key);
     if (try e = entry) {
-        TVal fn_val = e.value;
+        TVal fn_val = e.data.value;
         if (fn_val.is_lightfunc()) {
             // Re-dispatch to toString
             ctx.needs_re_dispatch = true;
@@ -6125,35 +6124,41 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
 }
 
 /// Get array element at numeric index (returns undefined for holes).
+/// Checks the dense array part first, then falls back to named properties.
 fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
+    // Try the dense array part first.
+    if (obj.array_part != null && idx < obj.array_size) {
+        TVal v = obj.array_part[idx];
+        if (!v.is_undefined()) return v;
+    }
+    // Fall back to named property lookup (elements may be stored as named
+    // properties via PUTPROP or Object.defineProperty).
     char[16] buf;
     int len = libc::snprintf(&buf, 16, "%d", idx);
     if (len <= 0 || len >= 16) { TVal undef; undef.set_undefined(); return undef; }
     HString* key = builtin_intern_string(heap, buf[:len]);
     if (key == null) { TVal undef; undef.set_undefined(); return undef; }
-    TVal? result = obj.get_prop_proto(key);
-    if (try v = result) return v;
+    TVal? result = obj.get_prop(key);
+    if (try v = result) {
+        return v;
+    }
+    TVal? result2 = obj.get_prop_proto(key);
+    if (try v2 = result2) {
+        return v2;
+    }
     TVal undef; undef.set_undefined(); return undef;
 }
 
 /// Set array element at numeric index.
+/// Uses the dense array part for numeric indices (O(1) push/append).
 fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
-    char[16] buf;
-    int len = libc::snprintf(&buf, 16, "%d", idx);
-    if (len <= 0 || len >= 16) return;
-    HString* key = builtin_intern_string(heap, buf[:len]);
-    if (key == null) return;
-    obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+    obj.set_array_idx(idx, val);
 }
 
-/// Delete array element at numeric index (remove the property entirely).
+/// Delete array element at numeric index (set to undefined in dense part).
 fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
-    char[16] buf;
-    int len = libc::snprintf(&buf, 16, "%d", idx);
-    if (len <= 0 || len >= 16) return;
-    HString* key = builtin_intern_string(heap, buf[:len]);
-    if (key == null) return;
-    obj.delete_prop(key);
+    TVal undef; undef.set_undefined();
+    obj.set_array_idx(idx, undef);
 }
 
 /// Strict equality comparison for Array.prototype.indexOf / lastIndexOf.
@@ -6663,10 +6668,7 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
     array_set_length(obj, idx, ctx.heap);
 
     // Return the popped element
-    ctx.result.set_fastint(elem.get_fastint());
-    ctx.result.set_boolean(elem.get_boolean());
-    ctx.result.set_object(elem.get_heapptr());
-    ctx.result.set_number(elem.get_number());
+    *ctx.result = elem;
 }
 
 // ============================================================================
@@ -6735,10 +6737,7 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
     array_set_length(obj, len - 1, ctx.heap);
 
     // Return the first element
-    ctx.result.set_fastint(first.get_fastint());
-    ctx.result.set_boolean(first.get_boolean());
-    ctx.result.set_object(first.get_heapptr());
-    ctx.result.set_number(first.get_number());
+    *ctx.result = first;
 }
 
 // ============================================================================
@@ -8679,7 +8678,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
         } else if (obj.get_class() == ObjClass.OBJECT) {
             // Walk own properties
             for (uint i = 0; i < obj.prop_count; i++) {
-                HString* key_str = obj.props[i].key;
+                HString* key_str = obj.shape.props()[i].key;
                 if (key_str != null) {
                     TVal new_val = json_walk(heap, reviver, val, key_str);
                     if (new_val.is_undefined()) {
@@ -8874,8 +8873,8 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     // Check if object has properties
     bool has_props = false;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null &&
-            !obj.props[i].flags.is_accessor) {
+        if (obj.shape.props()[i].key != null &&
+            !obj.prop_values[i].flags.is_accessor) {
             has_props = true;
             break;
         }
@@ -8891,10 +8890,10 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     // For simplicity, iterate the entry table (will work for most cases)
     bool first = true;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.props[i].key != null &&
-            !obj.props[i].flags.is_accessor) {
-            HString* key_hstr = (HString*)obj.props[i].key;
-            TVal val = obj.props[i].value;
+        if (obj.shape.props()[i].key != null &&
+            !obj.prop_values[i].flags.is_accessor) {
+            HString* key_hstr = (HString*)obj.shape.props()[i].key;
+            TVal val = obj.prop_values[i].data.value;
 
             // Skip undefined and function values
             if (val.is_undefined()) continue;
@@ -9581,7 +9580,7 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
-/// Date.prototype.valueOf() — ES5 §15.9.5.8
+/// Date.prototype.data.valueOf() — ES5 §15.9.5.8
 fn void builtin_date_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double time_val = date_get_time_value(&this_val);
@@ -10966,7 +10965,7 @@ fn void builtin_map_proto_keys(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Map.prototype.values() — ES6 §23.1.3.11
+// Map.prototype.data.values() — ES6 §23.1.3.11
 // Returns a new Array of all values in insertion order.
 // ============================================================================
 fn void builtin_map_proto_values(BuiltinContext* ctx) {
@@ -11255,7 +11254,7 @@ fn void builtin_set_proto_keys(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Set.prototype.values() — ES6 §23.2.3.10
+// Set.prototype.data.values() — ES6 §23.2.3.10
 // ============================================================================
 fn void builtin_set_proto_values(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
@@ -11968,7 +11967,7 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Symbol.prototype.valueOf() — ES6 §19.4.3.3
+// Symbol.prototype.data.valueOf() — ES6 §19.4.3.3
 // ============================================================================
 fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -11990,7 +11989,7 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.data.valueOf called on non-Symbol");
         if (msg_str != null) {
             TVal msg_val;
             msg_val.set_string(msg_str);
@@ -14028,7 +14027,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
 
         uint count = 0;
         for (uint i = 0; i < globals.prop_count; i++) {
-            void* key = globals.props[i].key;
+            void* key = globals.shape.props()[i].key;
             if (key == null) continue;
             if (count >= heap.checkpoint_cap) {
                 uint new_cap = heap.checkpoint_cap * 2;
@@ -14042,7 +14041,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
                 heap.checkpoint_cap = new_cap;
             }
             heap.checkpoint_keys[count] = key;
-            heap.checkpoint_vals[count] = globals.props[i].value;
+            heap.checkpoint_vals[count] = globals.prop_values[i].data.value;
             count++;
         }
         heap.checkpoint_count = count;
@@ -14051,7 +14050,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
         // Delete globals not in checkpoint
         for (uint i = globals.prop_count; i > 0; i--) {
             uint idx = i - 1;
-            void* key = globals.props[idx].key;
+            void* key = globals.shape.props()[idx].key;
             if (key == null) continue;
             bool found = false;
             for (uint j = 0; j < heap.checkpoint_count; j++) {
@@ -15347,7 +15346,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // Add Date.prototype.toJSON()
     if (!register_string_proto_method(proto, heap, "toJSON", BUILTIN_DATE_PROTO_TOJSON)) return false;
 
-    // Add Date.prototype.valueOf()
+    // Add Date.prototype.data.valueOf()
     if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_DATE_PROTO_VALUEOF)) return false;
 
     // Add Date.prototype.getTime()

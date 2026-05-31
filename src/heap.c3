@@ -259,10 +259,17 @@ struct Heap {
     bool      microtask_draining;  // re-entrancy guard
 
     // Shape (hidden class) system for inline cache support.
-    hobject::Shape*     shapes;
+    hobject::Shape**    shapes;       // pointer array — each element points to a shape allocation
     uint                shape_count;
     uint                shape_capacity;
     uint                shape_gen;
+
+    // Shape transition deduplication table.
+    // Maps (parent_shape_id, key_pointer) → child_shape_id so that two
+    // objects following the same property-addition path share one Shape.
+    TransitionEntry*    trans_table;
+    uint                trans_mask;   // table has mask+1 entries
+    uint                trans_count;
 }
 
 // ============================================================================
@@ -460,35 +467,109 @@ fn void Heap.init_builtin_strs(&self) {
 // Shape (hidden class) system
 // ============================================================================
 
-const uint SHAPE_INITIAL_CAP      = 64;
-const uint SHAPE_CHILDREN_INITIAL = 4;
-const uint SHAPE_NONE             = 0xFFFF_FFFF;
+const uint SHAPE_INITIAL_CAP   = 64;
+const uint SHAPE_NONE          = 0xFFFF_FFFF;
+const uint SHAPE_TRANS_INITIAL = 16;   // must be power of 2
+const uint SHAPE_TRANS_LOAD    = 70;   // max load percentage before grow
+
+struct TransitionEntry {
+    uint parent_id;
+    void* key;
+    uint shape_id;
+}
+
+fn void Heap.init_transition_table(&self) {
+    self.trans_mask = SHAPE_TRANS_INITIAL - 1;
+    self.trans_count = 0;
+    usz bytes = (usz)SHAPE_TRANS_INITIAL * TransitionEntry::size;
+    self.trans_table = (TransitionEntry*)libc::malloc(bytes);
+    libc::memset(self.trans_table, 0xFF, bytes);
+}
+
+fn uint hash_transition(uint parent_id, void* key) @inline {
+    uint h = parent_id;
+    h ^= (uint)((usz)key);
+    h = ((h >> 16) ^ h) * 0x45D9_F3B;
+    h = ((h >> 16) ^ h) * 0x45D9_F3B;
+    h = (h >> 16) ^ h;
+    return h;
+}
+
+fn uint Heap.lookup_transition(&self, uint parent_id, void* key) {
+    uint h = hash_transition(parent_id, key);
+    uint mask = self.trans_mask;
+    uint slot = h & mask;
+    TransitionEntry* table = self.trans_table;
+    for (uint i = 0; i <= mask; i++) {
+        TransitionEntry* e = &table[slot];
+        if (e.parent_id == SHAPE_NONE) return SHAPE_NONE;
+        if (e.parent_id == parent_id && e.key == key) return e.shape_id;
+        slot = (slot + 1) & mask;
+    }
+    return SHAPE_NONE;
+}
+
+fn void Heap.transition_table_grow(&self) {
+    uint old_mask = self.trans_mask;
+    uint new_cap = (old_mask + 1) * 2;
+    uint new_mask = new_cap - 1;
+    usz bytes = (usz)new_cap * TransitionEntry::size;
+    TransitionEntry* new_table = (TransitionEntry*)libc::malloc(bytes);
+    libc::memset(new_table, 0xFF, bytes);
+    TransitionEntry* old_table = self.trans_table;
+    for (uint i = 0; i <= old_mask; i++) {
+        TransitionEntry* e = &old_table[i];
+        if (e.parent_id == SHAPE_NONE) continue;
+        uint h = hash_transition(e.parent_id, e.key);
+        uint slot = h & new_mask;
+        while (new_table[slot].parent_id != SHAPE_NONE) slot = (slot + 1) & new_mask;
+        new_table[slot] = *e;
+    }
+    libc::free(old_table);
+    self.trans_table = new_table;
+    self.trans_mask = new_mask;
+}
+
+fn void Heap.insert_transition(&self, uint parent_id, void* key, uint shape_id) {
+    if ((self.trans_count + 1) * 100 > (self.trans_mask + 1) * SHAPE_TRANS_LOAD) {
+        self.transition_table_grow();
+    }
+    uint h = hash_transition(parent_id, key);
+    uint mask = self.trans_mask;
+    uint slot = h & mask;
+    TransitionEntry* table = self.trans_table;
+    while (table[slot].parent_id != SHAPE_NONE) slot = (slot + 1) & mask;
+    table[slot].parent_id = parent_id;
+    table[slot].key = key;
+    table[slot].shape_id = shape_id;
+    self.trans_count++;
+}
 
 fn void Heap.init_shapes(&self) {
     self.shape_capacity = SHAPE_INITIAL_CAP;
     self.shape_count    = 1;  // slot 0 = root shape
     self.shape_gen      = 0;
-    usz bytes = (usz)SHAPE_INITIAL_CAP * hobject::Shape::size;
-    self.shapes = (hobject::Shape*)libc::malloc(bytes);
+    // Allocate pointer array
+    usz bytes = (usz)SHAPE_INITIAL_CAP * (void*::size);
+    self.shapes = (hobject::Shape**)libc::malloc(bytes);
     libc::memset(self.shapes, 0, bytes);
-    hobject::Shape* root = &self.shapes[0];
-    root.key            = null;
-    root.prop_idx       = 0;
-    root.parent         = SHAPE_NONE;
-    root.generation     = 0;
-    root.children       = null;
-    root.children_size  = 0;
-    root.children_count = 0;
+    // Allocate root shape: 0 properties, minimum hash (mask=0 → 2 slots)
+    self.shapes[0] = hobject::shape_create(0, SHAPE_NONE);
+    // Init transition dedup table
+    self.init_transition_table();
 }
 
-fn uint Heap.alloc_shape(&self) {
+/// Allocate a new shape slot in the shapes array. Returns the new shape ID.
+/// Does NOT initialize the shape pointer (caller must set shapes[id]).
+fn uint Heap.alloc_shape_slot(&self) {
     if (self.shape_count >= self.shape_capacity) {
         uint new_cap = self.shape_capacity * 2;
-        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * hobject::Shape::size);
+        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * (void*::size));
         if (new_raw == null) return SHAPE_NONE;
-        usz old_bytes = (usz)self.shape_capacity * hobject::Shape::size;
-        libc::memset((char*)new_raw + old_bytes, 0, (usz)new_cap * hobject::Shape::size - old_bytes);
-        self.shapes = (hobject::Shape*)new_raw;
+        // Zero new slots
+        usz old_bytes = (usz)self.shape_capacity * (void*::size);
+        libc::memset((char*)new_raw + old_bytes, 0, (usz)new_cap * (void*::size) - old_bytes);
+        self.shapes = (hobject::Shape**)new_raw;
         self.shape_capacity = new_cap;
     }
     uint id = self.shape_count;
@@ -504,74 +585,59 @@ fn uint hash_key_ptr(void* key) @inline {
     return h;
 }
 
-fn uint Heap.find_child_shape(&self, uint parent_idx, void* key) {
-    hobject::Shape* s = &self.shapes[parent_idx];
-    if (s.children == null || s.children_size == 0) return SHAPE_NONE;
-    uint mask = s.children_size - 1;
-    uint slot = hash_key_ptr(key) & mask;
-    for (uint i = 0; i < s.children_size; i++) {
-        uint ci = s.children[slot];
-        if (ci == SHAPE_NONE) return SHAPE_NONE;
-        if (ci < self.shape_count && self.shapes[ci].key == key) return ci;
-        slot = (slot + 1) & mask;
+/// Transition to a new shape that includes the given property key.
+///
+/// If the current shape already has this key, returns the current shape
+/// (the caller should update the existing slot).
+///
+/// Otherwise, creates a new shape that extends the current one:
+/// copies all existing ShapeProperties and appends the new one.
+fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
+    if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
+        return cur_shape_id;
     }
-    return SHAPE_NONE;
-}
 
-fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key, ushort prop_idx) {
-    if (cur_shape_id >= self.shape_count) return cur_shape_id;
-    uint child_idx = self.find_child_shape(cur_shape_id, key);
-    if (child_idx != SHAPE_NONE) return child_idx;
+    hobject::Shape* cur = self.shapes[cur_shape_id];
 
-    uint new_id = self.alloc_shape();
-    if (new_id == SHAPE_NONE) return cur_shape_id;
-
-    hobject::Shape* ns = &self.shapes[new_id];
-    ns.key            = key;
-    ns.prop_idx       = prop_idx;
-    ns.parent         = cur_shape_id;
-    ns.generation     = 0;
-    ns.children       = null;
-    ns.children_size  = 0;
-    ns.children_count = 0;
-
-    hobject::Shape* parent = &self.shapes[cur_shape_id];
-    if (parent.children == null) {
-        parent.children_size = SHAPE_CHILDREN_INITIAL;
-        parent.children = (uint*)libc::malloc((usz)SHAPE_CHILDREN_INITIAL * uint::size);
-        if (parent.children == null) return cur_shape_id;
-        libc::memset(parent.children, 0xFF, (usz)SHAPE_CHILDREN_INITIAL * uint::size);
-    } else if (parent.children_count * 10 > parent.children_size * 7) {
-        uint new_sz = parent.children_size * 2;
-        uint* new_tbl = (uint*)libc::malloc((usz)new_sz * uint::size);
-        if (new_tbl == null) return cur_shape_id;
-        libc::memset(new_tbl, 0xFF, (usz)new_sz * uint::size);
-        uint mask = new_sz - 1;
-        for (uint i = 0; i < parent.children_size; i++) {
-            uint ci = parent.children[i];
-            if (ci != SHAPE_NONE) {
-                uint h = hash_key_ptr(self.shapes[ci].key) & mask;
-                while (new_tbl[h] != SHAPE_NONE) h = (h + 1) & mask;
-                new_tbl[h] = ci;
-            }
-        }
-        libc::free(parent.children);
-        parent.children = new_tbl;
-        parent.children_size = new_sz;
+    // If the key already exists in the shape, no transition needed.
+    if (cur.find_prop_idx(key) >= 0) {
+        return cur_shape_id;
     }
-    uint mask = parent.children_size - 1;
-    uint h = hash_key_ptr(key) & mask;
-    while (parent.children[h] != SHAPE_NONE) h = (h + 1) & mask;
-    parent.children[h] = new_id;
-    parent.children_count++;
+
+    // Check transition table for existing child shape.
+    uint existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_NONE) {
+        //io::printfn("DEDUP HIT: parent=%d key=%p -> shape=%d", cur_shape_id, key, existing);
+        return existing;
+    }
+
+    // Allocate a new shape that extends the current one.
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    if (ns == null) return cur_shape_id;
+
+    uint new_id = self.alloc_shape_slot();
+    if (new_id == SHAPE_NONE) {
+        hobject::shape_free(ns);
+        return cur_shape_id;
+    }
+
+    self.shapes[new_id] = ns;
+    // Register this transition for future deduplication.
+    self.insert_transition(cur_shape_id, key, new_id);
     return new_id;
 }
 
 fn void Heap.bump_shape_gen(&self, uint shape_id) {
-    if (shape_id < self.shape_count) {
+    if (shape_id < self.shape_count && self.shapes[shape_id] != null) {
         self.shapes[shape_id].generation++;
         self.shape_gen++;
     }
+}
+
+/// Get a shape pointer by ID. Returns null if invalid.
+fn hobject::Shape* Heap.get_shape(&self, uint shape_id) {
+    if (shape_id >= self.shape_count) return null;
+    return self.shapes[shape_id];
 }
 
 /**
@@ -656,10 +722,14 @@ fn void Heap.destroy(&self) {
     }
 
     // Free shape system
+    if (self.trans_table != null) {
+        libc::free(self.trans_table);
+        self.trans_table = null;
+    }
     if (self.shapes != null) {
         for (uint i = 0; i < self.shape_count; i++) {
-            if (self.shapes[i].children != null) {
-                libc::free(self.shapes[i].children);
+            if (self.shapes[i] != null) {
+                hobject::shape_free(self.shapes[i]);
             }
         }
         libc::free(self.shapes);
@@ -821,6 +891,25 @@ fn void Heap.reset(&self) {
     // Clear longjmp state
     self.lj.lj_type = LjType.UNKNOWN;
     self.lj.iserror = false;
+
+    // Reset shape system — free all shapes and transition table, then reinit
+    if (self.trans_table != null) {
+        libc::free(self.trans_table);
+        self.trans_table = null;
+    }
+    if (self.shapes != null) {
+        for (uint i = 0; i < self.shape_count; i++) {
+            if (self.shapes[i] != null) {
+                hobject::shape_free(self.shapes[i]);
+            }
+        }
+        // Reuse the pointer array, just zero it
+        libc::memset(self.shapes, 0, (usz)self.shape_capacity * (void*::size));
+    }
+    self.shape_count = 1;
+    self.shape_gen   = 0;
+    self.shapes[0]   = hobject::shape_create(0, SHAPE_NONE);
+    self.init_transition_table();
 
     // Reintern builtin strings into the now-empty string table
     self.init_builtin_strs();
@@ -1120,13 +1209,13 @@ fn void Heap.drain_gray(&self) {
 
         // --- Named properties ---
         for (uint i = 0; i < obj.prop_count; i++) {
-            HString* key = (HString*)obj.props[i].key;
+            HString* key = (HString*)obj.shape.props()[i].key;
             if (key != null) {
                 ((HeapHeader*)key).set_reachable();
             }
-            self.mark_tval(&obj.props[i].value);
-            self.mark_tval(&obj.props[i].getter);
-            self.mark_tval(&obj.props[i].setter);
+            self.mark_tval(&obj.prop_values[i].data.value);
+            self.mark_tval(&obj.prop_values[i].data.getter);
+            self.mark_tval(&obj.prop_values[i].setter);
         }
 
         // --- Array part ---
