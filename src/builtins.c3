@@ -149,7 +149,19 @@ const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
 const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
 const uint BUILTIN_PROMISE_RESOLVE_CALLBACK     = 264;
 const uint BUILTIN_PROMISE_REJECT_CALLBACK      = 265;
-const uint BUILTIN_COUNT                         = 269;
+
+// Iterator protocol
+const uint BUILTIN_ARRAY_ITERATOR_NEXT        = 269;
+const uint BUILTIN_STRING_ITERATOR_NEXT       = 270;
+const uint BUILTIN_ARRAY_PROTO_SYMBOL_ITER    = 271;
+const uint BUILTIN_STRING_PROTO_SYMBOL_ITER   = 272;
+
+const uint BUILTIN_ARRAY_PROTO_KEYS           = 273;
+const uint BUILTIN_ARRAY_PROTO_VALUES         = 274;
+const uint BUILTIN_ARRAY_PROTO_ENTRIES        = 275;
+const uint BUILTIN_OBJECT_FROMENTRIES         = 276;
+
+const uint BUILTIN_COUNT                         = 277;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -568,11 +580,17 @@ fn TVal to_primitive_value_local(TVal* val) {
             result.set_boolean(obj.primitive_value.get_boolean());
             return result;
         }
-        if (cls == hobject::ObjClass.NUMBER &&
-            (obj.primitive_value.is_number() || obj.primitive_value.is_fastint())) {
-            TVal result;
-            result.set_number(obj.primitive_value.get_number());
-            return result;
+        if (cls == hobject::ObjClass.NUMBER) {
+            if (obj.primitive_value.is_fastint()) {
+                TVal result;
+                result.set_number((double)obj.primitive_value.get_fastint());
+                return result;
+            }
+            if (obj.primitive_value.is_number()) {
+                TVal result;
+                result.set_number(obj.primitive_value.get_number());
+                return result;
+            }
         }
         if (cls == hobject::ObjClass.STRING &&
             obj.primitive_value.is_string()) {
@@ -5772,6 +5790,146 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
     }
     ctx.result.set_object(obj);
 }
+
+// ============================================================================
+// Object.fromEntries — ES2019 §19.1.2.5
+// ============================================================================
+/// Creates a new object from an iterable of [key, value] pairs.
+fn void builtin_object_fromEntries(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // TypeError if argument is null or undefined
+    if (arg.is_null() || arg.is_undefined()) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.fromEntries requires an iterable");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
+    if (!arg.is_object()) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* iterable = (HObject*)arg.get_heapptr();
+    // Create result object
+    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+    HObject* obj = obj_raw;
+    obj.prototype = ctx.heap.object_proto;
+    // Get length
+    usz len = 0;
+    bool has_len = false;
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    if (try len_tv = iterable.get_prop(length_key)) {
+        if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+            len = (usz)len_tv.get_fastint();
+            has_len = true;
+        } else if (len_tv.is_number()) {
+            len = (usz)len_tv.get_number();
+            has_len = true;
+        }
+    }
+    if (!has_len || len == 0) {
+        ctx.result.set_object(obj);
+        return;
+    }
+    // Iterate entries
+    for (usz i = 0; i < len; i++) {
+        TVal idx_tv;
+        idx_tv.set_fastint((long)i);
+        TVal entry;
+        if (try e = iterable.get_prop(&idx_tv)) {
+            entry = e;
+        } else {
+            continue;
+        }
+        if (!entry.is_object()) continue;
+        HObject* pair = (HObject*)entry.get_heapptr();
+        // Get key from pair[0]
+        TVal key_idx;
+        key_idx.set_fastint(0);
+        TVal key_val;
+        if (try kv = pair.get_prop(&key_idx)) {
+            key_val = kv;
+        } else {
+            continue;
+        }
+        // Get value from pair[1]
+        TVal val_idx;
+        val_idx.set_fastint(1);
+        TVal val_val;
+        if (try vv = pair.get_prop(&val_idx)) {
+            val_val = vv;
+        } else {
+            val_val.set_undefined();
+        }
+        // Convert key to string
+        HString* key_str = null;
+        if (key_val.is_string()) {
+            key_str = (HString*)key_val.get_heapptr();
+        } else if (key_val.is_number()) {
+            char[32] buf;
+            int slen = libc::snprintf(&buf[0], 32, "%g", key_val.get_number());
+            if (slen > 0) {
+                uint hash = ctx.heap.hash_string(buf[..slen]);
+                HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
+                if (try ss = s) {
+                    ctx.heap.str_table_insert(ss);
+                    key_str = ss;
+                }
+            }
+        } else if (key_val.is_object()) {
+            // Symbol objects: skip per spec (Symbol keys are not string-coerced)
+            HObject* key_obj = (HObject*)key_val.get_heapptr();
+            if (key_obj.get_class() == hobject::ObjClass.SYMBOL) continue;
+            // For other objects, use toString via .name or [object Object]
+            char[64] buf;
+            char* repr = "[object Object]";
+            int slen = 15;
+            uint hash = ctx.heap.hash_string(buf[..slen]);
+            libc::memcpy(&buf, repr, (usz)slen);
+            HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
+            if (try ss = s) {
+                ctx.heap.str_table_insert(ss);
+                key_str = ss;
+            }
+        } else {
+            // ToPropertyKey: toString for null/undefined/boolean
+            char[64] buf;
+            char* repr = "undefined";
+            int slen = 9;
+            if (key_val.is_null()) {
+                repr = "null";
+                slen = 4;
+            } else if (key_val.is_boolean()) {
+                if (key_val.get_boolean()) { repr = "true"; slen = 4; }
+                else { repr = "false"; slen = 5; }
+            }
+            uint hash = ctx.heap.hash_string(buf[..slen]);
+            libc::memcpy(&buf, repr, (usz)slen);
+            HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
+            if (try ss = s) {
+                ctx.heap.str_table_insert(ss);
+                key_str = ss;
+            }
+        }
+        if (key_str != null) {
+            obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+    ctx.result.set_object(obj);
+}
+
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_object() && this_val.get_heapptr() != null) {
@@ -6497,6 +6655,10 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 266: return { "allSettled", 1 };
         case 267: return { "any", 1 };
         case 268: return { "AggregateError", 2 };
+        case 269: return { "next", 0 };
+        case 270: return { "next", 0 };
+        case 271: return { "[Symbol.iterator]", 0 };
+        case 272: return { "[Symbol.iterator]", 0 };
         default: return { "", -1 };
     }
 }
@@ -9015,11 +9177,20 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     if (jctx.offset >= jctx.buf_size) return -1;
     jctx.buf[jctx.offset++] = '[';
 
+    // Check if dense array fast path is available for element reads
+    bool is_dense = (arr.get_class() == ObjClass.ARRAY || arr.get_class() == ObjClass.ARGUMENTS)
+                    && arr.array_part != null;
+
+    // Always read length from the property (spec-correct)
     HString* len_key = builtin_intern_string(jctx.heap, "length");
     TVal? len_prop = arr.get_prop_proto(len_key);
     uint len = 0;
     if (try l = len_prop) {
-        if (l.is_fastint()) len = (uint)l.get_fastint();
+        if (l.is_fastint()) {
+            len = (uint)l.get_fastint();
+        } else if (l.is_number()) {
+            len = (uint)(long)l.get_number();
+        }
     }
 
     if (len == 0) {
@@ -9030,15 +9201,28 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
 
     bool first = true;
     for (uint i = 0; i < len; i++) {
-        char[16] idx_buf;
-        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-        HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
-        TVal? elem_prop = arr.get_prop_proto(idx_key);
+        // Read element: try array_part fast path first, then fall back to prop lookup
         TVal elem;
-        if (try e = elem_prop) {
-            elem = e;
-        } else {
-            elem.set_undefined();
+        bool found = false;
+        if (is_dense && i < arr.array_size) {
+            TVal av = arr.array_part[i];
+            if (!av.is_undefined()) {
+                elem = av;
+                found = true;
+            }
+            // undefined in array_part means hole — fall through to prop lookup
+        }
+        if (!found) {
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+            HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
+            TVal? elem_prop = arr.get_prop_proto(idx_key);
+            if (try e = elem_prop) {
+                elem = e;
+                found = true;
+            } else {
+                elem.set_undefined();
+            }
         }
 
         if (!first) {
@@ -11836,6 +12020,24 @@ fn HString* ensure_tostringtag_symbol(Heap* heap) {
     return sym;
 }
 
+/// Ensure the well-known @@iterator symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_iterator_symbol(Heap* heap) {
+    // Fast path: already cached on the heap
+    if (heap.iterator_symbol != null) return heap.iterator_symbol;
+    char[] desc = "iterator";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.iterator_symbol = existing;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.iterator_symbol = sym;
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -13535,6 +13737,349 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     return true;
 }
 
+// ============================================================================
+// Iterator protocol — built-in @@iterator methods and .next() functions
+// ============================================================================
+
+/// Array.prototype[Symbol.iterator] — creates an array iterator object.
+fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Get `this` — must be an object
+    TVal this_val = ctx.this_val;
+    HObject* iterable;
+    if (this_val.is_object()) {
+        iterable = (HObject*)this_val.get_heapptr();
+    } else {
+        // Non-object `this`: wrap it
+        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = wrapped) { ctx.result.set_undefined(); return; }
+        iterable = wrapped;
+    }
+
+    // Create an ARRAY_ITERATOR object
+    HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
+    if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
+    HObject* iter = iter_raw;
+    iter.iterator_target = iterable;
+    iter.iterator_index = 0;
+    iter.prototype = null;
+
+    // Add .next method as an own property
+    HString* next_key = builtin_intern_string(heap, "next");
+    if (next_key != null) {
+        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try fn_obj = fn_raw) {
+            fn_obj.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
+            fn_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            TVal fn_tv;
+            fn_tv.set_object(fn_obj);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+
+    ctx.result.set_object(iter);
+}
+
+/// Helper: create an array iterator with a specific kind.
+/// kind: 0=value (default), 1=key, 2=key+value (entries)
+fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    HObject* iterable;
+    if (this_val.is_object()) {
+        iterable = (HObject*)this_val.get_heapptr();
+    } else {
+        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = wrapped) { ctx.result.set_undefined(); return; }
+        iterable = wrapped;
+    }
+    HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
+    if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
+    HObject* iter = iter_raw;
+    iter.iterator_target = iterable;
+    iter.iterator_index = 0;
+    iter.iterator_kind = kind;
+    iter.prototype = null;
+    HString* next_key = builtin_intern_string(heap, "next");
+    if (next_key != null) {
+        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try fn_obj = fn_raw) {
+            fn_obj.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
+            fn_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            TVal fn_tv;
+            fn_tv.set_object(fn_obj);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+    ctx.result.set_object(iter);
+}
+
+/// Array.prototype.values — ES2015 §22.1.3.33 (kind=0, same as @@iterator)
+fn void builtin_array_proto_values(BuiltinContext* ctx) {
+    create_array_iterator(ctx, 0);
+}
+
+/// Array.prototype.keys — ES2015 §22.1.3.17 (kind=1)
+fn void builtin_array_proto_keys(BuiltinContext* ctx) {
+    create_array_iterator(ctx, 1);
+}
+
+/// Array.prototype.entries — ES2015 §22.1.3.5 (kind=2)
+fn void builtin_array_proto_entries(BuiltinContext* ctx) {
+    create_array_iterator(ctx, 2);
+}
+
+/// String.prototype[Symbol.iterator] — creates a string iterator object.
+fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Get `this` — must be a string or String object
+    TVal this_val = ctx.this_val;
+    HString* str_data = null;
+    if (this_val.is_string()) {
+        str_data = (HString*)this_val.get_heapptr();
+    } else if (this_val.is_object()) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.primitive_value.is_string()) {
+            str_data = (HString*)obj.primitive_value.get_heapptr();
+        }
+    }
+
+    if (str_data == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Create a STRING_ITERATOR object
+    HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.STRING_ITERATOR);
+    if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
+    HObject* iter = iter_raw;
+    // Store the string as primitive_value (for GC tracing via mark_tval)
+    iter.primitive_value.set_string(str_data);
+    iter.iterator_index = 0;
+    iter.prototype = null;
+
+    // Add .next method as an own property
+    HString* next_key = builtin_intern_string(heap, "next");
+    if (next_key != null) {
+        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try fn_obj = fn_raw) {
+            fn_obj.builtin_fn_index = (int)BUILTIN_STRING_ITERATOR_NEXT;
+            fn_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            TVal fn_tv;
+            fn_tv.set_object(fn_obj);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+
+    ctx.result.set_object(iter);
+}
+
+/// Array iterator .next() — returns {value, done}.
+fn void builtin_array_iterator_next(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    Heap* heap = ctx.heap;
+
+    if (!this_val.is_object()) {
+        ctx.should_throw = true;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HObject* iter = (HObject*)this_val.get_heapptr();
+    if (iter.get_class() != hobject::ObjClass.ARRAY_ITERATOR) {
+        ctx.should_throw = true;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HObject* target = iter.iterator_target;
+    if (target == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    uint idx = iter.iterator_index;
+
+    // Check if done — compare against target.array_used (fast path for arrays)
+    bool done = false;
+    TVal value;
+    value.set_undefined();
+
+    if (target.get_class() == hobject::ObjClass.ARRAY && target.array_part != null) {
+        if (idx >= target.array_used) {
+            done = true;
+        } else {
+            TVal? elem = target.get_array_idx(idx);
+            if (try v = elem) {
+                value = v;
+            } else {
+                value.set_undefined();
+            }
+        }
+    } else {
+        // Fallback: use .length property
+        TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);
+        long len = 0;
+        if (try lv = len_val) {
+            if (lv.is_fastint()) {
+                len = lv.get_fastint();
+            } else if (lv.is_number()) {
+                len = (long)lv.get_number();
+            }
+        }
+        if ((long)idx >= len) {
+            done = true;
+        } else {
+            // Get element via stringified index key
+            char[32] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf[0], 32, "%u", idx);
+            uint idx_hash = heap.hash_string(idx_buf[:idx_len]);
+            HString* idx_str = heap.str_table_lookup(idx_buf[:idx_len], idx_hash);
+            if (idx_str == null) {
+                HString*? new_str = hstring::hstring_alloc(heap, idx_buf[:idx_len], idx_hash);
+                if (try s = new_str) {
+                    heap.str_table_insert(s);
+                    idx_str = s;
+                }
+            }
+            if (idx_str != null) {
+                TVal? elem_val = target.get_prop_proto(idx_str);
+                if (try ev = elem_val) {
+                    value = ev;
+                } else {
+                    value.set_undefined();
+                }
+            }
+        }
+    }
+
+    if (!done) {
+        iter.iterator_index = idx + 1;
+    }
+
+    // Adjust value based on iterator kind
+    uint kind = iter.iterator_kind;
+    if (kind == 1) {
+        // keys() iterator: value = index
+        value.set_fastint((long)idx);
+    } else if (kind == 2) {
+        // entries() iterator: value = [index, value]
+        HObject*? pair_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (try pair = pair_raw) {
+            pair.prototype = heap.array_proto;
+            TVal idx_tv;
+            idx_tv.set_fastint((long)idx);
+            pair.set_array_idx(0, idx_tv);
+            pair.set_array_idx(1, value);
+            pair.array_used = 2;
+            value.set_object(pair);
+        }
+    }
+    // kind==0: value stays as-is (default/@@iterator)
+
+    // Create result object: {value, done}
+    HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = result_raw) { ctx.result.set_undefined(); return; }
+    HObject* result = result_raw;
+    result.prototype = null;
+
+    // Set .value
+    HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+    result.put_prop(value_key, value, hobject::PROP_FLAGS_WEC);
+
+    // Set .done
+    HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+    TVal done_tv;
+    done_tv.set_boolean(done);
+    result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.set_object(result);
+}
+
+/// String iterator .next() — returns {value, done}.
+fn void builtin_string_iterator_next(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    Heap* heap = ctx.heap;
+
+    if (!this_val.is_object()) {
+        ctx.should_throw = true;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HObject* iter = (HObject*)this_val.get_heapptr();
+    if (iter.get_class() != hobject::ObjClass.STRING_ITERATOR) {
+        ctx.should_throw = true;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HString* str = (HString*)iter.primitive_value.get_heapptr();
+    if (str == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    uint idx = iter.iterator_index;
+    char[] data = str.get_data();
+
+    // Check if done — for simplicity, iterate by code units (bytes for ASCII)
+    // TODO: full Unicode support with code point iteration
+    if (idx >= data.len) {
+        // Done — return {value: undefined, done: true}
+        HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = result_raw) { ctx.result.set_undefined(); return; }
+        HObject* result = result_raw;
+        result.prototype = null;
+        HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+        TVal done_tv;
+        done_tv.set_boolean(true);
+        result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+        HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+        TVal undef;
+        undef.set_undefined();
+        result.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(result);
+        return;
+    }
+
+    iter.iterator_index = idx + 1;
+
+    // Create result object: {value: char, done: false}
+    HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = result_raw) { ctx.result.set_undefined(); return; }
+    HObject* result = result_raw;
+    result.prototype = null;
+
+    // Set .value — single character string
+    HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+    char[1] ch = { data[idx] };
+    uint hash = heap.hash_string(ch[:1]);
+    HString*? char_str = hstring::hstring_alloc(heap, ch[:1], hash);
+    if (try s = char_str) {
+        heap.str_table_insert(s);
+        TVal value_tv;
+        value_tv.set_string(s);
+        result.put_prop(value_key, value_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    // Set .done
+    HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+    TVal done_tv;
+    done_tv.set_boolean(false);
+    result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.set_object(result);
+}
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
     switch (fn_index) {
         case BUILTIN_PRINT:
@@ -14049,6 +14594,22 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_decode_uri(ctx);
         case BUILTIN_DECODE_URI_COMPONENT:
             builtin_decode_uri_component(ctx);
+        case BUILTIN_ARRAY_ITERATOR_NEXT:
+            builtin_array_iterator_next(ctx);
+        case BUILTIN_STRING_ITERATOR_NEXT:
+            builtin_string_iterator_next(ctx);
+        case BUILTIN_ARRAY_PROTO_SYMBOL_ITER:
+            builtin_array_proto_symbol_iter(ctx);
+        case BUILTIN_STRING_PROTO_SYMBOL_ITER:
+            builtin_string_proto_symbol_iter(ctx);
+        case BUILTIN_ARRAY_PROTO_KEYS:
+            builtin_array_proto_keys(ctx);
+        case BUILTIN_ARRAY_PROTO_VALUES:
+            builtin_array_proto_values(ctx);
+        case BUILTIN_ARRAY_PROTO_ENTRIES:
+            builtin_array_proto_entries(ctx);
+        case BUILTIN_OBJECT_FROMENTRIES:
+            builtin_object_fromEntries(ctx);
         default:
             ctx.result.set_undefined();
     }
@@ -14285,6 +14846,17 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         }
     }
 
+    // Register globalThis (ES2020 §19.2.1) — points back to the global object itself.
+    // globalThis is a property of the global environment's bindings object.
+    {
+        HString* gthis_key = builtin_intern_string(heap, "globalThis");
+        if (gthis_key != null) {
+            TVal gthis_tv;
+            gthis_tv.set_object(global_env.bindings);
+            env::env_declare(global_env, gthis_key, gthis_tv);
+        }
+    }
+
     return true;
 }
 
@@ -14495,6 +15067,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     TVal setproto_tv;
     setproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SETPROTOTYPEOF);
     obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.fromEntries — ES2019 §19.1.2.5
+    HString* fromentries_key = builtin_intern_string(heap, "fromEntries");
+    if (fromentries_key == null) return false;
+    TVal fromentries_tv;
+    fromentries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FROMENTRIES);
+    obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
@@ -15075,6 +15654,36 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "match",      BUILTIN_STRING_PROTO_MATCH))      return false;
     if (!register_string_proto_method(proto, heap, "search",     BUILTIN_STRING_PROTO_SEARCH))     return false;
 
+    // Register String.prototype[@@iterator] (ES6 §21.1.3.30)
+    {
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        if (iter_sym != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            fn_obj.builtin_fn_index = (int)BUILTIN_STRING_PROTO_SYMBOL_ITER;
+            fn_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            HString* name_key = builtin_intern_string(heap, "name");
+            HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
+            if (name_key != null && name_val != null) {
+                TVal name_tv;
+                name_tv.set_string(name_val);
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (len_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(0);
+                fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+            TVal iter_tv;
+            iter_tv.set_object(fn_obj);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+
     // Create String constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static methods like String.fromCharCode.
     HObject*? str_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -15238,6 +15847,11 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;
     if (!register_array_proto_method(proto, heap, "with",      BUILTIN_ARRAY_PROTO_WITH))      return false;
 
+    // Array.prototype.keys/values/entries (ES2015 §22.1.3.x)
+    if (!register_array_proto_method(proto, heap, "keys",      BUILTIN_ARRAY_PROTO_KEYS))      return false;
+    if (!register_array_proto_method(proto, heap, "values",    BUILTIN_ARRAY_PROTO_VALUES))    return false;
+    if (!register_array_proto_method(proto, heap, "entries",   BUILTIN_ARRAY_PROTO_ENTRIES))   return false;
+
     // Register callback-based Array.prototype methods as compiled JS functions.
     // These need VM callback invocation, so they're compiled from JS source.
     // Format: (params){body} — compile_function expects no "function" keyword.
@@ -15256,6 +15870,38 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_compiled_proto_method(proto, heap, global_env, "reduceRight",
         "(callback,initialValue){var O=Object(this);var len=O.length;var k=len-1;var acc=initialValue;while(k>=0){var v=O[k];var a=acc;acc=callback(a,v,k,O);k--}return acc}", 1)) return false;
     // TODO: register map/filter/every/some/reduce/reduceRight after forEach works
+
+    // Register Array.prototype[@@iterator] (ES6 §22.1.3.30)
+    {
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        if (iter_sym != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            fn_obj.builtin_fn_index = (int)BUILTIN_ARRAY_PROTO_SYMBOL_ITER;
+            fn_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            // Set .name
+            HString* name_key = builtin_intern_string(heap, "name");
+            HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
+            if (name_key != null && name_val != null) {
+                TVal name_tv;
+                name_tv.set_string(name_val);
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            // Set .length = 0
+            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (len_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(0);
+                fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+            TVal iter_tv;
+            iter_tv.set_object(fn_obj);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
     HString* isarray_key = builtin_intern_string(heap, "isArray");
@@ -16030,6 +16676,17 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
         TVal tostrtag_val;
         tostrtag_val.set_string(tostrtag_sym);
         ctor.put_prop(tostrtag_key, tostrtag_val, hobject::PROP_FLAGS_WC);
+    }
+
+    // Register Symbol.iterator as a well-known symbol property (non-writable, non-enumerable, non-configurable per ES6 §19.4.2.12)
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    if (iter_sym != null) {
+        HString* iter_key = builtin_intern_string(heap, "iterator");
+        if (iter_key != null) {
+            TVal iter_val;
+            iter_val.set_string(iter_sym);
+            ctor.put_prop(iter_key, iter_val, hobject::PROP_FLAGS_NWC);
+        }
     }
 
     // Register "Symbol" in global environment

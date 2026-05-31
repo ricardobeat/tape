@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 97 (GETVAR/TYPEOFIDENT inline cache)
+**Last Updated:** Session 98 (arithmetic ToNumber coercion fix)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -541,4 +541,23 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 **Impact**: No test262 regressions. Benchmark `bench_loop` improved ~3% (108ms → 105ms). Global variable access in hot loops now skips the environment chain walk after first access.
 
-**NEXT TASK**: Optimize GETVAR for global variable lookups — currently each GETVAR walks the full environment chain (lex_env → var_env → parent) even for globals like `fib` in benchmarks. Implement a **global variable cache** (QuickJS-style): on first GETVAR of a global, record the environment pointer + property index in a per-instruction inline cache (like the existing IC for GETPROP). Subsequent lookups skip the chain walk. This would directly speed up all benchmark hot loops that read global functions. See the GETVAR handler in `src/vm.c3` and QuickJS's `var_ref` mechanism for reference.
+---
+
+### Session 98: Fix arithmetic operator ToNumber coercion (BOOLEAN/OBJECT/NULL/UNDEFINED/STRING)
+
+**Task**: Fix critical bug where all arithmetic operators (+, -, *, /, %, **, unary +/-) and bitwise operators (&, |, ^, ~, <<, >>, >>>) produced NaN or garbage when operands were BOOLEAN, OBJECT (wrapper), NULL, or UNDEFINED. The root cause was that `num_val` macro and ADD handler's else-branch called `get_number()` on non-numeric TVal types, reading raw tag bits as doubles.
+
+**Changes** (`src/vm.c3`):
+1. **Replaced `num_val` macro with `vm_to_number` function** — Proper ECMAScript ToNumber coercion handling all TVal tags: BOOLEAN→0/1, NULL→0, UNDEFINED→NaN, STRING→parse via `builtin_string_to_number`, OBJECT→ToPrimitive→recurse. Inlined `switch` on tag for zero-overhead on the FASTINT/NUMBER fast path.
+2. **Fixed ADD handler** — Added ToPrimitive step before string/numeric dispatch: OBJECT operands are unwrapped via `to_primitive_value()` before the STRING check. This fixes `new String("hello") + 5` producing `"[object Object]5"` instead of `"hello5"`.
+3. **Fixed `to_primitive_value` (vm.c3) and `to_primitive_value_local` (builtins.c3)** — Both had a bug where `obj.primitive_value.get_number()` was called on FASTINT-typed primitive values, reading garbage bits. Fixed by checking `is_fastint()` first and using `(double)get_fastint()`.
+4. **Added infinite-recursion guard** in `vm_to_number` OBJECT case — If `to_primitive_value` returns the same OBJECT (plain objects without valueOf/toString), returns NaN instead of recursing.
+5. **Updated all 16 operators** — ADD, SUB, MUL, DIV, MOD, EXP, UNP, UNM, BNOT, BAND, BOR, BXOR, SHL, SHR, USHR, plus comparison helpers (EQ/NE/LT/LE/GT/GE) that used `num_val`.
+
+**Impact** (test262):
+- Phase 2 (Basic Operators): 372 → 533 pass (**+161**)
+- Phase 5 (Built-in Constructors): 2407 → 2423 pass (+16)
+- Phase 1 (Calling Convention): 17 → 19 pass (+2)
+- No regressions in existing JS test suite. Benchmarks unchanged.
+
+**NEXT TASK**: Implement `Date.prototype.toISOString` proper UTC formatting — Phase 8 Date tests have 86/594 passing; ISO 8601 formatting improvements would unlock dozens more. Or: implement proper `this` binding for non-strict mode functions to unblock Phase 1's 338 skipped `noStrict` tests.
