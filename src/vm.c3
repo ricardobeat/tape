@@ -310,6 +310,11 @@ fn bool ensure_valstack_grow(Vm* vm, uint needed) {
     vm.valstack_size = new_size;
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)(used * TVal::size));
     vm.valstack_end = (TVal*)((usz)vm.valstack + (usz)(new_size * TVal::size));
+
+    // Update heap's valstack GC root pointers (base may have moved)
+    vm.heap.valstack_base = vm.valstack;
+    // valstack_top_ptr still points to vm.valstack_top (stable struct field)
+
     return true;
 }
 
@@ -1006,6 +1011,10 @@ fn Vm*? vm_create(Heap* heap) {
     vm.valstack_top = (TVal*)vs_raw;
     vm.valstack_end = (TVal*)((usz)vs_raw + (usz)INITIAL_VALSTACK * TVal::size);
 
+    // Register valstack with heap for GC root scanning
+    heap.valstack_base = vm.valstack;
+    heap.valstack_top_ptr = &vm.valstack_top;
+
     // Create global environment
     EnvRecord*? global = env::env_create(heap, null);
     if (catch err = global) {
@@ -1048,6 +1057,9 @@ fn void vm_destroy(Vm* vm) {
     if (vm.valstack != null) {
         libc::free(vm.valstack);
     }
+    // Clear heap's valstack GC root pointers
+    vm.heap.valstack_base = null;
+    vm.heap.valstack_top_ptr = null;
     libc::free(vm);
 }
 
@@ -1066,6 +1078,10 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     vm.current_func     = null;
     vm.curr_pc          = null;
     vm.return_val.set_undefined();
+
+    // Update heap's valstack GC root pointers
+    vm.heap.valstack_base = vm.valstack;
+    vm.heap.valstack_top_ptr = &vm.valstack_top;
 
     // Fresh global environment on the reset heap
     EnvRecord*? global = env::env_create(heap, null);

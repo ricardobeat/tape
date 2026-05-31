@@ -93,6 +93,23 @@ bench-orig file:
 	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
 	./out/duktape_orig {{file}}
 
+# ── Size & Memory Benchmarks ────────────────────────────────────────────────
+
+# Measure binary sizes and peak RSS of all engines
+bench-sizes:
+	@echo "=== Engine Size & Memory Benchmark ==="
+	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
+	bash scripts/run_sizes_bench.sh
+
+# Rebuild duktape_c3 and run size/memory benchmark
+bench-sizes-rebuild:
+	c3c build duktape_c3
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
+	bash scripts/run_sizes_bench.sh
+
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 # List available commands
