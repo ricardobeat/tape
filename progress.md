@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 94 (tech debt: magic buffer constants, CallableKind enum, PropLookupResult tagged struct, shared MAX_PROTO_DEPTH + is_prototype_of)
+**Last Updated:** Session 96 (array fast paths + grow_props fix)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -507,3 +507,14 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 5. **Added `@inline` attribute to `handle_return`** for remaining call sites.
 
 **Impact**: −2-7% on recursion/function_call/valstack_copy benchmarks. No regressions. The 1.8-1.9x recursion gap vs Duktape is structural (vm loop size vs L1 icache).
+
+---
+
+### Session 96: Array fast paths + grow_props array data relocation fix
+
+**Task**: Optimize hot array operations by bypassing string-based property lookup for dense arrays, and fix array data corruption during property table growth.
+
+**Changes**:
+1. **`src/builtins.c3` — Array fast paths**: `array_get_length`, `array_set_length`, `array_get_elem`, `array_set_elem`, `array_delete_elem` now short-circuit for ARRAY/ARGUMENTS class objects by reading/writing `array_part` directly, skipping `snprintf` + `find_prop` for the common dense case.
+2. **`src/builtins.c3` — TVal copy fix in pop/shift**: `builtin_array_proto_pop` and `builtin_array_proto_shift` now assign `*ctx.result = elem` instead of setting individual TVal tag fields, fixing incorrect return values for non-fastint types.
+3. **`src/hobject.c3` — grow_props array relocation**: `grow_props()` now saves the old array offset before realloc and uses `memmove` to relocate array data to its new position after `update_prop_pointers()` recomputes the layout. Previously, array data was silently left at its old offset, causing reads from stale/wrong memory when properties were added to objects with dense array parts.

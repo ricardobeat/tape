@@ -6105,6 +6105,24 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
 
 /// Get the 'length' property of an array-like object as a uint.
 fn uint array_get_length(HObject* obj, Heap* heap) {
+    // Fast path: dense array — length is stored as own property in the prop table.
+    // Use get_own_prop to skip prototype chain walk for the common case.
+    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key == null) return 0;
+        TVal? len_val = obj.get_prop(len_key);
+        if (try v = len_val) {
+            if (v.is_fastint()) return (uint)(long)v.get_fastint();
+            if (v.is_number()) return (uint)(long)v.get_number();
+        }
+        // Fallback: might be inherited
+        len_val = obj.get_prop_proto(len_key);
+        if (try v = len_val) {
+            if (v.is_fastint()) return (uint)(long)v.get_fastint();
+            if (v.is_number()) return (uint)(long)v.get_number();
+        }
+        return 0;
+    }
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return 0;
     TVal? len_val = obj.get_prop_proto(len_key);
@@ -6117,6 +6135,20 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
 
 /// Set the 'length' property of an array-like object.
 fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
+    // Fast path: for arrays/arguments, update the own 'length' property
+    // directly — avoids descriptor checks inside put_prop.
+    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key != null) {
+            int idx = obj.find_prop_idx(len_key);
+            if (idx >= 0) {
+                TVal tv;
+                tv.set_fastint((long)len_val);
+                obj.props[idx].value = tv;
+                return;
+            }
+        }
+    }
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return;
     TVal tv;
@@ -6126,6 +6158,15 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
 
 /// Get array element at numeric index (returns undefined for holes).
 fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
+    // Fast path: dense array — read directly from array_part.
+    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+        TVal* part = obj.array_part;
+        if (part != null && idx < obj.array_size) {
+            TVal v = part[idx];
+            if (!v.is_undefined()) return v;
+            // Hole — fall through to prototype chain for getter/descendant lookup
+        }
+    }
     char[16] buf;
     int len = libc::snprintf(&buf, 16, "%d", idx);
     if (len <= 0 || len >= 16) { TVal undef; undef.set_undefined(); return undef; }
@@ -6138,6 +6179,11 @@ fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
 
 /// Set array element at numeric index.
 fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
+    // Fast path: dense array — write directly to array_part.
+    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+        obj.set_array_idx(idx, val);
+        return;
+    }
     char[16] buf;
     int len = libc::snprintf(&buf, 16, "%d", idx);
     if (len <= 0 || len >= 16) return;
@@ -6148,6 +6194,15 @@ fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
 
 /// Delete array element at numeric index (remove the property entirely).
 fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
+    // Fast path: dense array — set slot to undefined directly.
+    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+        TVal* part = obj.array_part;
+        if (part != null && idx < obj.array_size) {
+            TVal undef; undef.set_undefined();
+            obj.set_array_idx(idx, undef);
+            return;
+        }
+    }
     char[16] buf;
     int len = libc::snprintf(&buf, 16, "%d", idx);
     if (len <= 0 || len >= 16) return;
@@ -6663,10 +6718,7 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
     array_set_length(obj, idx, ctx.heap);
 
     // Return the popped element
-    ctx.result.set_fastint(elem.get_fastint());
-    ctx.result.set_boolean(elem.get_boolean());
-    ctx.result.set_object(elem.get_heapptr());
-    ctx.result.set_number(elem.get_number());
+    *ctx.result = elem;
 }
 
 // ============================================================================
@@ -6735,10 +6787,7 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
     array_set_length(obj, len - 1, ctx.heap);
 
     // Return the first element
-    ctx.result.set_fastint(first.get_fastint());
-    ctx.result.set_boolean(first.get_boolean());
-    ctx.result.set_object(first.get_heapptr());
-    ctx.result.set_number(first.get_number());
+    *ctx.result = first;
 }
 
 // ============================================================================

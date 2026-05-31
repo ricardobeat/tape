@@ -760,6 +760,8 @@ fn void HObject.grow_props(&self) {
     // Save old sizes
     usz old_size = self.prop_alloc_size();
     usz old_hash_bytes = (usz)self.hash_size * uint::size;
+    usz old_array_bytes = (usz)self.array_size * TVal::size;
+    usz old_array_offset = (usz)self.prop_capacity * PropEntry::size + old_hash_bytes;
 
     // New total size with new prop capacity
     usz new_size = old_size - (usz)self.prop_capacity * PropEntry::size
@@ -782,6 +784,14 @@ fn void HObject.grow_props(&self) {
 
     // Recompute pointers into the new block
     self.update_prop_pointers();
+
+    // Move array data to its new position if the offset changed
+    if (old_array_bytes > 0 && self.array_part != null) {
+        usz new_array_offset = (usz)new_cap * PropEntry::size + old_hash_bytes;
+        if (new_array_offset != old_array_offset) {
+            libc::memmove(self.array_part, (char*)new_raw + old_array_offset, old_array_bytes);
+        }
+    }
 
     // Zero-initialise the newly added property slots
     if (new_cap > old_prop_capacity) {
