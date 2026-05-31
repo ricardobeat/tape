@@ -35,6 +35,15 @@ build-quickjs:
 build t="duktape":
     c3c build "{{t}}"
 
+# Build with NaN-boxing disabled (`-D NONANBOX`)
+build-nonanbox t="test_vm":
+    c3c -D NONANBOX build "{{t}}"
+
+# Build test_vm with NaN-boxing disabled and run a smoke test
+test-nonanbox file="test/simple.js":
+    c3c -D NONANBOX build test_vm
+    ./out/test_vm {{file}}
+
 # Clean build artifacts
 clean:
     c3c clean

@@ -100,7 +100,8 @@ const long FASTINT_MAX =  140737488355327L;  //  2^47 - 1
 
 /// Toggle for NaN-boxing representation. When true, TVal is an 8-byte
 /// NaN-boxed ulong. When false, TVal is the 16-byte tagged union.
-const bool USE_NANBOX = true;
+/// Default is true. Pass `-D NONANBOX` to c3c to disable.
+const bool USE_NANBOX = !$defined(NONANBOX);
 
 // ============================================================================
 // NaN-boxing constants and helpers (used when USE_NANBOX = true)
