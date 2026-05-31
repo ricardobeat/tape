@@ -83,6 +83,11 @@ bench-rebuild n="3":
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_benchmarks.sh {{n}}
 
+# Quick single-engine benchmark (no comparison, skips deep recursion)
+bench-fast n="2":
+	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
+	bash scripts/run_bench_fast.sh {{n}}
+
 # Run a single benchmark file: `just bench-one benchmarks/bench_loop.js`
 bench-one file n="3":
     @test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found"; exit 1; }
