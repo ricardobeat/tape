@@ -1337,6 +1337,7 @@ fn TVal? Vm.run(Vm* vm) {
     Instruction* curr_pc;
     bool needs_restart;
     hobject::ICEntry* ic_base;
+    hobject::VarICEntry* var_ic_base;
     uint nregs;
 
     // Outer restart loop: on ECMAScript-to-ECMAScript calls, reload state
@@ -1353,6 +1354,7 @@ fn TVal? Vm.run(Vm* vm) {
         code_count = vm.current_func.code_count;
         constants = vm.current_func.constants;
         ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
+        var_ic_base = (hobject::VarICEntry*)vm.current_func.var_ic_entries;
         nregs = vm.current_func.num_regs;
 
         curr_pc = act.curr_pc;
@@ -4065,50 +4067,93 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal name_val = constants[bc];
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
+
+                    // --- Variable IC fast path ---
+                    if (var_ic_base != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::VarICEntry* vic = var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                TVal v = b.props[vic.prop_idx].value;
+                                if (!env::is_tdz_sentinel(&v)) {
+                                    *ra = v;
+                                    break;
+                                }
+                                // TDZ: fall through to slow path (error)
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path: full environment chain walk ---
                     bool found = false;
+                    EnvRecord* ic_env = null;
+                    int ic_prop_idx = -1;
 
                     // Search lexical environment first (for let/const bindings)
-                    TVal? result = env::env_get_lex(act.lex_env, key);
-                    if (try v = result) {
-                        // Check for TDZ sentinel
-                        if (env::is_tdz_sentinel(&v)) {
-                            HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.ref_err_proto;
-                                char[types::ERROR_MSG_BUF] buf;
-                                int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
-                                                         name_hstr.get_cstr());
-                                if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                    HString* msg_str = intern_string(vm, buf[:len]);
-                                    TVal msg_val;
-                                    msg_val.set_string(msg_str);
-                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                    EnvRecord* cur = act.lex_env;
+                    while (cur != null) {
+                        int idx = cur.bindings.find_prop_idx(key);
+                        if (idx >= 0) {
+                            TVal v = cur.bindings.props[idx].value;
+                            if (env::is_tdz_sentinel(&v)) {
+                                HString* name_hstr = (HString*)key;
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.ref_err_proto;
+                                    char[types::ERROR_MSG_BUF] buf;
+                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
+                                                             name_hstr.get_cstr());
+                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                        HString* msg_str = intern_string(vm, buf[:len]);
+                                        TVal msg_val;
+                                        msg_val.set_string(msg_str);
+                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                    }
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
+                                } else {
                                     return VM_ERROR~;
                                 }
                             } else {
-                                return VM_ERROR~;
+                                *ra = v;
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
                             }
-                        } else {
-                            *ra = v;
-                            found = true;
+                            break;
                         }
-                    } else if (act.lex_env != act.var_env) {
+                        cur = cur.parent;
+                    }
+
+                    if (!found && act.lex_env != act.var_env) {
                         // Not in lex_env — search var_env (only needed with `with` blocks)
-                        result = env::env_get(act.var_env, key);
+                        TVal? result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
                             *ra = v2;
                             found = true;
                         }
                     }
-                    // If lex_env == var_env, env_get_lex already walked the entire chain.
 
-                    if (!found) {
+                    if (found) {
+                        // Populate IC
+                        if (var_ic_base != null && ic_env != null) {
+                            uint pc_off = (uint)(curr_pc - 1 - code_base);
+                            hobject::VarICEntry* vic = var_ic_base + pc_off;
+                            vic.env = ic_env;
+                            vic.bindings = ic_env.bindings;
+                            vic.shape_id = ic_env.bindings.shape_id;
+                            vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                            vic.prop_idx = (ushort)ic_prop_idx;
+                            vic.key = key;
+                        }
+                    } else {
                         // ReferenceError: variable not declared
                         HString* name_hstr = (HString*)key;
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -4152,49 +4197,97 @@ fn TVal? Vm.run(Vm* vm) {
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
 
-                    // Search lexical environment first (for let/const bindings)
-                    TVal? result = env::env_get_lex(act.lex_env, key);
-                    if (try v = result) {
-                        // Check for TDZ sentinel
-                        if (env::is_tdz_sentinel(&v)) {
-                            // TDZ: throw ReferenceError (ES6 behavior)
-                            HString* name_hstr = (HString*)key;
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.ref_err_proto;
-                                char[types::ERROR_MSG_BUF] buf;
-                                int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
-                                                         name_hstr.get_cstr());
-                                if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                    HString* msg_str = intern_string(vm, buf[:len]);
-                                    TVal msg_val;
-                                    msg_val.set_string(msg_str);
-                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    // --- Variable IC fast path ---
+                    if (var_ic_base != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::VarICEntry* vic = var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                TVal v = b.props[vic.prop_idx].value;
+                                if (!env::is_tdz_sentinel(&v)) {
+                                    HString* ts = typeof_string(vm, &v);
+                                    ra.set_string(ts);
+                                    break;
                                 }
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                // TDZ: fall through to slow path (error)
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path ---
+                    bool found = false;
+                    EnvRecord* ic_env = null;
+                    int ic_prop_idx = -1;
+
+                    // Search lexical environment first (for let/const bindings)
+                    EnvRecord* cur = act.lex_env;
+                    while (cur != null) {
+                        int idx = cur.bindings.find_prop_idx(key);
+                        if (idx >= 0) {
+                            TVal v = cur.bindings.props[idx].value;
+                            if (env::is_tdz_sentinel(&v)) {
+                                // TDZ: throw ReferenceError (ES6 behavior)
+                                HString* name_hstr = (HString*)key;
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.ref_err_proto;
+                                    char[types::ERROR_MSG_BUF] buf;
+                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
+                                                             name_hstr.get_cstr());
+                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                        HString* msg_str = intern_string(vm, buf[:len]);
+                                        TVal msg_val;
+                                        msg_val.set_string(msg_str);
+                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                    }
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
+                                } else {
                                     return VM_ERROR~;
                                 }
                             } else {
-                                return VM_ERROR~;
+                                HString* ts = typeof_string(vm, &v);
+                                ra.set_string(ts);
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
                             }
-                        } else {
-                            HString* ts = typeof_string(vm, &v);
-                            ra.set_string(ts);
+                            break;
                         }
-                    } else {
+                        cur = cur.parent;
+                    }
+
+                    if (!found) {
                         // Not in lex_env — search var_env
-                        result = env::env_get(act.var_env, key);
+                        TVal? result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
                             HString* ts = typeof_string(vm, &v2);
                             ra.set_string(ts);
+                            found = true;
                         } else {
                             // Unresolvable reference → "undefined" (no error)
                             HString* ts = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
                             ra.set_string(ts);
                         }
+                    }
+
+                    // Populate IC (skip for unresolvable — no env to cache)
+                    if (found && var_ic_base != null && ic_env != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::VarICEntry* vic = var_ic_base + pc_off;
+                        vic.env = ic_env;
+                        vic.bindings = ic_env.bindings;
+                        vic.shape_id = ic_env.bindings.shape_id;
+                        vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                        vic.prop_idx = (ushort)ic_prop_idx;
+                        vic.key = key;
                     }
                 } else {
                     ra.set_undefined();

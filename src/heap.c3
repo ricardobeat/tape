@@ -612,6 +612,7 @@ fn void Heap.destroy(&self) {
                 if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
                 if (cf.line_table != null) { libc::free(cf.line_table); }
                 if (cf.ic_entries != null) { libc::free(cf.ic_entries); }
+                if (cf.var_ic_entries != null) { libc::free(cf.var_ic_entries); }
                 libc::free(cf);
             }
         }

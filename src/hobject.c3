@@ -1165,6 +1165,24 @@ macro ushort ic_idx(ulong v) {
     return (ushort)(v >> 32);
 }
 
+/// Per GETVAR/TYPEOFIDENT site inline cache. Stores the resolved
+/// environment record and property index to skip the scope-chain walk
+/// on subsequent accesses.
+struct VarICEntry {
+    /// The EnvRecord* that owns the binding (null = not populated).
+    void*   env;
+    /// The HObject* bindings object of the env (for shape check).
+    void*   bindings;
+    /// Shape ID of the bindings object when this entry was populated.
+    uint    shape_id;
+    /// Generation of the shape at population time.
+    uint    generation;
+    /// Property index within bindings.props[].
+    ushort  prop_idx;
+    /// The interned key (HString*) this entry was populated for.
+    void*   key;
+}
+
 /// Single-pass prototype chain search: finds either an accessor or data property.
 /// Returns the kind found. For accessors, sets `acc_out`; for data, sets `data_out`.
 /// If `owner_out` is non-null, sets it to the object owning the found property.

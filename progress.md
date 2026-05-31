@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 96 (array fast paths + grow_props fix)
+**Last Updated:** Session 97 (GETVAR/TYPEOFIDENT inline cache)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -518,3 +518,27 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 1. **`src/builtins.c3` — Array fast paths**: `array_get_length`, `array_set_length`, `array_get_elem`, `array_set_elem`, `array_delete_elem` now short-circuit for ARRAY/ARGUMENTS class objects by reading/writing `array_part` directly, skipping `snprintf` + `find_prop` for the common dense case.
 2. **`src/builtins.c3` — TVal copy fix in pop/shift**: `builtin_array_proto_pop` and `builtin_array_proto_shift` now assign `*ctx.result = elem` instead of setting individual TVal tag fields, fixing incorrect return values for non-fastint types.
 3. **`src/hobject.c3` — grow_props array relocation**: `grow_props()` now saves the old array offset before realloc and uses `memmove` to relocate array data to its new position after `update_prop_pointers()` recomputes the layout. Previously, array data was silently left at its old offset, causing reads from stale/wrong memory when properties were added to objects with dense array parts.
+
+---
+
+### Session 97: GETVAR/TYPEOFIDENT inline cache (VarIC)
+
+**Task**: Add per-instruction inline caching to GETVAR and TYPEOFIDENT opcodes to skip the full environment chain walk on subsequent accesses. Inspired by QuickJS's `var_ref` mechanism but adapted to this engine's architecture.
+
+**Changes**:
+1. **`src/hobject.c3` — `VarICEntry` struct**: New 32-byte struct caching `EnvRecord*` owner, `HObject*` bindings, `shape_id`, `generation`, `prop_idx`, and `key` (interned HString* for identity check).
+2. **`src/bytecode.c3` — CompiledFunction fields**: Added `var_ic_entries` (VarICEntry*) and `var_ic_count` alongside existing `ic_entries`.
+3. **`src/compiler.c3` — Allocation**: VarIC array allocated alongside the GETPROP IC array (one entry per instruction, zeroed).
+4. **`src/heap.c3` — Cleanup**: `var_ic_entries` freed alongside `ic_entries` during heap destroy.
+5. **`src/vm.c3` — GETVAR fast path**: On each GETVAR, check VarIC entry (key match → shape match → generation match → direct read). On miss, walk lex_env chain inline, cache owner env + prop_idx on success.
+6. **`src/vm.c3` — TYPEOFIDENT fast path**: Same IC mechanism, caching the resolved env + prop_idx for typeof lookups.
+
+**Key design decisions**:
+- Key validation (`vic.key == key`) is essential — without it, different variables at the same pc_off in shared CompiledFunctions would return wrong values (discovered and fixed during testing).
+- IC is per-CompiledFunction (shared across all invocations of the same function). Shape + generation checks handle cross-call validity.
+- TDZ sentinel values bypass the IC (fall through to slow path to throw ReferenceError).
+- `with` block variables (var_env != lex_env) fall through to slow path.
+
+**Impact**: No test262 regressions. Benchmark `bench_loop` improved ~3% (108ms → 105ms). Global variable access in hot loops now skips the environment chain walk after first access.
+
+**NEXT TASK**: Optimize GETVAR for global variable lookups — currently each GETVAR walks the full environment chain (lex_env → var_env → parent) even for globals like `fib` in benchmarks. Implement a **global variable cache** (QuickJS-style): on first GETVAR of a global, record the environment pointer + property index in a per-instruction inline cache (like the existing IC for GETPROP). Subsequent lookups skip the chain walk. This would directly speed up all benchmark hot loops that read global functions. See the GETVAR handler in `src/vm.c3` and QuickJS's `var_ref` mechanism for reference.

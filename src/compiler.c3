@@ -395,6 +395,15 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             func.ic_entries = ic_raw;
             func.ic_count = func.code_count;
         }
+
+        // Allocate Variable IC array — one entry per instruction, zeroed.
+        usz vic_bytes = (usz)func.code_count * hobject::VarICEntry::size;
+        void* vic_raw = libc::malloc(vic_bytes);
+        if (vic_raw != null) {
+            libc::memset(vic_raw, 0, vic_bytes);
+            func.var_ic_entries = vic_raw;
+            func.var_ic_count = func.code_count;
+        }
     }
 
     // Track the CompiledFunction for cleanup when the heap is destroyed

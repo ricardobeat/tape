@@ -772,6 +772,13 @@ struct CompiledFunction {
     /// `code[pc_offset]`.
     void*           ic_entries;  // ICEntry* (opaque to avoid import cycle)
     uint            ic_count;
+
+    // ---- Variable IC (GETVAR/TYPEOFIDENT) --------------------------------
+    /// Per-GETVAR/TYPEOFIDENT site inline cache. Parallel to the instruction
+    /// stream: `var_ic_entries[pc_offset]` caches the resolved env + prop_idx
+    /// for the GETVAR/TYPEOFIDENT at `code[pc_offset]`.
+    void*           var_ic_entries;  // VarICEntry* (opaque)
+    uint            var_ic_count;
 }
 
 // ============================================================================
