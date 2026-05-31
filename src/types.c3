@@ -103,6 +103,11 @@ const long FASTINT_MAX =  140737488355327L;  //  2^47 - 1
 /// Default is true. Pass `-D NONANBOX` to c3c to disable.
 const bool USE_NANBOX = !$defined(NONANBOX);
 
+/// Maximum length of a formatted error-message string (160 bytes).
+const int ERROR_MSG_BUF = 160;
+/// Maximum length of a number/date-to-string temporary buffer (32 bytes).
+const int FORMAT_BUF = 32;
+
 // ============================================================================
 // NaN-boxing constants and helpers (used when USE_NANBOX = true)
 // ============================================================================

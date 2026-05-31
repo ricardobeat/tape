@@ -764,6 +764,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     HObject* func_obj = func_obj_raw;
     func_obj.comp_func = func;
     func_obj.builtin_fn_index = -1;
+    func_obj.callable_kind = hobject::CallableKind.COMPILED_FN;
 
     // Use the global environment (per ES5 §15.3.2.1 step 5)
     func_obj.var_env = ctx.global_env;
@@ -854,6 +855,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
     func_obj.flags.callable = true;
     func_obj.comp_func = func;
     func_obj.builtin_fn_index = -1;
+    func_obj.callable_kind = hobject::CallableKind.COMPILED_FN;
 
     // For eval, use the global environment
     func_obj.var_env = ctx.global_env;
@@ -3997,10 +3999,10 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         }
     }
     // Dense array indices (as strings)
-    char[32] buf;
+    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part[i].is_undefined()) {
-            int len = libc::snprintf(&buf, 32, "%u", i);
+            int len = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
             if (len < 0) {
                 ctx.result.set_undefined();
                 return;
@@ -4088,10 +4090,10 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
     // Dense array indices (as strings)
-    char[32] buf;
+    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part[i].is_undefined()) {
-            int len = libc::snprintf(&buf, 32, "%u", i);
+            int len = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
             if (len < 0) {
                 ctx.result.set_undefined();
                 return;
@@ -5481,10 +5483,10 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         }
     }
     // Dense array indices → [key, value] pairs
-    char[32] buf;
+    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part[i].is_undefined()) {
-            int slen = libc::snprintf(&buf, 32, "%u", i);
+            int slen = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
             if (slen < 0) continue;
             uint hash = ctx.heap.hash_string(buf[..slen]);
             HString*? key_s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
@@ -6464,6 +6466,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.builtin_fn_index = (int)fn_index;
+    func_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)
@@ -6509,6 +6512,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     HObject* func_obj = func_obj_raw;
     func_obj.comp_func = func;
     func_obj.builtin_fn_index = -1;
+    func_obj.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.var_env = global_env;
     func_obj.lex_env = global_env;
     func_obj.prototype = heap.function_proto;
@@ -8083,6 +8087,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.flags.is_bound = true;
     bound_obj.prototype = ctx.heap.function_proto;
     bound_obj.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
+    bound_obj.callable_kind = hobject::CallableKind.BOUND_FN;
 
     // Also maintain constructable flag if downstream is constructable
     bool downstream_constructable = false;
@@ -9538,8 +9543,8 @@ fn void builtin_date_proto_toLocaleDateString(BuiltinContext* ctx) {
     }
     long year, month, day, wday, hour, min, sec;
     date_break_time(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
-    char[32] buf;
-    usz len = (usz)libc::snprintf(&buf, 32, "%04d-%02d-%02d", (int)year, (int)(month + 1), (int)day);
+    char[types::FORMAT_BUF] buf;
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%04d-%02d-%02d", (int)year, (int)(month + 1), (int)day);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
     ctx.result.set_string(result);
 }
@@ -9556,8 +9561,8 @@ fn void builtin_date_proto_toLocaleTimeString(BuiltinContext* ctx) {
     }
     long year, month, day, wday, hour, min, sec;
     date_break_time(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
-    char[32] buf;
-    usz len = (usz)libc::snprintf(&buf, 32, "%02d:%02d:%02d", (int)hour, (int)min, (int)sec);
+    char[types::FORMAT_BUF] buf;
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%02d:%02d:%02d", (int)hour, (int)min, (int)sec);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
     ctx.result.set_string(result);
 }
@@ -10175,7 +10180,7 @@ fn void builtin_date_proto_toUTCString(BuiltinContext* ctx) {
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
     char[7][] day_names = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
     char[7][] mon_names = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-    char[32] buf;
+    char[types::FORMAT_BUF] buf;
     // "Thu, 01 Jan 1970 00:00:00 GMT"
     buf[0] = day_names[wday][0]; buf[1] = day_names[wday][1]; buf[2] = day_names[wday][2];
     buf[3] = ','; buf[4] = ' ';
@@ -12368,6 +12373,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
     }
     HObject* resolve_func = resolve_func_raw;
     resolve_func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
+    resolve_func.callable_kind = hobject::CallableKind.BUILTIN_FN;
     resolve_func.flags.callable = true;
     resolve_func.prototype = heap.function_proto;
     // Store promise reference on the function object
@@ -12383,6 +12389,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
     }
     HObject* reject_func = reject_func_raw;
     reject_func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
+    reject_func.callable_kind = hobject::CallableKind.BUILTIN_FN;
     reject_func.flags.callable = true;
     reject_func.prototype = heap.function_proto;
     reject_func.put_prop(promise_key, promise_ref, hobject::PROP_FLAGS_WEC);
@@ -13087,6 +13094,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_PROMISE;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -14281,6 +14289,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = obj_raw) return false;
     HObject* obj = obj_raw;
     obj.builtin_fn_index = (int)BUILTIN_OBJECT;
+    obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Object.prototype to point to the actual Object constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -14609,6 +14618,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
     num.builtin_fn_index = (int)BUILTIN_NUMBER;
+    num.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Number.prototype to point to the actual Number object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15022,6 +15032,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = str_obj_raw) return false;
     HObject* str_obj = str_obj_raw;
     str_obj.builtin_fn_index = (int)BUILTIN_STRING;
+    str_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on String.prototype to point to the actual String object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15082,6 +15093,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.builtin_fn_index = (int)fn_index;
+    func_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)
@@ -15128,6 +15140,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = arr_raw) return false;
     HObject* arr = arr_raw;
     arr.builtin_fn_index = (int)BUILTIN_ARRAY;
+    arr.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Array.prototype to point to the actual Array constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15240,6 +15253,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.builtin_fn_index = (int)BUILTIN_FUNCTION;
+    func_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Create Function.prototype
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -15458,6 +15472,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = date_raw) return false;
     HObject* date_obj = date_raw;
     date_obj.builtin_fn_index = (int)BUILTIN_DATE;
+    date_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set Date.prototype on the constructor
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
@@ -15532,6 +15547,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = regexp_raw) return false;
     HObject* regexp_obj = regexp_raw;
     regexp_obj.builtin_fn_index = (int)BUILTIN_REGEXP;
+    regexp_obj.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set RegExp.prototype on the constructor
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
@@ -15619,6 +15635,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_MAP;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Map.prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15712,6 +15729,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_SET;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Set.prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15783,6 +15801,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKMAP;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
@@ -15849,6 +15868,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_WEAKSET;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
@@ -15917,6 +15937,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.builtin_fn_index = (int)BUILTIN_SYMBOL;
+    ctor.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

@@ -115,6 +115,16 @@ enum ObjClass : char {
     GENERATOR,
 }
 
+/// Discriminator for a callable object's invocation kind.
+/// Stored in HObject.callable_kind.  Meaningful only when
+/// flags.callable is true.
+enum CallableKind : ushort {
+    COMPILED_FN,        /// JS function — dispatch via comp_func
+    BUILTIN_FN,         /// Native builtin — dispatch via builtin_fn_index
+    BOUND_FN,           /// Bound function — dispatch via bound_call logic
+    OTHER               /// Callable but none of the above (rare)
+}
+
 // ============================================================================
 // ObjFlags — per-object bit-packed flags
 // ============================================================================
@@ -335,6 +345,10 @@ struct HObject {
     /// Builtin function index for native built-in functions (e.g., Number, Object).
     /// -1 when this object is not a native builtin function.
     int           builtin_fn_index;
+
+    /// Discriminator for this callable's invocation kind (meaningful only
+    /// when flags.callable is true).
+    CallableKind  callable_kind;
 
     /// Compiled regexp bytecode pointer (only for REGEXP class objects).
     /// Allocated by libregexp, freed via re_free().
@@ -942,6 +956,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     }
 
     obj.builtin_fn_index = -1;
+    obj.callable_kind = CallableKind.OTHER;
     obj.regexp_data = null;
     obj.shape_id = 0;  // Start with root shape
     return obj;
@@ -1005,7 +1020,6 @@ fn PropEntry*? HObject.get_prop_at(&self, uint idx) {
 /// has the property.  The depth limit prevents infinite loops from circular
 /// prototype chains.
 fn TVal? HObject.get_prop_proto(&self, void* key) {
-    const uint MAX_PROTO_DEPTH = 256;
     HObject* cur = self;
     uint depth = 0;
 
@@ -1027,7 +1041,6 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
 /// (for `this` binding), or `.found = false` if no accessor exists.
 /// If a data property is found before any accessor, the search stops (no accessor).
 fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter) {
-    const uint MAX_PROTO_DEPTH = 256;
     HObject* cur = self;
     uint depth = 0;
 
@@ -1053,11 +1066,25 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     return { .found = false };
 }
 
+/// Maximum prototype chain depth before we assume a cycle / infinite loop.
+const uint MAX_PROTO_DEPTH = 256;
+
 /// Result of a combined accessor + data property lookup.
 enum PropLookupKind {
     PROP_ACCESSOR,
     PROP_DATA,
     PROP_NOT_FOUND
+}
+
+/// Combined result of a prototype-chain lookup.
+/// Check `kind` first: if PROP_ACCESSOR, read `acc`;
+/// if PROP_DATA, read `data_val` (and optionally `owner`);
+/// if PROP_NOT_FOUND, neither is valid.
+struct PropLookupResult {
+    PropLookupKind kind;
+    TVal data_val;
+    HObject* owner;
+    AccessorResult acc;
 }
 
 // ============================================================================
@@ -1130,8 +1157,7 @@ macro ushort ic_idx(ulong v) {
 /// Single-pass prototype chain search: finds either an accessor or data property.
 /// Returns the kind found. For accessors, sets `acc_out`; for data, sets `data_out`.
 /// If `owner_out` is non-null, sets it to the object owning the found property.
-fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want_getter, AccessorResult* acc_out, TVal* data_out, HObject** owner_out) {
-    const uint MAX_PROTO_DEPTH = 256;
+fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool want_getter) {
     HObject* cur = self;
     uint depth = 0;
 
@@ -1141,25 +1167,30 @@ fn PropLookupKind HObject.get_prop_or_accessor_proto(&self, void* key, bool want
             PropEntry* pe = &cur.props[idx];
             if (pe.flags.is_accessor) {
                 TVal accessor_fn = want_getter ? pe.getter : pe.setter;
-                acc_out.accessor_fn = accessor_fn;
-                acc_out.this_obj = self;
-                acc_out.found = true;
-                return PropLookupKind.PROP_ACCESSOR;
+                return {
+                    .kind = PropLookupKind.PROP_ACCESSOR,
+                    .acc = {
+                        .accessor_fn = accessor_fn,
+                        .this_obj = self,
+                        .found = true
+                    }
+                };
             }
-            *data_out = pe.value;
-            if (owner_out != null) *owner_out = cur;
-            return PropLookupKind.PROP_DATA;
+            return {
+                .kind = PropLookupKind.PROP_DATA,
+                .data_val = pe.value,
+                .owner = cur
+            };
         }
         cur = cur.prototype;
         depth++;
     }
 
-    return PropLookupKind.PROP_NOT_FOUND;
+    return { .kind = PropLookupKind.PROP_NOT_FOUND };
 }
 
 /// Check whether the property exists anywhere on the prototype chain.
 fn bool HObject.has_prop_proto(&self, void* key) {
-    const uint MAX_PROTO_DEPTH = 256;
     HObject* cur = self;
     uint depth = 0;
 
@@ -1171,6 +1202,18 @@ fn bool HObject.has_prop_proto(&self, void* key) {
         depth++;
     }
 
+    return false;
+}
+
+/// Returns true if `probe` appears anywhere in the prototype chain of `self`.
+fn bool HObject.is_prototype_of(&self, HObject* probe) {
+    HObject* cur = self;
+    uint depth = 0;
+    while (cur != null && depth < MAX_PROTO_DEPTH) {
+        if (cur == probe) return true;
+        cur = cur.prototype;
+        depth++;
+    }
     return false;
 }
 

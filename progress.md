@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 93 (iterative GC marking + iterative env_destroy — stack safety)
+**Last Updated:** Session 94 (tech debt: magic buffer constants, CallableKind enum, PropLookupResult tagged struct, shared MAX_PROTO_DEPTH + is_prototype_of)
 **Target:** Full test262 conformance
 
 ## Summary

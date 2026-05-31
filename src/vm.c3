@@ -449,9 +449,9 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
 
 /// Convert a FASTINT to an interned HString* using fast int-to-string.
 fn HString*? vm_fastint_to_string(Vm* vm, long val) {
-    char[32] buf;
-    int len = int_to_buf(val, &buf, 32);
-    if (len <= 0 || len >= 32) {
+    char[types::FORMAT_BUF] buf;
+    int len = int_to_buf(val, &buf, types::FORMAT_BUF);
+    if (len <= 0 || len >= (int)types::FORMAT_BUF) {
         return null;
     }
     char[] s = buf[:len];
@@ -638,7 +638,6 @@ fn bool forin_add_key(HString*** keys, uint* count,
 /// Returns a malloc'd ForInState, or null if allocation fails.
 /// The caller (NEXTFOR) is responsible for freeing via `libc::free`.
 fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
-    const uint MAX_PROTO_DEPTH = 256;
 
     uint cap = FORIN_INITIAL_CAP;
     HString** keys = (HString**)libc::malloc(cap * HString*::size);
@@ -651,7 +650,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 
     HObject* cur = obj;
     uint depth = 0;
-    while (cur != null && depth < MAX_PROTO_DEPTH) {
+    while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
         // Own named properties
         for (uint i = 0; i < cur.prop_count; i++) {
             if (cur.props[i].flags.enumerable && cur.props[i].key != null) {
@@ -1129,7 +1128,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 2: HObject with builtin_fn_index — dispatch via BuiltinContext
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.comp_func == null && hobj.builtin_fn_index >= 0) {
+        if (hobj != null && hobj.is_callable() && hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
             uint fn_idx = (uint)hobj.builtin_fn_index;
 
             uint total = 1 + nargs;
@@ -1773,16 +1772,9 @@ fn TVal? Vm.run(Vm* vm) {
                     default: break;
                 }
                 if (proto_obj != null && rb.is_object()) {
-                    HObject* cur = (HObject*)rb.get_heapptr();
-                    const uint MAX_PROTO_DEPTH = 256;
-                    uint depth = 0;
-                    while (cur != null && depth < MAX_PROTO_DEPTH) {
-                        if (cur == proto_obj) {
-                            ra.set_boolean(true);
-                            break;
-                        }
-                        cur = cur.prototype;
-                        depth++;
+                    HObject* rbh = (HObject*)rb.get_heapptr();
+                    if (rbh.is_prototype_of(proto_obj)) {
+                        ra.set_boolean(true);
                     }
                 }
                 break;
@@ -1848,15 +1840,8 @@ fn TVal? Vm.run(Vm* vm) {
 
             HObject* proto_obj = (HObject*)proto_val.get_heapptr();
             HObject* cur = (HObject*)rb.get_heapptr();
-            const uint MAX_PROTO_DEPTH = 256;
-            uint depth = 0;
-            while (cur != null && depth < MAX_PROTO_DEPTH) {
-                if (cur == proto_obj) {
-                    ra.set_boolean(true);
-                    break;
-                }
-                cur = cur.prototype;
-                depth++;
+            if (cur.is_prototype_of(proto_obj)) {
+                ra.set_boolean(true);
             }
             break;
         }
@@ -1976,29 +1961,26 @@ fn TVal? Vm.run(Vm* vm) {
                         ra.set_fastint((long)hobj.array_used);
                         break;
                     }
-                    hobject::AccessorResult acc;
-                    TVal data_val;
-                    HObject* owner = null;
-                    hobject::PropLookupKind kind = hobj.get_prop_or_accessor_proto(key, true, &acc, &data_val, &owner);
-                    if (kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    hobject::PropLookupResult res = hobj.get_prop_or_accessor_proto(key, true);
+                    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                         TVal obj_val;
                         obj_val.set_object(hobj);
-                        if (invoke_getter(vm, &acc, &obj_val, (uint)insn.a,
+                        if (invoke_getter(vm, &res.acc, &obj_val, (uint)insn.a,
                                           act, &curr_pc, &needs_restart, regs_base)) {
                             regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
                             break;
                         }
                         break;
-                    } else if (kind == hobject::PropLookupKind.PROP_DATA) {
-                        *ra = data_val;
+                    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                        *ra = res.data_val;
                         // Populate IC for this site
-                        if (owner != null && ic_base != null) {
+                        if (res.owner != null && ic_base != null) {
                             uint pc_off = (uint)(curr_pc - 1 - code_base);
                             hobject::ICEntry* ic = ic_base + pc_off;
-                            int owner_idx = owner.find_prop_idx(key);
+                            int owner_idx = res.owner.find_prop_idx(key);
                             if (owner_idx >= 0) {
                                 ic.shape_id = hobj.shape_id;
-                                ic.proto = owner == hobj ? null : (void*)owner;
+                                ic.proto = res.owner == hobj ? null : (void*)res.owner;
                                 ic.gen_and_idx = hobject::ic_pack(vm.heap.shapes[hobj.shape_id].generation, (ushort)owner_idx);
                                 ic.key = key;
                             }
@@ -2018,12 +2000,12 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
+                    char[types::ERROR_MSG_BUF] buf;
                     if (name_hstr != null) {
-                        int len = libc::snprintf(&buf, 160, "Cannot read properties of %s (reading '%s')",
+                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
                                                  (rb.is_null() ? "null" : "undefined"),
                                                  name_hstr.get_cstr());
-                        if (len > 0 && len < 160) {
+                        if (len > 0 && len < types::ERROR_MSG_BUF) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
@@ -2273,12 +2255,12 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
+                    char[types::ERROR_MSG_BUF] buf;
                     if (name_hstr != null) {
-                        int len = libc::snprintf(&buf, 160, "Cannot set properties of %s (setting '%s')",
+                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot set properties of %s (setting '%s')",
                                                  (ra.is_null() ? "null" : "undefined"),
                                                  name_hstr.get_cstr());
-                        if (len > 0 && len < 160) {
+                        if (len > 0 && len < types::ERROR_MSG_BUF) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
@@ -2601,7 +2583,7 @@ fn TVal? Vm.run(Vm* vm) {
             // === Fast path: direct compiled HObject call (most common) ===
             if (func_val.is_object()) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
-                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.comp_func != null && hobj_fast.builtin_fn_index < 0) {
+                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.callable_kind == hobject::CallableKind.COMPILED_FN) {
                     CompiledFunction* target_fast = hobj_fast.comp_func;
                     if (!target_fast.is_generator()) {
 
@@ -2735,10 +2717,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a function",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -2764,10 +2746,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a function",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -2786,7 +2768,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.comp_func == null) {
+            if (hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -2833,10 +2815,10 @@ fn TVal? Vm.run(Vm* vm) {
                     HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                     if (try err2 = err_raw2) {
                         err2.prototype = vm.heap.type_err_proto;
-                        char[160] buf;
-                        int len = libc::snprintf(&buf, 160, "%s is not a function",
+                        char[types::ERROR_MSG_BUF] buf;
+                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
                                                  type_str.get_cstr());
-                        if (len > 0 && len < 160) {
+                        if (len > 0 && len < types::ERROR_MSG_BUF) {
                             HString* msg_str = intern_string(vm, buf[:len]);
                             TVal msg_val;
                             msg_val.set_string(msg_str);
@@ -3173,10 +3155,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3199,10 +3181,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len2 = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len2 = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                               type_str.get_cstr());
-                    if (len2 > 0 && len2 < 160) {
+                    if (len2 > 0 && len2 < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len2]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3229,7 +3211,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin super constructors
-            if (super_hobj.comp_func == null) {
+            if (super_hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
                 if (super_hobj.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)super_hobj.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -3391,10 +3373,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3419,10 +3401,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3441,7 +3423,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.comp_func == null) {
+            if (hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -3472,10 +3454,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
                     err2.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3501,10 +3483,10 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? err_raw3 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err3 = err_raw3) {
                     err3.prototype = vm.heap.type_err_proto;
-                    char[160] buf;
-                    int len = libc::snprintf(&buf, 160, "%s is not a constructor",
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
                                              type_str.get_cstr());
-                    if (len > 0 && len < 160) {
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
                         HString* msg_str = intern_string(vm, buf[:len]);
                         TVal msg_val;
                         msg_val.set_string(msg_str);
@@ -3997,10 +3979,10 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.ref_err_proto;
-                                char[160] buf;
-                                int len = libc::snprintf(&buf, 160, "Cannot access '%s' before initialization",
+                                char[types::ERROR_MSG_BUF] buf;
+                                int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
                                                          name_hstr.get_cstr());
-                                if (len > 0 && len < 160) {
+                                if (len > 0 && len < types::ERROR_MSG_BUF) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
                                     msg_val.set_string(msg_str);
@@ -4035,10 +4017,10 @@ fn TVal? Vm.run(Vm* vm) {
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                         if (try err = err_raw) {
                             err.prototype = vm.heap.ref_err_proto;
-                            char[160] buf;
-                            int len = libc::snprintf(&buf, 160, "%s is not defined",
+                            char[types::ERROR_MSG_BUF] buf;
+                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not defined",
                                                      name_hstr.get_cstr());
-                            if (len > 0 && len < 160) {
+                            if (len > 0 && len < types::ERROR_MSG_BUF) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
                                 msg_val.set_string(msg_str);
@@ -4083,10 +4065,10 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.ref_err_proto;
-                                char[160] buf;
-                                int len = libc::snprintf(&buf, 160, "Cannot access '%s' before initialization",
+                                char[types::ERROR_MSG_BUF] buf;
+                                int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
                                                          name_hstr.get_cstr());
-                                if (len > 0 && len < 160) {
+                                if (len > 0 && len < types::ERROR_MSG_BUF) {
                                     HString* msg_str = intern_string(vm, buf[:len]);
                                     TVal msg_val;
                                     msg_val.set_string(msg_str);
@@ -4140,10 +4122,10 @@ fn TVal? Vm.run(Vm* vm) {
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                         if (try err = err_raw) {
                             err.prototype = vm.heap.type_err_proto;
-                            char[160] buf;
-                            int len = libc::snprintf(&buf, 160, "Assignment to constant variable '%s'",
+                            char[types::ERROR_MSG_BUF] buf;
+                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Assignment to constant variable '%s'",
                                                      name_hstr.get_cstr());
-                            if (len > 0 && len < 160) {
+                            if (len > 0 && len < types::ERROR_MSG_BUF) {
                                 HString* msg_str = intern_string(vm, buf[:len]);
                                 TVal msg_val;
                                 msg_val.set_string(msg_str);
