@@ -137,7 +137,7 @@ struct Heap {
     int   gc_mark_recurse_depth;
     int   gc_mark_recurse_limit;
     long  gc_trigger_counter;
-    // gc_obj_count moved to gc_objects section below
+    uint  live_obj_count;
 
     // Current execution thread (HThread*)
     void* curr_thread;
@@ -196,11 +196,9 @@ struct Heap {
     uint      checkpoint_count;  /// Number of saved entries
     uint      checkpoint_cap;    /// Allocated capacity
 
-    // GC object tracking — growable array of all heap-allocated objects
-    // (avoiding linked-list pointer casts which cause safe-mode traps)
-    void**    gc_objects;        /// Array of HeapHeader* pointers
-    uint      gc_obj_cap;        /// Allocated capacity
-    uint      gc_obj_count;      /// Number of live objects
+    // Environment record pool — freelist of EnvRecord nodes
+    void*     env_freelist;     /// EnvRecord* freelist (chains via .parent)
+    void*     env_pool_blocks;  /// EnvPoolBlock* linked list for cleanup
 
     // CompiledFunction tracking — growable array of all CompiledFunction*
     // allocated through the compiler.  Freed in Heap.destroy.
@@ -539,15 +537,28 @@ fn void Heap.bump_shape_gen(&self, uint shape_id) {
  * the heap struct itself.
  */
 fn void Heap.destroy(&self) {
-    // Free all objects through the GC array
-    for (uint i = 0; i < self.gc_obj_count; i++) {
-        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
-        if (cur != null && cur.is_object()) {
+    // Free all objects through the heap_allocated linked list
+    HeapHeader* cur = self.heap_allocated;
+    while (cur != null) {
+        HeapHeader* next = cur.next;
+        if (cur.is_object()) {
             hobject::hobject_free((HObject*)cur);
         }
+        cur = next;
     }
-    libc::free(self.gc_objects);
-    self.gc_objects = null;
+    self.heap_allocated = null;
+
+    // Free EnvRecord pool blocks
+    {
+        void* b = self.env_pool_blocks;
+        while (b != null) {
+            void* next = *(void**)b;  // next pointer is first field
+            libc::free(b);
+            b = next;
+        }
+        self.env_pool_blocks = null;
+        self.env_freelist = null;
+    }
 
     // Free all tracked CompiledFunction objects and their sub-arrays.
     if (self.compiled_funcs != null) {
@@ -618,15 +629,16 @@ fn void Heap.destroy(&self) {
  * causes allocator fragmentation and RSS bloat.
  */
 fn void Heap.reset(&self) {
-    // Free all tracked HObjects
-    for (uint i = 0; i < self.gc_obj_count; i++) {
-        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
-        if (cur != null && cur.is_object()) {
+    // Free all tracked HObjects via heap_allocated linked list
+    HeapHeader* cur = self.heap_allocated;
+    while (cur != null) {
+        HeapHeader* next = cur.next;
+        if (cur.is_object()) {
             hobject::hobject_free((HObject*)cur);
         }
+        cur = next;
     }
-    self.gc_obj_count = 0;
-    // Keep gc_objects array allocated — just reset the count
+    self.heap_allocated = null;
 
     // Free all tracked CompiledFunctions
     for (uint i = 0; i < self.compiled_func_count; i++) {
@@ -804,21 +816,10 @@ fn void*? Heap.alloc(&self, usz size) {
 fn HObject*? Heap.alloc_object(&self, hobject::ObjClass cls) {
     HObject*? result = hobject::hobject_alloc((void*)self, cls);
     if (try obj = result) {
-        // Track in the GC object array (avoids linked-list through
-        // cast pointers which safe-mode forbids).
-        if (self.gc_obj_count >= self.gc_obj_cap) {
-            uint new_cap = self.gc_obj_cap == 0 ? 256 : self.gc_obj_cap * 2;
-            usz new_bytes = (usz)new_cap * void*::size;
-            void* new_arr = libc::realloc(self.gc_objects, new_bytes);
-            if (new_arr == null) {
-                // Can't track, but object is still allocated
-                return result;
-            }
-            self.gc_objects = (void**)new_arr;
-            self.gc_obj_cap = new_cap;
-        }
-        self.gc_objects[self.gc_obj_count] = (void*)obj;
-        self.gc_obj_count++;
+        // Insert into the heap_allocated linked list (preserving flags
+        // already set by hobject_alloc).
+        self.insert_into_heap_allocated_preserve_flags((HeapHeader*)obj);
+        self.live_obj_count++;
     }
     return result;
 }
@@ -856,9 +857,6 @@ fn void Heap.free(&self, void* ptr) {
 
 /**
  * Insert `hdr` at the head of the heap_allocated doubly-linked list.
- * Uses HeapHeader.init() to wire up next/prev pointers.
- * NOTE: This is currently unused in favor of the array-based gc_objects
- * tracking.  Kept for compatibility.
  */
 fn void Heap.insert_into_heap_allocated(&self, HeapHeader* hdr) {
     hdr.init(hdr.get_type(), &self.heap_allocated);
@@ -1088,32 +1086,43 @@ fn void Heap.mark_roots(&self) {
 /**
  * Sweep phase: walk the heap_allocated list and free every object that
  * was NOT marked reachable during the mark phase.  Clears the reachable
- * flag on surviving objects for the next cycle.
+ * flag on surviving objects for the next cycle.  Unlinks dead nodes
+ * from the list.
  */
 fn void Heap.sweep(&self) {
+    HeapHeader* cur = self.heap_allocated;
+    HeapHeader* prev = null;
     uint kept = 0;
-    for (uint i = 0; i < self.gc_obj_count; i++) {
-        HeapHeader* hdr = (HeapHeader*)self.gc_objects[i];
-        if (hdr == null) { continue; }
 
-        if (!hdr.is_reachable()) {
-            // Free this object
-            if (hdr.is_object()) {
-                hobject::hobject_free((HObject*)hdr);
-            } else if (hdr.is_string()) {
-                libc::free(hdr);
+    while (cur != null) {
+        HeapHeader* next = cur.next;
+        if (!cur.is_reachable()) {
+            // Unlink from list
+            if (prev != null) {
+                prev.next = next;
             } else {
-                self.free_func(self.heap_udata, hdr);
+                self.heap_allocated = next;
             }
-            // Removed from array (will be overwritten by kept compaction)
+            if (next != null) {
+                next.prev = prev;
+            }
+            // Free
+            if (cur.is_object()) {
+                hobject::hobject_free((HObject*)cur);
+            } else if (cur.is_string()) {
+                libc::free(cur);
+            } else {
+                self.free_func(self.heap_udata, cur);
+            }
         } else {
             // Keep — clear mark bit for next cycle
-            hdr.clear_reachable();
-            self.gc_objects[kept] = self.gc_objects[i];
+            cur.clear_reachable();
+            prev = cur;
             kept++;
         }
+        cur = next;
     }
-    self.gc_obj_count = kept;
+    self.live_obj_count = kept;
 }
 
 // ============================================================================
@@ -1136,10 +1145,11 @@ fn void Heap.mark_and_sweep(&self) {
     self.gc_running = true;
 
     // --- Phase 1: Clear all reachable flags ---
-    for (uint i = 0; i < self.gc_obj_count; i++) {
-        HeapHeader* cur = (HeapHeader*)self.gc_objects[i];
-        if (cur != null) {
+    {
+        HeapHeader* cur = self.heap_allocated;
+        while (cur != null) {
             cur.clear_reachable();
+            cur = cur.next;
         }
     }
 
@@ -1150,7 +1160,7 @@ fn void Heap.mark_and_sweep(&self) {
     self.sweep();
 
     // --- Phase 4: Reset trigger counter ---
-    long new_trigger = (long)self.gc_obj_count * GC_TRIGGER_GROW_FACTOR;
+    long new_trigger = (long)self.live_obj_count * GC_TRIGGER_GROW_FACTOR;
     if (new_trigger < GC_INITIAL_TRIGGER) {
         new_trigger = GC_INITIAL_TRIGGER;
     }

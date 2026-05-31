@@ -11,6 +11,57 @@ import duktape::heap;
 import libc;
 
 // ============================================================================
+// EnvRecord pool
+// ============================================================================
+
+/// A pool block header — allocated blocks are linked so the heap can
+/// free them on teardown.  The first field is the `next` pointer (void*
+/// for opaque storage in the Heap struct).
+struct EnvPoolBlock { void* next; }
+
+const uint ENV_POOL_BLOCK_SIZE = 64;
+
+/// Allocate an EnvRecord from the pool.
+fn EnvRecord*? env_pool_alloc(Heap* h) {
+    if (h.env_freelist != null) {
+        EnvRecord* env = (EnvRecord*)h.env_freelist;
+        h.env_freelist = env.parent;
+        libc::memset(env, 0, EnvRecord::size);
+        return env;
+    }
+
+    // Allocate a new block
+    usz block_sz = EnvPoolBlock::size + EnvRecord::size * ENV_POOL_BLOCK_SIZE;
+    void* raw = libc::malloc(block_sz);
+    if (raw == null) return null;
+    libc::memset(raw, 0, block_sz);
+
+    // Link into block list
+    EnvPoolBlock* block = (EnvPoolBlock*)raw;
+    block.next = h.env_pool_blocks;
+    h.env_pool_blocks = block;
+
+    // Thread records 1..N-1 into the freelist
+    char* base = (char*)raw + EnvPoolBlock::size;
+    for (uint i = 1; i < ENV_POOL_BLOCK_SIZE; i++) {
+        EnvRecord* e = (EnvRecord*)(base + i * EnvRecord::size);
+        e.parent = (EnvRecord*)h.env_freelist;
+        h.env_freelist = e;
+    }
+
+    // Return the first record in the block
+    return (EnvRecord*)base;
+}
+
+/// Return an EnvRecord to the pool.
+fn void env_pool_free(Heap* h, EnvRecord* env) {
+    if (env == null) return;
+    libc::memset(env, 0, EnvRecord::size);
+    env.parent = (EnvRecord*)h.env_freelist;
+    h.env_freelist = env;
+}
+
+// ============================================================================
 // EnvRecord — a single link in the scope chain
 // ============================================================================
 
@@ -34,24 +85,20 @@ struct EnvRecord {
 
 /// Create a new object environment record.
 fn EnvRecord*? env_create(Heap* heap, EnvRecord* parent) {
-    void* raw = libc::malloc(EnvRecord::size);
-    if (raw == null) {
-        return types::ALLOC_ERROR~;
+    EnvRecord*? raw = env_pool_alloc(heap);
+    if (try env = raw) {
+        env.parent = parent;
+        env.is_declarative = false;
+
+        HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = bindings) {
+            env_pool_free(heap, env);
+            return types::ALLOC_ERROR~;
+        }
+        env.bindings = bindings;
+        return env;
     }
-    libc::memset(raw, 0, EnvRecord::size);
-
-    EnvRecord* env = (EnvRecord*)raw;
-    env.parent = parent;
-    env.is_declarative = false;
-
-    HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
-    if (catch err = bindings) {
-        libc::free(raw);
-        return types::ALLOC_ERROR~;
-    }
-    env.bindings = bindings;
-
-    return env;
+    return types::ALLOC_ERROR~;
 }
 
 /// Create a new `with` environment record wrapping an existing HObject.
@@ -61,52 +108,44 @@ fn EnvRecord*? env_create(Heap* heap, EnvRecord* parent) {
 /// set so that `env_put` skips this record when creating *new* bindings
 /// (spec-compliant: unresolvable references inside `with` go to the
 /// enclosing scope, not to the with-object).
-fn EnvRecord*? env_create_with_object(EnvRecord* parent, HObject* bindings) {
-    void* raw = libc::malloc(EnvRecord::size);
-    if (raw == null) {
-        return types::ALLOC_ERROR~;
+fn EnvRecord*? env_create_with_object(Heap* heap, EnvRecord* parent, HObject* bindings) {
+    EnvRecord*? raw = env_pool_alloc(heap);
+    if (try env = raw) {
+        env.parent = parent;
+        env.bindings = bindings;
+        env.is_declarative = false;
+        env.is_with = true;
+        return env;
     }
-    libc::memset(raw, 0, EnvRecord::size);
-
-    EnvRecord* env = (EnvRecord*)raw;
-    env.parent = parent;
-    env.bindings = bindings;
-    env.is_declarative = false;
-    env.is_with = true;
-
-    return env;
+    return types::ALLOC_ERROR~;
 }
 
 /// Create a new declarative environment record.
 fn EnvRecord*? env_create_declarative(Heap* heap, EnvRecord* parent) {
-    void* raw = libc::malloc(EnvRecord::size);
-    if (raw == null) {
-        return types::ALLOC_ERROR~;
+    EnvRecord*? raw = env_pool_alloc(heap);
+    if (try env = raw) {
+        env.parent = parent;
+        env.is_declarative = true;
+
+        HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = bindings) {
+            env_pool_free(heap, env);
+            return types::ALLOC_ERROR~;
+        }
+        env.bindings = bindings;
+        return env;
     }
-    libc::memset(raw, 0, EnvRecord::size);
-
-    EnvRecord* env = (EnvRecord*)raw;
-    env.parent = parent;
-    env.is_declarative = true;
-
-    HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
-    if (catch err = bindings) {
-        libc::free(raw);
-        return types::ALLOC_ERROR~;
-    }
-    env.bindings = bindings;
-
-    return env;
+    return types::ALLOC_ERROR~;
 }
 
 /// Destroy an environment record and all its owned resources.
-fn void env_destroy(EnvRecord* env) {
+fn void env_destroy(Heap* heap, EnvRecord* env) {
     if (env == null) { return; }
     // Free parent chain first
     if (env.parent != null) {
-        env_destroy(env.parent);
+        env_destroy(heap, env.parent);
     }
-    libc::free(env);
+    env_pool_free(heap, env);
 }
 
 // ============================================================================

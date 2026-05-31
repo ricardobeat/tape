@@ -1022,7 +1022,7 @@ fn Vm*? vm_create(Heap* heap) {
 
     // Register built-ins
     if (!builtins::register_builtins(global, heap)) {
-        env::env_destroy(global);
+        env::env_destroy(heap, global);
         libc::free(vs_raw);
         libc::free(raw);
         return VM_ERROR~;
@@ -1044,7 +1044,7 @@ fn Vm*? vm_create(Heap* heap) {
 fn void vm_destroy(Vm* vm) {
     if (vm == null) return;
     // env_destroy is NOT called here because all HObjects are tracked
-    // in the heap's gc_objects array and freed by heap.destroy().
+    // in the heap_allocated linked list and freed by heap.destroy().
     // Calling env_destroy would double-free those tracked objects.
     if (vm.valstack != null) {
         libc::free(vm.valstack);
@@ -4615,7 +4615,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Create a with-env record wrapping the object and push it
             // onto the current activation's var_env.
-            EnvRecord*? env_raw = env::env_create_with_object(act.var_env, obj);
+            EnvRecord*? env_raw = env::env_create_with_object(vm.heap, act.var_env, obj);
             if (try new_env = env_raw) {
                 act.var_env = new_env;
             } else {

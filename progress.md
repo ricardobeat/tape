@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 91 (Array.prototype.flat/flatMap — Phase 5/6 pass increase)
+**Last Updated:** Session 92 (GC linked-list + EnvRecord pool — infrastructure cleanup)
 **Target:** Full test262 conformance
 
 ## Summary
@@ -474,6 +474,22 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 - Note: `typeof obj.prop.length` returning `undefined` is a pre-existing bug in string primitive `.length` access, not related to this fix.
 
 ---
+
+### Session 92: GC linked-list + EnvRecord pool (infrastructure cleanup)
+
+**P1.3 — GC tracking via `realloc`d `void*[]` array removed**
+- Replaced `gc_objects` growable array with the existing `heap_allocated` doubly-linked list (`HeapHeader.next/prev`) as the sole GC tracking structure.
+- `alloc_object()` now calls `insert_into_heap_allocated_preserve_flags()` instead of appending to a `realloc`d array. No more realloc churn on allocation.
+- `sweep()` unlinks dead nodes in O(1) instead of compacting the array (memmove of pointers).
+- Removed `gc_objects`, `gc_obj_cap`, `gc_obj_count` from `Heap` struct (3 fields + realloc'd array).
+
+**P1.4 — EnvRecord pooling**
+- Replaced individual `libc::malloc(EnvRecord::size)` calls with a slab pool (64 entries per block).
+- Freelist stored in `Heap.env_freelist`; allocated blocks tracked in `Heap.env_pool_blocks` for cleanup on heap destroy.
+- Covers `env_create`, `env_create_with_object`, `env_create_declarative`, and `env_destroy`.
+
+**P1.5 — Array index fast path** (confirmed already fixed)
+- GETPROP (`vm.c3:1935`) and PUTPROP (`vm.c3:2143`) both check for ARRAY-class objects with numeric keys *before* calling `get_prop_key()`, so indices are never stringified on the hot path.
 
 **NEXT TASK**: Optimize inner function compilation — currently each inner function (including compiled JS stubs for builtins like `Map.prototype.set`, `Array.prototype.flatMap`) re-compiles from source on every outer function instantiation. This is wasteful: the compiled bytecode is always the same. Cache the `CompiledFunction*` pointer on first compilation and reuse it. See `compile_inner_function()` in `src/compiler.c3` for the site where inner functions are compiled.
 
