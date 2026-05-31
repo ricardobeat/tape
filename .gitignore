@@ -2,3 +2,4 @@ duktape
 *.dSYM
 out/
 quickjs/
+.antigravitycli
