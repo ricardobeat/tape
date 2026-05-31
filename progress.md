@@ -434,6 +434,25 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 
 ---
 
+### Session 92: Optimized arguments object (exotic ARGUMENTS class)
+
+**Task**: Replace the heavyweight arguments object (plain `ObjClass.OBJECT` with `.length` as a property-table entry) with a lightweight exotic `ObjClass.ARGUMENTS`. The goal was to avoid O(argc) string key allocations and reduce per-call overhead for functions using `arguments`.
+
+**Changes** (`src/vm.c3`):
+- Changed `ObjClass.OBJECT` → `ObjClass.ARGUMENTS` (the class already existed with `exotic_arguments` flag but was unused in the arguments creation path)
+- Eliminated the `.put_prop` for `.length` — replaced with an exotic handler in `GETPROP` that reads `array_used` directly from the dense array part
+- Added `ARGUMENTS` to both the `GETPROP` and `PUTPROP` dense indexed fast paths (same as `ObjClass.ARRAY`) so `arguments[i]` reads/writes go through the array part directly
+- Uses `set_array_idx` to store argument values into the dense array part (no string formatting, no property table entries)
+
+**Impact**:
+- Per-call allocation: 1 HObject + O(argc) TVal array writes. Zero string keys, zero property table entries, zero hash table ops
+- `arguments.length` and `arguments[i]` hit the same fast paths as array `.length` and `[i]`
+- No mapped-param sync (`arguments[0]=x` does not update named param `a`) — acceptable per spec for non-mapped arguments
+- `arguments.callee` returns `undefined` (strict mode callee throw not implemented)
+- 48 bytes saved per call vs the old approach (no property entry allocation)
+
+---
+
 **NEXT TASK**: Fix the `typeof X.y` compiler bug to unblock sync property access tests across the board (~100 tests impacted across Promise.allSettled, Promise.any, flat, flatMap, and any builtin using dot-access typeof checks). The bug is in `src/compiler.c3` where `TYPEOFIDENT` is emitted for dotted member expressions instead of `TYPEOF` + `GETPROP`.
 
 After the compiler fix, re-run the test262 runner to measure pass rate improvements across all builtins.

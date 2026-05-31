@@ -2139,8 +2139,7 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
                 // Fast path: dense array indexed store (a[i] = v where i is a non-negative integer)
-                // Only for ARRAY-class objects — plain arrays don't have setters on numeric indices.
-                if (hobj.get_class() == hobject::ObjClass.ARRAY && hobj.array_part != null && (rb.is_fastint() || rb.is_number())) {
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part != null && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     if (idx_long >= 0) {
                         hobj.set_array_idx((uint)idx_long, *rc);
@@ -2672,15 +2671,10 @@ fn TVal? Vm.run(Vm* vm) {
                     if (target_fast.uses_arguments()) {
                         HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
                         if (try args_obj = args_obj_raw) {
-                            // Pre-grow array to avoid per-element bounds checks
-                            if (nargs > args_obj.array_size) {
-                                args_obj.grow_array(nargs);
-                            }
-                            // Store arguments in dense array_part directly
+                            // Store arguments in dense array_part (avoids O(argc) string key allocs)
                             for (uint ai = 0; ai < nargs; ai++) {
-                                args_obj.array_part[ai] = regs_base[ai];
+                                args_obj.set_array_idx(ai, regs_base[ai]);
                             }
-                            args_obj.array_used = nargs;
                             // No own .length property — handled via exotic_arguments fast path in GETPROP
                             args_obj.prototype = null;
                             // Declare 'arguments' in the function's var_env
