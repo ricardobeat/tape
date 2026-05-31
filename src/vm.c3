@@ -1931,7 +1931,8 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
 
                 // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
-                if (hobj.get_class() == hobject::ObjClass.ARRAY && hobj.array_part != null && (rc.is_fastint() || rc.is_number())) {
+                // Also handles ARGUMENTS exotic objects for arguments[i] access
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part != null && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
@@ -1970,6 +1971,11 @@ fn TVal? Vm.run(Vm* vm) {
 
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
+                    // ARGUMENTS exotic: .length returns array_used directly (no own property)
+                    if (hobj.get_class() == hobject::ObjClass.ARGUMENTS && key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                        ra.set_fastint((long)hobj.array_used);
+                        break;
+                    }
                     hobject::AccessorResult acc;
                     TVal data_val;
                     HObject* owner = null;
@@ -2664,19 +2670,18 @@ fn TVal? Vm.run(Vm* vm) {
 
                     // Create arguments object if the function references 'arguments'
                     if (target_fast.uses_arguments()) {
-                        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
                         if (try args_obj = args_obj_raw) {
-                            // Store arguments in dense array_part (avoids O(argc) string key allocs)
+                            // Pre-grow array to avoid per-element bounds checks
+                            if (nargs > args_obj.array_size) {
+                                args_obj.grow_array(nargs);
+                            }
+                            // Store arguments in dense array_part directly
                             for (uint ai = 0; ai < nargs; ai++) {
-                                args_obj.set_array_idx(ai, regs_base[ai]);
+                                args_obj.array_part[ai] = regs_base[ai];
                             }
-                            // Set .length property
-                            HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                            if (len_key != null) {
-                                TVal len_tv;
-                                len_tv.set_fastint((long)nargs);
-                                args_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-                            }
+                            args_obj.array_used = nargs;
+                            // No own .length property — handled via exotic_arguments fast path in GETPROP
                             args_obj.prototype = null;
                             // Declare 'arguments' in the function's var_env
                             HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
