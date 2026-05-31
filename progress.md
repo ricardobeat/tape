@@ -491,6 +491,19 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 **P1.5 — Array index fast path** (confirmed already fixed)
 - GETPROP (`vm.c3:1935`) and PUTPROP (`vm.c3:2143`) both check for ARRAY-class objects with numeric keys *before* calling `get_prop_key()`, so indices are never stringified on the hot path.
 
-**NEXT TASK**: Optimize inner function compilation — currently each inner function (including compiled JS stubs for builtins like `Map.prototype.set`, `Array.prototype.flatMap`) re-compiles from source on every outer function instantiation. This is wasteful: the compiled bytecode is always the same. Cache the `CompiledFunction*` pointer on first compilation and reuse it. See `compile_inner_function()` in `src/compiler.c3` for the site where inner functions are compiled.
+**NEXT TASK**: Optimize GETVAR for global variable lookups — currently each GETVAR walks the full environment chain (lex_env → var_env → parent) even for globals like `fib` in benchmarks. Implement a **global variable cache** (QuickJS-style): on first GETVAR of a global, record the environment pointer + property index in a per-instruction inline cache (like the existing IC for GETPROP). Subsequent lookups skip the chain walk. This would directly speed up all benchmark hot loops that read global functions. See the GETVAR handler in `src/vm.c3` and QuickJS's `var_ref` mechanism for reference.
 
-After this, re-run test262 to measure the impact on startup time and pass rates.
+---
+
+### Session 95: VM dispatch — inline handle_return + same-function return optimization
+
+**Task**: Reduce per-call/return overhead in the VM dispatch loop to close the recursion performance gap vs Duktape.
+
+**Changes** (`src/vm.c3`):
+1. **Inlined `handle_return` into RET, RETUNDEF, and fall-off-end handlers** — Eliminates function call overhead on every return.
+2. **Same-function return optimization** — `caller_func != vm.current_func` check skips reloading 6 function-dependent locals on recursive calls.
+3. **Removed redundant null check in CALL fast path** — `hobj_fast != null` was always true after `is_object()`.
+4. **Replaced `libc::memset` with inline loop in CALL zero-init** — Compiler can unroll for small register counts.
+5. **Added `@inline` attribute to `handle_return`** for remaining call sites.
+
+**Impact**: −2-7% on recursion/function_call/valstack_copy benchmarks. No regressions. The 1.8-1.9x recursion gap vs Duktape is structural (vm loop size vs L1 icache).

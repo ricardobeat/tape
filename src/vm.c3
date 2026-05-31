@@ -51,12 +51,12 @@ struct Activation {
     /// Next instruction to execute (points into bytecode; stable pointer)
     /// null for native calls
     Instruction* curr_pc;
-    /// Byte offset into valstack for this activation's bottom (absolute).
+    /// Pointer into valstack for this activation's bottom (absolute).
     /// Used to reset valstack_bottom on return.
-    uint bottom_byteoff;
-    /// Byte offset into valstack where return value goes (absolute).
+    TVal* bottom;
+    /// Pointer into valstack where return value goes (absolute).
     /// Only set for non-topmost activations.
-    uint retval_byteoff;
+    TVal* retval;
     /// Flags: strict, tailcalled, construct, etc.
     uint flags;
     /// The 'this' binding for this activation (full TVal)
@@ -125,7 +125,7 @@ struct Vm {
     uint valstack_size;    /// Allocated size in slots
     TVal* valstack_top;   /// Current top (one-past-last used slot)
     TVal* valstack_end;   /// End of allocated space
-    uint valstack_bottom; /// Byte offset to current activation's bottom
+    TVal* valstack_bottom; /// Pointer to current activation's bottom
 
     // Activation/call stack
     Activation[MAX_CALLS] activations;
@@ -179,14 +179,12 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                         vm.activation_count--;
                     }
                     // Restore the valstack_bottom for the target activation
-                    vm.valstack_bottom = search_act.bottom_byteoff;
+                    vm.valstack_bottom = search_act.bottom;
                     // Restore valstack_top to match the target function's nregs
                     if (search_act.func != null) {
                         CompiledFunction* target_func = (CompiledFunction*)search_act.func;
                         uint target_nregs = target_func.num_regs;
-                        uint target_bottom_idx = search_act.bottom_byteoff / TVal::size;
-                        vm.valstack_top = (TVal*)((usz)vm.valstack
-                            + (usz)(target_bottom_idx + target_nregs) * TVal::size);
+                        vm.valstack_top = search_act.bottom + target_nregs;
                     }
                 }
                 return true;
@@ -202,13 +200,11 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                            && &vm.activations[vm.activation_count - 1] != search_act) {
                         vm.activation_count--;
                     }
-                    vm.valstack_bottom = search_act.bottom_byteoff;
+                    vm.valstack_bottom = search_act.bottom;
                     if (search_act.func != null) {
                         CompiledFunction* target_func = (CompiledFunction*)search_act.func;
                         uint target_nregs = target_func.num_regs;
-                        uint target_bottom_idx = search_act.bottom_byteoff / TVal::size;
-                        vm.valstack_top = (TVal*)((usz)vm.valstack
-                            + (usz)(target_bottom_idx + target_nregs) * TVal::size);
+                        vm.valstack_top = search_act.bottom + target_nregs;
                     }
                 }
                 return true;
@@ -220,15 +216,14 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
     return false;
 }
 
-/// Helper to get byte offset from valstack base to a pointer
+/// Helper to get index from valstack base to a pointer
 fn uint byte_offset(TVal* base, TVal* ptr) @inline {
-    return (uint)((usz)ptr - (usz)base);
+    return (uint)(ptr - base);
 }
 
-/// Helper to get TVal* from valstack base and byte offset.
-fn TVal* ptr_from_byteoff(TVal* base, uint byteoff) @inline {
-    assert(byteoff % (uint)TVal::size == 0);
-    return (TVal*)((usz)base + (usz)byteoff);
+/// Helper to get TVal* from valstack base and index.
+fn TVal* ptr_from_byteoff(TVal* base, uint idx) @inline {
+    return base + idx;
 }
 
 // ============================================================================
@@ -327,7 +322,7 @@ fn Activation* curr_act(Vm* vm) @inline {
 
 /// Get valstack_bottom as TVal*
 fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
-    return ptr_from_byteoff(vm.valstack, curr_act(vm).bottom_byteoff);
+    return curr_act(vm).bottom;
 }
 
 /// Convert a TVal to an interned string key for property access.
@@ -798,13 +793,13 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
 fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     // Save current activation state
     Activation* caller_act = curr_act(vm);
-    uint caller_bottom = caller_act.bottom_byteoff;
+    TVal* caller_bottom = caller_act.bottom;
 
-    // retval_byteoff: where to write return value in caller's frame
-    caller_act.retval_byteoff = byte_offset(vm.valstack, ptr_from_byteoff(vm.valstack, caller_bottom) + idx_func);
+    // retval: where to write return value in caller's frame
+    caller_act.retval = caller_bottom + idx_func;
 
     // Get target function
-    TVal* func_slot = ptr_from_byteoff(vm.valstack, caller_bottom) + idx_func;
+    TVal* func_slot = caller_bottom + idx_func;
     TVal func_val = *func_slot;
 
     CompiledFunction* target_func = null;
@@ -835,7 +830,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     vm.activation_count++;
 
     // Compute new valstack bottom (after func + this + args)
-    uint new_bottom_byteoff = caller_bottom + ((uint)idx_func + 2) * (uint)TVal::size;
+    TVal* new_bottom = caller_bottom + ((uint)idx_func + 2);
 
     // Set up activation
     new_act.parent = caller_act;
@@ -844,19 +839,19 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     new_act.lex_env = lex_env;
     new_act.cat = null;
     new_act.curr_pc = null;
-    new_act.bottom_byteoff = new_bottom_byteoff;
-    new_act.retval_byteoff = 0;
+    new_act.bottom = new_bottom;
+    new_act.retval = null;
     new_act.flags = ACT_FLAG_STRICT;
     if (is_construct) {
         new_act.flags |= ACT_FLAG_CONSTRUCT;
     }
 
     // Set up 'this' binding from slot idx_func+1
-    TVal* this_slot = ptr_from_byteoff(vm.valstack, caller_bottom) + idx_func + 1;
+    TVal* this_slot = caller_bottom + idx_func + 1;
     new_act.this_binding = *this_slot;
 
     // Move valstack_bottom to new activation
-    vm.valstack_bottom = new_bottom_byteoff;
+    vm.valstack_bottom = new_bottom;
 
     return true;
 }
@@ -888,8 +883,8 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     // Set up call frame: callee_reg = result_reg (we reuse it)
     uint callee_reg = result_reg;
     uint frame_start = callee_reg + 2;
-    uint new_bottom_idx = (act.bottom_byteoff / (uint)TVal::size) + frame_start;
-    uint needed = new_bottom_idx + target.num_regs;
+    TVal* new_bottom = act.bottom + frame_start;
+    uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
     if (!ensure_valstack(vm, needed)) {
         regs_base[result_reg].set_undefined();
@@ -897,7 +892,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     }
 
     // Re-acquire regs_base after potential reallocation
-    TVal* caller_regs = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+    TVal* caller_regs = act.bottom;
     caller_regs[callee_reg] = getter_fn;
     caller_regs[callee_reg + 1] = *this_val;
 
@@ -915,18 +910,18 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.lex_env = func_obj.lex_env;
     new_act.cat = null;
     new_act.curr_pc = target.code;
-    new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-    new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+    new_act.bottom = new_bottom;
+    new_act.retval = act.bottom + result_reg;
     new_act.flags = ACT_FLAG_STRICT;
     new_act.this_binding = *this_val;
 
     // Clear registers and copy args (getters have 0 args)
-    TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+    TVal* new_regs = new_act.bottom;
     uint new_nregs = target.num_regs;
     libc::memset(new_regs, 0, (usz)new_nregs * TVal::size);
 
-    vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * TVal::size);
-    vm.valstack_bottom = new_act.bottom_byteoff;
+    vm.valstack_top = new_regs + new_nregs;
+    vm.valstack_bottom = new_act.bottom;
 
     // Save caller's PC so it resumes correctly after getter returns
     act.curr_pc = *curr_pc;
@@ -936,14 +931,15 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
 }
 
 /// val: the return value (or undefined for RETUNDEF)
-fn TVal handle_return(Vm* vm, TVal val) {
+/// @inline: critical hot-path, called on every RET instruction.
+fn TVal handle_return(Vm* vm, TVal val) @inline {
     if (vm.activation_count == 0) {
         vm.return_val = val;
         return val;
     }
 
     Activation* callee_act = curr_act(vm);
-    uint callee_result_byteoff = callee_act.retval_byteoff;
+    TVal* callee_result = callee_act.retval;
 
     // Pop activation
     vm.activation_count--;
@@ -958,10 +954,10 @@ fn TVal handle_return(Vm* vm, TVal val) {
     assert(caller_act != null);
 
     // Restore valstack_bottom to caller's
-    vm.valstack_bottom = caller_act.bottom_byteoff;
+    vm.valstack_bottom = caller_act.bottom;
 
-    // Write result to caller's frame at the saved retval_byteoff
-    if (callee_result_byteoff != 0 && callee_result_byteoff < vm.valstack_size * TVal::size) {
+    // Write result to caller's frame at the saved retval
+    if (callee_result != null && callee_result >= vm.valstack && callee_result < vm.valstack_end) {
         // For construct calls: if return value is not an object, use this_binding
         TVal final_val = val;
         if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
@@ -972,14 +968,14 @@ fn TVal handle_return(Vm* vm, TVal val) {
                 }
             }
         }
-        TVal* result_slot = ptr_from_byteoff(vm.valstack, callee_result_byteoff);
+        TVal* result_slot = callee_result;
         *result_slot = final_val;
     }
 
     // Restore valstack_top to match caller's nregs
     if (caller_act.func != null) {
         CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-        vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
+        vm.valstack_top = caller_act.bottom + caller_func.num_regs;
     }
 
     return val;
@@ -1072,7 +1068,7 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
 
     // Rewind the value stack — no free/realloc needed
     vm.valstack_top    = vm.valstack;
-    vm.valstack_bottom = 0;
+    vm.valstack_bottom = vm.valstack;
     vm.activation_count = 0;
     vm.has_error        = false;
     vm.current_func     = null;
@@ -1184,7 +1180,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
 
             // Save current VM state
             uint saved_act_count = vm.activation_count;
-            uint saved_valstack_bottom = vm.valstack_bottom;
+            TVal* saved_valstack_bottom = vm.valstack_bottom;
             TVal* saved_valstack_top = vm.valstack_top;
             TVal* saved_valstack = vm.valstack;
             uint saved_valstack_size = vm.valstack_size;
@@ -1216,8 +1212,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.lex_env = hobj.lex_env;
             act.cat = null;
             act.curr_pc = target.code;
-            act.bottom_byteoff = 0;
-            act.retval_byteoff = 0;
+            act.bottom = vm.valstack;
+            act.retval = null;
             act.flags = ACT_FLAG_STRICT;
             act.this_binding = this_val;
 
@@ -1237,7 +1233,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 vm.valstack[i] = args[i];
             }
             vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
-            vm.valstack_bottom = 0;
+            vm.valstack_bottom = vm.valstack;
             vm.current_func = target;
 
             // Run the function via Vm.run (skip Vm.execute init — we already set up state)
@@ -1300,8 +1296,8 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.lex_env = vm.global_env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;  // Points into bytecode
-    entry_act.bottom_byteoff = 0;
-    entry_act.retval_byteoff = 0;
+    entry_act.bottom = vm.valstack;
+    entry_act.retval = null;
     entry_act.flags = ACT_FLAG_STRICT;
 
     TVal this_val;
@@ -1319,7 +1315,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
         vm.valstack[i].set_undefined();
     }
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
-    vm.valstack_bottom = 0;
+    vm.valstack_bottom = vm.valstack;
 
     vm.current_func = func;
 
@@ -1362,19 +1358,53 @@ fn TVal? Vm.run(Vm* vm) {
         curr_pc = act.curr_pc;
         Instruction* code_end = code_base + code_count;
 
-        TVal* regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+        TVal* regs_base = act.bottom;
 
         // Inner dispatch loop
         for (; !needs_restart; ) {
             if (curr_pc >= code_end) {
-                TVal undef_val;
-                undef_val.set_undefined();
-                handle_return(vm, undef_val);
+                // Inline handle_return for fall-off-end — avoids function call overhead.
+                Activation* callee_act = &vm.activations[vm.activation_count - 1];
+                TVal* callee_result = callee_act.retval;
+                vm.activation_count--;
+
                 if (vm.activation_count == 0) {
+                    TVal undef_val;
+                    undef_val.set_undefined();
+                    vm.return_val = undef_val;
                     return vm.return_val;
                 }
-                needs_restart = true;
-                break;
+
+                Activation* caller_act = &vm.activations[vm.activation_count - 1];
+                vm.valstack_bottom = caller_act.bottom;
+
+                TVal undef_val;
+                undef_val.set_undefined();
+                TVal final_val = undef_val;
+                if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                    if (!final_val.is_object() || final_val.get_heapptr() == null) {
+                        if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
+                            final_val = callee_act.this_binding;
+                        }
+                    }
+                }
+                *callee_result = final_val;
+
+                CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+                vm.valstack_top = caller_act.bottom + caller_func.num_regs;
+
+                act = caller_act;
+                if (caller_func != vm.current_func) {
+                    vm.current_func = caller_func;
+                    code_base = caller_func.code;
+                    code_count = caller_func.code_count;
+                    code_end = code_base + code_count;
+                    constants = caller_func.constants;
+                    nregs = caller_func.num_regs;
+                }
+                curr_pc = act.curr_pc;
+                regs_base = act.bottom;
+                continue;
             }
 
             Instruction insn = *curr_pc;
@@ -1903,7 +1933,6 @@ fn TVal? Vm.run(Vm* vm) {
             int sabc = insn.get_sabc();
             int target = (int)((long)(curr_pc - code_base) + (long)sabc);
             curr_pc = code_base + target;
-            act.curr_pc = curr_pc;
             break;
         }
 
@@ -1912,7 +1941,6 @@ fn TVal? Vm.run(Vm* vm) {
                 int sbx = insn.get_sbc();
                 int target = (int)((long)(curr_pc - code_base) + (long)sbx);
                 curr_pc = code_base + target;
-                act.curr_pc = curr_pc;
             }
             break;
 
@@ -1921,7 +1949,6 @@ fn TVal? Vm.run(Vm* vm) {
                 int sbx = insn.get_sbc();
                 int target = (int)((long)(curr_pc - code_base) + (long)sbx);
                 curr_pc = code_base + target;
-                act.curr_pc = curr_pc;
             }
             break;
 
@@ -1983,7 +2010,7 @@ fn TVal? Vm.run(Vm* vm) {
                         obj_val.set_object(hobj);
                         if (invoke_getter(vm, &res.acc, &obj_val, (uint)insn.a,
                                           act, &curr_pc, &needs_restart, regs_base)) {
-                            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                            regs_base = act.bottom;
                             break;
                         }
                         break;
@@ -2178,11 +2205,11 @@ fn TVal? Vm.run(Vm* vm) {
 
                             uint callee_reg = (uint)insn.a + 1;
                             uint frame_start = callee_reg + 2;
-                            uint new_bottom_idx = (act.bottom_byteoff / (uint)TVal::size) + frame_start;
-                            uint needed = new_bottom_idx + target.num_regs;
+                            TVal* new_bottom = act.bottom + frame_start;
+                            uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
                             if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
-                                TVal* caller_regs = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                                TVal* caller_regs = act.bottom;
 
                                 caller_regs[callee_reg] = acc.accessor_fn;
                                 TVal obj_tv;
@@ -2199,18 +2226,18 @@ fn TVal? Vm.run(Vm* vm) {
                                 new_act.lex_env = setter_obj.lex_env;
                                 new_act.cat = null;
                                 new_act.curr_pc = target.code;
-                                new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-                                new_act.retval_byteoff = act.bottom_byteoff + ((uint)insn.a) * (uint)TVal::size;
+                                new_act.bottom = new_bottom;
+                                new_act.retval = act.bottom + (uint)insn.a;
                                 new_act.flags = ACT_FLAG_STRICT;
                                 new_act.this_binding = obj_tv;
 
-                                TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+                                TVal* new_regs = new_act.bottom;
                                 libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
                                 // Copy arg (the value being set)
                                 new_regs[0] = put_val;
 
-                                vm.valstack_top = (TVal*)((usz)new_regs + (usz)target.num_regs * TVal::size);
-                                vm.valstack_bottom = new_act.bottom_byteoff;
+                                vm.valstack_top = new_regs + target.num_regs;
+                                vm.valstack_bottom = new_act.bottom;
 
                                 // Save caller's PC for resumption after setter returns
                                 act.curr_pc = curr_pc;
@@ -2599,21 +2626,21 @@ fn TVal? Vm.run(Vm* vm) {
             // === Fast path: direct compiled HObject call (most common) ===
             if (func_val.is_object()) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
-                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.callable_kind == hobject::CallableKind.COMPILED_FN) {
+                if (hobj_fast.is_callable() && hobj_fast.callable_kind == hobject::CallableKind.COMPILED_FN) {
                     CompiledFunction* target_fast = hobj_fast.comp_func;
                     if (!target_fast.is_generator()) {
 
                     // New callee frame starts right after func and this in the caller frame
                     uint frame_start = callee_reg + 2;
-                    uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
-                    uint needed = new_bottom_idx + target_fast.num_regs;
+                    TVal* new_bottom = regs_base + frame_start;
+                    uint needed = (uint)(new_bottom - vm.valstack) + target_fast.num_regs;
 
                     if (!ensure_valstack(vm, needed)) {
                         regs_base[result_reg].set_undefined();
                         break;
                     }
 
-                    regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                    regs_base = act.bottom;
 
                     if (vm.activation_count >= MAX_CALLS) {
                         regs_base[result_reg].set_undefined();
@@ -2629,8 +2656,8 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.lex_env = hobj_fast.lex_env;
                     new_act.cat = null;
                     new_act.curr_pc = target_fast.code;
-                    new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-                    new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+                    new_act.bottom = new_bottom;
+                    new_act.retval = regs_base + result_reg;
                     new_act.flags = ACT_FLAG_STRICT;
                     // Arrow functions use lexical this (inherited from enclosing scope)
                     if (target_fast.is_arrow()) {
@@ -2639,17 +2666,20 @@ fn TVal? Vm.run(Vm* vm) {
                         new_act.this_binding = regs_base[callee_reg + 1];
                     }
 
-                    TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+                    TVal* new_regs = new_act.bottom;
                     uint new_nregs = target_fast.num_regs;
 
                     // Copy args: in the sliding-window model new_regs == old_args
-                    // Values are already in place — just zero the unused registers
-                    if (nargs < new_nregs) {
-                        libc::memset(&new_regs[nargs], 0, (usz)(new_nregs - nargs) * TVal::size);
+                    // Values are already in place — just zero the unused registers.
+                    // Direct loop instead of libc::memset to allow compiler inlining/unrolling.
+                    uint zero_count = new_nregs - nargs;
+                    TVal* zero_dst = &new_regs[nargs];
+                    for (uint zi = 0; zi < zero_count; zi++) {
+                        zero_dst[zi].bits = 0;
                     }
 
-                    vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
-                    vm.valstack_bottom = new_act.bottom_byteoff;
+                    vm.valstack_top = new_regs + new_nregs;
+                    vm.valstack_bottom = new_act.bottom;
 
                     // Save caller resume point before switching activations
                     act.curr_pc = curr_pc;
@@ -2663,7 +2693,7 @@ fn TVal? Vm.run(Vm* vm) {
                     constants = target_fast.constants;
                     nregs = target_fast.num_regs;
                     curr_pc = act.curr_pc;
-                    regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                    regs_base = act.bottom;
 
                     // Create arguments object if the function references 'arguments'
                     if (target_fast.uses_arguments()) {
@@ -2696,7 +2726,7 @@ fn TVal? Vm.run(Vm* vm) {
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
-                ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                ctx.base_reg = (ushort)((act.bottom - vm.valstack) + callee_reg + 2);
                 ctx.argc = (ushort)nargs;
                 ctx.result = regs_base + result_reg;
                 ctx.heap = vm.heap;
@@ -2790,7 +2820,7 @@ fn TVal? Vm.run(Vm* vm) {
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
-                    ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                    ctx.base_reg = (ushort)((act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
                     ctx.result = regs_base + result_reg;
                     ctx.heap = vm.heap;
@@ -2872,8 +2902,8 @@ fn TVal? Vm.run(Vm* vm) {
 
                     // Calculate register layout
                     uint frame_start_r = callee_reg + 2;
-                    uint new_bottom_idx_r = (act.bottom_byteoff / TVal::size) + frame_start_r;
-                    uint needed_r = new_bottom_idx_r + target.num_regs;
+                    TVal* new_bottom_r = regs_base + frame_start_r;
+                    uint needed_r = (uint)(new_bottom_r - vm.valstack) + target.num_regs;
 
                     if (!ensure_valstack(vm, needed_r)) {
                         gs.state = GEN_SUSPENDED_YIELD;
@@ -2881,7 +2911,7 @@ fn TVal? Vm.run(Vm* vm) {
                         break;
                     }
 
-                    regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                    regs_base = act.bottom;
 
                     if (vm.activation_count >= MAX_CALLS) {
                         gs.state = GEN_SUSPENDED_YIELD;
@@ -2899,20 +2929,20 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act_r.lex_env = gs.lex_env;
                     new_act_r.cat = null;
                     new_act_r.curr_pc = gs.saved_pc;
-                    new_act_r.bottom_byteoff = new_bottom_idx_r * (uint)TVal::size;
-                    new_act_r.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+                    new_act_r.bottom = new_bottom_r;
+                    new_act_r.retval = regs_base + result_reg;
                     new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD;
                     new_act_r.this_binding = gs.this_binding;
 
                     // Copy saved registers to valstack
-                    TVal* new_regs_r = ptr_from_byteoff(vm.valstack, new_act_r.bottom_byteoff);
+                    TVal* new_regs_r = new_act_r.bottom;
                     uint new_nregs_r = target.num_regs;
                     for (uint i = 0; i < new_nregs_r; i++) {
                         new_regs_r[i] = gs.saved_regs[i];
                     }
 
-                    vm.valstack_top = (TVal*)((usz)new_regs_r + (usz)new_nregs_r * TVal::size);
-                    vm.valstack_bottom = new_act_r.bottom_byteoff;
+                    vm.valstack_top = new_regs_r + new_nregs_r;
+                    vm.valstack_bottom = new_act_r.bottom;
 
                     needs_restart = true;
                     break;
@@ -2921,15 +2951,15 @@ fn TVal? Vm.run(Vm* vm) {
                 // Initial call: create generator object, don't execute body
                 // Calculate register layout
                 uint frame_start = callee_reg + 2;
-                uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
-                uint needed = new_bottom_idx + target.num_regs;
+                TVal* new_bottom = regs_base + frame_start;
+                uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
                 if (!ensure_valstack(vm, needed)) {
                     regs_base[result_reg].set_undefined();
                     break;
                 }
 
-                regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                regs_base = act.bottom;
 
                 // Allocate GeneratorState
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
@@ -2960,7 +2990,7 @@ fn TVal? Vm.run(Vm* vm) {
                 libc::memset(regs_raw, 0, regs_bytes);
 
                 // Initialize registers with args (rest = undefined for extra slots)
-                TVal* base = ptr_from_byteoff(vm.valstack, (usz)new_bottom_idx * TVal::size);
+                TVal* base = new_bottom;
                 TVal* old_args = regs_base + callee_reg + 2;
                 uint copy_count = target.has_rest() ? (uint)target.num_formals : nargs;
                 if (copy_count > target.num_regs) copy_count = target.num_regs;
@@ -3024,15 +3054,15 @@ fn TVal? Vm.run(Vm* vm) {
             // New callee frame starts right after func and this in the caller frame
             // Layout: callee_reg = func, callee_reg+1 = this, callee_reg+2.. callee_reg+1+nargs = args
             uint frame_start = callee_reg + 2;
-            uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
-            uint needed = new_bottom_idx + target.num_regs;
+            TVal* new_bottom = regs_base + frame_start;
+            uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
                 regs_base[result_reg].set_undefined();
                 break;
             }
 
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
 
             if (vm.activation_count >= MAX_CALLS) {
                 regs_base[result_reg].set_undefined();
@@ -3048,8 +3078,8 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.lex_env = hobj.lex_env;
             new_act.cat = null;
             new_act.curr_pc = target.code;
-            new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-            new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+            new_act.bottom = new_bottom;
+            new_act.retval = regs_base + result_reg;
             new_act.flags = ACT_FLAG_STRICT;
             // Arrow functions use lexical this (inherited from enclosing scope)
             if (target.is_arrow()) {
@@ -3058,7 +3088,7 @@ fn TVal? Vm.run(Vm* vm) {
                 new_act.this_binding = regs_base[callee_reg + 1];
             }
 
-            TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            TVal* new_regs = new_act.bottom;
             uint new_nregs = target.num_regs;
 
             // Copy args
@@ -3113,12 +3143,16 @@ fn TVal? Vm.run(Vm* vm) {
                     }
                 }
                 if (nargs < new_nregs) {
-                    libc::memset(&new_regs[nargs], 0, (usz)(new_nregs - nargs) * TVal::size);
+                    uint zc = new_nregs - nargs;
+                    TVal* zd = &new_regs[nargs];
+                    for (uint zi = 0; zi < zc; zi++) {
+                        zd[zi].bits = 0;
+                    }
                 }
             }
 
-            vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
-            vm.valstack_bottom = new_act.bottom_byteoff;
+            vm.valstack_top = new_regs + new_nregs;
+            vm.valstack_bottom = new_act.bottom;
 
             // Save caller resume point before switching activations
             act.curr_pc = curr_pc;
@@ -3132,7 +3166,7 @@ fn TVal? Vm.run(Vm* vm) {
             constants = target.constants;
             nregs = target.num_regs;
             curr_pc = act.curr_pc;
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
             continue;
         }
 
@@ -3233,7 +3267,7 @@ fn TVal? Vm.run(Vm* vm) {
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
-                    ctx.base_reg = (ushort)(act.bottom_byteoff / TVal::size) + (ushort)(callee_reg + 2);
+                    ctx.base_reg = (ushort)((uint)(act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
                     ctx.result = regs_base + result_reg;
                     ctx.heap = vm.heap;
@@ -3253,15 +3287,15 @@ fn TVal? Vm.run(Vm* vm) {
             // Set up activation frame for superclass constructor
             // The 'this' slot should already have new_target (set by caller)
             uint frame_start = callee_reg + 2;
-            uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
-            uint needed = new_bottom_idx + super_target.num_regs;
+            TVal* new_bottom = regs_base + frame_start;
+            uint needed = (uint)(new_bottom - vm.valstack) + super_target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
                 ra.set_undefined();
                 break;
             }
 
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
 
             if (vm.activation_count >= MAX_CALLS) {
                 ra.set_undefined();
@@ -3277,13 +3311,13 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.lex_env = super_hobj.lex_env;
             new_act.cat = null;
             new_act.curr_pc = super_target.code;
-            new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-            new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+            new_act.bottom = new_bottom;
+            new_act.retval = regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
             new_act.this_binding = regs_base[callee_reg + 1];
             new_act.new_target = new_target;  // Pass through new.target
 
-            TVal* new_regs = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            TVal* new_regs = new_act.bottom;
             uint new_nregs = super_target.num_regs;
 
             // Copy args
@@ -3330,8 +3364,8 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             }
 
-            vm.valstack_top = (TVal*)((usz)new_regs + (usz)new_nregs * (usz)TVal::size);
-            vm.valstack_bottom = new_act.bottom_byteoff;
+            vm.valstack_top = new_regs + new_nregs;
+            vm.valstack_bottom = new_act.bottom;
 
             needs_restart = true;
             break;
@@ -3363,7 +3397,7 @@ fn TVal? Vm.run(Vm* vm) {
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
-                ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                ctx.base_reg = (ushort)((uint)(act.bottom - vm.valstack) + callee_reg + 2);
                 ctx.argc = (ushort)nargs;
                 ctx.result = regs_base + result_reg;
                 ctx.heap = vm.heap;
@@ -3445,7 +3479,7 @@ fn TVal? Vm.run(Vm* vm) {
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
-                    ctx.base_reg = (ushort)((act.bottom_byteoff / (uint)TVal::size) + callee_reg + 2);
+                    ctx.base_reg = (ushort)((uint)(act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
                     ctx.result = regs_base + result_reg;
                     ctx.heap = vm.heap;
@@ -3542,15 +3576,15 @@ fn TVal? Vm.run(Vm* vm) {
             this_tval.set_object(new_obj);
             regs_base[callee_reg + 1] = this_tval;
             uint frame_start = callee_reg + 2;
-            uint new_bottom_idx = (act.bottom_byteoff / TVal::size) + frame_start;
-            uint needed = new_bottom_idx + target.num_regs;
+            TVal* new_bottom = regs_base + frame_start;
+            uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
             if (!ensure_valstack(vm, needed)) {
                 regs_base[result_reg].set_undefined();
                 break;
             }
 
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
             func_slot = regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
@@ -3567,13 +3601,13 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.lex_env = hobj.lex_env;
             new_act.cat = null;
             new_act.curr_pc = target.code;
-            new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
-            new_act.retval_byteoff = act.bottom_byteoff + result_reg * (uint)TVal::size;
+            new_act.bottom = new_bottom;
+            new_act.retval = regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
             new_act.this_binding = this_tval;
             new_act.new_target = hobj;  // constructor function, not instance
 
-            TVal* new_regs2 = ptr_from_byteoff(vm.valstack, new_act.bottom_byteoff);
+            TVal* new_regs2 = new_act.bottom;
             uint new_nregs2 = target.num_regs;
 
             // Copy args
@@ -3624,7 +3658,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             vm.valstack_top = (TVal*)((usz)new_regs2 + (usz)new_nregs2 * (usz)TVal::size);
-            vm.valstack_bottom = new_act.bottom_byteoff;
+            vm.valstack_bottom = new_act.bottom;
 
             act.curr_pc = curr_pc;
             needs_restart = true;
@@ -3660,10 +3694,10 @@ fn TVal? Vm.run(Vm* vm) {
                             vm.activation_count--;
                             if (vm.activation_count > 0) {
                                 Activation* caller_act = &vm.activations[vm.activation_count - 1];
-                                vm.valstack_bottom = caller_act.bottom_byteoff;
+                                vm.valstack_bottom = caller_act.bottom;
                                 if (caller_act.func != null) {
                                     CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
+                                    vm.valstack_top = caller_act.bottom + caller_func.num_regs;
                                 }
 
                                 // Try to find a catcher in the caller's chain
@@ -3671,8 +3705,7 @@ fn TVal? Vm.run(Vm* vm) {
                                                     &caller_act.curr_pc, &needs_restart)) {
                                     // Unhandled — set error for the VM to return
                                     vm.has_error = true;
-                                    TVal* ret_slot = ptr_from_byteoff(vm.valstack,
-                                        caller_act.retval_byteoff);
+                                    TVal* ret_slot = caller_act.retval;
                                     ret_slot[0] = throw_val;
                                 }
                             }
@@ -3692,18 +3725,18 @@ fn TVal? Vm.run(Vm* vm) {
                     // Pop the generator activation
                     if (vm.activation_count > 0) {
                         Activation* gen_act = &vm.activations[vm.activation_count - 1];
-                        uint ret_byteoff = gen_act.retval_byteoff;
+                        TVal* ret_byteoff = gen_act.retval;
                         vm.activation_count--;
                         if (vm.activation_count > 0) {
                             Activation* caller_act = &vm.activations[vm.activation_count - 1];
-                            vm.valstack_bottom = caller_act.bottom_byteoff;
+                            vm.valstack_bottom = caller_act.bottom;
                             if (caller_act.func != null) {
                                 CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
+                                vm.valstack_top = caller_act.bottom + caller_func.num_regs;
                             }
 
                             // Write return value to caller's return slot
-                            TVal* ret_slot = ptr_from_byteoff(vm.valstack, caller_act.retval_byteoff);
+                            TVal* ret_slot = caller_act.retval;
                             ret_slot[0] = ret_val;
                         }
                     }
@@ -3726,7 +3759,7 @@ fn TVal? Vm.run(Vm* vm) {
                 GeneratorState* gs = vm.heap.resume_gen;
 
                 // Save current state
-                TVal* regs_base_r = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+                TVal* regs_base_r = act.bottom;
                 for (uint i = 0; i < gs.num_regs; i++) {
                     gs.saved_regs[i] = regs_base_r[i];
                 }
@@ -3751,19 +3784,19 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (vm.activation_count > 0) {
                         Activation* yield_act = &vm.activations[vm.activation_count - 1];
-                        uint ret_byteoff = yield_act.retval_byteoff;
+                        TVal* ret_byteoff = yield_act.retval;
 
                         // Write the exception as the result (will be caught by try/catch inside generator)
-                        TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                        TVal* ret_slot = ret_byteoff;
                         ret_slot[0] = gs.throw_value;
 
                         vm.activation_count--;
                         if (vm.activation_count > 0) {
                             Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-                            vm.valstack_bottom = caller_act2.bottom_byteoff;
+                            vm.valstack_bottom = caller_act2.bottom;
                             if (caller_act2.func != null) {
                                 CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
+                                vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
                             }
                         }
                     }
@@ -3795,17 +3828,17 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (vm.activation_count > 0) {
                         Activation* yield_act = &vm.activations[vm.activation_count - 1];
-                        uint ret_byteoff = yield_act.retval_byteoff;
-                        TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                        TVal* ret_byteoff = yield_act.retval;
+                        TVal* ret_slot = ret_byteoff;
                         ret_slot[0] = wrapped_val;
 
                         vm.activation_count--;
                         if (vm.activation_count > 0) {
                             Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-                            vm.valstack_bottom = caller_act2.bottom_byteoff;
+                            vm.valstack_bottom = caller_act2.bottom;
                             if (caller_act2.func != null) {
                                 CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                                vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
+                                vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
                             }
                         }
                     }
@@ -3822,7 +3855,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Pop activation and return to caller (the .next() builtin's context)
             if (vm.activation_count > 0) {
                 Activation* yield_act = &vm.activations[vm.activation_count - 1];
-                uint ret_byteoff = yield_act.retval_byteoff;
+                TVal* ret_byteoff = yield_act.retval;
 
                 // Create IteratorResult {value: yieldVal, done: false}
                 HObject*? result_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -3841,16 +3874,16 @@ fn TVal? Vm.run(Vm* vm) {
                 }
 
                 // Write wrapped result to caller's frame
-                TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+                TVal* ret_slot = ret_byteoff;
                 ret_slot[0] = wrapped_val;
 
                 vm.activation_count--;
                 if (vm.activation_count > 0) {
                     Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-                    vm.valstack_bottom = caller_act2.bottom_byteoff;
+                    vm.valstack_bottom = caller_act2.bottom;
                     if (caller_act2.func != null) {
                         CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                        vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
+                        vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
                     }
                 }
             }
@@ -3868,41 +3901,89 @@ fn TVal? Vm.run(Vm* vm) {
 
         // === RETURNS ===
 
-        case Opcode.RET:
-            handle_return(vm, *ra);
+        case Opcode.RET: {
+            // Inline handle_return — eliminates function call overhead on every return.
+            TVal val = *ra;
+            Activation* callee_act = &vm.activations[vm.activation_count - 1];
+            TVal* callee_result = callee_act.retval;
+            vm.activation_count--;
+
             if (vm.activation_count == 0) {
+                vm.return_val = val;
                 return vm.return_val;
             }
-            // Direct dispatch after return (avoid restart overhead)
-            act = &vm.activations[vm.activation_count - 1];
-            vm.current_func = (CompiledFunction*)act.func;
-            code_base = vm.current_func.code;
-            code_count = vm.current_func.code_count;
-            code_end = code_base + code_count;
-            constants = vm.current_func.constants;
-            nregs = vm.current_func.num_regs;
+
+            Activation* caller_act = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller_act.bottom;
+
+            TVal final_val = val;
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                if (!final_val.is_object() || final_val.get_heapptr() == null) {
+                    if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
+                        final_val = callee_act.this_binding;
+                    }
+                }
+            }
+            *callee_result = final_val;
+
+            CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+            vm.valstack_top = caller_act.bottom + caller_func.num_regs;
+
+            act = caller_act;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                code_base = caller_func.code;
+                code_count = caller_func.code_count;
+                code_end = code_base + code_count;
+                constants = caller_func.constants;
+                nregs = caller_func.num_regs;
+            }
             curr_pc = act.curr_pc;
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
             continue;
+        }
 
         case Opcode.RETUNDEF: {
             TVal undef_val;
             undef_val.set_undefined();
 
-            handle_return(vm, undef_val);
+            // Inline handle_return — eliminates function call overhead.
+            Activation* callee_act = &vm.activations[vm.activation_count - 1];
+            TVal* callee_result = callee_act.retval;
+            vm.activation_count--;
+
             if (vm.activation_count == 0) {
+                vm.return_val = undef_val;
                 return vm.return_val;
             }
-            // Direct dispatch after return (avoid restart overhead)
-            act = &vm.activations[vm.activation_count - 1];
-            vm.current_func = (CompiledFunction*)act.func;
-            code_base = vm.current_func.code;
-            code_count = vm.current_func.code_count;
-            code_end = code_base + code_count;
-            constants = vm.current_func.constants;
-            nregs = vm.current_func.num_regs;
+
+            Activation* caller_act = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller_act.bottom;
+
+            TVal final_val = undef_val;
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                if (!final_val.is_object() || final_val.get_heapptr() == null) {
+                    if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
+                        final_val = callee_act.this_binding;
+                    }
+                }
+            }
+            *callee_result = final_val;
+
+            CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+            vm.valstack_top = caller_act.bottom + caller_func.num_regs;
+
+            act = caller_act;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                code_base = caller_func.code;
+                code_count = caller_func.code_count;
+                code_end = code_base + code_count;
+                constants = caller_func.constants;
+                nregs = caller_func.num_regs;
+            }
             curr_pc = act.curr_pc;
-            regs_base = ptr_from_byteoff(vm.valstack, act.bottom_byteoff);
+            regs_base = act.bottom;
             continue;
         }
 
@@ -3930,17 +4011,17 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             Activation* ret_act = &vm.activations[vm.activation_count - 1];
-            uint ret_byteoff = ret_act.retval_byteoff;
-            TVal* ret_slot = ptr_from_byteoff(vm.valstack, ret_byteoff);
+            TVal* ret_byteoff = ret_act.retval;
+            TVal* ret_slot = ret_byteoff;
             ret_slot[0] = wrapped_val;
 
             vm.activation_count--;
             if (vm.activation_count > 0) {
                 Activation* caller_act = &vm.activations[vm.activation_count - 1];
-                vm.valstack_bottom = caller_act.bottom_byteoff;
+                vm.valstack_bottom = caller_act.bottom;
                 if (caller_act.func != null) {
                     CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act.bottom_byteoff) + caller_func.num_regs;
+                    vm.valstack_top = caller_act.bottom + caller_func.num_regs;
                 }
             }
             needs_restart = true;
@@ -3959,17 +4040,17 @@ fn TVal? Vm.run(Vm* vm) {
             vm.heap.resume_gen = null;
 
             Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
-            uint ret_byteoff2 = ret_act2.retval_byteoff;
-            TVal* ret_slot2 = ptr_from_byteoff(vm.valstack, ret_byteoff2);
+            TVal* ret_byteoff2 = ret_act2.retval;
+            TVal* ret_slot2 = ret_byteoff2;
             ret_slot2[0] = undef_val;
 
             vm.activation_count--;
             if (vm.activation_count > 0) {
                 Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-                vm.valstack_bottom = caller_act2.bottom_byteoff;
+                vm.valstack_bottom = caller_act2.bottom;
                 if (caller_act2.func != null) {
                     CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                    vm.valstack_top = ptr_from_byteoff(vm.valstack, caller_act2.bottom_byteoff) + caller_func2.num_regs;
+                    vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
                 }
             }
             needs_restart = true;
