@@ -182,6 +182,9 @@ struct CompilerContext {
     // Track last identifier resolved via GETVAR (for assignment write-back)
     bool last_was_getvar;
     uint last_getvar_name_idx;
+    /// Set when the last primary_expr returned a live local variable register directly.
+    bool last_was_local_var;
+    ushort last_local_var_reg;
     /// LHS mode: when true, member_expr saves obj/key without emitting GETPROP
     bool lhs_mode;
     /// Delete mode: when true, member_expr saves obj/key for delete.
@@ -1132,7 +1135,9 @@ fn void CompilerContext.emit_var_store(&self, ushort reg, uint name_idx, bool is
             self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
         }
     } else {
-        self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+        // DECLVAR declares the binding in the immediate var_env (function-scoped).
+        // PUTVAR (plain assignment) walks the chain to update existing bindings.
+        self.emit_a_bc(Opcode.DECLVAR, (uint)reg, name_idx);
     }
 }
 
@@ -2607,7 +2612,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 }
                 ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
                 uint rest_name_idx = self.add_string_constant(rest_param.str_value);
-                self.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                self.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
                 arg_count++;
                 self.has_rest = true;
                 self.rest_formal_count = arg_count - 1;
@@ -2622,8 +2627,8 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             }
             ushort param_reg = self.declare_var(param.str_value, VAR);
             uint param_name_idx = self.add_string_constant(param.str_value);
-            // PUTVAR for env lookup (needed for default value writes and inner functions)
-            self.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+            // DECLVAR declares the parameter in the immediate var_env only.
+            self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
 
             // Check for default value
@@ -2814,7 +2819,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 }
                 ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
                 uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
-                inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
                 arg_count++;
                 inner_ctx.has_rest = true;
                 inner_ctx.rest_formal_count = arg_count - 1;
@@ -2828,9 +2833,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 return COMPILE_ERROR~;
             }
             ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
-            // Store parameter in environment so inner functions can capture it
+            // Store parameter in the immediate var_env only (DECLVAR).
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
-            inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+            inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
 
             // Check for default value
@@ -3220,9 +3225,12 @@ fn ushort? CompilerContext.conditional_expr(&self) {
 
 /// Parse binary expressions using a Pratt parser with precedence climbing.
 fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
+    self.last_was_local_var = false;
     ushort left = self.unary_expr()!;
+    bool left_is_local = self.last_was_local_var;
 
     for (;;) {
+        self.last_was_local_var = false;
         TokenType tt = self.peek_type();
         int prec = get_binary_precedence(tt);
 
@@ -3298,13 +3306,23 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         }
 
         ushort right = self.binary_expr(next_prec)!;
+        bool right_is_local = self.last_was_local_var;
 
         // Determine opcode
         Opcode op = token_to_binary_opcode(tt);
 
-        // Reuse left as result register (saves 2 regs per binary op)
+        // If left is a live local variable register, we cannot use it as the
+        // destination (it would clobber the variable). Copy it to a fresh temp.
+        if (left_is_local) {
+            ushort tmp = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+            left = tmp;
+            left_is_local = false;
+        }
+
         self.emit_abc(op, (uint)left, (uint)left, (uint)right);
         self.free_reg(right);
+        left_is_local = right_is_local;  // propagate for chained ops
     }
 
     return left;
@@ -4157,6 +4175,8 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (!self.is_global) {
                     if (try var_reg = self.resolve_var(id_tok.str_value)) {
                         self.last_was_getvar = false;
+                        self.last_was_local_var = true;
+                        self.last_local_var_reg = var_reg;
                         return var_reg;
                     }
                 }
@@ -4991,7 +5011,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
         }
         ushort param_reg = arrow_ctx.declare_var(name, VAR);
         uint param_name_idx = arrow_ctx.add_string_constant(name);
-        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+        arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
     }
 
     // Push a function-level lexical scope
