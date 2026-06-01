@@ -17,6 +17,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
 import libc;
+import std::io;
 
 // ============================================================================
 // Fault codes
@@ -523,6 +524,10 @@ fn ushort CompilerContext.alloc_reg(&self) {
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
     }
+    if (self.next_reg > 255) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+        libc::abort();
+    }
     return reg;
 }
 
@@ -532,6 +537,10 @@ fn ushort CompilerContext.alloc_regs(&self, ushort count) {
     self.next_reg += count;
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
+    }
+    if (self.next_reg > 255) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+        libc::abort();
     }
     return first;
 }
