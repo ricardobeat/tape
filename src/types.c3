@@ -602,7 +602,6 @@ bitstruct HeapFlags : uint {
 /// sweep phase can walk them.
 struct HeapHeader {
     HeapFlags    flags;
-    uint         refcount;
     HeapHeader*  next;
     HeapHeader*  prev;
 }
@@ -660,23 +659,6 @@ fn void HeapHeader.clear_readonly(&self)    { self.flags.readonly = false; }
 fn bool HeapHeader.is_readonly(&self)       { return self.flags.readonly; }
 
 // ---------------------------------------------------------------------------
-// HeapHeader — reference counting helpers
-// ---------------------------------------------------------------------------
-
-/// Increments the reference count by one.
-fn void HeapHeader.incref(&self) {
-    self.refcount++;
-}
-
-/// Decrements the reference count and returns the new count.
-/// When the returned value is zero the caller is responsible for
-/// destroying the object.
-fn uint HeapHeader.decref(&self) {
-    self.refcount--;
-    return self.refcount;
-}
-
-// ---------------------------------------------------------------------------
 // HeapHeader — linked-list helpers
 // ---------------------------------------------------------------------------
 
@@ -686,7 +668,6 @@ fn uint HeapHeader.decref(&self) {
 fn void HeapHeader.init(&self, HType htype, HeapHeader** list_head) {
     self.flags       = {};
     self.flags.htype = htype;
-    self.refcount    = 0;
     self.prev        = null;
     self.next        = *list_head;
     if (*list_head != null) {

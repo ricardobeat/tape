@@ -30,7 +30,7 @@ faultdef STACK_OVERFLOW;
 // ============================================================================
 
 const uint MAX_CALLS        = 128;
-const uint INITIAL_VALSTACK = 1024;
+const uint INITIAL_VALSTACK = 256;
 
 // ============================================================================
 // Activation record (matches duk_activation in duktape)
@@ -1717,49 +1717,57 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
-        case Opcode.LT:
-            ra.set_boolean(false);
+        case Opcode.LT: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() < rc.get_fastint()));
+                result = rb.get_fastint() < rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
-                ra.set_boolean((num_val(rb) < num_val(rc)));
+                result = num_val(rb) < num_val(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.LE:
-            ra.set_boolean(false);
+        case Opcode.LE: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() <= rc.get_fastint()));
+                result = rb.get_fastint() <= rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
-                ra.set_boolean((num_val(rb) <= num_val(rc)));
+                result = num_val(rb) <= num_val(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.GT:
-            ra.set_boolean(false);
+        case Opcode.GT: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() > rc.get_fastint()));
+                result = rb.get_fastint() > rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
-                ra.set_boolean((num_val(rb) > num_val(rc)));
+                result = num_val(rb) > num_val(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.GE:
-            ra.set_boolean(false);
+        case Opcode.GE: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() >= rc.get_fastint()));
+                result = rb.get_fastint() >= rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
-                ra.set_boolean((num_val(rb) >= num_val(rc)));
+                result = num_val(rb) >= num_val(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
         case Opcode.INSTANCEOF: {
             // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression

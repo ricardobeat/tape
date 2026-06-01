@@ -300,7 +300,10 @@ struct ShapeProperty {
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
     ObjFlags      flags;
+<<<<<<< HEAD
     uint          refcount;
+=======
+>>>>>>> ebe4d23 (Fix comparison aliasing bug and reduce memory overhead)
     HeapHeader*   next;
     HeapHeader*   prev;
 
@@ -378,17 +381,6 @@ fn void HObject.update_prop_pointers(&self) {
 /// Returns a HeapHeader pointer to this object (binary-compatible cast).
 fn HeapHeader* HObject.as_header(&self) @inline {
     return (HeapHeader*)self;
-}
-
-/// Increments the reference count.
-fn void HObject.incref(&self) {
-    self.refcount++;
-}
-
-/// Decrements the reference count and returns the new value.
-fn uint HObject.decref(&self) {
-    self.refcount--;
-    return self.refcount;
 }
 
 // ============================================================================

@@ -44,9 +44,9 @@ const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
 const long  GC_MAX_TRIGGER          = 4096;
 /// Initial capacity for the gray object stack (grows as needed).
-const uint  GRAY_STACK_INITIAL_CAP  = 1024;
+const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
-const uint  GC_MAX_ROOTS            = 128;
+const uint  GC_MAX_ROOTS            = 16;
 
 // --- LongjmpState ---------------------------------------------------------
 
