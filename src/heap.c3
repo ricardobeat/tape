@@ -22,6 +22,8 @@ alias FatalFunc   = fn void(void* udata, char* msg);
 /// Takes an opaque VM pointer, the handler TVal, an argument TVal pointer.
 /// Returns the result TVal.
 alias VmCallHandlerFn = fn TVal(void* vm, TVal handler, TVal* arg);
+/// Callback to mark activation-record env bindings during GC mark phase.
+alias MarkActivationsFn = fn void(void* vm, void* heap);
 
 /// Callback invoked after a microtask handler completes.  Receives the heap,
 /// VM, handler return value, and the downstream promise to resolve.
@@ -238,6 +240,8 @@ struct Heap {
     // VM callback for calling JS functions from builtins (set by vm_create)
     VmCallHandlerFn     call_handler_fn;
     VmCallFn            call_fn;
+    /// Callback to mark activation-record env bindings during GC (set by vm_create).
+    MarkActivationsFn   mark_activations_fn;
 
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
@@ -607,7 +611,6 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     // Check transition table for existing child shape.
     uint existing = self.lookup_transition(cur_shape_id, key);
     if (existing != SHAPE_NONE) {
-        //io::printfn("DEDUP HIT: parent=%d key=%p -> shape=%d", cur_shape_id, key, existing);
         return existing;
     }
 
@@ -1329,6 +1332,11 @@ fn void Heap.mark_roots(&self) {
     for (uint i = 0; i < self.checkpoint_count; i++) {
         HString* key = (HString*)self.checkpoint_keys[i];
         if (key != null) { ((HeapHeader*)key).set_reachable(); }
+    }
+
+    // Mark activation-record env bindings (fresh per-call envs not otherwise rooted)
+    if (self.mark_activations_fn != null && self.curr_thread != null) {
+        self.mark_activations_fn(self.curr_thread, self);
     }
 
     // Drain the gray stack — transitively marks all reachable objects

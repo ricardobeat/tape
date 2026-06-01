@@ -494,3 +494,44 @@ See `benchmarks/results.txt` for the latest comparison against Duktape v2.7.0 an
 **NEXT TASK**: Optimize inner function compilation — currently each inner function (including compiled JS stubs for builtins like `Map.prototype.set`, `Array.prototype.flatMap`) re-compiles from source on every outer function instantiation. This is wasteful: the compiled bytecode is always the same. Cache the `CompiledFunction*` pointer on first compilation and reuse it. See `compile_inner_function()` in `src/compiler.c3` for the site where inner functions are compiled.
 
 After this, re-run test262 to measure the impact on startup time and pass rates.
+
+---
+
+### Session 96: Fix HObject struct merge conflict + array fast path regression
+
+**Task**: Debug and fix VM failures where `test/math.js`, `benchmarks/vdom_test.js`, and other tests returned `VM_ERROR` immediately on execution, and `bench_array.js` was 411x slower than original Duktape.
+
+**Root cause 1 — Unresolved merge conflict in `src/hobject.c3:304-307`**:
+- A git merge conflict left `<<<<<<< HEAD / ======= / >>>>>>>` markers in the `HObject` struct definition.
+- The conflict was over the `uint refcount` field: HEAD kept it, branch `ebe4d23` removed it.
+- The C3 compiler saw `<<<<<<< HEAD` as a type name and failed to compile — but the conflict markers also corrupted struct layout for any binary built before the fix.
+- `refcount` was never read or written anywhere in the codebase (only mentioned in comments). `HeapHeader` (the struct HObject is layout-compatible with) never had a refcount field.
+- **Fix**: Removed conflict markers, kept the `ebe4d23` side (no refcount), updated doc comments.
+
+**Root cause 2 — PUTPROP array fast path skipped for uninitialized `array_part`**:
+- `benchmarks/bench_array.js` was 411x slower than Duktape (16s vs 39ms).
+- The PUTPROP fast path (`vm.c3:2190`) checked `hobj.array_part != null` before calling `set_array_idx()`.
+- `NEWARR` creates arrays with `array_part == null` (lazy allocation). `set_array_idx` handles this — it calls `grow_array` when `array_size == 0`.
+- But the `array_part != null` guard caused the fast path to be skipped entirely, falling through to the property system where each `arr2[i] = value` triggered `put_prop` → `shape_extend` → O(n) copy + rehash per element → O(n²) total.
+- **Fix**: Removed the `array_part != null` guard from the PUTPROP fast path. `set_array_idx` already handles lazy allocation correctly.
+
+**Debug instrumentation cleanup**:
+- Removed 15 `io::printfn` debug statements from `vm.c3` (dispatch loop + GETVAR handler).
+- Removed 9 debug statements from `hobject.c3` (`put_prop`, `find_prop_idx`, `shape_extend`).
+- Removed 1 debug statement from `heap.c3` (`transition_shape`).
+- Removed unused `import std::io` from `hobject.c3`.
+
+**Impact**:
+- `bench_array.js`: 16035ms → 49ms (411x → 1.3x ratio vs Duktape)
+- `benchmarks/vdom_test.js`: was failing with VM_ERROR, now passes (9000 changes computed correctly)
+- All 42 test files pass (core, ES6+, benchmarks)
+- `test/test_class.js` still hangs — pre-existing issue (default constructor for derived classes missing `super()` call, flagged in `compiler.c3:2204-2263`)
+
+**Benchmark comparison (C3 / Duktape ratio, 1 iteration)**:
+| Benchmark | Before | After |
+|-----------|--------|-------|
+| bench_array | 411.1x | 1.3x |
+| bench_loop | 0.7x | 0.7x |
+| bench_object | 0.7x | 0.8x |
+| bench_property_lookup | 0.6x | 0.6x |
+| bench_string | 0.8x | 0.8x |

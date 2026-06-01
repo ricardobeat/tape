@@ -789,6 +789,32 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
 }
 
 // ============================================================================
+// GC activation marking
+// ============================================================================
+
+/// Mark all env bindings held by live activation records.
+/// Called from heap's mark_roots to keep per-call var_envs alive during GC.
+fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
+    Vm* vm = (Vm*)vm_ptr;
+    heap::Heap* h = (heap::Heap*)heap_ptr;
+    for (uint i = 0; i < vm.activation_count; i++) {
+        Activation* act = &vm.activations[i];
+        if (act.var_env != null && act.var_env.bindings != null) {
+            h.mark_hobject(act.var_env.bindings);
+        }
+        if (act.lex_env != null && act.lex_env.bindings != null && act.lex_env != act.var_env) {
+            h.mark_hobject(act.lex_env.bindings);
+        }
+        // Walk parent env chains too
+        env::EnvRecord* cur = act.var_env;
+        while (cur != null) {
+            if (cur.bindings != null) { h.mark_hobject(cur.bindings); }
+            cur = cur.parent;
+        }
+    }
+}
+
+// ============================================================================
 // Call handling (matches duk_js_call.c)
 // ============================================================================
 
@@ -837,11 +863,19 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     // Compute new valstack bottom (after func + this + args)
     uint new_bottom_byteoff = caller_bottom + ((uint)idx_func + 2) * (uint)TVal::size;
 
+    // Create a fresh var environment for this call so that `var` declarations
+    // inside the function body don't clobber bindings in the outer/closure env.
+    EnvRecord*? fresh_var = env::env_create_function_scope(vm.heap, var_env);
+    EnvRecord* call_var_env = var_env;
+    if (try fv = fresh_var) {
+        call_var_env = fv;
+    }
+
     // Set up activation
     new_act.parent = caller_act;
     new_act.func = target_func;
-    new_act.var_env = var_env;
-    new_act.lex_env = lex_env;
+    new_act.var_env = call_var_env;
+    new_act.lex_env = call_var_env;
     new_act.cat = null;
     new_act.curr_pc = null;
     new_act.bottom_byteoff = new_bottom_byteoff;
@@ -909,10 +943,12 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
 
+    EnvRecord* invoke_getter_var_env = func_obj.var_env;
+    if (try fv_ig = env::env_create_function_scope(vm.heap, func_obj.var_env)) { invoke_getter_var_env = fv_ig; }
     new_act.parent = act;
     new_act.func = target;
-    new_act.var_env = func_obj.var_env;
-    new_act.lex_env = func_obj.lex_env;
+    new_act.var_env = invoke_getter_var_env;
+    new_act.lex_env = invoke_getter_var_env;
     new_act.cat = null;
     new_act.curr_pc = target.code;
     new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -1014,6 +1050,8 @@ fn Vm*? vm_create(Heap* heap) {
     // Register valstack with heap for GC root scanning
     heap.valstack_base = vm.valstack;
     heap.valstack_top_ptr = &vm.valstack_top;
+    heap.curr_thread = vm;
+    heap.mark_activations_fn = &vm_mark_activations;
 
     // Create global environment
     EnvRecord*? global = env::env_create(heap, null);
@@ -1082,6 +1120,8 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     // Update heap's valstack GC root pointers
     vm.heap.valstack_base = vm.valstack;
     vm.heap.valstack_top_ptr = &vm.valstack_top;
+    vm.heap.curr_thread = vm;
+    vm.heap.mark_activations_fn = &vm_mark_activations;
 
     // Fresh global environment on the reset heap
     EnvRecord*? global = env::env_create(heap, null);
@@ -1210,10 +1250,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             // Set up activation[0] for the function
             Activation* act = &vm.activations[0];
             vm.activation_count = 1;
+            EnvRecord* cfn_var_env = hobj.var_env;
+            if (try fv_cfn = env::env_create_function_scope(vm.heap, hobj.var_env)) { cfn_var_env = fv_cfn; }
             act.func = target;
             act.parent = null;
-            act.var_env = hobj.var_env;
-            act.lex_env = hobj.lex_env;
+            act.var_env = cfn_var_env;
+            act.lex_env = cfn_var_env;
             act.cat = null;
             act.curr_pc = target.code;
             act.bottom_byteoff = 0;
@@ -2145,7 +2187,9 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
                 // Fast path: dense array indexed store (a[i] = v where i is a non-negative integer)
-                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part != null && (rb.is_fastint() || rb.is_number())) {
+                // set_array_idx handles lazy allocation of array_part when array_size == 0.
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS)
+                    && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     if (idx_long >= 0) {
                         hobj.set_array_idx((uint)idx_long, *rc);
@@ -2201,10 +2245,12 @@ fn TVal? Vm.run(Vm* vm) {
                                 Activation* new_act = &vm.activations[vm.activation_count];
                                 vm.activation_count++;
 
+                                EnvRecord* setter_var_env = setter_obj.var_env;
+                                if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.var_env)) { setter_var_env = fv_s; }
                                 new_act.parent = act;
                                 new_act.func = target;
-                                new_act.var_env = setter_obj.var_env;
-                                new_act.lex_env = setter_obj.lex_env;
+                                new_act.var_env = setter_var_env;
+                                new_act.lex_env = setter_var_env;
                                 new_act.cat = null;
                                 new_act.curr_pc = target.code;
                                 new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -2627,10 +2673,12 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act = &vm.activations[vm.activation_count];
                     vm.activation_count++;
 
+                    EnvRecord* fast_var_env = hobj_fast.var_env;
+                    if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.var_env)) { fast_var_env = fv_f; }
                     new_act.parent = act;
                     new_act.func = target_fast;
-                    new_act.var_env = hobj_fast.var_env;
-                    new_act.lex_env = hobj_fast.lex_env;
+                    new_act.var_env = fast_var_env;
+                    new_act.lex_env = fast_var_env;
                     new_act.cat = null;
                     new_act.curr_pc = target_fast.code;
                     new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -2664,6 +2712,7 @@ fn TVal? Vm.run(Vm* vm) {
                     code_base = target_fast.code;
                     code_count = target_fast.code_count;
                     code_end = code_base + code_count;
+                    ic_base = (hobject::ICEntry*)target_fast.ic_entries;
                     constants = target_fast.constants;
                     nregs = target_fast.num_regs;
                     curr_pc = act.curr_pc;
@@ -3046,10 +3095,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* call_var_env2 = hobj.var_env;
+            if (try fv_c2 = env::env_create_function_scope(vm.heap, hobj.var_env)) { call_var_env2 = fv_c2; }
             new_act.parent = act;
             new_act.func = target;
-            new_act.var_env = hobj.var_env;
-            new_act.lex_env = hobj.lex_env;
+            new_act.var_env = call_var_env2;
+            new_act.lex_env = call_var_env2;
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -3133,6 +3184,7 @@ fn TVal? Vm.run(Vm* vm) {
             code_base = target.code;
             code_count = target.code_count;
             code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)target.ic_entries;
             constants = target.constants;
             nregs = target.num_regs;
             curr_pc = act.curr_pc;
@@ -3275,10 +3327,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* super_var_env = super_hobj.var_env;
+            if (try fv_su = env::env_create_function_scope(vm.heap, super_hobj.var_env)) { super_var_env = fv_su; }
             new_act.parent = act;
             new_act.func = super_target;
-            new_act.var_env = super_hobj.var_env;
-            new_act.lex_env = super_hobj.lex_env;
+            new_act.var_env = super_var_env;
+            new_act.lex_env = super_var_env;
             new_act.cat = null;
             new_act.curr_pc = super_target.code;
             new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -3565,10 +3619,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* ctor_var_env = hobj.var_env;
+            if (try fv_ct = env::env_create_function_scope(vm.heap, hobj.var_env)) { ctor_var_env = fv_ct; }
             new_act.parent = act;
             new_act.func = target;
-            new_act.var_env = hobj.var_env;
-            new_act.lex_env = hobj.lex_env;
+            new_act.var_env = ctor_var_env;
+            new_act.lex_env = ctor_var_env;
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom_byteoff = new_bottom_idx * (uint)TVal::size;
@@ -3883,6 +3939,7 @@ fn TVal? Vm.run(Vm* vm) {
             code_base = vm.current_func.code;
             code_count = vm.current_func.code_count;
             code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
             constants = vm.current_func.constants;
             nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
@@ -3903,6 +3960,7 @@ fn TVal? Vm.run(Vm* vm) {
             code_base = vm.current_func.code;
             code_count = vm.current_func.code_count;
             code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
             constants = vm.current_func.constants;
             nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
@@ -4166,6 +4224,19 @@ fn TVal? Vm.run(Vm* vm) {
                         env::env_put(act.var_env, key, *ra);
                     }
                     // put_result == 1: already updated in lex_env
+                }
+            }
+            break;
+        }
+
+        case Opcode.DECLVAR: {
+            // Declare a `var` binding in the immediate var_env only (no chain walk).
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    env::env_declare(act.var_env, key, *ra);
                 }
             }
             break;

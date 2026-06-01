@@ -2,7 +2,7 @@
 ///
 /// HObjects model all ECMAScript ordinary and exotic objects.  Each object
 /// has:
-///   - A HeapHeader-compatible prefix (flags, refcount, GC list pointers).
+///   - A HeapHeader-compatible prefix (flags, GC list pointers).
 ///   - A prototype chain link.
 ///   - A property table with both a hash part (for fast named-property
 ///     lookup) and a linear entry array.
@@ -291,7 +291,7 @@ struct ShapeProperty {
 
 /// The core ECMAScript object representation.
 ///
-/// Memory layout is chosen so that the first four fields (flags, refcount,
+/// Memory layout is chosen so that the first three fields (flags,
 /// next, prev) are binary-compatible with HeapHeader, allowing a raw cast
 /// for the GC's linked-list walk.
 ///
@@ -300,10 +300,6 @@ struct ShapeProperty {
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
     ObjFlags      flags;
-<<<<<<< HEAD
-    uint          refcount;
-=======
->>>>>>> ebe4d23 (Fix comparison aliasing bug and reduce memory overhead)
     HeapHeader*   next;
     HeapHeader*   prev;
 
@@ -542,10 +538,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
 
 /// Delete an own property by interned key.
 ///
-/// Removes the key from the shape's hash table (tombstone) and clears
-/// the value slot.  Does NOT compact or decrement prop_count — shape
-/// indices must remain stable.  The caller should bump the shape
-/// generation after deletion.
+/// Compacts prop_values by shifting remaining entries down, decrements
+/// prop_count, and rebuilds this object's shape from scratch (private,
+/// not shared) so the hash table reflects the new layout.
 fn bool HObject.delete_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
@@ -553,27 +548,62 @@ fn bool HObject.delete_prop(&self, void* key) {
     }
 
     uint ui = (uint)idx;
+    uint new_count = self.prop_count - 1;
 
-    // Remove key from shape's hash table (mark as deleted = 0).
-    if (self.shape != null) {
-        uint* ht = self.shape.hash_table();
-        uint mask = self.shape.hash_mask;
-        uint h = hash_key(key);
-        uint slot = h & mask;
-        for (uint probes = 0; probes <= mask; probes++) {
-            uint entry = ht[slot];
-            if (entry == 0) break;
-            if (entry - 1 == ui) {
-                ht[slot] = 0;  // mark deleted
-                break;
-            }
-            slot = (slot + 1) & mask;
-        }
+    // Compact prop_values: shift [ui+1..prop_count-1] → [ui..prop_count-2]
+    for (uint i = ui; i < new_count; i++) {
+        self.prop_values[i] = self.prop_values[i + 1];
     }
+    libc::memset(&self.prop_values[new_count], 0, PropValue::size);
+    self.prop_count = new_count;
 
-    // Clear the value slot but do NOT decrement prop_count.
-    // Shape indices must remain stable.
-    libc::memset(&self.prop_values[ui], 0, PropValue::size);
+    // Build a new private shape from the surviving properties.
+    // We do NOT insert it into the transition table — it's object-specific.
+    Shape* ns = shape_create(new_count, 0xFFFF_FFFF);
+    if (ns != null) {
+        // Copy surviving property names from old shape.
+        if (self.shape != null) {
+            ShapeProperty* old_sp = self.shape.props();
+            ShapeProperty* new_sp = ns.props();
+            uint ni = 0;
+            for (uint i = 0; i < self.shape.prop_count; i++) {
+                if (i != ui) {
+                    new_sp[ni].key   = old_sp[i].key;
+                    new_sp[ni].flags = old_sp[i].flags;
+                    ni++;
+                }
+            }
+        }
+        // Rebuild hash table.
+        uint* ht = ns.hash_table();
+        uint mask = ns.hash_mask;
+        ShapeProperty* sp = ns.props();
+        for (uint i = 0; i < new_count; i++) {
+            uint h = hash_key(sp[i].key);
+            uint slot = h & mask;
+            while (ht[slot] != 0) slot = (slot + 1) & mask;
+            ht[slot] = i + 1;
+        }
+
+        // Register with heap and attach to this object.
+        if (self.heap_ptr != null) {
+            heap::Heap* h = (heap::Heap*)self.heap_ptr;
+            uint new_id = h.alloc_shape_slot();
+            if (new_id != heap::SHAPE_NONE) {
+                h.shapes[new_id] = ns;
+                self.shape_id = new_id;
+                self.shape = ns;
+            } else {
+                shape_free(ns);
+                self.shape = null;
+            }
+        } else {
+            shape_free(ns);
+            self.shape = null;
+        }
+    } else {
+        self.shape = null;
+    }
 
     return true;
 }
@@ -727,7 +757,7 @@ fn void HObject.grow_array(&self, uint new_size) {
 ///   - flags.htype          = HType.OBJECT
 ///   - flags.extensible     = true
 ///   - flags.obj_class      = cls
-///   - refcount             = 0
+///   - (padding)            = 0
 ///   - Empty property table and no array part
 ///
 /// Returns `null` on allocation failure.
@@ -954,7 +984,7 @@ fn int Shape.find_prop_idx(&self, void* key) {
     ShapeProperty* sp = self.props();
     for (uint probes = 0; probes <= mask; probes++) {
         uint entry = ht[slot];
-        if (entry == 0) return -1;  // empty slot
+        if (entry == 0) return -1;
         uint idx = entry - 1;
         if (idx < self.prop_count && sp[idx].key == key) {
             return (int)idx;
