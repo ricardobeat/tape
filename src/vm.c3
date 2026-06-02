@@ -4026,18 +4026,25 @@ fn TVal? Vm.run(Vm* vm) {
                 vm.return_val = val;
                 return vm.return_val;
             }
-            // Direct dispatch after return (avoid restart overhead)
+            // Write return value to caller's result register
+            if (callee_result != null) {
+                // Constructor: if callee returned an object, use it; otherwise use 'this'
+                if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                    if (val.is_object()) {
+                        *callee_result = val;
+                    } else {
+                        *callee_result = callee_act.this_binding;
+                    }
+                } else {
+                    *callee_result = val;
+                }
+            }
+            // Restore caller state and restart dispatch loop
             act = &vm.activations[vm.activation_count - 1];
-            vm.current_func = (CompiledFunction*)act.func;
-            code_base = vm.current_func.code;
-            code_count = vm.current_func.code_count;
-            code_end = code_base + code_count;
-            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
-            constants = vm.current_func.constants;
-            nregs = vm.current_func.num_regs;
-            curr_pc = act.curr_pc;
-            regs_base = act.bottom;
-            continue;
+            vm.valstack_bottom = act.bottom;
+            vm.valstack_top = act.bottom + ((CompiledFunction*)act.func).num_regs;
+            needs_restart = true;
+            break;
         }
 
         case Opcode.RETUNDEF: {
@@ -4053,18 +4060,21 @@ fn TVal? Vm.run(Vm* vm) {
                 vm.return_val = undef_val;
                 return vm.return_val;
             }
-            // Direct dispatch after return (avoid restart overhead)
+            // Write return value to caller's result register
+            if (callee_result != null) {
+                // Constructor: return 'this' (the newly created object)
+                if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                    *callee_result = callee_act.this_binding;
+                } else {
+                    *callee_result = undef_val;
+                }
+            }
+            // Restore caller state and restart dispatch loop
             act = &vm.activations[vm.activation_count - 1];
-            vm.current_func = (CompiledFunction*)act.func;
-            code_base = vm.current_func.code;
-            code_count = vm.current_func.code_count;
-            code_end = code_base + code_count;
-            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
-            constants = vm.current_func.constants;
-            nregs = vm.current_func.num_regs;
-            curr_pc = act.curr_pc;
-            regs_base = act.bottom;
-            continue;
+            vm.valstack_bottom = act.bottom;
+            vm.valstack_top = act.bottom + ((CompiledFunction*)act.func).num_regs;
+            needs_restart = true;
+            break;
         }
 
         case Opcode.RET_GEN: {
