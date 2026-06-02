@@ -1211,32 +1211,52 @@ fn void Heap.drain_gray(&self) {
         }
 
         // --- Named properties ---
+        PropValue* pv = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
             HString* key = (HString*)obj.shape.props()[i].key;
             if (key != null) {
                 ((HeapHeader*)key).set_reachable();
             }
-            self.mark_tval(&obj.prop_values[i].data.value);
-            self.mark_tval(&obj.prop_values[i].data.getter);
-            self.mark_tval(&obj.prop_values[i].setter);
+            self.mark_tval(&pv[i].data.value);
+            self.mark_tval(&pv[i].data.getter);
+            self.mark_tval(&pv[i].setter);
         }
 
         // --- Array part ---
-        if (obj.array_part != null) {
+        TVal* ap = obj.array_part();
+        if (ap != null) {
             for (uint i = 0; i < obj.array_size; i++) {
-                self.mark_tval(&obj.array_part[i]);
+                self.mark_tval(&ap[i]);
             }
         }
 
-        // --- Primitive value (wrapper objects) ---
-        self.mark_tval(&obj.primitive_value);
-
-        // --- Environment bindings (var_env, lex_env) ---
-        if (obj.var_env != null && obj.var_env.bindings != null) {
-            self.mark_hobject(obj.var_env.bindings);
-        }
-        if (obj.lex_env != null && obj.lex_env.bindings != null) {
-            self.mark_hobject(obj.lex_env.bindings);
+        // --- Subtype-specific fields ---
+        switch (obj.flags.obj_class) {
+            case ObjClass.FUNCTION:
+            case ObjClass.THREAD:
+                if (obj.extra.func.var_env != null && obj.extra.func.var_env.bindings != null) {
+                    self.mark_hobject(obj.extra.func.var_env.bindings);
+                }
+                if (obj.extra.func.lex_env != null && obj.extra.func.lex_env.bindings != null) {
+                    self.mark_hobject(obj.extra.func.lex_env.bindings);
+                }
+                break;
+            case ObjClass.GENERATOR:
+                if (obj.extra.gen.var_env != null && obj.extra.gen.var_env.bindings != null) {
+                    self.mark_hobject(obj.extra.gen.var_env.bindings);
+                }
+                if (obj.extra.gen.lex_env != null && obj.extra.gen.lex_env.bindings != null) {
+                    self.mark_hobject(obj.extra.gen.lex_env.bindings);
+                }
+                break;
+            case ObjClass.BOOLEAN:
+            case ObjClass.NUMBER:
+            case ObjClass.STRING:
+            case ObjClass.DATE:
+                self.mark_tval(&obj.extra.prim.primitive_value);
+                break;
+            default:
+                break;
         }
 
         // TODO: mark CompiledFunction constants (bytecode.c3 helper)

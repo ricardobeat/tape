@@ -289,11 +289,56 @@ struct ShapeProperty {
 // HObject — the core heap-allocated object
 // ============================================================================
 
+// ============================================================================
+// HObject — Subtype structs for HObjectExtra union
+// ============================================================================
+
+/// Compiled function / native builtin extra fields.
+struct HObjectFunction {
+    CompiledFunction* comp_func;
+    EnvRecord*        var_env;
+    EnvRecord*        lex_env;
+    int               builtin_fn_index;
+    CallableKind      callable_kind;
+}
+
+/// Primitive wrapper (Boolean, Number, String objects).
+struct HObjectPrimitive {
+    TVal              primitive_value;
+}
+
+/// RegExp object: pattern + compiled bytecode.
+struct HObjectRegExp {
+    TVal              pattern_str;
+    void*             regexp_data;
+}
+
+/// Generator: suspended execution state + captured env.
+struct HObjectGenerator {
+    void*             generator_data;
+    CompiledFunction* comp_func;
+    EnvRecord*        var_env;
+    EnvRecord*        lex_env;
+}
+
+/// Tagged union of subtype-specific fields.
+/// Discriminator is flags.obj_class (in the common header).
+union HObjectExtra {
+    HObjectFunction  func;
+    HObjectPrimitive prim;
+    HObjectRegExp    regexp;
+    HObjectGenerator gen;
+}
+
 /// The core ECMAScript object representation.
 ///
 /// Memory layout is chosen so that the first three fields (flags,
 /// next, prev) are binary-compatible with HeapHeader, allowing a raw cast
 /// for the GC's linked-list walk.
+///
+/// Subtype-specific fields (function, primitive wrapper, regexp, generator)
+/// are stored in a union to save memory — only one variant is active at a
+/// time, discriminated by flags.obj_class.
 ///
 /// Property storage uses QuickJS-style shapes: property names and flags
 /// live in the shared Shape, objects only store values.
@@ -316,15 +361,12 @@ struct HObject {
     void*         heap_ptr;
 
     // --- Per-object property values ----------------------------------------
-    /// Flat array of property values, indexed by shape property index.
-    PropValue*    prop_values;
     /// Allocated capacity of prop_values (>= shape->prop_count).
     uint          prop_capacity;
     /// Number of properties currently in use (synced with shape->prop_count).
     uint          prop_count;
 
     // --- Dense array part ------------------------------------------------
-    TVal*         array_part;
     uint          array_size;
     uint          array_used;
 
@@ -332,17 +374,9 @@ struct HObject {
     /// Single allocation that holds prop_values and array_part contiguously.
     void*         prop_alloc;
 
-    // --- Primitive wrapper storage (for Boolean, Number, String objects) ---
-    TVal          primitive_value;
-
-    // --- Compiled function support (non-null for JS functions) -----------
-    CompiledFunction* comp_func;
-    EnvRecord*    var_env;
-    EnvRecord*    lex_env;
-    int           builtin_fn_index;
-    CallableKind  callable_kind;
-    void*         regexp_data;
-    void*         generator_data;
+    // --- Subtype-specific fields (overlapping union) -----------------------
+    /// Only one variant is active, determined by flags.obj_class.
+    HObjectExtra  extra;
 }
 
 // ============================================================================
@@ -356,18 +390,17 @@ fn usz HObject.prop_alloc_size(&self) {
     return size;
 }
 
-/// Recompute prop_values, array_part pointers from prop_alloc.
-fn void HObject.update_prop_pointers(&self) {
-    if (self.prop_alloc == null) {
-        self.prop_values = null;
-        self.array_part  = null;
-        return;
-    }
-    char* base = (char*)self.prop_alloc;
-    usz offs = 0;
-    self.prop_values = (PropValue*)(base + offs);
-    offs += (usz)self.prop_capacity * PropValue::size;
-    self.array_part = self.array_size > 0 ? (TVal*)(base + offs) : null;
+/// Returns pointer to the property values array (derived from prop_alloc).
+fn PropValue* HObject.prop_values(&self) @inline {
+    if (self.prop_alloc == null) return null;
+    return (PropValue*)self.prop_alloc;
+}
+
+/// Returns pointer to the dense array part (derived from prop_alloc).
+/// Returns null when there is no array part.
+fn TVal* HObject.array_part(&self) @inline {
+    if (self.prop_alloc == null || self.array_size == 0) return null;
+    return (TVal*)((char*)self.prop_alloc + (usz)self.prop_capacity * PropValue::size);
 }
 
 // ============================================================================
@@ -404,7 +437,7 @@ fn void HObject.seal(&self) {
     self.flags.extensible = false;
     ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
-        self.prop_values[i].flags.configurable = false;
+        self.prop_values()[i].flags.configurable = false;
         if (sp != null) sp[i].flags.configurable = false;
     }
 }
@@ -414,8 +447,8 @@ fn void HObject.freeze(&self) {
     self.seal();
     ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
-        if (!self.prop_values[i].flags.is_accessor) {
-            self.prop_values[i].flags.writable = false;
+        if (!self.prop_values()[i].flags.is_accessor) {
+            self.prop_values()[i].flags.writable = false;
             if (sp != null) sp[i].flags.writable = false;
         }
     }
@@ -464,7 +497,7 @@ fn PropValue*? HObject.find_prop(&self, void* key) {
     if (idx < 0) {
         return PROP_NOT_FOUND~;
     }
-    return &self.prop_values[idx];
+    return &self.prop_values()[idx];
 }
 
 // ============================================================================
@@ -477,7 +510,7 @@ fn TVal? HObject.get_prop(&self, void* key) {
     if (idx < 0) {
         return PROP_NOT_FOUND~;
     }
-    return self.prop_values[idx].data.value;
+    return self.prop_values()[idx].data.value;
 }
 
 /// Check whether the object has an own property with the given key.
@@ -489,7 +522,7 @@ fn bool HObject.has_prop(&self, void* key) {
 fn bool HObject.is_prop_writable(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) return true;
-    return self.prop_values[idx].flags.writable;
+    return self.prop_values()[idx].flags.writable;
 }
 
 /// Set (create or update) a named property.
@@ -503,8 +536,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // --- Update existing property ---
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
-        self.prop_values[idx].data.value = val;
-        self.prop_values[idx].flags = pflags;
+        self.prop_values()[idx].data.value = val;
+        self.prop_values()[idx].flags = pflags;
         return true;
     }
 
@@ -518,9 +551,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
 
     // --- Append new value at the next slot ---
     uint new_idx = self.prop_count;
-    libc::memset(&self.prop_values[new_idx], 0, PropValue::size);
-    self.prop_values[new_idx].data.value = val;
-    self.prop_values[new_idx].flags = pflags;
+    libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
+    self.prop_values()[new_idx].data.value = val;
+    self.prop_values()[new_idx].flags = pflags;
     self.prop_count++;
 
     // --- Transition shape to include the new property ---
@@ -552,9 +585,9 @@ fn bool HObject.delete_prop(&self, void* key) {
 
     // Compact prop_values: shift [ui+1..prop_count-1] → [ui..prop_count-2]
     for (uint i = ui; i < new_count; i++) {
-        self.prop_values[i] = self.prop_values[i + 1];
+        self.prop_values()[i] = self.prop_values()[i + 1];
     }
-    libc::memset(&self.prop_values[new_count], 0, PropValue::size);
+    libc::memset(&self.prop_values()[new_count], 0, PropValue::size);
     self.prop_count = new_count;
 
     // Build a new private shape from the surviving properties.
@@ -617,10 +650,10 @@ fn bool HObject.delete_prop(&self, void* key) {
 /// Returns the TVal at `idx`, or `null` (Optional failure) when the index
 /// is out of range or the slot holds undefined (hole).
 fn TVal? HObject.get_array_idx(&self, uint idx) {
-    if (self.array_part == null || idx >= self.array_size) {
+    if (self.array_part() == null || idx >= self.array_size) {
         return PROP_NOT_FOUND~;
     }
-    TVal v = self.array_part[idx];
+    TVal v = self.array_part()[idx];
     // Treat undefined as "not present" (array hole).
     if (v.is_undefined()) {
         return PROP_NOT_FOUND~;
@@ -647,15 +680,15 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
     }
 
     // Track used count.
-    if (self.array_part[idx].is_undefined() && !val.is_undefined()) {
+    if (self.array_part()[idx].is_undefined() && !val.is_undefined()) {
         self.array_used++;
-    } else if (!self.array_part[idx].is_undefined() && val.is_undefined()) {
+    } else if (!self.array_part()[idx].is_undefined() && val.is_undefined()) {
         if (self.array_used > 0) {
             self.array_used--;
         }
     }
 
-    self.array_part[idx] = val;
+    self.array_part()[idx] = val;
 }
 
 // ============================================================================
@@ -693,7 +726,7 @@ fn void HObject.grow_props(&self) {
     // Move the dense array part to its new position before updating pointers.
     // When prop_capacity grows, the array data shifts right by the capacity
     // difference — realloc preserves old bytes in place, so we must move them.
-    if (self.array_size > 0 && self.array_part != null) {
+    if (self.array_size > 0 && self.array_part() != null) {
         usz old_arr_off = (usz)old_prop_capacity * PropValue::size;
         usz new_arr_off = (usz)new_cap * PropValue::size;
         if (old_arr_off != new_arr_off) {
@@ -703,11 +736,9 @@ fn void HObject.grow_props(&self) {
         }
     }
 
-    self.update_prop_pointers();
-
     if (new_cap > old_prop_capacity) {
         usz added_bytes = (usz)(new_cap - old_prop_capacity) * PropValue::size;
-        void* start = (void*)((char*)self.prop_values + (usz)old_prop_capacity * PropValue::size);
+        void* start = (void*)((char*)self.prop_values() + (usz)old_prop_capacity * PropValue::size);
         libc::memset(start, 0, added_bytes);
     }
 }
@@ -733,12 +764,11 @@ fn void HObject.grow_array(&self, uint new_size) {
 
     self.prop_alloc = new_raw;
     self.array_size = new_size;
-    self.update_prop_pointers();
 
     usz added = (usz)(new_size - old_array_size);
     ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
     for (usz i = 0; i < added; i++) {
-        self.array_part[old_array_size + i].bits = undef_bits;
+        self.array_part()[old_array_size + i].bits = undef_bits;
     }
 }
 
@@ -772,6 +802,8 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     HObject* obj = (HObject*)raw;
 
     obj.prop_alloc = null;
+    obj.prop_capacity = 0;
+    obj.prop_count = 0;
 
     obj.flags.htype      = HType.OBJECT;
     obj.flags.extensible = true;
@@ -788,15 +820,11 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         obj.flags.exotic_proxyobj = true;
     }
 
-    obj.builtin_fn_index = -1;
-    obj.callable_kind = CallableKind.OTHER;
-    obj.regexp_data = null;
+    obj.extra.func.builtin_fn_index = -1;
+    obj.extra.func.callable_kind = CallableKind.OTHER;
     obj.shape_id = 0;
     obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
     obj.heap_ptr = heap_ptr;
-    obj.prop_values = null;
-    obj.prop_capacity = 0;
-    obj.prop_count = 0;
     return obj;
 }
 
@@ -808,9 +836,9 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 fn void hobject_free(HObject* obj) {
     if (obj == null) { return; }
 
-    if (obj.regexp_data != null) {
-        re_bindings::re_free(obj.regexp_data);
-        obj.regexp_data = null;
+    if (obj.flags.obj_class == ObjClass.REGEXP && obj.extra.regexp.regexp_data != null) {
+        re_bindings::re_free(obj.extra.regexp.regexp_data);
+        obj.extra.regexp.regexp_data = null;
     }
 
     // Free the unified property allocation block (prop_values + array_part).
@@ -831,7 +859,7 @@ fn void hobject_free(HObject* obj) {
 fn uint HObject.enumerable_count(&self) {
     uint count = 0;
     for (uint i = 0; i < self.prop_count; i++) {
-        if (self.prop_values[i].flags.enumerable) {
+        if (self.prop_values()[i].flags.enumerable) {
             count++;
         }
     }
@@ -844,7 +872,7 @@ fn PropValue*? HObject.get_prop_at(&self, uint idx) {
     if (idx >= self.prop_count) {
         return PROP_NOT_FOUND~;
     }
-    return &self.prop_values[idx];
+    return &self.prop_values()[idx];
 }
 
 // ============================================================================
@@ -864,7 +892,7 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.prop_values[idx].data.value;
+            return cur.prop_values()[idx].data.value;
         }
         cur = cur.prototype;
         depth++;
@@ -885,8 +913,8 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            if (cur.prop_values[idx].flags.is_accessor) {
-                TVal accessor_fn = want_getter ? cur.prop_values[idx].data.getter : cur.prop_values[idx].setter;
+            if (cur.prop_values()[idx].flags.is_accessor) {
+                TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
                 if (accessor_fn.is_object() && accessor_fn.get_heapptr() != null) {
                     return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
                 }
@@ -1120,8 +1148,8 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            if (cur.prop_values[idx].flags.is_accessor) {
-                TVal accessor_fn = want_getter ? cur.prop_values[idx].data.getter : cur.prop_values[idx].setter;
+            if (cur.prop_values()[idx].flags.is_accessor) {
+                TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
                 return {
                     .kind = PropLookupKind.PROP_ACCESSOR,
                     .acc = {
@@ -1133,7 +1161,7 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
             }
             return {
                 .kind = PropLookupKind.PROP_DATA,
-                .data_val = cur.prop_values[idx].data.value,
+                .data_val = cur.prop_values()[idx].data.value,
                 .owner = cur
             };
         }
@@ -1182,7 +1210,7 @@ fn bool HObject.es_delete_prop(&self, void* key) {
     if (idx < 0) {
         return true;  // Not found → [[Delete]] returns true.
     }
-    if (!self.prop_values[idx].flags.configurable) {
+    if (!self.prop_values()[idx].flags.configurable) {
         return false;  // Non-configurable → [[Delete]] returns false.
     }
     return self.delete_prop(key);
