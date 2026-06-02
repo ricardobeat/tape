@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 100 (function .name + .length flags)
+**Last Updated:** Session 101 (lightfunc .prototype + instanceof fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (fresh run, 2026-06-02)
@@ -28,7 +28,7 @@ QuickJS is 3-10x faster on most benchmarks.
 
 | Phase | Total | Pass | Fail | Skip | Notes |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 458 | 430 | 1,297 | VM, lexer, compiler ✅ |
+| 0-1: Core VM | 2,185 | 459 | 429 | 1,297 | VM, lexer, compiler ✅ |
 | 1: Calling Convention | 426 | 12 | 76 | 338 | Most skipped (noStrict) |
 | 2: Basic Operators | 1,969 | 465 | 679 | 825 | BigInt/gen skipped |
 | 3: Object System | 7,766 | 1,949 | 3,850 | 1,967 | Descriptors weak |
@@ -118,8 +118,9 @@ which doesn't have `.prototype` → returns `undefined`.
 **Cascade**: `Boolean.prototype` === `undefined` → `Object.getOwnPropertyDescriptor(
 Boolean.prototype, 'toString')` → "called on non-object" — a single root cause
 explains BOTH the missing `.prototype` and the getOwnPropertyDescriptor errors.
-**Fix**: In lightfunc GETPROP handler, resolve `.prototype` by mapping fn_index
-to the corresponding `heap.X_proto` (e.g., BUILTIN_BOOLEAN → heap.bool_proto).
+**Status**: ✅ FIXED (Session 101) — Added `.prototype` case in lightfunc GETPROP
+handler with `lightfunc_get_proto()` helper mapping fn_index → heap proto fields.
+Also fixed INSTANCEOF register aliasing bug (ra/rb sharing same register).
 
 ### 3. Built-in method `.name` absent on lightfunc methods (~800+ tests)
 **Impact**: `Boolean.prototype.toString.name` should be "toString". Lightfunc
@@ -145,10 +146,9 @@ change `.length` from `PROP_FLAGS_WEC` → `PROP_FLAGS_C` for built-in functions
 
 1. ~~Set `.name` on function objects during CLOSURE~~ — ✅ DONE (Session 100).
 
-2. **Fix lightfunc `.prototype` resolution** — Unblocks ~1500+ tests.
-   `vm.c3:2213`: add `.prototype` case in lightfunc GETPROP handler.
-   Map fn_index → heap's proto fields (bool_proto, number_proto, etc. —
-   already exist, just not connected to lightfunc dispatch).
+2. ~~Fix lightfunc `.prototype` resolution~~ — ✅ DONE (Session 101).
+   Added `lightfunc_get_proto()` helper + `.prototype` case in GETPROP handler.
+   Also fixed INSTANCEOF register aliasing bug and refactored to use shared helper.
 
 3. **Fix built-in method `.name` for lightfunc methods** — Unblocks ~800+ tests.
    Lightfunc methods registered via `put_prop` have no `.name` property.
@@ -163,8 +163,8 @@ change `.length` from `PROP_FLAGS_WEC` → `PROP_FLAGS_C` for built-in functions
 
 ### Medium Priority
 
-5. **Instanceof lightfunc handling** — `instanceof` walks `rval.prototype` but
-   doesn't handle lightfuncs (crashes on null ptr). `vm.c3:1893`.
+5. ~~Instanceof lightfunc handling~~ — ✅ DONE (Session 101).
+   Fixed register aliasing bug and refactored to use `lightfunc_get_proto()` helper.
 6. **String wrapper `.length` auto-boxing** — `typeof "hello".length` gives
    `undefined` because string primitives don't auto-box.
 7. **String wrapper property enumeration** — String indices should enumerate
@@ -193,6 +193,12 @@ change `.length` from `PROP_FLAGS_WEC` → `PROP_FLAGS_C` for built-in functions
 ---
 
 ## Session History (condensed)
+
+### Session 101: Lightfunc .prototype + INSTANCEOF fix
+Added `.prototype` resolution for lightfunc constructors via `lightfunc_get_proto()`.
+Fixed INSTANCEOF register aliasing bug (ra/rb sharing same register destroyed lval).
+Refactored instanceof to use shared helper for lightfunc proto lookup.
+Phase 0-1: 458→459. Core `instanceof` now works correctly with all constructors.
 
 ### Session 98: Fix arithmetic ToNumber coercion
 BOOLEAN/OBJECT/NULL/UNDEFINED/STRING → ToNumber for all 16 operators.
@@ -245,11 +251,12 @@ obj[key] = value compiled to GETPROP instead of PUTPROP. Phase 3: +813 pass.
 
 ## Suggested Next Task
 
-**Fix lightfunc `.prototype` resolution** — Unblocks ~1500+ tests.
-In `vm.c3` GETPROP lightfunc handler (~line 2213), add a `.prototype` case that
-maps each builtin function index to its corresponding `heap.X_proto`
-(e.g., BUILTIN_BOOLEAN → heap.bool_proto, BUILTIN_NUMBER → heap.number_proto,
-etc.). The proto fields already exist on the heap; they just aren't connected
-to lightfunc dispatch. This single fix cascades: once `Boolean.prototype` is
-an object instead of `undefined`, `Object.getOwnPropertyDescriptor(Boolean.prototype, 'toString')`
-starts working too, resolving the category #4 cascade.
+**Fix built-in method `.name` for lightfunc methods** — Unblocks ~800+ tests.
+Lightfunc methods registered via `put_prop` have no `.name` property as an own
+property (GETPROP resolves it for lightfuncs but `getOwnPropertyDescriptor`
+returns null since it's not in the object's property table).
+Options: (a) convert lightfunc methods to real function objects, or
+(b) add special handling in `getOwnPropertyDescriptor` for lightfunc values.
+Approach (b) is simpler: in the `getOwnPropertyDescriptor` handler, when the
+value is a lightfunc, synthesize a descriptor with `.name`, `.value` and the
+correct flags (writable:false, enumerable:false, configurable:true).

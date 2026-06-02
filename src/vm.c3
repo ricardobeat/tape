@@ -373,6 +373,35 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
 }
 
 /// Look up a property on an object, walking the prototype chain.
+/// Returns the .prototype object for a constructor lightfunc, or null for non-constructor lightfuncs.
+fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
+    switch (fn_idx) {
+        case builtins::BUILTIN_ERROR:           return vm.heap.err_proto;
+        case builtins::BUILTIN_TYPE_ERROR:      return vm.heap.type_err_proto;
+        case builtins::BUILTIN_RANGE_ERROR:     return vm.heap.range_err_proto;
+        case builtins::BUILTIN_REFERENCE_ERROR: return vm.heap.ref_err_proto;
+        case builtins::BUILTIN_SYNTAX_ERROR:    return vm.heap.syntax_err_proto;
+        case builtins::BUILTIN_EVAL_ERROR:      return vm.heap.eval_err_proto;
+        case builtins::BUILTIN_BOOLEAN:         return vm.heap.bool_proto;
+        case builtins::BUILTIN_STRING:          return vm.heap.string_proto;
+        case builtins::BUILTIN_NUMBER:          return vm.heap.number_proto;
+        case builtins::BUILTIN_OBJECT:          return vm.heap.object_proto;
+        case builtins::BUILTIN_ARRAY:           return vm.heap.array_proto;
+        case builtins::BUILTIN_FUNCTION:        return vm.heap.function_proto;
+        case builtins::BUILTIN_DATE:            return vm.heap.date_proto;
+        case builtins::BUILTIN_REGEXP:          return vm.heap.regexp_proto;
+        case builtins::BUILTIN_MAP:             return vm.heap.map_proto;
+        case builtins::BUILTIN_SET:             return vm.heap.set_proto;
+        case builtins::BUILTIN_WEAKMAP:         return vm.heap.weakmap_proto;
+        case builtins::BUILTIN_WEAKSET:         return vm.heap.weakset_proto;
+        case builtins::BUILTIN_SYMBOL:          return vm.heap.symbol_proto;
+        case builtins::BUILTIN_PROMISE:         return vm.heap.promise_proto;
+        case builtins::BUILTIN_GENERATOR_FUNCTION: return vm.heap.generator_proto;
+        case builtins::BUILTIN_AGGREGATE_ERROR: return vm.heap.aggregate_err_proto;
+        default: return null;
+    }
+}
+
 fn TVal get_prop_with_proto(HObject* obj, void* key) {
     TVal? result = obj.get_prop_proto(key);
     if (try v = result) {
@@ -1883,33 +1912,18 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.INSTANCEOF: {
             // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression
-            // Right side must be an object (or LIGHTFUNC in our internal repr.)
-            // Right side must be callable (has [[HasInstance]])
-            // [[HasInstance]] §15.3.5.3: if Type(lval) is not Object → false
-            //   Get rval.prototype, walk lval's prototype chain
+            // ra may alias rb (compiler optimization), so read rb before writing ra.
+            TVal lval = *rb;
+            TVal rval = *rc;
             ra.set_boolean(false);
 
-            TVal rval = *rc;
             if (rval.is_lightfunc()) {
                 // LIGHTFUNC builtins are callable; look up their prototype
                 uint fn_idx = (uint)(usz)rval.get_heapptr();
-                HObject* proto_obj = null;
-                switch (fn_idx) {
-                    case 6:  proto_obj = vm.heap.err_proto;         break; // BUILTIN_ERROR
-                    case 7:  proto_obj = vm.heap.type_err_proto;    break; // BUILTIN_TYPE_ERROR
-                    case 8:  proto_obj = vm.heap.range_err_proto;   break; // BUILTIN_RANGE_ERROR
-                    case 9:  proto_obj = vm.heap.ref_err_proto;     break; // BUILTIN_REFERENCE_ERROR
-                    case 10: proto_obj = vm.heap.syntax_err_proto;  break; // BUILTIN_SYNTAX_ERROR
-                    case 11: proto_obj = vm.heap.eval_err_proto;    break; // BUILTIN_EVAL_ERROR
-                    case 13: proto_obj = vm.heap.bool_proto;        break; // BUILTIN_BOOLEAN
-                    case 16: proto_obj = vm.heap.string_proto;      break; // BUILTIN_STRING
-                    case 22: proto_obj = vm.heap.object_proto;      break; // BUILTIN_OBJECT
-                    case 25: proto_obj = vm.heap.array_proto;       break; // BUILTIN_ARRAY
-                    default: break;
-                }
-                if (proto_obj != null && rb.is_object()) {
-                    HObject* rbh = (HObject*)rb.get_heapptr();
-                    if (rbh.is_prototype_of(proto_obj)) {
+                HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                if (proto_obj != null && lval.is_object()) {
+                    HObject* lbh = (HObject*)lval.get_heapptr();
+                    if (lbh.is_prototype_of(proto_obj)) {
                         ra.set_boolean(true);
                     }
                 }
@@ -1960,7 +1974,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // §15.3.5.3 step 1: If Type(lval) is not Object → false
-            if (!rb.is_object()) {
+            if (!lval.is_object()) {
                 break;
             }
 
@@ -1975,7 +1989,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             HObject* proto_obj = (HObject*)proto_val.get_heapptr();
-            HObject* cur = (HObject*)rb.get_heapptr();
+            HObject* cur = (HObject*)lval.get_heapptr();
             if (cur.is_prototype_of(proto_obj)) {
                 ra.set_boolean(true);
             }
@@ -2227,6 +2241,14 @@ fn TVal? Vm.run(Vm* vm) {
                         builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
                         if (meta.arity >= 0) {
                             ra.set_number(meta.arity);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else if (key.equals("prototype")) {
+                        // Resolve .prototype for constructor lightfuncs (Boolean, Number, etc.)
+                        HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                        if (proto_obj != null) {
+                            ra.set_object(proto_obj);
                         } else {
                             ra.set_undefined();
                         }
