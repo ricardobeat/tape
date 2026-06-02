@@ -799,7 +799,7 @@ fn void builtin_function(BuiltinContext* ctx) {
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
     len_tv.set_fastint((long)num_params);
-    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
 
     // Return the function object
     ctx.result.set_object(func_obj);
@@ -4055,6 +4055,31 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
+
+    // Handle lightfuncs: return ["name", "length"] as own property names
+    if (arg.is_lightfunc()) {
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* arr = arr_raw;
+        arr.prototype = ctx.heap.array_proto;
+
+        HString* name_str = builtin_intern_string(ctx.heap, "name");
+        TVal name_tv; name_tv.set_string(name_str);
+        array_set_elem(arr, 0, name_tv, ctx.heap);
+
+        HString* length_str = builtin_intern_string(ctx.heap, "length");
+        TVal length_tv; length_tv.set_string(length_str);
+        array_set_elem(arr, 1, length_tv, ctx.heap);
+
+        TVal len_tv; len_tv.set_fastint(2);
+        arr.put_prop(builtin_intern_string(ctx.heap, "length"), len_tv, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(arr);
+        return;
+    }
+
     HObject* obj;
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
@@ -4274,6 +4299,91 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         return;
     }
     TVal arg0 = ctx.regs[ctx.base_reg];
+
+    // Handle lightfuncs: synthesize .name and .length property descriptors
+    if (arg0.is_lightfunc()) {
+        if (ctx.argc < 2) {
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal key_val = ctx.regs[ctx.base_reg + 1];
+        void* key = null;
+        char[64] key_buf;
+        if (key_val.is_string()) {
+            key = key_val.get_heapptr();
+        } else if (key_val.is_fastint()) {
+            int len = libc::snprintf(&key_buf, 64, "%ld", key_val.get_fastint());
+            if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
+            HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+            if (catch err2 = key_str) { ctx.result.set_undefined(); return; }
+            ctx.heap.str_table_insert(key_str);
+            key = key_str;
+        } else if (key_val.is_number()) {
+            int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
+            if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
+            HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
+            if (catch err3 = key_str) { ctx.result.set_undefined(); return; }
+            ctx.heap.str_table_insert(key_str);
+            key = key_str;
+        } else {
+            ctx.result.set_undefined();
+            return;
+        }
+
+        uint fn_idx = (uint)(usz)arg0.get_heapptr();
+        HString* key_hstr = (HString*)key;
+
+        if (key_hstr.equals("name")) {
+            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+            if (meta.name.len > 0) {
+                HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err4 = desc_raw) { ctx.result.set_undefined(); return; }
+                HObject* desc = desc_raw;
+                desc.prototype = ctx.heap.object_proto;
+
+                HString* name_val = builtin_intern_string(ctx.heap, meta.name);
+                TVal name_tv; name_tv.set_string(name_val);
+                desc.put_prop(builtin_intern_string(ctx.heap, "value"), name_tv, hobject::PROP_FLAGS_WEC);
+                TVal w_tv; w_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
+                TVal e_tv; e_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "enumerable"), e_tv, hobject::PROP_FLAGS_WEC);
+                TVal c_tv; c_tv.set_boolean(true);
+                desc.put_prop(builtin_intern_string(ctx.heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
+
+                ctx.result.set_object(desc);
+            } else {
+                ctx.result.set_undefined();
+            }
+            return;
+        } else if (key_hstr.equals("length")) {
+            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+            if (meta.arity >= 0) {
+                HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err5 = desc_raw) { ctx.result.set_undefined(); return; }
+                HObject* desc = desc_raw;
+                desc.prototype = ctx.heap.object_proto;
+
+                TVal len_tv; len_tv.set_fastint((long)meta.arity);
+                desc.put_prop(builtin_intern_string(ctx.heap, "value"), len_tv, hobject::PROP_FLAGS_WEC);
+                TVal w_tv; w_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
+                TVal e_tv; e_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "enumerable"), e_tv, hobject::PROP_FLAGS_WEC);
+                TVal c_tv; c_tv.set_boolean(true);
+                desc.put_prop(builtin_intern_string(ctx.heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
+
+                ctx.result.set_object(desc);
+            } else {
+                ctx.result.set_undefined();
+            }
+            return;
+        } else {
+            ctx.result.set_undefined();
+            return;
+        }
+    }
+
     if (!arg0.is_object()) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err1 = err_raw) {
@@ -6022,7 +6132,15 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     // O = ToObject(this value)
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* obj;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
+    if (this_val.is_lightfunc()) {
+        // Lightfuncs have .name and .length as own properties per ES6 spec
+        if (key.equals("name") || key.equals("length")) {
+            ctx.result.set_boolean(true);
+        } else {
+            ctx.result.set_boolean(false);
+        }
+        return;
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
         obj = (HObject*)this_val.get_heapptr();
     } else {
         // Primitive this value — return false (no own properties)
@@ -6683,7 +6801,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     // Register on prototype
     TVal tv;
     tv.set_object(func_obj);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_NWC);
     return true;
 }
 
@@ -6739,7 +6857,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     }
     TVal tv;
     tv.set_object(func_obj);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_NWC);
     return true;
 }
 
@@ -7982,7 +8100,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
 
     // For LIGHTFUNC downstreams, dispatch directly after shifting args
     if (downstream.is_lightfunc()) {
-        uint fn_idx = (uint)downstream.get_fastint();
+        uint fn_idx = (uint)(usz)downstream.get_heapptr();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -8069,7 +8187,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     if (!has_array) {
         // Call with no args
         if (downstream.is_lightfunc()) {
-            uint fn_idx = (uint)downstream.get_fastint();
+            uint fn_idx = (uint)(usz)downstream.get_heapptr();
             builtins::BuiltinContext inner_ctx;
             inner_ctx.vm = ctx.vm;
             inner_ctx.regs = ctx.regs;
@@ -8158,7 +8276,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     }
 
     if (downstream.is_lightfunc()) {
-        uint fn_idx = (uint)downstream.get_fastint();
+        uint fn_idx = (uint)(usz)downstream.get_heapptr();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -8438,7 +8556,7 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
 
     // Determine if downstream is LIGHTFUNC or OBJECT
     if (downstream.is_lightfunc()) {
-        uint fn_idx = (uint)downstream.get_fastint();
+        uint fn_idx = (uint)(usz)downstream.get_heapptr();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -13752,7 +13870,7 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
             fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
         }
     }
 
@@ -13789,7 +13907,7 @@ fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
             fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
         }
     }
     ctx.result.set_object(iter);
@@ -13851,7 +13969,7 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
             fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_WC);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
         }
     }
 
@@ -14693,7 +14811,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     TVal log_val;
     log_val.set_lightfunc((void*)(usz)BUILTIN_CONSOLE_LOG);
-    console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_WC);
+    console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_NWC);
 
     env::env_declare(global_env, console_key, console_val);
 
@@ -14848,37 +14966,37 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .hasOwnProperty() method to Object.prototype
     HString* hasown_key = builtin_intern_string(heap, "hasOwnProperty");
     TVal hasown_tv;
     hasown_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_HASOWNPROPERTY);
-    proto.put_prop(hasown_key, hasown_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(hasown_key, hasown_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .propertyIsEnumerable() method to Object.prototype (non-enumerable per ES5 §15.2.4.7)
     HString* propisenum_key = builtin_intern_string(heap, "propertyIsEnumerable");
     TVal propisenum_tv;
     propisenum_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE);
-    proto.put_prop(propisenum_key, propisenum_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(propisenum_key, propisenum_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .valueOf() method to Object.prototype (returns 'this')
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .isPrototypeOf() method to Object.prototype
     HString* isproto_key = builtin_intern_string(heap, "isPrototypeOf");
     TVal isproto_tv;
     isproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF);
-    proto.put_prop(isproto_key, isproto_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(isproto_key, isproto_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .toLocaleString() method to Object.prototype (ES5 §15.2.4.3)
     HString* tolocalestring_key = builtin_intern_string(heap, "toLocaleString");
     TVal tolocalestring_tv;
     tolocalestring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOLOCALESTRING);
-    proto.put_prop(tolocalestring_key, tolocalestring_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(tolocalestring_key, tolocalestring_tv, hobject::PROP_FLAGS_NWC);
 
     // Create Object constructor as a proper HObject (not LIGHTFUNC)
     // so it can carry .prototype, .length, etc.
@@ -14909,147 +15027,147 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(1);
-    obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
     // Add static methods to Object constructor
     HString* keys_key = builtin_intern_string(heap, "keys");
     if (keys_key == null) return false;
     TVal keys_tv;
     keys_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_KEYS);
-    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.getPrototypeOf — ES5 §15.2.3.2
     HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
     if (getproto_key == null) return false;
     TVal getproto_tv;
     getproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETPROTOTYPEOF);
-    obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.isExtensible — ES5 §15.2.3.13
     HString* isext_key = builtin_intern_string(heap, "isExtensible");
     if (isext_key == null) return false;
     TVal isext_tv;
     isext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISEXTENSIBLE);
-    obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.preventExtensions — ES5 §15.2.3.10
     HString* prevext_key = builtin_intern_string(heap, "preventExtensions");
     if (prevext_key == null) return false;
     TVal prevext_tv;
     prevext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PREVENTEXTENSIONS);
-    obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.getOwnPropertyDescriptor — ES5 §15.2.3.3
     HString* getownpropdesc_key = builtin_intern_string(heap, "getOwnPropertyDescriptor");
     if (getownpropdesc_key == null) return false;
     TVal getownpropdesc_tv;
     getownpropdesc_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR);
-    obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.defineProperty — ES5 §15.2.3.6
     HString* defineprop_key = builtin_intern_string(heap, "defineProperty");
     if (defineprop_key == null) return false;
     TVal defineprop_tv;
     defineprop_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTY);
-    obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.getOwnPropertyNames — ES5 §15.2.3.4
     HString* getownpropnames_key = builtin_intern_string(heap, "getOwnPropertyNames");
     if (getownpropnames_key == null) return false;
     TVal getownpropnames_tv;
     getownpropnames_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYNAMES);
-    obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.defineProperties — ES5 §15.2.3.7
     HString* defineprops_key = builtin_intern_string(heap, "defineProperties");
     if (defineprops_key == null) return false;
     TVal defineprops_tv;
     defineprops_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTIES);
-    obj.put_prop(defineprops_key, defineprops_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(defineprops_key, defineprops_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.create — ES5 §15.2.3.5
     HString* create_key = builtin_intern_string(heap, "create");
     if (create_key == null) return false;
     TVal create_tv;
     create_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_CREATE);
-    obj.put_prop(create_key, create_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(create_key, create_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.seal — ES5 §15.2.3.8
     HString* seal_key = builtin_intern_string(heap, "seal");
     if (seal_key == null) return false;
     TVal seal_tv;
     seal_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SEAL);
-    obj.put_prop(seal_key, seal_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(seal_key, seal_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.freeze — ES5 §15.2.3.9
     HString* freeze_key = builtin_intern_string(heap, "freeze");
     if (freeze_key == null) return false;
     TVal freeze_tv;
     freeze_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FREEZE);
-    obj.put_prop(freeze_key, freeze_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(freeze_key, freeze_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.isSealed — ES5 §15.2.3.11
     HString* issealed_key = builtin_intern_string(heap, "isSealed");
     if (issealed_key == null) return false;
     TVal issealed_tv;
     issealed_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISSEALED);
-    obj.put_prop(issealed_key, issealed_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(issealed_key, issealed_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.isFrozen — ES5 §15.2.3.12
     HString* isfrozen_key = builtin_intern_string(heap, "isFrozen");
     if (isfrozen_key == null) return false;
     TVal isfrozen_tv;
     isfrozen_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISFROZEN);
-    obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.entries — ES2017 §19.1.2.21
     HString* entries_key = builtin_intern_string(heap, "entries");
     if (entries_key == null) return false;
     TVal entries_tv;
     entries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ENTRIES);
-    obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.values — ES2017 §19.1.2.22
     HString* values_key = builtin_intern_string(heap, "values");
     if (values_key == null) return false;
     TVal values_tv;
     values_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_VALUES);
-    obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.assign — ES2015 §19.1.2.2
     HString* assign_key = builtin_intern_string(heap, "assign");
     if (assign_key == null) return false;
     TVal assign_tv;
     assign_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ASSIGN);
-    obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.is — ES6 §19.1.2.10
     HString* is_key = builtin_intern_string(heap, "is");
     if (is_key == null) return false;
     TVal is_tv;
     is_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_IS);
-    obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.hasOwn — ES2022 §19.1.2.10
     HString* hasown_static_key = builtin_intern_string(heap, "hasOwn");
     if (hasown_static_key == null) return false;
     TVal hasown_static_tv;
     hasown_static_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_HASOWN);
-    obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.setPrototypeOf — ES2015 §19.1.2.19
     HString* setproto_key = builtin_intern_string(heap, "setPrototypeOf");
     if (setproto_key == null) return false;
     TVal setproto_tv;
     setproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SETPROTOTYPEOF);
-    obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_NWC);
 
     // Object.fromEntries — ES2019 §19.1.2.5
     HString* fromentries_key = builtin_intern_string(heap, "fromEntries");
     if (fromentries_key == null) return false;
     TVal fromentries_tv;
     fromentries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FROMENTRIES);
-    obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_WC);
+    obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_NWC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");
@@ -15201,13 +15319,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .toFixed() method (Phase 6d)
     if (!register_string_proto_method(proto, heap, "toFixed", BUILTIN_NUMBER_PROTO_TOFIXED)) return false;
@@ -15437,7 +15555,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
-    err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+    err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .constructor to Error.prototype pointing to Error builtin
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15564,13 +15682,13 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_NWC);
 
     // Register Boolean as a global constructor
     if (!register_simple_builtin(global_env, heap, "Boolean", BUILTIN_BOOLEAN)) return false;
@@ -15595,13 +15713,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_TOSTRING);
-    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .valueOf() method
     HString* valueof_key = builtin_intern_string(heap, "valueOf");
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_VALUEOF);
-    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_NWC);
 
     // Add String.prototype methods (Phase 6b)
     if (!register_string_proto_method(proto, heap, "charAt",     BUILTIN_STRING_PROTO_CHARAT))     return false;
@@ -15656,7 +15774,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
             }
             TVal iter_tv;
             iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
         }
     }
 
@@ -15751,7 +15869,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     // Register on prototype
     TVal tv;
     tv.set_object(func_obj);
-    proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(key, tv, hobject::PROP_FLAGS_NWC);
     return true;
 }
 
@@ -15875,7 +15993,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
             }
             TVal iter_tv;
             iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
         }
     }
 
@@ -15937,19 +16055,19 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HString* call_key = builtin_intern_string(heap, "call");
     TVal call_tv;
     call_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_CALL);
-    proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .apply method
     HString* apply_key = builtin_intern_string(heap, "apply");
     TVal apply_tv;
     apply_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_APPLY);
-    proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_NWC);
 
     // Add .bind method
     HString* bind_key = builtin_intern_string(heap, "bind");
     TVal bind_tv;
     bind_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_BIND);
-    proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_NWC);
 
     // Set .constructor to the Function constructor object itself
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -15972,7 +16090,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv;
     len_tv.set_fastint(1);
-    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
 
     // Register Function constructor globally as an OBJECT
     uint hash = heap.hash_string("Function");
@@ -16235,7 +16353,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv;
     len_tv.set_fastint(2);
-    regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WC);
+    regexp_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
 
     // Register RegExp constructor globally as an OBJECT
     uint hash = heap.hash_string("RegExp");
@@ -16292,14 +16410,14 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Map"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
     size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_NWC);
 
     // Create Map constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -16386,14 +16504,14 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Set"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     // Add .size property (will be updated on each mutation)
     HString* size_key = builtin_intern_string(heap, "size");
     TVal size_tv;
     size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_WC);
+    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_NWC);
 
     // Create Set constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -16465,7 +16583,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "WeakMap"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -16532,7 +16650,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "WeakSet"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -16600,7 +16718,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Symbol"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     // Create Symbol function object
