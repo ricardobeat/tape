@@ -4503,11 +4503,26 @@ fn TVal? Vm.run(Vm* vm) {
                     func_obj.extra.func.var_env = act.var_env;
                     func_obj.extra.func.lex_env = act.lex_env;
 
-                    // Set .length property (ES5 §15.3.5.1)
+                    // Set .name property (ES6 §14.1.20: non-writable, non-enumerable, configurable)
+                    // Always set name — anonymous functions get "" per spec
+                    char[] name_data = template.get_name();
+                    HString* name_hstr;
+                    if (name_data.len > 0) {
+                        name_hstr = intern_string(vm, name_data);
+                    } else {
+                        name_hstr = (HString*)vm.heap.strs[heap::BuiltinStr.EMPTY];
+                    }
+                    if (name_hstr != null) {
+                        TVal name_tv;
+                        name_tv.set_string(name_hstr);
+                        func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
+                    }
+
+                    // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable)
                     HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val;
                     len_val.set_fastint((long)template.num_formals);
-                    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+                    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
 
                     // Arrow functions don't get a .prototype property (ES6 §14.2.16)
                     if (!template.is_arrow()) {

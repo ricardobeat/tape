@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 99 (progress cleanup + root cause analysis)
+**Last Updated:** Session 100 (function .name + .length flags)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (fresh run, 2026-06-02)
@@ -106,12 +106,9 @@ Map, Set, WeakMap, WeakSet, Symbol, Promise (no microtask), Generators.
 
 ### 1. Function `.name` not set on JS functions (~2000+ tests)
 **Impact**: Every test checking `fn.name` or property descriptors on function objects.
-**Status**: Compiler sets `func.name_ptr`/`func.name_len` on CompiledFunction but
-CLOSURE opcode never creates `.name` property on the function object.
-**Fix**: In `vm.c3` CLOSURE handler (line 4492), after creating func_obj, add:
-`prop_def_value(func_obj, "name", template.name, PROP_FLAGS_WEC)`.
-Note: also need `.length` as writable:false, enumerable:false, configurable:true
-(matching ES spec). Currently set as WEC.
+**Status**: ✅ FIXED — CLOSURE opcode now creates `.name` property from template name.
+Anonymous functions get `""` per ES6 spec. `.length` flags also fixed to `PROP_FLAGS_NWC`
+(non-writable, non-enumerable, configurable) per ES5 §15.3.5.1.
 
 ### 2. Lightfunc constructors lack `.prototype` (~1500+ tests, cascading)
 **Root cause**: Built-in constructors (Boolean, Number, String, Array, Object,
@@ -146,9 +143,7 @@ change `.length` from `PROP_FLAGS_WEC` → `PROP_FLAGS_C` for built-in functions
 
 ### High Priority (100+ tests each)
 
-1. **Set `.name` on function objects during CLOSURE** — Unblocks ~2000+ tests.
-   `vm.c3:4492`: after creating func_obj, add name property from template.
-   Also fix `.length` to be writable:false per spec.
+1. ~~Set `.name` on function objects during CLOSURE~~ — ✅ DONE (Session 100).
 
 2. **Fix lightfunc `.prototype` resolution** — Unblocks ~1500+ tests.
    `vm.c3:2213`: add `.prototype` case in lightfunc GETPROP handler.
@@ -245,3 +240,16 @@ Phase 8: +36 pass.
 
 ### Session 67: Fix bracket assignment lhs_mode clobbering
 obj[key] = value compiled to GETPROP instead of PUTPROP. Phase 3: +813 pass.
+
+---
+
+## Suggested Next Task
+
+**Fix lightfunc `.prototype` resolution** — Unblocks ~1500+ tests.
+In `vm.c3` GETPROP lightfunc handler (~line 2213), add a `.prototype` case that
+maps each builtin function index to its corresponding `heap.X_proto`
+(e.g., BUILTIN_BOOLEAN → heap.bool_proto, BUILTIN_NUMBER → heap.number_proto,
+etc.). The proto fields already exist on the heap; they just aren't connected
+to lightfunc dispatch. This single fix cascades: once `Boolean.prototype` is
+an object instead of `undefined`, `Object.getOwnPropertyDescriptor(Boolean.prototype, 'toString')`
+starts working too, resolving the category #4 cascade.
