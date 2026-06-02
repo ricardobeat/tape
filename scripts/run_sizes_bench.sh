@@ -1,7 +1,7 @@
 #!/bin/bash
 # Size & memory benchmark: binary sizes + peak RSS for a stress script.
 #
-# Usage: ./scripts/run_sizes_bench.sh
+# Usage: ./scripts/run_sizes_bench.sh [script.js]
 #
 # Compares: C3 port (duktape_c3), original Duktape (duktape_orig), QuickJS (qjs)
 #
@@ -17,7 +17,11 @@ C3_RUNNER="$PROJ_DIR/out/duktape_c3"
 DUKTAPE="$PROJ_DIR/out/duktape_orig"
 QJS="$PROJ_DIR/out/qjs"
 
-MEM_SCRIPT="$BENCH_DIR/memory_test.js"
+# Accept optional script argument, default to memory_test.js
+MEM_SCRIPT="${1:-$BENCH_DIR/memory_test.js}"
+if [[ "$MEM_SCRIPT" != /* ]]; then
+    MEM_SCRIPT="$PROJ_DIR/$MEM_SCRIPT"
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +71,7 @@ measure_rss_kb() {
 echo "============================================================"
 echo "  Engine Size & Memory Comparison"
 echo "  $(date)"
+echo "  Script: $(basename "$MEM_SCRIPT")"
 echo "============================================================"
 echo ""
 

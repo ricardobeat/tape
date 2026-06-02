@@ -214,6 +214,9 @@ enum Opcode : char {
     GETVAR,
     /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
     PUTVAR,
+    /// `declare variable[constants[BC]] = A`  — declare+initialize a `var` in
+    /// the immediate var_env only (does not walk the scope chain).
+    DECLVAR,
     /// `A = typeof identifier`  — typeof on a variable name (A-BC format).
     /// Returns "undefined" for unresolvable references per ES5 §11.4.3.
     TYPEOFIDENT,
@@ -400,6 +403,7 @@ fn OpFormat get_op_format(Opcode op) {
         case GETVAR:    return A_BC;
         case TYPEOFIDENT: return A_BC;
         case PUTVAR:    return A_BC;
+        case DECLVAR:   return A_BC;
         case DELVAR:    return A_BC;
         case CLOSURE:   return A_BC;
         case GETBOUND:  return A_BC;
@@ -708,8 +712,6 @@ struct CompiledFunction {
 
     /// Bit-packed flags — HeapHeader-compatible prefix + function metadata.
     FuncFlags       flags;
-    /// Reference count.
-    uint            refcount;
     /// Next pointer in the heap GC linked list.
     HeapHeader*     next;
     /// Previous pointer in the heap GC linked list.
@@ -789,17 +791,6 @@ struct CompiledFunction {
 /// (binary-compatible cast).
 macro HeapHeader* CompiledFunction.as_header(&self) {
     return (HeapHeader*)self;
-}
-
-/// Increments the reference count.
-fn void CompiledFunction.incref(&self) {
-    self.refcount++;
-}
-
-/// Decrements the reference count and returns the new value.
-fn uint CompiledFunction.decref(&self) {
-    self.refcount--;
-    return self.refcount;
 }
 
 // ============================================================================
@@ -961,6 +952,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.GETVAR.ordinal]      = "GETVAR",
     [Opcode.TYPEOFIDENT.ordinal]  = "TYPEOFIDENT",
     [Opcode.PUTVAR.ordinal]      = "PUTVAR",
+    [Opcode.DECLVAR.ordinal]     = "DECLVAR",
     [Opcode.DELVAR.ordinal]      = "DELVAR",
     [Opcode.CLOSURE.ordinal]     = "CLOSURE",
     [Opcode.GETBOUND.ordinal]    = "GETBOUND",

@@ -96,8 +96,6 @@ const usz HSTRING_HDR_SIZE = HString::size;
 struct HString {
     /// Combined HeapHeader-compatible + string-specific flags.
     HStringFlags flags;
-    /// Reference count (mirrors HeapHeader.refcount).
-    uint refcount;
     /// Next pointer in the string table chain (singly-linked).
     HString* next;
 
@@ -255,23 +253,6 @@ fn uint HString.char_offset_to_byte_offset(&self, uint char_offset) {
     }
 
     return byte_off;
-}
-
-// ============================================================================
-// HString — reference-counting helpers
-// ============================================================================
-
-/// Increments the reference count.
-fn void HString.incref(&self) {
-    self.refcount++;
-}
-
-/// Decrements the reference count and returns the new value.  When the
-/// returned value is zero the caller must remove the string from the
-/// string table and free it.
-fn uint HString.decref(&self) {
-    self.refcount--;
-    return self.refcount;
 }
 
 // ============================================================================

@@ -77,6 +77,9 @@ struct EnvRecord {
     /// skips this record when creating new bindings (unresolvable
     /// references go to the enclosing non-with scope).
     bool is_with;
+    /// Is this a function call boundary? When true, var-scope writes
+    /// stop here and do not propagate to parent scopes.
+    bool is_function_scope;
 }
 
 // ============================================================================
@@ -84,6 +87,24 @@ struct EnvRecord {
 // ============================================================================
 
 /// Create a new object environment record.
+/// Create a fresh function-scope var environment (marks is_function_scope).
+fn EnvRecord*? env_create_function_scope(Heap* heap, EnvRecord* parent) {
+    EnvRecord*? raw = env_pool_alloc(heap);
+    if (try env = raw) {
+        env.parent = parent;
+        env.is_declarative = false;
+        env.is_function_scope = true;
+        HObject*? bindings = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = bindings) {
+            env_pool_free(heap, env);
+            return types::ALLOC_ERROR~;
+        }
+        env.bindings = bindings;
+        return env;
+    }
+    return types::ALLOC_ERROR~;
+}
+
 fn EnvRecord*? env_create(Heap* heap, EnvRecord* parent) {
     EnvRecord*? raw = env_pool_alloc(heap);
     if (try env = raw) {
@@ -170,7 +191,7 @@ fn TVal? env_get(EnvRecord* env, void* key) {
         } else {
             int idx = cur.bindings.find_prop_idx(key);
             if (idx >= 0) {
-                return cur.bindings.props[idx].value;
+                return cur.bindings.prop_values()[idx].data.value;
             }
         }
         cur = cur.parent;
@@ -219,7 +240,8 @@ fn bool env_put(EnvRecord* env, void* key, TVal val) {
         } else {
             int idx = cur.bindings.find_prop_idx(key);
             if (idx >= 0) {
-                cur.bindings.props[idx].value = val;
+                // Found the binding — update it here (even if it's in an outer scope).
+                cur.bindings.prop_values()[idx].data.value = val;
                 return true;
             }
         }
@@ -283,7 +305,7 @@ fn TVal? env_get_lex(EnvRecord* lex_env, void* key) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.bindings.props[idx].value;
+            return cur.bindings.prop_values()[idx].data.value;
         }
         cur = cur.parent;
     }
@@ -307,10 +329,10 @@ fn bool env_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            if (!cur.bindings.props[idx].flags.writable) {
+            if (!cur.bindings.prop_values()[idx].flags.writable) {
                 return false;
             }
-            cur.bindings.props[idx].value = val;
+            cur.bindings.prop_values()[idx].data.value = val;
             return true;
         }
         cur = cur.parent;
@@ -342,7 +364,7 @@ fn TVal? env_get_at_depth(EnvRecord* env, uint depth, void* key) {
     if (cur == null) return hobject::PROP_NOT_FOUND~;
     int idx = cur.bindings.find_prop_idx(key);
     if (idx >= 0) {
-        return cur.bindings.props[idx].value;
+        return cur.bindings.prop_values()[idx].data.value;
     }
     return hobject::PROP_NOT_FOUND~;
 }
@@ -356,8 +378,8 @@ fn bool env_put_at_depth(EnvRecord* env, uint depth, void* key, TVal val) {
     if (cur == null) return false;
     int idx = cur.bindings.find_prop_idx(key);
     if (idx >= 0) {
-        if (!cur.bindings.props[idx].flags.writable) return false;
-        cur.bindings.props[idx].value = val;
+        if (!cur.bindings.prop_values()[idx].flags.writable) return false;
+        cur.bindings.prop_values()[idx].data.value = val;
         return true;
     }
     return cur.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
@@ -373,7 +395,7 @@ fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.bindings.props[idx].flags.writable;
+            return cur.bindings.prop_values()[idx].flags.writable;
         }
         cur = cur.parent;
     }
@@ -386,15 +408,33 @@ fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
 ///    0 = not found in lex_env (caller should fall through to env_put)
 ///   -1 = found but not writable (const violation — caller throws TypeError)
 /// This replaces the triple-walk pattern: env_has_lex + env_is_lex_writable + env_put_lex.
+/// Check whether a key is a const binding in the lex chain.
+/// Returns -1 if the key exists and is const, 0 otherwise.
+/// Does NOT write any value.
+fn int env_check_const(EnvRecord* lex_env, void* key) {
+    EnvRecord* cur = lex_env;
+    while (cur != null) {
+        int idx = cur.bindings.find_prop_idx(key);
+        if (idx >= 0) {
+            if (!cur.bindings.prop_values()[idx].flags.writable) {
+                return -1;
+            }
+            return 0;
+        }
+        cur = cur.parent;
+    }
+    return 0;
+}
+
 fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     EnvRecord* cur = lex_env;
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            if (!cur.bindings.props[idx].flags.writable) {
+            if (!cur.bindings.prop_values()[idx].flags.writable) {
                 return -1;
             }
-            cur.bindings.props[idx].value = val;
+            cur.bindings.prop_values()[idx].data.value = val;
             return 1;
         }
         cur = cur.parent;

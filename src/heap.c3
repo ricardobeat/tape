@@ -22,6 +22,8 @@ alias FatalFunc   = fn void(void* udata, char* msg);
 /// Takes an opaque VM pointer, the handler TVal, an argument TVal pointer.
 /// Returns the result TVal.
 alias VmCallHandlerFn = fn TVal(void* vm, TVal handler, TVal* arg);
+/// Callback to mark activation-record env bindings during GC mark phase.
+alias MarkActivationsFn = fn void(void* vm, void* heap);
 
 /// Callback invoked after a microtask handler completes.  Receives the heap,
 /// VM, handler return value, and the downstream promise to resolve.
@@ -44,9 +46,9 @@ const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
 const long  GC_MAX_TRIGGER          = 4096;
 /// Initial capacity for the gray object stack (grows as needed).
-const uint  GRAY_STACK_INITIAL_CAP  = 1024;
+const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
-const uint  GC_MAX_ROOTS            = 128;
+const uint  GC_MAX_ROOTS            = 16;
 
 // --- LongjmpState ---------------------------------------------------------
 
@@ -238,6 +240,11 @@ struct Heap {
     // VM callback for calling JS functions from builtins (set by vm_create)
     VmCallHandlerFn     call_handler_fn;
     VmCallFn            call_fn;
+    /// Callback to mark activation-record env bindings during GC (set by vm_create).
+    MarkActivationsFn   mark_activations_fn;
+
+    // Cached iterator symbol (lazily created, rooted via this field).
+    HString*            iterator_symbol;
 
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
@@ -259,10 +266,17 @@ struct Heap {
     bool      microtask_draining;  // re-entrancy guard
 
     // Shape (hidden class) system for inline cache support.
-    hobject::Shape*     shapes;
+    hobject::Shape**    shapes;       // pointer array — each element points to a shape allocation
     uint                shape_count;
     uint                shape_capacity;
     uint                shape_gen;
+
+    // Shape transition deduplication table.
+    // Maps (parent_shape_id, key_pointer) → child_shape_id so that two
+    // objects following the same property-addition path share one Shape.
+    TransitionEntry*    trans_table;
+    uint                trans_mask;   // table has mask+1 entries
+    uint                trans_count;
 }
 
 // ============================================================================
@@ -289,6 +303,7 @@ enum BuiltinStr : uint {
     VALUE,       // "value"
     DONE,        // "done"
     ARGUMENTS,   // "arguments"
+    SYMBOL,      // "symbol"
 }
 
 // ============================================================================
@@ -433,13 +448,13 @@ fn Heap*? create(
 /// is safe to call multiple times.
 fn void Heap.init_builtin_strs(&self) {
     // Each entry: (ZString literal, byte length)
-    ZString[16] literals = {
+    ZString[17] literals = {
         "undefined", "object", "boolean", "number", "string", "function",
         "true", "false", "null", "message", "prototype", "constructor",
-        "length", "value", "done", "arguments"
+        "length", "value", "done", "arguments", "symbol"
     };
-    uint[16] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9 };
-    for (uint i = 0; i < 16; i++) {
+    uint[17] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9, 6 };
+    for (uint i = 0; i < 17; i++) {
         char* ptr = (char*)literals[i];
         char[] data = ptr[:lengths[i]];
         uint h = self.hash_string(data);
@@ -460,35 +475,109 @@ fn void Heap.init_builtin_strs(&self) {
 // Shape (hidden class) system
 // ============================================================================
 
-const uint SHAPE_INITIAL_CAP      = 64;
-const uint SHAPE_CHILDREN_INITIAL = 4;
-const uint SHAPE_NONE             = 0xFFFF_FFFF;
+const uint SHAPE_INITIAL_CAP   = 64;
+const uint SHAPE_NONE          = 0xFFFF_FFFF;
+const uint SHAPE_TRANS_INITIAL = 16;   // must be power of 2
+const uint SHAPE_TRANS_LOAD    = 70;   // max load percentage before grow
+
+struct TransitionEntry {
+    uint parent_id;
+    void* key;
+    uint shape_id;
+}
+
+fn void Heap.init_transition_table(&self) {
+    self.trans_mask = SHAPE_TRANS_INITIAL - 1;
+    self.trans_count = 0;
+    usz bytes = (usz)SHAPE_TRANS_INITIAL * TransitionEntry::size;
+    self.trans_table = (TransitionEntry*)libc::malloc(bytes);
+    libc::memset(self.trans_table, 0xFF, bytes);
+}
+
+fn uint hash_transition(uint parent_id, void* key) @inline {
+    uint h = parent_id;
+    h ^= (uint)((usz)key);
+    h = ((h >> 16) ^ h) * 0x45D9_F3B;
+    h = ((h >> 16) ^ h) * 0x45D9_F3B;
+    h = (h >> 16) ^ h;
+    return h;
+}
+
+fn uint Heap.lookup_transition(&self, uint parent_id, void* key) {
+    uint h = hash_transition(parent_id, key);
+    uint mask = self.trans_mask;
+    uint slot = h & mask;
+    TransitionEntry* table = self.trans_table;
+    for (uint i = 0; i <= mask; i++) {
+        TransitionEntry* e = &table[slot];
+        if (e.parent_id == SHAPE_NONE) return SHAPE_NONE;
+        if (e.parent_id == parent_id && e.key == key) return e.shape_id;
+        slot = (slot + 1) & mask;
+    }
+    return SHAPE_NONE;
+}
+
+fn void Heap.transition_table_grow(&self) {
+    uint old_mask = self.trans_mask;
+    uint new_cap = (old_mask + 1) * 2;
+    uint new_mask = new_cap - 1;
+    usz bytes = (usz)new_cap * TransitionEntry::size;
+    TransitionEntry* new_table = (TransitionEntry*)libc::malloc(bytes);
+    libc::memset(new_table, 0xFF, bytes);
+    TransitionEntry* old_table = self.trans_table;
+    for (uint i = 0; i <= old_mask; i++) {
+        TransitionEntry* e = &old_table[i];
+        if (e.parent_id == SHAPE_NONE) continue;
+        uint h = hash_transition(e.parent_id, e.key);
+        uint slot = h & new_mask;
+        while (new_table[slot].parent_id != SHAPE_NONE) slot = (slot + 1) & new_mask;
+        new_table[slot] = *e;
+    }
+    libc::free(old_table);
+    self.trans_table = new_table;
+    self.trans_mask = new_mask;
+}
+
+fn void Heap.insert_transition(&self, uint parent_id, void* key, uint shape_id) {
+    if ((self.trans_count + 1) * 100 > (self.trans_mask + 1) * SHAPE_TRANS_LOAD) {
+        self.transition_table_grow();
+    }
+    uint h = hash_transition(parent_id, key);
+    uint mask = self.trans_mask;
+    uint slot = h & mask;
+    TransitionEntry* table = self.trans_table;
+    while (table[slot].parent_id != SHAPE_NONE) slot = (slot + 1) & mask;
+    table[slot].parent_id = parent_id;
+    table[slot].key = key;
+    table[slot].shape_id = shape_id;
+    self.trans_count++;
+}
 
 fn void Heap.init_shapes(&self) {
     self.shape_capacity = SHAPE_INITIAL_CAP;
     self.shape_count    = 1;  // slot 0 = root shape
     self.shape_gen      = 0;
-    usz bytes = (usz)SHAPE_INITIAL_CAP * hobject::Shape::size;
-    self.shapes = (hobject::Shape*)libc::malloc(bytes);
+    // Allocate pointer array
+    usz bytes = (usz)SHAPE_INITIAL_CAP * (void*::size);
+    self.shapes = (hobject::Shape**)libc::malloc(bytes);
     libc::memset(self.shapes, 0, bytes);
-    hobject::Shape* root = &self.shapes[0];
-    root.key            = null;
-    root.prop_idx       = 0;
-    root.parent         = SHAPE_NONE;
-    root.generation     = 0;
-    root.children       = null;
-    root.children_size  = 0;
-    root.children_count = 0;
+    // Allocate root shape: 0 properties, minimum hash (mask=0 → 2 slots)
+    self.shapes[0] = hobject::shape_create(0, SHAPE_NONE);
+    // Init transition dedup table
+    self.init_transition_table();
 }
 
-fn uint Heap.alloc_shape(&self) {
+/// Allocate a new shape slot in the shapes array. Returns the new shape ID.
+/// Does NOT initialize the shape pointer (caller must set shapes[id]).
+fn uint Heap.alloc_shape_slot(&self) {
     if (self.shape_count >= self.shape_capacity) {
         uint new_cap = self.shape_capacity * 2;
-        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * hobject::Shape::size);
+        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * (void*::size));
         if (new_raw == null) return SHAPE_NONE;
-        usz old_bytes = (usz)self.shape_capacity * hobject::Shape::size;
-        libc::memset((char*)new_raw + old_bytes, 0, (usz)new_cap * hobject::Shape::size - old_bytes);
-        self.shapes = (hobject::Shape*)new_raw;
+        // Zero new slots
+        usz old_bytes = (usz)self.shape_capacity * (void*::size);
+        libc::memset((char*)new_raw + old_bytes, 0, (usz)new_cap * (void*::size) - old_bytes);
+        self.shapes = (hobject::Shape**)new_raw;
         self.shape_capacity = new_cap;
     }
     uint id = self.shape_count;
@@ -504,74 +593,58 @@ fn uint hash_key_ptr(void* key) @inline {
     return h;
 }
 
-fn uint Heap.find_child_shape(&self, uint parent_idx, void* key) {
-    hobject::Shape* s = &self.shapes[parent_idx];
-    if (s.children == null || s.children_size == 0) return SHAPE_NONE;
-    uint mask = s.children_size - 1;
-    uint slot = hash_key_ptr(key) & mask;
-    for (uint i = 0; i < s.children_size; i++) {
-        uint ci = s.children[slot];
-        if (ci == SHAPE_NONE) return SHAPE_NONE;
-        if (ci < self.shape_count && self.shapes[ci].key == key) return ci;
-        slot = (slot + 1) & mask;
+/// Transition to a new shape that includes the given property key.
+///
+/// If the current shape already has this key, returns the current shape
+/// (the caller should update the existing slot).
+///
+/// Otherwise, creates a new shape that extends the current one:
+/// copies all existing ShapeProperties and appends the new one.
+fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
+    if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
+        return cur_shape_id;
     }
-    return SHAPE_NONE;
-}
 
-fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key, ushort prop_idx) {
-    if (cur_shape_id >= self.shape_count) return cur_shape_id;
-    uint child_idx = self.find_child_shape(cur_shape_id, key);
-    if (child_idx != SHAPE_NONE) return child_idx;
+    hobject::Shape* cur = self.shapes[cur_shape_id];
 
-    uint new_id = self.alloc_shape();
-    if (new_id == SHAPE_NONE) return cur_shape_id;
-
-    hobject::Shape* ns = &self.shapes[new_id];
-    ns.key            = key;
-    ns.prop_idx       = prop_idx;
-    ns.parent         = cur_shape_id;
-    ns.generation     = 0;
-    ns.children       = null;
-    ns.children_size  = 0;
-    ns.children_count = 0;
-
-    hobject::Shape* parent = &self.shapes[cur_shape_id];
-    if (parent.children == null) {
-        parent.children_size = SHAPE_CHILDREN_INITIAL;
-        parent.children = (uint*)libc::malloc((usz)SHAPE_CHILDREN_INITIAL * uint::size);
-        if (parent.children == null) return cur_shape_id;
-        libc::memset(parent.children, 0xFF, (usz)SHAPE_CHILDREN_INITIAL * uint::size);
-    } else if (parent.children_count * 10 > parent.children_size * 7) {
-        uint new_sz = parent.children_size * 2;
-        uint* new_tbl = (uint*)libc::malloc((usz)new_sz * uint::size);
-        if (new_tbl == null) return cur_shape_id;
-        libc::memset(new_tbl, 0xFF, (usz)new_sz * uint::size);
-        uint mask = new_sz - 1;
-        for (uint i = 0; i < parent.children_size; i++) {
-            uint ci = parent.children[i];
-            if (ci != SHAPE_NONE) {
-                uint h = hash_key_ptr(self.shapes[ci].key) & mask;
-                while (new_tbl[h] != SHAPE_NONE) h = (h + 1) & mask;
-                new_tbl[h] = ci;
-            }
-        }
-        libc::free(parent.children);
-        parent.children = new_tbl;
-        parent.children_size = new_sz;
+    // If the key already exists in the shape, no transition needed.
+    if (cur.find_prop_idx(key) >= 0) {
+        return cur_shape_id;
     }
-    uint mask = parent.children_size - 1;
-    uint h = hash_key_ptr(key) & mask;
-    while (parent.children[h] != SHAPE_NONE) h = (h + 1) & mask;
-    parent.children[h] = new_id;
-    parent.children_count++;
+
+    // Check transition table for existing child shape.
+    uint existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_NONE) {
+        return existing;
+    }
+
+    // Allocate a new shape that extends the current one.
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    if (ns == null) return cur_shape_id;
+
+    uint new_id = self.alloc_shape_slot();
+    if (new_id == SHAPE_NONE) {
+        hobject::shape_free(ns);
+        return cur_shape_id;
+    }
+
+    self.shapes[new_id] = ns;
+    // Register this transition for future deduplication.
+    self.insert_transition(cur_shape_id, key, new_id);
     return new_id;
 }
 
 fn void Heap.bump_shape_gen(&self, uint shape_id) {
-    if (shape_id < self.shape_count) {
+    if (shape_id < self.shape_count && self.shapes[shape_id] != null) {
         self.shapes[shape_id].generation++;
         self.shape_gen++;
     }
+}
+
+/// Get a shape pointer by ID. Returns null if invalid.
+fn hobject::Shape* Heap.get_shape(&self, uint shape_id) {
+    if (shape_id >= self.shape_count) return null;
+    return self.shapes[shape_id];
 }
 
 /**
@@ -657,10 +730,14 @@ fn void Heap.destroy(&self) {
     }
 
     // Free shape system
+    if (self.trans_table != null) {
+        libc::free(self.trans_table);
+        self.trans_table = null;
+    }
     if (self.shapes != null) {
         for (uint i = 0; i < self.shape_count; i++) {
-            if (self.shapes[i].children != null) {
-                libc::free(self.shapes[i].children);
+            if (self.shapes[i] != null) {
+                hobject::shape_free(self.shapes[i]);
             }
         }
         libc::free(self.shapes);
@@ -822,6 +899,25 @@ fn void Heap.reset(&self) {
     // Clear longjmp state
     self.lj.lj_type = LjType.UNKNOWN;
     self.lj.iserror = false;
+
+    // Reset shape system — free all shapes and transition table, then reinit
+    if (self.trans_table != null) {
+        libc::free(self.trans_table);
+        self.trans_table = null;
+    }
+    if (self.shapes != null) {
+        for (uint i = 0; i < self.shape_count; i++) {
+            if (self.shapes[i] != null) {
+                hobject::shape_free(self.shapes[i]);
+            }
+        }
+        // Reuse the pointer array, just zero it
+        libc::memset(self.shapes, 0, (usz)self.shape_capacity * (void*::size));
+    }
+    self.shape_count = 1;
+    self.shape_gen   = 0;
+    self.shapes[0]   = hobject::shape_create(0, SHAPE_NONE);
+    self.init_transition_table();
 
     // Reintern builtin strings into the now-empty string table
     self.init_builtin_strs();
@@ -1120,32 +1216,52 @@ fn void Heap.drain_gray(&self) {
         }
 
         // --- Named properties ---
+        PropValue* pv = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
-            HString* key = (HString*)obj.props[i].key;
+            HString* key = (HString*)obj.shape.props()[i].key;
             if (key != null) {
                 ((HeapHeader*)key).set_reachable();
             }
-            self.mark_tval(&obj.props[i].value);
-            self.mark_tval(&obj.props[i].getter);
-            self.mark_tval(&obj.props[i].setter);
+            self.mark_tval(&pv[i].data.value);
+            self.mark_tval(&pv[i].data.getter);
+            self.mark_tval(&pv[i].setter);
         }
 
         // --- Array part ---
-        if (obj.array_part != null) {
+        TVal* ap = obj.array_part();
+        if (ap != null) {
             for (uint i = 0; i < obj.array_size; i++) {
-                self.mark_tval(&obj.array_part[i]);
+                self.mark_tval(&ap[i]);
             }
         }
 
-        // --- Primitive value (wrapper objects) ---
-        self.mark_tval(&obj.primitive_value);
-
-        // --- Environment bindings (var_env, lex_env) ---
-        if (obj.var_env != null && obj.var_env.bindings != null) {
-            self.mark_hobject(obj.var_env.bindings);
-        }
-        if (obj.lex_env != null && obj.lex_env.bindings != null) {
-            self.mark_hobject(obj.lex_env.bindings);
+        // --- Subtype-specific fields ---
+        switch (obj.flags.obj_class) {
+            case ObjClass.FUNCTION:
+            case ObjClass.THREAD:
+                if (obj.extra.func.var_env != null && obj.extra.func.var_env.bindings != null) {
+                    self.mark_hobject(obj.extra.func.var_env.bindings);
+                }
+                if (obj.extra.func.lex_env != null && obj.extra.func.lex_env.bindings != null) {
+                    self.mark_hobject(obj.extra.func.lex_env.bindings);
+                }
+                break;
+            case ObjClass.GENERATOR:
+                if (obj.extra.gen.var_env != null && obj.extra.gen.var_env.bindings != null) {
+                    self.mark_hobject(obj.extra.gen.var_env.bindings);
+                }
+                if (obj.extra.gen.lex_env != null && obj.extra.gen.lex_env.bindings != null) {
+                    self.mark_hobject(obj.extra.gen.lex_env.bindings);
+                }
+                break;
+            case ObjClass.BOOLEAN:
+            case ObjClass.NUMBER:
+            case ObjClass.STRING:
+            case ObjClass.DATE:
+                self.mark_tval(&obj.extra.prim.primitive_value);
+                break;
+            default:
+                break;
         }
 
         // TODO: mark CompiledFunction constants (bytecode.c3 helper)
@@ -1235,12 +1351,40 @@ fn void Heap.mark_roots(&self) {
         for (uint ci = 0; ci < cf.const_count; ci++) {
             self.mark_tval(&cf.constants[ci]);
         }
+        // Mark IC entries: trace cached proto HObject* and key HString*
+        if (cf.ic_entries != null && cf.ic_count > 0) {
+            hobject::ICEntry* ics = (hobject::ICEntry*)cf.ic_entries;
+            for (uint ii = 0; ii < cf.ic_count; ii++) {
+                hobject::ICEntry* ie = &ics[ii];
+                if (ie.key != null) { ((HeapHeader*)ie.key).set_reachable(); }
+                if (ie.proto != null) { self.mark_hobject((HObject*)ie.proto); }
+            }
+        }
+        // Mark VarIC entries: trace cached bindings HObject* and key HString*
+        if (cf.var_ic_entries != null && cf.var_ic_count > 0) {
+            hobject::VarICEntry* vics = (hobject::VarICEntry*)cf.var_ic_entries;
+            for (uint vi = 0; vi < cf.var_ic_count; vi++) {
+                hobject::VarICEntry* vie = &vics[vi];
+                if (vie.key != null) { ((HeapHeader*)vie.key).set_reachable(); }
+                if (vie.bindings != null) { self.mark_hobject((HObject*)vie.bindings); }
+            }
+        }
+    }
+
+    // Mark the cached iterator symbol (may not be in strs[] or symbol registry)
+    if (self.iterator_symbol != null) {
+        ((HeapHeader*)self.iterator_symbol).set_reachable();
     }
 
     // Mark global checkpoint keys
     for (uint i = 0; i < self.checkpoint_count; i++) {
         HString* key = (HString*)self.checkpoint_keys[i];
         if (key != null) { ((HeapHeader*)key).set_reachable(); }
+    }
+
+    // Mark activation-record env bindings (fresh per-call envs not otherwise rooted)
+    if (self.mark_activations_fn != null && self.curr_thread != null) {
+        self.mark_activations_fn(self.curr_thread, self);
     }
 
     // Drain the gray stack — transitively marks all reachable objects

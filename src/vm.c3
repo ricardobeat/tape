@@ -30,7 +30,7 @@ faultdef STACK_OVERFLOW;
 // ============================================================================
 
 const uint MAX_CALLS        = 128;
-const uint INITIAL_VALSTACK = 1024;
+const uint INITIAL_VALSTACK = 256;
 
 // ============================================================================
 // Activation record (matches duk_activation in duktape)
@@ -304,6 +304,7 @@ fn bool ensure_valstack(Vm* vm, uint needed) @inline {
 
 /// Slow path: grow the value stack.
 fn bool ensure_valstack_grow(Vm* vm, uint needed) {
+    TVal* old_base = vm.valstack;
     uint used = (uint)((usz)vm.valstack_top - (usz)vm.valstack) / TVal::size;
     uint new_size = vm.valstack_size;
     while (new_size < used + needed) {
@@ -313,10 +314,23 @@ fn bool ensure_valstack_grow(Vm* vm, uint needed) {
     if (new_raw == null) {
         return false;
     }
-    vm.valstack = (TVal*)new_raw;
+    TVal* new_base = (TVal*)new_raw;
+    long diff = (char*)new_base - (char*)old_base;
+
+    vm.valstack = new_base;
     vm.valstack_size = new_size;
-    vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)(used * TVal::size));
-    vm.valstack_end = (TVal*)((usz)vm.valstack + (usz)(new_size * TVal::size));
+    vm.valstack_top = (TVal*)((char*)vm.valstack_top + diff);
+    vm.valstack_end = (TVal*)((char*)new_base + (usz)(new_size * TVal::size));
+    vm.valstack_bottom = (TVal*)((char*)vm.valstack_bottom + diff);
+
+    // Relocate all activation bottom/retval pointers (they point into the old buffer)
+    for (uint i = 0; i < vm.activation_count; i++) {
+        Activation* a = &vm.activations[i];
+        a.bottom = (TVal*)((char*)a.bottom + diff);
+        if (a.retval != null) {
+            a.retval = (TVal*)((char*)a.retval + diff);
+        }
+    }
 
     // Update heap's valstack GC root pointers (base may have moved)
     vm.heap.valstack_base = vm.valstack;
@@ -598,27 +612,21 @@ fn TVal to_primitive_value(TVal* val) {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
         if (cls == hobject::ObjClass.BOOLEAN &&
-            obj.primitive_value.is_boolean()) {
+            obj.extra.prim.primitive_value.is_boolean()) {
             TVal result;
-            result.set_boolean(obj.primitive_value.get_boolean());
+            result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
             return result;
         }
-        if (cls == hobject::ObjClass.NUMBER) {
-            if (obj.primitive_value.is_fastint()) {
-                TVal result;
-                result.set_number((double)obj.primitive_value.get_fastint());
-                return result;
-            }
-            if (obj.primitive_value.is_number()) {
-                TVal result;
-                result.set_number(obj.primitive_value.get_number());
-                return result;
-            }
+        if (cls == hobject::ObjClass.NUMBER &&
+            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
+            TVal result;
+            result.set_number(obj.extra.prim.primitive_value.get_number());
+            return result;
         }
         if (cls == hobject::ObjClass.STRING &&
-            obj.primitive_value.is_string()) {
+            obj.extra.prim.primitive_value.is_string()) {
             TVal result;
-            result.set_string(obj.primitive_value.get_heapptr());
+            result.set_string(obj.extra.prim.primitive_value.get_heapptr());
             return result;
         }
     }
@@ -676,8 +684,8 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
         // Own named properties
         for (uint i = 0; i < cur.prop_count; i++) {
-            if (cur.props[i].flags.enumerable && cur.props[i].key != null) {
-                HString* k = (HString*)cur.props[i].key;
+            if (cur.prop_values()[i].flags.enumerable && cur.shape.props()[i].key != null) {
+                HString* k = (HString*)cur.shape.props()[i].key;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
                     libc::free(seen);
@@ -688,7 +696,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 
         // Own dense array part indices
         for (uint i = 0; i < cur.array_size; i++) {
-            if (!cur.array_part[i].is_undefined()) {
+            if (!cur.array_part()[i].is_undefined()) {
                 char[16] buf;
                 int len = libc::snprintf(&buf, 16, "%u", i);
                 if (len > 0 && len < 16) {
@@ -807,6 +815,32 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
 }
 
 // ============================================================================
+// GC activation marking
+// ============================================================================
+
+/// Mark all env bindings held by live activation records.
+/// Called from heap's mark_roots to keep per-call var_envs alive during GC.
+fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
+    Vm* vm = (Vm*)vm_ptr;
+    heap::Heap* h = (heap::Heap*)heap_ptr;
+    for (uint i = 0; i < vm.activation_count; i++) {
+        Activation* act = &vm.activations[i];
+        if (act.var_env != null && act.var_env.bindings != null) {
+            h.mark_hobject(act.var_env.bindings);
+        }
+        if (act.lex_env != null && act.lex_env.bindings != null && act.lex_env != act.var_env) {
+            h.mark_hobject(act.lex_env.bindings);
+        }
+        // Walk parent env chains too
+        env::EnvRecord* cur = act.var_env;
+        while (cur != null) {
+            if (cur.bindings != null) { h.mark_hobject(cur.bindings); }
+            cur = cur.parent;
+        }
+    }
+}
+
+// ============================================================================
 // Call handling (matches duk_js_call.c)
 // ============================================================================
 
@@ -834,10 +868,10 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
         // Nothing special needed for var_env/lex_env
     } else if (func_val.is_object()) {
         HObject* hobj = (HObject*)func_val.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.comp_func != null) {
-            target_func = hobj.comp_func;
-            var_env = hobj.var_env;
-            lex_env = hobj.lex_env;
+        if (hobj != null && hobj.is_callable() && hobj.extra.func.comp_func != null) {
+            target_func = hobj.extra.func.comp_func;
+            var_env = hobj.extra.func.var_env;
+            lex_env = hobj.extra.func.lex_env;
         } else {
             return false;
         }
@@ -855,11 +889,19 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     // Compute new valstack bottom (after func + this + args)
     TVal* new_bottom = caller_bottom + ((uint)idx_func + 2);
 
+    // Create a fresh var environment for this call so that `var` declarations
+    // inside the function body don't clobber bindings in the outer/closure env.
+    EnvRecord*? fresh_var = env::env_create_function_scope(vm.heap, var_env);
+    EnvRecord* call_var_env = var_env;
+    if (try fv = fresh_var) {
+        call_var_env = fv;
+    }
+
     // Set up activation
     new_act.parent = caller_act;
     new_act.func = target_func;
-    new_act.var_env = var_env;
-    new_act.lex_env = lex_env;
+    new_act.var_env = call_var_env;
+    new_act.lex_env = call_var_env;
     new_act.cat = null;
     new_act.curr_pc = null;
     new_act.bottom = new_bottom;
@@ -900,7 +942,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     HObject* func_obj = (HObject*)getter_fn.get_heapptr();
     if (func_obj == null || !func_obj.is_callable()) return false;
 
-    CompiledFunction* target = func_obj.comp_func;
+    CompiledFunction* target = func_obj.extra.func.comp_func;
     if (target == null) return false;
 
     // Set up call frame: callee_reg = result_reg (we reuse it)
@@ -916,6 +958,8 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
 
     // Re-acquire regs_base after potential reallocation
     TVal* caller_regs = act.bottom;
+    // Recompute new_bottom after realloc (act.bottom may have moved)
+    new_bottom = act.bottom + frame_start;
     caller_regs[callee_reg] = getter_fn;
     caller_regs[callee_reg + 1] = *this_val;
 
@@ -927,10 +971,12 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
 
+    EnvRecord* invoke_getter_var_env = func_obj.extra.func.var_env;
+    if (try fv_ig = env::env_create_function_scope(vm.heap, func_obj.extra.func.var_env)) { invoke_getter_var_env = fv_ig; }
     new_act.parent = act;
     new_act.func = target;
-    new_act.var_env = func_obj.var_env;
-    new_act.lex_env = func_obj.lex_env;
+    new_act.var_env = invoke_getter_var_env;
+    new_act.lex_env = invoke_getter_var_env;
     new_act.cat = null;
     new_act.curr_pc = target.code;
     new_act.bottom = new_bottom;
@@ -1033,6 +1079,8 @@ fn Vm*? vm_create(Heap* heap) {
     // Register valstack with heap for GC root scanning
     heap.valstack_base = vm.valstack;
     heap.valstack_top_ptr = &vm.valstack_top;
+    heap.curr_thread = vm;
+    heap.mark_activations_fn = &vm_mark_activations;
 
     // Create global environment
     EnvRecord*? global = env::env_create(heap, null);
@@ -1101,6 +1149,8 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     // Update heap's valstack GC root pointers
     vm.heap.valstack_base = vm.valstack;
     vm.heap.valstack_top_ptr = &vm.valstack_top;
+    vm.heap.curr_thread = vm;
+    vm.heap.mark_activations_fn = &vm_mark_activations;
 
     // Fresh global environment on the reset heap
     EnvRecord*? global = env::env_create(heap, null);
@@ -1163,8 +1213,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 2: HObject with builtin_fn_index — dispatch via BuiltinContext
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
-            uint fn_idx = (uint)hobj.builtin_fn_index;
+        if (hobj != null && hobj.is_callable() && hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
 
             uint total = 1 + nargs;
             if (total > 16) total = 16;
@@ -1198,8 +1248,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 3: compiled function on HObject
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.comp_func != null) {
-            CompiledFunction* target = hobj.comp_func;
+        if (hobj != null && hobj.is_callable() && hobj.extra.func.comp_func != null) {
+            CompiledFunction* target = hobj.extra.func.comp_func;
 
             // Save current VM state
             uint saved_act_count = vm.activation_count;
@@ -1229,10 +1279,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             // Set up activation[0] for the function
             Activation* act = &vm.activations[0];
             vm.activation_count = 1;
+            EnvRecord* cfn_var_env = hobj.extra.func.var_env;
+            if (try fv_cfn = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { cfn_var_env = fv_cfn; }
             act.func = target;
             act.parent = null;
-            act.var_env = hobj.var_env;
-            act.lex_env = hobj.lex_env;
+            act.var_env = cfn_var_env;
+            act.lex_env = cfn_var_env;
             act.cat = null;
             act.curr_pc = target.code;
             act.bottom = vm.valstack;
@@ -1777,49 +1829,57 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
-        case Opcode.LT:
-            ra.set_boolean(false);
+        case Opcode.LT: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() < rc.get_fastint()));
+                result = rb.get_fastint() < rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
-                ra.set_boolean((vm_to_number(rb) < vm_to_number(rc)));
+                result = vm_to_number(rb) < vm_to_number(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.LE:
-            ra.set_boolean(false);
+        case Opcode.LE: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() <= rc.get_fastint()));
+                result = rb.get_fastint() <= rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
-                ra.set_boolean((vm_to_number(rb) <= vm_to_number(rc)));
+                result = vm_to_number(rb) <= vm_to_number(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.GT:
-            ra.set_boolean(false);
+        case Opcode.GT: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() > rc.get_fastint()));
+                result = rb.get_fastint() > rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
-                ra.set_boolean((vm_to_number(rb) > vm_to_number(rc)));
+                result = vm_to_number(rb) > vm_to_number(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
-        case Opcode.GE:
-            ra.set_boolean(false);
+        case Opcode.GE: {
+            bool result;
             if (rb.is_fastint() && rc.is_fastint()) {
-                ra.set_boolean((rb.get_fastint() >= rc.get_fastint()));
+                result = rb.get_fastint() >= rc.get_fastint();
             } else if (rb.is_string() && rc.is_string()) {
-                ra.set_boolean((hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0));
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
-                ra.set_boolean((vm_to_number(rb) >= vm_to_number(rc)));
+                result = vm_to_number(rb) >= vm_to_number(rc);
             }
+            ra.set_boolean(result);
             break;
+        }
 
         case Opcode.INSTANCEOF: {
             // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression
@@ -1990,7 +2050,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
                 // Also handles ARGUMENTS exotic objects for arguments[i] access
-                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part != null && (rc.is_fastint() || rc.is_number())) {
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
@@ -2014,13 +2074,13 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.proto == null) {
                             if (pi < hobj.prop_count
                                 && gen == vm.heap.shapes[hobj.shape_id].generation) {
-                                *ra = hobj.props[pi].value;
+                                *ra = hobj.prop_values()[pi].data.value;
                                 break;
                             }
                         } else if (gen == vm.heap.shapes[ic.shape_id].generation) {
                             HObject* proto = (HObject*)ic.proto;
                             if (pi < proto.prop_count) {
-                                *ra = proto.props[pi].value;
+                                *ra = proto.prop_values()[pi].data.value;
                                 break;
                             }
                         }
@@ -2194,7 +2254,9 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
                 // Fast path: dense array indexed store (a[i] = v where i is a non-negative integer)
-                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part != null && (rb.is_fastint() || rb.is_number())) {
+                // set_array_idx handles lazy allocation of array_part when array_size == 0.
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS)
+                    && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     if (idx_long >= 0) {
                         hobj.set_array_idx((uint)idx_long, *rc);
@@ -2212,9 +2274,9 @@ fn TVal? Vm.run(Vm* vm) {
                         uint gen = hobject::ic_gen(ic.gen_and_idx);
                         if (pi < hobj.prop_count
                             && gen == vm.heap.shapes[hobj.shape_id].generation
-                            && !hobj.props[pi].flags.is_accessor
-                            && hobj.props[pi].flags.writable) {
-                            hobj.props[pi].value = *rc;
+                            && !hobj.prop_values()[pi].flags.is_accessor
+                            && hobj.prop_values()[pi].flags.writable) {
+                            hobj.prop_values()[pi].data.value = *rc;
                             break;
                         }
                     }
@@ -2230,8 +2292,8 @@ fn TVal? Vm.run(Vm* vm) {
                     if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
                         // Invoke setter: this=obj, arg=value
                         HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
-                        if (setter_obj.is_callable() && setter_obj.comp_func != null) {
-                            CompiledFunction* target = setter_obj.comp_func;
+                        if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
+                            CompiledFunction* target = setter_obj.extra.func.comp_func;
 
                             uint callee_reg = (uint)insn.a + 1;
                             uint frame_start = callee_reg + 2;
@@ -2239,6 +2301,8 @@ fn TVal? Vm.run(Vm* vm) {
                             uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
                             if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
+                                // Recompute new_bottom after realloc (act.bottom may have moved)
+                                new_bottom = act.bottom + frame_start;
                                 TVal* caller_regs = act.bottom;
 
                                 caller_regs[callee_reg] = acc.accessor_fn;
@@ -2250,10 +2314,12 @@ fn TVal? Vm.run(Vm* vm) {
                                 Activation* new_act = &vm.activations[vm.activation_count];
                                 vm.activation_count++;
 
+                                EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
+                                if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
                                 new_act.parent = act;
                                 new_act.func = target;
-                                new_act.var_env = setter_obj.var_env;
-                                new_act.lex_env = setter_obj.lex_env;
+                                new_act.var_env = setter_var_env;
+                                new_act.lex_env = setter_var_env;
                                 new_act.cat = null;
                                 new_act.curr_pc = target.code;
                                 new_act.bottom = new_bottom;
@@ -2280,7 +2346,7 @@ fn TVal? Vm.run(Vm* vm) {
                         // Check if property exists and is writable
                         int exist_idx = hobj.find_prop_idx(key);
                         if (exist_idx >= 0) {
-                            hobject::PropEntry* entry = &hobj.props[exist_idx];
+                            hobject::PropValue* entry = &hobj.prop_values()[exist_idx];
                             if (!entry.flags.is_accessor && !entry.flags.writable) {
                                 // Non-writable data property — TypeError in strict mode
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -2302,17 +2368,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 break;
                             }
                             // Update value, preserve existing flags
-                            entry.value = put_val;
+                            entry.data.value = put_val;
                         } else {
                             // Property doesn't exist: check extensibility
                             if (hobj.flags.extensible) {
-                                uint old_count = hobj.prop_count;
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
-                                // Transition shape if property was actually added
-                                if (hobj.prop_count > old_count) {
-                                    hobj.shape_id = vm.heap.transition_shape(
-                                        hobj.shape_id, key, (ushort)(hobj.prop_count - 1));
-                                }
                             }
                             // If not extensible, silently ignore in non-strict, but we're strict-only
                             // so we could throw. For now, silently ignore.
@@ -2389,6 +2449,8 @@ fn TVal? Vm.run(Vm* vm) {
             if (try a = new_arr) {
                 a.prototype = vm.heap.array_proto;
                 ra.set_object(a);
+                if (insn.a == 251) {
+                }
             } else {
                 ra.set_undefined();
             }
@@ -2455,10 +2517,10 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
-                                obj.regexp_data = compiled;
+                                obj.extra.regexp.regexp_data = compiled;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.primitive_value.set_string(pattern_hs);
+                                obj.extra.prim.primitive_value.set_string(pattern_hs);
                                 // Set instance properties (ES5 §15.10.7)
                                 HString* source_key = intern_string(vm, "source");
                                 TVal source_tv;
@@ -2492,9 +2554,9 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
-                                obj.regexp_data = null;
+                                obj.extra.regexp.regexp_data = null;
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.primitive_value.set_string(pattern_hs);
+                                obj.extra.prim.primitive_value.set_string(pattern_hs);
                                 ra.set_object(obj);
                             } else {
                                 ra.set_undefined();
@@ -2656,8 +2718,8 @@ fn TVal? Vm.run(Vm* vm) {
             // === Fast path: direct compiled HObject call (most common) ===
             if (func_val.is_object()) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
-                if (hobj_fast.is_callable() && hobj_fast.callable_kind == hobject::CallableKind.COMPILED_FN) {
-                    CompiledFunction* target_fast = hobj_fast.comp_func;
+                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.extra.func.callable_kind == hobject::CallableKind.COMPILED_FN) {
+                    CompiledFunction* target_fast = hobj_fast.extra.func.comp_func;
                     if (!target_fast.is_generator()) {
 
                     // New callee frame starts right after func and this in the caller frame
@@ -2671,6 +2733,8 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     regs_base = act.bottom;
+                    // Recompute new_bottom after realloc (act.bottom may have moved)
+                    new_bottom = regs_base + frame_start;
 
                     if (vm.activation_count >= MAX_CALLS) {
                         regs_base[result_reg].set_undefined();
@@ -2680,10 +2744,12 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act = &vm.activations[vm.activation_count];
                     vm.activation_count++;
 
+                    EnvRecord* fast_var_env = hobj_fast.extra.func.var_env;
+                    if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.extra.func.var_env)) { fast_var_env = fv_f; }
                     new_act.parent = act;
                     new_act.func = target_fast;
-                    new_act.var_env = hobj_fast.var_env;
-                    new_act.lex_env = hobj_fast.lex_env;
+                    new_act.var_env = fast_var_env;
+                    new_act.lex_env = fast_var_env;
                     new_act.cat = null;
                     new_act.curr_pc = target_fast.code;
                     new_act.bottom = new_bottom;
@@ -2720,6 +2786,7 @@ fn TVal? Vm.run(Vm* vm) {
                     code_base = target_fast.code;
                     code_count = target_fast.code_count;
                     code_end = code_base + code_count;
+                    ic_base = (hobject::ICEntry*)target_fast.ic_entries;
                     constants = target_fast.constants;
                     nregs = target_fast.num_regs;
                     curr_pc = act.curr_pc;
@@ -2844,9 +2911,9 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
-                if (hobj.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.builtin_fn_index;
+            if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+                if (hobj.extra.func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -2877,7 +2944,7 @@ fn TVal? Vm.run(Vm* vm) {
                         nargs = ctx.re_nargs;
                         // Only support re-dispatch to compiled functions from here;
                         // if the target is another builtin, just break
-                        if (hobj.comp_func != null) {
+                        if (hobj.extra.func.comp_func != null) {
                             // Continue to compiled function handling below (skip error)
                         } else {
                             break;
@@ -2913,7 +2980,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             }
 
-            CompiledFunction* target = hobj.comp_func;
+            CompiledFunction* target = hobj.extra.func.comp_func;
 
             // === Generator function handling (ES6 §25.3) ===
             if (target.is_generator()) {
@@ -2942,6 +3009,8 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     regs_base = act.bottom;
+                    // Recompute new_bottom after realloc (act.bottom may have moved)
+                    new_bottom_r = regs_base + frame_start_r;
 
                     if (vm.activation_count >= MAX_CALLS) {
                         gs.state = GEN_SUSPENDED_YIELD;
@@ -2990,6 +3059,8 @@ fn TVal? Vm.run(Vm* vm) {
                 }
 
                 regs_base = act.bottom;
+                // Recompute new_bottom after realloc (act.bottom may have moved)
+                new_bottom = regs_base + frame_start;
 
                 // Allocate GeneratorState
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
@@ -3004,8 +3075,8 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.func = target;
                 gs.num_regs = target.num_regs;
                 gs.saved_pc = target.code;
-                gs.var_env = hobj.var_env;
-                gs.lex_env = hobj.lex_env;
+                gs.var_env = hobj.extra.gen.var_env;
+                gs.lex_env = hobj.extra.gen.lex_env;
                 gs.this_binding = regs_base[callee_reg + 1];
 
                 // Allocate and copy saved registers
@@ -3073,7 +3144,7 @@ fn TVal? Vm.run(Vm* vm) {
                     break;
                 }
                 gen_obj.prototype = vm.heap.generator_proto;
-                gen_obj.generator_data = gs;
+                gen_obj.extra.gen.generator_data = gs;
 
                 // Return generator object as the call result
                 TVal* result_slot = regs_base + result_reg;
@@ -3093,6 +3164,8 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             regs_base = act.bottom;
+            // Recompute new_bottom after realloc (act.bottom may have moved)
+            new_bottom = regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
                 regs_base[result_reg].set_undefined();
@@ -3102,10 +3175,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* call_var_env2 = hobj.extra.func.var_env;
+            if (try fv_c2 = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { call_var_env2 = fv_c2; }
             new_act.parent = act;
             new_act.func = target;
-            new_act.var_env = hobj.var_env;
-            new_act.lex_env = hobj.lex_env;
+            new_act.var_env = call_var_env2;
+            new_act.lex_env = call_var_env2;
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
@@ -3193,6 +3268,7 @@ fn TVal? Vm.run(Vm* vm) {
             code_base = target.code;
             code_count = target.code_count;
             code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)target.ic_entries;
             constants = target.constants;
             nregs = target.num_regs;
             curr_pc = act.curr_pc;
@@ -3291,9 +3367,9 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin super constructors
-            if (super_hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
-                if (super_hobj.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)super_hobj.builtin_fn_index;
+            if (super_hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+                if (super_hobj.extra.func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)super_hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -3312,7 +3388,7 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            CompiledFunction* super_target = super_hobj.comp_func;
+            CompiledFunction* super_target = super_hobj.extra.func.comp_func;
 
             // Set up activation frame for superclass constructor
             // The 'this' slot should already have new_target (set by caller)
@@ -3326,6 +3402,8 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             regs_base = act.bottom;
+            // Recompute new_bottom after realloc (act.bottom may have moved)
+            new_bottom = regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
                 ra.set_undefined();
@@ -3335,10 +3413,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* super_var_env = super_hobj.extra.func.var_env;
+            if (try fv_su = env::env_create_function_scope(vm.heap, super_hobj.extra.func.var_env)) { super_var_env = fv_su; }
             new_act.parent = act;
             new_act.func = super_target;
-            new_act.var_env = super_hobj.var_env;
-            new_act.lex_env = super_hobj.lex_env;
+            new_act.var_env = super_var_env;
+            new_act.lex_env = super_var_env;
             new_act.cat = null;
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
@@ -3503,9 +3583,9 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.callable_kind == hobject::CallableKind.BUILTIN_FN) {
-                if (hobj.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.builtin_fn_index;
+            if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+                if (hobj.extra.func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -3555,7 +3635,7 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            CompiledFunction* target = hobj.comp_func;
+            CompiledFunction* target = hobj.extra.func.comp_func;
 
             // Arrow functions cannot be used as constructors (ES6 §14.2.2)
             if (target.is_arrow()) {
@@ -3615,6 +3695,8 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             regs_base = act.bottom;
+            // Recompute new_bottom after realloc (act.bottom may have moved)
+            new_bottom = regs_base + frame_start;
             func_slot = regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
@@ -3625,10 +3707,12 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
 
+            EnvRecord* ctor_var_env = hobj.extra.func.var_env;
+            if (try fv_ct = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { ctor_var_env = fv_ct; }
             new_act.parent = act;
             new_act.func = target;
-            new_act.var_env = hobj.var_env;
-            new_act.lex_env = hobj.lex_env;
+            new_act.var_env = ctor_var_env;
+            new_act.lex_env = ctor_var_env;
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
@@ -3942,32 +4026,15 @@ fn TVal? Vm.run(Vm* vm) {
                 vm.return_val = val;
                 return vm.return_val;
             }
-
-            Activation* caller_act = &vm.activations[vm.activation_count - 1];
-            vm.valstack_bottom = caller_act.bottom;
-
-            TVal final_val = val;
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
-                if (!final_val.is_object() || final_val.get_heapptr() == null) {
-                    if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
-                        final_val = callee_act.this_binding;
-                    }
-                }
-            }
-            *callee_result = final_val;
-
-            CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-            vm.valstack_top = caller_act.bottom + caller_func.num_regs;
-
-            act = caller_act;
-            if (caller_func != vm.current_func) {
-                vm.current_func = caller_func;
-                code_base = caller_func.code;
-                code_count = caller_func.code_count;
-                code_end = code_base + code_count;
-                constants = caller_func.constants;
-                nregs = caller_func.num_regs;
-            }
+            // Direct dispatch after return (avoid restart overhead)
+            act = &vm.activations[vm.activation_count - 1];
+            vm.current_func = (CompiledFunction*)act.func;
+            code_base = vm.current_func.code;
+            code_count = vm.current_func.code_count;
+            code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
+            constants = vm.current_func.constants;
+            nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
             regs_base = act.bottom;
             continue;
@@ -3986,32 +4053,15 @@ fn TVal? Vm.run(Vm* vm) {
                 vm.return_val = undef_val;
                 return vm.return_val;
             }
-
-            Activation* caller_act = &vm.activations[vm.activation_count - 1];
-            vm.valstack_bottom = caller_act.bottom;
-
-            TVal final_val = undef_val;
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
-                if (!final_val.is_object() || final_val.get_heapptr() == null) {
-                    if (callee_act.this_binding.is_object() && callee_act.this_binding.get_heapptr() != null) {
-                        final_val = callee_act.this_binding;
-                    }
-                }
-            }
-            *callee_result = final_val;
-
-            CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-            vm.valstack_top = caller_act.bottom + caller_func.num_regs;
-
-            act = caller_act;
-            if (caller_func != vm.current_func) {
-                vm.current_func = caller_func;
-                code_base = caller_func.code;
-                code_count = caller_func.code_count;
-                code_end = code_base + code_count;
-                constants = caller_func.constants;
-                nregs = caller_func.num_regs;
-            }
+            // Direct dispatch after return (avoid restart overhead)
+            act = &vm.activations[vm.activation_count - 1];
+            vm.current_func = (CompiledFunction*)act.func;
+            code_base = vm.current_func.code;
+            code_count = vm.current_func.code_count;
+            code_end = code_base + code_count;
+            ic_base = (hobject::ICEntry*)vm.current_func.ic_entries;
+            constants = vm.current_func.constants;
+            nregs = vm.current_func.num_regs;
             curr_pc = act.curr_pc;
             regs_base = act.bottom;
             continue;
@@ -4104,7 +4154,7 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
-                                TVal v = b.props[vic.prop_idx].value;
+                                TVal v = b.prop_values()[vic.prop_idx].data.value;
                                 if (!env::is_tdz_sentinel(&v)) {
                                     *ra = v;
                                     break;
@@ -4125,7 +4175,7 @@ fn TVal? Vm.run(Vm* vm) {
                     while (cur != null) {
                         int idx = cur.bindings.find_prop_idx(key);
                         if (idx >= 0) {
-                            TVal v = cur.bindings.props[idx].value;
+                            TVal v = cur.bindings.prop_values()[idx].data.value;
                             if (env::is_tdz_sentinel(&v)) {
                                 HString* name_hstr = (HString*)key;
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -4233,7 +4283,7 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
-                                TVal v = b.props[vic.prop_idx].value;
+                                TVal v = b.prop_values()[vic.prop_idx].data.value;
                                 if (!env::is_tdz_sentinel(&v)) {
                                     HString* ts = typeof_string(vm, &v);
                                     ra.set_string(ts);
@@ -4255,7 +4305,7 @@ fn TVal? Vm.run(Vm* vm) {
                     while (cur != null) {
                         int idx = cur.bindings.find_prop_idx(key);
                         if (idx >= 0) {
-                            TVal v = cur.bindings.props[idx].value;
+                            TVal v = cur.bindings.prop_values()[idx].data.value;
                             if (env::is_tdz_sentinel(&v)) {
                                 // TDZ: throw ReferenceError (ES6 behavior)
                                 HString* name_hstr = (HString*)key;
@@ -4369,6 +4419,19 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
+        case Opcode.DECLVAR: {
+            // Declare a `var` binding in the immediate var_env only (no chain walk).
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    env::env_declare(act.var_env, key, *ra);
+                }
+            }
+            break;
+        }
+
         case Opcode.PUTLEX: {
             uint bc = insn.get_bc();
             if (bc < vm.current_func.const_count) {
@@ -4426,9 +4489,9 @@ fn TVal? Vm.run(Vm* vm) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
                     func_obj.flags.constructable = template.is_constructable();
-                    func_obj.comp_func = template;
-                    func_obj.var_env = act.var_env;
-                    func_obj.lex_env = act.lex_env;
+                    func_obj.extra.func.comp_func = template;
+                    func_obj.extra.func.var_env = act.var_env;
+                    func_obj.extra.func.lex_env = act.lex_env;
 
                     // Set .length property (ES5 §15.3.5.1)
                     HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
@@ -4516,19 +4579,19 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.primitive_value.set_boolean(ra.get_boolean());
+                obj.extra.prim.primitive_value.set_boolean(ra.get_boolean());
             } else if (ra.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
-                obj.primitive_value.set_string(ra.get_heapptr());
+                obj.extra.prim.primitive_value.set_string(ra.get_heapptr());
             } else if (ra.is_number() || ra.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                obj.primitive_value = *ra;
+                obj.extra.prim.primitive_value = *ra;
             } else {
                 rb.set_null();
                 break;
@@ -4698,9 +4761,9 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.prop_values()[idx].flags.is_accessor) {
                         // Update existing accessor's getter
-                        hobj.props[idx].getter = getter_val;
+                        hobj.prop_values()[idx].data.getter = getter_val;
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -4709,8 +4772,8 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.props[new_idx].getter = getter_val;
-                            hobj.props[new_idx].setter = undef;
+                            hobj.prop_values()[new_idx].data.getter = getter_val;
+                            hobj.prop_values()[new_idx].setter = undef;
                         }
                     }
                 }
@@ -4728,9 +4791,9 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.prop_values()[idx].flags.is_accessor) {
                         // Update existing accessor's setter
-                        hobj.props[idx].setter = setter_val;
+                        hobj.prop_values()[idx].setter = setter_val;
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -4739,8 +4802,8 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.props[new_idx].getter = undef;
-                            hobj.props[new_idx].setter = setter_val;
+                            hobj.prop_values()[new_idx].data.getter = undef;
+                            hobj.prop_values()[new_idx].setter = setter_val;
                         }
                     }
                 }
@@ -4795,19 +4858,19 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.primitive_value.set_boolean(obj_val.get_boolean());
+                obj.extra.prim.primitive_value.set_boolean(obj_val.get_boolean());
             } else if (obj_val.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.string_proto;
-                obj.primitive_value.set_string(obj_val.get_heapptr());
+                obj.extra.prim.primitive_value.set_string(obj_val.get_heapptr());
             } else if (obj_val.is_number() || obj_val.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                obj.primitive_value = obj_val;
+                obj.extra.prim.primitive_value = obj_val;
             } else {
                 // POINTER or BUFFER
                 break;
@@ -4828,7 +4891,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Pop the current with-env from the scope chain.
             // NOTE: we do NOT free the env record here because a closure
             // created inside the `with` block may have captured it via
-            // func_obj.var_env = act.var_env (see CLOSURE opcode).
+            // func_obj.extra.func.var_env = act.var_env (see CLOSURE opcode).
             // Freeing it would leave a dangling pointer in the closure
             // and crash on subsequent env_get calls.
             if (act.var_env != null && act.var_env.parent != null) {

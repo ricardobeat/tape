@@ -17,6 +17,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
 import libc;
+import std::io;
 
 // ============================================================================
 // Fault codes
@@ -182,6 +183,9 @@ struct CompilerContext {
     // Track last identifier resolved via GETVAR (for assignment write-back)
     bool last_was_getvar;
     uint last_getvar_name_idx;
+    /// Set when the last primary_expr returned a live local variable register directly.
+    bool last_was_local_var;
+    ushort last_local_var_reg;
     /// LHS mode: when true, member_expr saves obj/key without emitting GETPROP
     bool lhs_mode;
     /// Delete mode: when true, member_expr saves obj/key for delete.
@@ -529,6 +533,10 @@ fn ushort CompilerContext.alloc_reg(&self) {
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
     }
+    if (self.next_reg > 255) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+        libc::abort();
+    }
     return reg;
 }
 
@@ -538,6 +546,10 @@ fn ushort CompilerContext.alloc_regs(&self, ushort count) {
     self.next_reg += count;
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
+    }
+    if (self.next_reg > 255) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+        libc::abort();
     }
     return first;
 }
@@ -1141,7 +1153,9 @@ fn void CompilerContext.emit_var_store(&self, ushort reg, uint name_idx, bool is
             self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
         }
     } else {
-        self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+        // DECLVAR declares the binding in the immediate var_env (function-scoped).
+        // PUTVAR (plain assignment) walks the chain to update existing bindings.
+        self.emit_a_bc(Opcode.DECLVAR, (uint)reg, name_idx);
     }
 }
 
@@ -1168,6 +1182,7 @@ fn void? CompilerContext.var_declaration(&self) {
                 return COMPILE_ERROR~;
             }
             ushort reg = self.declare_var(name_tok.str_value, kind);
+            ushort saved_reg = self.next_reg;
 
             // Optional initializer
             if (self.match(TokenType.ASSIGN)) {
@@ -1185,6 +1200,13 @@ fn void? CompilerContext.var_declaration(&self) {
             // var → var_env (function-scoped), let/const → lex_env (block-scoped)
             uint name_idx = self.add_string_constant(name_tok.str_value);
             self.emit_var_store(reg, name_idx, is_lexical, is_const);
+
+            // At global scope, free the var register and any leaked temporaries
+            // from the initializer evaluation.  Global vars use PUTVAR/GETVAR
+            // at runtime — the register is only needed briefly as the PUTVAR source.
+            if (self.is_global) {
+                self.free_regs_to(saved_reg);
+            }
         }
 
         if (!self.match(TokenType.COMMA)) {
@@ -2161,6 +2183,12 @@ fn void? CompilerContext.function_declaration(&self) {
     // Also store in environment so inner functions can find it via GETVAR
     uint name_idx = self.add_string_constant(name_tok.str_value);
     self.emit_a_bc(Opcode.PUTVAR, (uint)func_reg, name_idx);
+
+    // At global scope, free the register — the function object lives in the
+    // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
+    if (self.is_global) {
+        self.free_reg(func_reg);
+    }
 }
 
 // ============================================================================
@@ -2602,7 +2630,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 }
                 ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
                 uint rest_name_idx = self.add_string_constant(rest_param.str_value);
-                self.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                self.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
                 arg_count++;
                 self.has_rest = true;
                 self.rest_formal_count = arg_count - 1;
@@ -2617,8 +2645,8 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             }
             ushort param_reg = self.declare_var(param.str_value, VAR);
             uint param_name_idx = self.add_string_constant(param.str_value);
-            // PUTVAR for env lookup (needed for default value writes and inner functions)
-            self.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+            // DECLVAR declares the parameter in the immediate var_env only.
+            self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
 
             // Check for default value
@@ -2690,16 +2718,13 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
         self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
 
-        ushort result_reg = self.alloc_reg();
-        self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)call_base, 0);
+        self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
 
         // Assign result to parameter register and sync to environment
-        self.emit_abc(Opcode.LDREG, (uint)pr, (uint)result_reg, 0);
+        self.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
         self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
 
-        self.free_reg(result_reg);
-        self.free_reg(this_reg);
-        self.free_reg(closure_reg);
+        self.free_regs_to(call_base);
 
         // Patch the skip jump to land after default evaluation
         int skip_off = (int)self.code_count - (int)skip_addr - 1;
@@ -2812,7 +2837,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 }
                 ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
                 uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
-                inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, rest_name_idx);
+                inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
                 arg_count++;
                 inner_ctx.has_rest = true;
                 inner_ctx.rest_formal_count = arg_count - 1;
@@ -2826,9 +2851,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 return COMPILE_ERROR~;
             }
             ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
-            // Store parameter in environment so inner functions can capture it
+            // Store parameter in the immediate var_env only (DECLVAR).
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
-            inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+            inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
 
             // Check for default value
@@ -2898,16 +2923,13 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
         inner_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
         inner_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
 
-        ushort result_reg = inner_ctx.alloc_reg();
-        inner_ctx.emit_abc(Opcode.CALL, (uint)result_reg, (uint)call_base, 0);
+        inner_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
 
         // Assign result to parameter register and sync to environment
-        inner_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)result_reg, 0);
+        inner_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
         inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
 
-        inner_ctx.free_reg(result_reg);
-        inner_ctx.free_reg(this_reg);
-        inner_ctx.free_reg(closure_reg);
+        inner_ctx.free_regs_to(call_base);
 
         // Patch the skip jump to land after default evaluation
         int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
@@ -3221,9 +3243,12 @@ fn ushort? CompilerContext.conditional_expr(&self) {
 
 /// Parse binary expressions using a Pratt parser with precedence climbing.
 fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
+    self.last_was_local_var = false;
     ushort left = self.unary_expr()!;
+    bool left_is_local = self.last_was_local_var;
 
     for (;;) {
+        self.last_was_local_var = false;
         TokenType tt = self.peek_type();
         int prec = get_binary_precedence(tt);
 
@@ -3235,68 +3260,44 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         if (tt == TokenType.LOG_AND) {
             self.advance()!;
             // Short-circuit: if left is falsy, skip right and result is left
-            ushort result_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)left, 0);
-            uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)result_reg);
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
 
-            self.free_reg(left);
             ushort right = self.binary_expr(prec + 1)!;
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)right, 0);
+            self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
             self.patch_jump(skip_jump);
-            left = result_reg;
             continue;
         }
 
         if (tt == TokenType.LOG_OR) {
             self.advance()!;
             // Short-circuit: if left is truthy, skip right and result is left
-            ushort result_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)left, 0);
-            uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)result_reg);
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
 
-            self.free_reg(left);
             ushort right = self.binary_expr(prec + 1)!;
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)right, 0);
+            self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
             self.patch_jump(skip_jump);
-            left = result_reg;
             continue;
         }
 
         if (tt == TokenType.NULLISH) {
             self.advance()!;
             // Nullish coalescing: if left is not null/undefined, use left.
-            // Can't use is_truthy (IF_TRUE) because falsy values like 0, false, ""
-            // are NOT nullish. Check null and undefined explicitly:
-            //   LDREG result, left
-            //   LDNULL cmp
-            //   SEQ cmp, result, cmp       ; cmp = (result == null)
-            //   IF_TRUE cmp, +skip_right   ; if null, go to right
-            //   LDUNDEF cmp
-            //   SEQ cmp, result, cmp       ; cmp = (result == undefined)
-            //   IF_TRUE cmp, +skip_right   ; if undefined, go to right
-            //   JUMP after_right            ; not nullish, skip right
-            // skip_right:
-            //   LDREG result, right
-            // after_right:
-            ushort result_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)left, 0);
-
+            // Reuse left as result register (no separate allocation).
             ushort cmp_reg = self.alloc_reg();
             // Check null
             self.emit_abc(Opcode.LDNULL, (uint)cmp_reg, 0, 0);
-            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)result_reg, (uint)cmp_reg);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)left, (uint)cmp_reg);
             uint null_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
             // Check undefined
             self.emit_abc(Opcode.LDUNDEF, (uint)cmp_reg, 0, 0);
-            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)result_reg, (uint)cmp_reg);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)left, (uint)cmp_reg);
             uint undef_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
 
             self.free_reg(cmp_reg);
-            self.free_reg(left);
 
             // Not nullish — skip right side
             uint skip_jump = self.emit_jump(Opcode.JUMP);
@@ -3306,11 +3307,10 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
             self.patch_jump(undef_jump);
 
             ushort right = self.binary_expr(prec + 1)!;
-            self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)right, 0);
+            self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
             self.patch_jump(skip_jump);
-            left = result_reg;
             continue;
         }
 
@@ -3324,17 +3324,23 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         }
 
         ushort right = self.binary_expr(next_prec)!;
+        bool right_is_local = self.last_was_local_var;
 
         // Determine opcode
         Opcode op = token_to_binary_opcode(tt);
 
-        // Emit the binary operation
-        ushort result_reg = self.alloc_reg();
-        self.emit_abc(op, (uint)result_reg, (uint)left, (uint)right);
-        self.free_reg(right);
-        self.free_reg(left);
+        // If left is a live local variable register, we cannot use it as the
+        // destination (it would clobber the variable). Copy it to a fresh temp.
+        if (left_is_local) {
+            ushort tmp = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+            left = tmp;
+            left_is_local = false;
+        }
 
-        left = result_reg;
+        self.emit_abc(op, (uint)left, (uint)left, (uint)right);
+        self.free_reg(right);
+        left_is_local = right_is_local;  // propagate for chained ops
     }
 
     return left;
@@ -3760,28 +3766,23 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
 
     self.expect(TokenType.RPAREN)!;
 
-    // Emit CALL or CALL_S depending on whether spread was used
-    ushort result_reg = self.alloc_reg();
+    // Emit CALL or CALL_S, reusing callee_reg as result (callee+this consumed by call)
     if (has_spread) {
-        // CALL_S: A=result_reg, B=callee_reg, C=nargs_reg
-        self.emit_abc(Opcode.CALL_S, (uint)result_reg, (uint)callee_reg, (uint)total_count_reg);
-        self.free_reg(total_count_reg);
-        self.free_reg(spread_count_reg);
+        // CALL_S: A=result, B=callee_reg, C=nargs_reg — reuse callee_reg for result
+        self.emit_abc(Opcode.CALL_S, (uint)callee_reg, (uint)callee_reg, (uint)total_count_reg);
     } else {
-        self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, (uint)arg_count);
+        self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, (uint)arg_count);
     }
 
-    // Free argument registers (callee_reg itself stays allocated)
-    self.free_regs_to(first_arg);
-    // Re-allocate the result register
-    if (result_reg >= self.next_reg) {
-        self.next_reg = result_reg + 1;
-        if (self.next_reg > self.max_reg) {
-            self.max_reg = self.next_reg;
-        }
+    // Free everything from callee_reg (callee, this, args, spread temps)
+    self.free_regs_to(callee_reg);
+    // Result lives at callee_reg
+    self.next_reg = callee_reg + 1;
+    if (self.next_reg > self.max_reg) {
+        self.max_reg = self.next_reg;
     }
 
-    return result_reg;
+    return callee_reg;
 }
 
 /// Emit a tagged template call: tag`...` or tag`text ${expr} text`.
@@ -4011,19 +4012,16 @@ fn ushort? CompilerContext.new_expr(&self) {
         self.expect(TokenType.RPAREN)!;
     }
 
-    // Emit NEW_OBJ: result = new ctor(args...)
-    ushort result_reg = self.alloc_reg();
-    self.emit_abc(Opcode.NEW_OBJ, (uint)result_reg, (uint)ctor_reg, (uint)arg_count);
+    // Emit NEW_OBJ: reuse ctor_reg as result (ctor consumed by new)
+    self.emit_abc(Opcode.NEW_OBJ, (uint)ctor_reg, (uint)ctor_reg, (uint)arg_count);
 
-    self.free_regs_to(first_arg);
-    if (result_reg >= self.next_reg) {
-        self.next_reg = result_reg + 1;
-        if (self.next_reg > self.max_reg) {
-            self.max_reg = self.next_reg;
-        }
+    self.free_regs_to(ctor_reg);
+    self.next_reg = ctor_reg + 1;
+    if (self.next_reg > self.max_reg) {
+        self.max_reg = self.next_reg;
     }
 
-    return result_reg;
+    return ctor_reg;
 }
 
 /// Parse member expression: property accesses and computed accesses.
@@ -4195,6 +4193,8 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (!self.is_global) {
                     if (try var_reg = self.resolve_var(id_tok.str_value)) {
                         self.last_was_getvar = false;
+                        self.last_was_local_var = true;
+                        self.last_local_var_reg = var_reg;
                         return var_reg;
                     }
                 }
@@ -4468,16 +4468,16 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // Place 'this' slot
                 self.emit_abc(Opcode.LDTHIS, (uint)(super_reg + 1), 0, 0);
 
-                // Emit SUPER_CALL
-                ushort result_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SUPER_CALL, (uint)result_reg, (uint)super_reg, (uint)arg_count);
+                // Emit SUPER_CALL, reusing super_reg as result
+                self.emit_abc(Opcode.SUPER_CALL, (uint)super_reg, (uint)super_reg, (uint)arg_count);
 
-                // Free arg regs
-                self.free_regs_to(super_reg + 2);
-                if (self.next_reg < super_reg + 3) {
-                    self.next_reg = super_reg + 3;
+                // Free arg regs and super_reg (callee+this no longer needed after SUPER_CALL)
+                self.free_regs_to(super_reg);
+                self.next_reg = super_reg + 1;
+                if (self.next_reg > self.max_reg) {
+                    self.max_reg = self.next_reg;
                 }
-                return result_reg;
+                return super_reg;
             }
 
             // super.property — access property on superclass prototype
@@ -5029,7 +5029,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
         }
         ushort param_reg = arrow_ctx.declare_var(name, VAR);
         uint param_name_idx = arrow_ctx.add_string_constant(name);
-        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)param_reg, param_name_idx);
+        arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
     }
 
     // Push a function-level lexical scope
