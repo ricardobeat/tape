@@ -353,6 +353,7 @@ fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
 
 /// Convert a TVal to an interned string key for property access.
 /// Uses a single tag extraction via switch to avoid redundant checks.
+/// ES5 §11.8.7 / ES7 §12.2.1: ToPropertyKey — unwraps wrapper objects.
 fn void* get_prop_key(Vm* vm, TVal* val) {
     Heap* h = vm.heap;
     switch (val.get_tag()) {
@@ -368,6 +369,15 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
             return h.strs[heap::BuiltinStr.FALSE];
         case UNDEFINED: return h.strs[heap::BuiltinStr.UNDEFINED];
         case NULL_VAL:  return h.strs[heap::BuiltinStr.NULL_STR];
+        case OBJECT: {
+            // Unwrap String/Number/Boolean wrapper objects per ToPrimitive hint string.
+            TVal prim = builtins::to_primitive_value_local(val);
+            if (prim.get_tag() != OBJECT) {
+                TVal tmp = prim;
+                return get_prop_key(vm, &tmp);
+            }
+            return h.strs[heap::BuiltinStr.UNDEFINED];
+        }
         default:        return h.strs[heap::BuiltinStr.UNDEFINED];
     }
 }
@@ -938,6 +948,39 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     if (!getter_fn.is_object()) return false;
     HObject* func_obj = (HObject*)getter_fn.get_heapptr();
     if (func_obj == null || !func_obj.is_callable()) return false;
+
+    // Fast path: builtin function getter — call directly, no JS frame needed
+    if (func_obj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN &&
+        func_obj.extra.func.builtin_fn_index >= 0) {
+        uint fn_idx = (uint)func_obj.extra.func.builtin_fn_index;
+        TVal[1] temp_regs;
+        temp_regs[0] = *this_val;  // this at regs[base_reg - 1] = regs[0]
+        builtins::BuiltinContext ctx;
+        ctx.vm = vm;
+        ctx.regs = &temp_regs;
+        ctx.base_reg = 1;
+        ctx.argc = 0;
+        ctx.result = &temp_regs[0];
+        ctx.heap = vm.heap;
+        ctx.this_val = *this_val;
+        ctx.is_constructor = false;
+        ctx.needs_re_dispatch = false;
+        ctx.re_nargs = 0;
+        ctx.global_env = vm.global_env;
+        ctx.should_throw = false;
+        ctx.callee_obj = func_obj;
+        builtins::dispatch_builtin(fn_idx, &ctx);
+        if (ctx.should_throw) {
+            if (!vm_throw_value(vm, ctx.throw_value, act, curr_pc, needs_restart)) {
+                regs_base[result_reg].set_undefined();
+                return false;
+            }
+            regs_base = act.bottom;
+        } else {
+            regs_base[result_reg] = *ctx.result;
+        }
+        return false;
+    }
 
     CompiledFunction* target = func_obj.extra.func.comp_func;
     if (target == null) return false;
@@ -1969,9 +2012,11 @@ fn TVal? Vm.run(Vm* vm) {
             // Right side must be an object; TypeError otherwise.
             // Returns true if the object has a property with the given name
             // (own or inherited — check via [[HasProperty]]).
-            ra.set_boolean(false);
-
+            //
+            // NOTE: Read rb (key) BEFORE writing ra, because ra may alias rb
+            // (compiler can emit IN r3, r3, r4 when result overwrites the key).
             if (!rc.is_object()) {
+                ra.set_boolean(false);
                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err = err_raw) {
                     err.prototype = vm.heap.type_err_proto;
@@ -1992,9 +2037,46 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             HObject* obj = (HObject*)rc.get_heapptr();
+
+            // Fast path: dense array / arguments indexed check (numeric keys)
+            if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && (rb.is_fastint() || rb.is_number())) {
+                long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
+                if (idx_long >= 0 && idx_long < (long)obj.array_size) {
+                    TVal? av = obj.get_array_idx((uint)idx_long);
+                    if (try v = av) {
+                        ra.set_boolean(true);
+                        break;
+                    }
+                    // Array hole — fall through to prototype chain lookup
+                } else {
+                    // Index out of bounds — check prototype only
+                    void* key = get_prop_key(vm, rb);
+                    if (key != null) {
+                        ra.set_boolean(obj.prototype != null && obj.prototype.has_prop_proto(key));
+                    } else {
+                        ra.set_boolean(false);
+                    }
+                    break;
+                }
+            }
+
+            // Fast path: dense array with string key that might be an index
+            if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && rb.is_string()) {
+                HString* skey = (HString*)rb.get_heapptr();
+                if (skey.arridx != hstring::ARRIDX_NONE && skey.arridx < (uint)obj.array_size) {
+                    TVal? av = obj.get_array_idx(skey.arridx);
+                    if (try v = av) {
+                        ra.set_boolean(true);
+                        break;
+                    }
+                }
+            }
+
             void* key = get_prop_key(vm, rb);
             if (key != null) {
                 ra.set_boolean(obj.has_prop_proto(key));
+            } else {
+                ra.set_boolean(false);
             }
             break;
         }
@@ -2529,7 +2611,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                         // Convert JS flags to libregexp flag bits
                         int flags = 0;
-                        int js_flags = 0;  // 1=g, 2=i, 4=m
+                        int js_flags = 0;  // 1=g, 2=i, 4=m, 8=s, 16=u, 32=y
                         for (usz i = 0; i < flag_data.len; i++) {
                             char f = flag_data[i];
                             if (f == 'g') {
@@ -2542,6 +2624,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 js_flags |= 4;
                             } else if (f == 's') {
                                 flags |= re_bindings::RE_FLAG_DOTALL;
+                                js_flags |= 8;
+                            } else if (f == 'u') {
+                                js_flags |= 16;
+                            } else if (f == 'y') {
+                                js_flags |= 32;
                             }
                         }
 
@@ -2566,23 +2653,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.extra.prim.primitive_value.set_string(pattern_hs);
-                                // Set instance properties (ES5 §15.10.7)
-                                HString* source_key = intern_string(vm, "source");
-                                TVal source_tv;
-                                source_tv.set_string(pattern_hs);
-                                obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
-                                HString* global_key = intern_string(vm, "global");
-                                TVal global_tv;
-                                global_tv.set_boolean((js_flags & 1) != 0);
-                                obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
-                                HString* ignorecase_key = intern_string(vm, "ignoreCase");
-                                TVal ignorecase_tv;
-                                ignorecase_tv.set_boolean((js_flags & 2) != 0);
-                                obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
-                                HString* multiline_key = intern_string(vm, "multiline");
-                                TVal multiline_tv;
-                                multiline_tv.set_boolean((js_flags & 4) != 0);
-                                obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
+                                // Set lastIndex (ES5 §15.10.7) — only own data property
                                 HString* lastindex_key = intern_string(vm, "lastIndex");
                                 TVal lastindex_tv;
                                 lastindex_tv.set_fastint(0);

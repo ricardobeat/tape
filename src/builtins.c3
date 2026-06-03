@@ -161,7 +161,17 @@ const uint BUILTIN_ARRAY_PROTO_VALUES         = 274;
 const uint BUILTIN_ARRAY_PROTO_ENTRIES        = 275;
 const uint BUILTIN_OBJECT_FROMENTRIES         = 276;
 
-const uint BUILTIN_COUNT                         = 277;
+// RegExp.prototype accessor getters (ES6 §21.2.5)
+const uint BUILTIN_REGEXP_PROTO_GET_FLAGS      = 277;
+const uint BUILTIN_REGEXP_PROTO_GET_SOURCE     = 278;
+const uint BUILTIN_REGEXP_PROTO_GET_GLOBAL     = 279;
+const uint BUILTIN_REGEXP_PROTO_GET_IGNORECASE = 280;
+const uint BUILTIN_REGEXP_PROTO_GET_MULTILINE  = 281;
+const uint BUILTIN_REGEXP_PROTO_GET_DOTALL     = 282;
+const uint BUILTIN_REGEXP_PROTO_GET_STICKY     = 283;
+const uint BUILTIN_REGEXP_PROTO_GET_UNICODE    = 284;
+
+const uint BUILTIN_COUNT                         = 285;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -570,7 +580,7 @@ fn void builtin_to_number(TVal* val, TVal* result) {
 }
 
 /// Simplified ToPrimitive for builtins — unwraps Boolean/Number/String wrapper objects.
-fn TVal to_primitive_value_local(TVal* val) {
+fn TVal to_primitive_value_local(TVal* val) @public {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
@@ -11052,6 +11062,11 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             js_flags |= 4;
         } else if (f == 's') {
             flags |= re_bindings::RE_FLAG_DOTALL;
+            js_flags |= 8;
+        } else if (f == 'u') {
+            js_flags |= 16;
+        } else if (f == 'y') {
+            js_flags |= 32;
         } else {
             // Invalid flag per ES5 §15.10.4.1 — throw SyntaxError
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -11115,27 +11130,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
     obj.extra.prim.primitive_value.set_string(pattern_hs);
 
-    // Set RegExp instance properties (ES5 §15.10.7)
-    HString* source_key = builtin_intern_string(ctx.heap, "source");
-    TVal source_tv;
-    source_tv.set_string(pattern_hs);
-    obj.put_prop(source_key, source_tv, hobject::PROP_FLAGS_WEC);
-
-    HString* global_key = builtin_intern_string(ctx.heap, "global");
-    TVal global_tv;
-    global_tv.set_boolean((js_flags & 1) != 0);
-    obj.put_prop(global_key, global_tv, hobject::PROP_FLAGS_WEC);
-
-    HString* ignorecase_key = builtin_intern_string(ctx.heap, "ignoreCase");
-    TVal ignorecase_tv;
-    ignorecase_tv.set_boolean((js_flags & 2) != 0);
-    obj.put_prop(ignorecase_key, ignorecase_tv, hobject::PROP_FLAGS_WEC);
-
-    HString* multiline_key = builtin_intern_string(ctx.heap, "multiline");
-    TVal multiline_tv;
-    multiline_tv.set_boolean((js_flags & 4) != 0);
-    obj.put_prop(multiline_key, multiline_tv, hobject::PROP_FLAGS_WEC);
-
+    // Set RegExp.prototype.lastIndex (ES5 §15.10.7) — own data property
     HString* lastindex_key = builtin_intern_string(ctx.heap, "lastIndex");
     TVal lastindex_tv;
     lastindex_tv.set_fastint(0);
@@ -11437,6 +11432,9 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
     if ((jsf & 1) != 0 && pos < 511) buf[pos++] = 'g';
     if ((jsf & 2) != 0 && pos < 511) buf[pos++] = 'i';
     if ((jsf & 4) != 0 && pos < 511) buf[pos++] = 'm';
+    if ((jsf & 8) != 0 && pos < 511) buf[pos++] = 's';
+    if ((jsf & 16) != 0 && pos < 511) buf[pos++] = 'u';
+    if ((jsf & 32) != 0 && pos < 511) buf[pos++] = 'y';
     buf[pos] = 0;
 
     HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
@@ -11444,7 +11442,121 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// SameValueZero comparison (ES6 §7.2.10)
+// RegExp.prototype accessor getters (ES6 §21.2.5)
+// These are getter functions registered on RegExp.prototype via accessor properties.
+// js_flags encoding: 1=g, 2=i, 4=m, 8=s(dotAll), 16=u(unicode), 32=y(sticky)
+// ============================================================================
+
+/// Helper: get regexp this or throw TypeError
+fn HObject* regexp_get_this_or_throw(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Method get RegExp.prototype.flags called on incompatible receiver");
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.throw_value.set_object(err);
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return null;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() != hobject::ObjClass.REGEXP) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Method get RegExp.prototype.flags called on incompatible receiver");
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.throw_value.set_object(err);
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return null;
+    }
+    return obj;
+}
+
+/// RegExp.prototype.flags — ES6 §21.2.5.7
+/// Returns a string of flags in alphabetical order: "dgimsuy"
+fn void builtin_regexp_proto_get_flags(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    int jsf = obj.extra.regexp.flags;
+    char[8] buf;
+    int pos = 0;
+    if ((jsf & 1) != 0)  buf[pos++] = 'g';   // global
+    if ((jsf & 8) != 0)  buf[pos++] = 'd';   // dotAll
+    if ((jsf & 2) != 0)  buf[pos++] = 'i';   // ignoreCase
+    if ((jsf & 4) != 0)  buf[pos++] = 'm';   // multiline
+    if ((jsf & 16) != 0) buf[pos++] = 'u';   // unicode
+    if ((jsf & 32) != 0) buf[pos++] = 'y';   // sticky
+    HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
+    ctx.result.set_string(result);
+}
+
+/// RegExp.prototype.source — ES6 §21.2.5.10
+fn void builtin_regexp_proto_get_source(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    if (obj.extra.prim.primitive_value.is_string() && obj.extra.prim.primitive_value.get_heapptr() != null) {
+        HString* phs = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        ctx.result.set_string(phs);
+    } else {
+        ctx.result.set_string(builtin_intern_string(ctx.heap, "(?:)"));
+    }
+}
+
+/// RegExp.prototype.global — ES6 §21.2.5.1
+fn void builtin_regexp_proto_get_global(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 1) != 0);
+}
+
+/// RegExp.prototype.ignoreCase — ES6 §21.2.5.3
+fn void builtin_regexp_proto_get_ignoreCase(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 2) != 0);
+}
+
+/// RegExp.prototype.multiline — ES6 §21.2.5.5
+fn void builtin_regexp_proto_get_multiline(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 4) != 0);
+}
+
+/// RegExp.prototype.dotAll — ES2018 §21.2.5.2
+fn void builtin_regexp_proto_get_dotAll(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 8) != 0);
+}
+
+/// RegExp.prototype.sticky — ES6 §21.2.5.14
+fn void builtin_regexp_proto_get_sticky(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 32) != 0);
+}
+
+/// RegExp.prototype.unicode — ES6 §21.2.5.16
+fn void builtin_regexp_proto_get_unicode(BuiltinContext* ctx) {
+    HObject* obj = regexp_get_this_or_throw(ctx);
+    if (obj == null) return;
+    ctx.result.set_boolean((obj.extra.regexp.flags & 16) != 0);
+}
 // Used by Map and Set for key/value equality.
 // Differs from === only in that NaN equals NaN.
 // ============================================================================
@@ -15018,6 +15130,22 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_regexp_proto_exec(ctx);
         case BUILTIN_REGEXP_PROTO_TOSTRING:
             builtin_regexp_proto_toString(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_FLAGS:
+            builtin_regexp_proto_get_flags(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_SOURCE:
+            builtin_regexp_proto_get_source(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_GLOBAL:
+            builtin_regexp_proto_get_global(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_IGNORECASE:
+            builtin_regexp_proto_get_ignoreCase(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_MULTILINE:
+            builtin_regexp_proto_get_multiline(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_DOTALL:
+            builtin_regexp_proto_get_dotAll(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_STICKY:
+            builtin_regexp_proto_get_sticky(ctx);
+        case BUILTIN_REGEXP_PROTO_GET_UNICODE:
+            builtin_regexp_proto_get_unicode(ctx);
         case BUILTIN_RESET_GLOBALS:
             builtin_reset_globals(ctx);
         case BUILTIN_MAP:
@@ -16305,6 +16433,59 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     return true;
 }
 
+/// Helper: register a getter accessor on a prototype as a builtin function.
+/// Creates a non-enumerable, configurable accessor property (ES6 §21.2.5).
+fn bool register_proto_accessor(HObject* proto, Heap* heap, char[] name, uint getter_index) {
+    HString* key = builtin_intern_string(heap, name);
+    if (key == null) return false;
+
+    // Create getter function object (builtin)
+    HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) return false;
+    HObject* func_obj = func_raw;
+    func_obj.extra.func.builtin_fn_index = (int)getter_index;
+    func_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
+    func_obj.flags.callable = true;
+    func_obj.prototype = heap.function_proto;
+
+    // Set .name = "get <name>" per ES6 §17 (non-writable, non-enumerable, configurable)
+    char[64] name_buf;
+    libc::snprintf(&name_buf, 64, "get %s", name.ptr);
+    usz total_len = libc::strlen((ZString)&name_buf);
+    HString* fn_name = builtin_intern_string(heap, name_buf[:total_len]);
+    if (fn_name != null) {
+        TVal name_tv;
+        name_tv.set_string(fn_name);
+        HString* name_prop_key = builtin_intern_string(heap, "name");
+        func_obj.put_prop(name_prop_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+    // Set .length = 0
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    if (length_key != null) {
+        TVal len_tv;
+        len_tv.set_fastint(0);
+        func_obj.put_prop(length_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // Register as non-enumerable, configurable accessor (ES6 spec)
+    TVal getter_tv;
+    getter_tv.set_object(func_obj);
+    TVal undef;
+    undef.set_undefined();
+    hobject::PropFlags acc_flags;
+    acc_flags.writable = false;
+    acc_flags.enumerable = false;
+    acc_flags.configurable = true;
+    acc_flags.is_accessor = true;
+    proto.put_prop(key, undef, acc_flags);
+    int idx = proto.find_prop_idx(key);
+    if (idx >= 0) {
+        proto.prop_values()[idx].data.getter = getter_tv;
+        proto.prop_values()[idx].setter = undef;
+    }
+    return true;
+}
+
 // ============================================================================
 // Array constructor registration
 // ============================================================================
@@ -16756,6 +16937,16 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add RegExp.prototype.toString()
     if (!register_string_proto_method(proto, heap, "toString", BUILTIN_REGEXP_PROTO_TOSTRING)) return false;
+
+    // Add RegExp.prototype accessor getters (ES6 §21.2.5)
+    if (!register_proto_accessor(proto, heap, "flags", BUILTIN_REGEXP_PROTO_GET_FLAGS)) return false;
+    if (!register_proto_accessor(proto, heap, "source", BUILTIN_REGEXP_PROTO_GET_SOURCE)) return false;
+    if (!register_proto_accessor(proto, heap, "global", BUILTIN_REGEXP_PROTO_GET_GLOBAL)) return false;
+    if (!register_proto_accessor(proto, heap, "ignoreCase", BUILTIN_REGEXP_PROTO_GET_IGNORECASE)) return false;
+    if (!register_proto_accessor(proto, heap, "multiline", BUILTIN_REGEXP_PROTO_GET_MULTILINE)) return false;
+    if (!register_proto_accessor(proto, heap, "dotAll", BUILTIN_REGEXP_PROTO_GET_DOTALL)) return false;
+    if (!register_proto_accessor(proto, heap, "sticky", BUILTIN_REGEXP_PROTO_GET_STICKY)) return false;
+    if (!register_proto_accessor(proto, heap, "unicode", BUILTIN_REGEXP_PROTO_GET_UNICODE)) return false;
 
     // Register RegExp as a global constructor (proper function object)
     HObject*? regexp_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
