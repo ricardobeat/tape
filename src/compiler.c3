@@ -3078,6 +3078,31 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
 
+    // Peek for a literal-1 RHS: `<var> += 1` → INC, `<var> -= 1` → DEC.
+    // Saves a register + LDINT 1 instruction per occurrence (hot in counters).
+    if (is_compound && !lhs_was_member) {
+        if (self.peek_type() == TokenType.NUMBER) {
+            Token num_tok2 = self.lexer.peek()!;
+            double nv = num_tok2.num_value;
+            if (nv == 1.0 && compound_op == Opcode.ADD) {
+                self.advance()!;  // consume the literal
+                self.emit_abc(Opcode.INC, (uint)left, 0, 0);
+                if (lhs_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                }
+                return left;
+            }
+            if (nv == 1.0 && compound_op == Opcode.SUB) {
+                self.advance()!;
+                self.emit_abc(Opcode.DEC, (uint)left, 0, 0);
+                if (lhs_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                }
+                return left;
+            }
+        }
+    }
+
     // Handle logical assignment operators with short-circuit semantics
     // x ||= expr  →  if (x) return x; x = expr; return expr;
     // x &&= expr  →  if (!x) return x; x = expr; return expr;
@@ -3480,10 +3505,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort op_inc = self.postfix_expr()!;
             bool inc_was_getvar = self.last_was_getvar;
             uint inc_getvar_name_idx = self.last_getvar_name_idx;
-            ushort one_inc = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_inc, 1));
-            self.emit_abc(Opcode.ADD, (uint)op_inc, (uint)op_inc, (uint)one_inc);
-            self.free_reg(one_inc);
+            // Fuse LDINT 1 + ADD into a single INC opcode
+            self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
             // Write back if the operand was a global variable
             if (inc_was_getvar) {
                 self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
@@ -3496,10 +3519,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort op_dec = self.postfix_expr()!;
             bool dec_was_getvar = self.last_was_getvar;
             uint dec_getvar_name_idx = self.last_getvar_name_idx;
-            ushort one_dec = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_dec, 1));
-            self.emit_abc(Opcode.SUB, (uint)op_dec, (uint)op_dec, (uint)one_dec);
-            self.free_reg(one_dec);
+            // Fuse LDINT 1 + SUB into a single DEC opcode
+            self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
             // Write back if the operand was a global variable
             if (dec_was_getvar) {
                 self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
@@ -3529,11 +3550,8 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        // Increment the operand
-        ushort one = self.alloc_reg();
-        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
-        self.emit_abc(Opcode.ADD, (uint)operand, (uint)operand, (uint)one);
-        self.free_reg(one);
+        // Increment the operand (fused LDINT 1 + ADD)
+        self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
 
         // Write back if the operand was a global variable
         if (lhs_was_getvar) {
@@ -3549,11 +3567,8 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        // Decrement the operand
-        ushort one = self.alloc_reg();
-        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
-        self.emit_abc(Opcode.SUB, (uint)operand, (uint)operand, (uint)one);
-        self.free_reg(one);
+        // Decrement the operand (fused LDINT 1 + SUB)
+        self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
 
         // Write back if the operand was a global variable
         if (lhs_was_getvar) {
@@ -5144,9 +5159,9 @@ fn Opcode token_to_binary_opcode(TokenType tt) {
 // for-of loop compilation
 // ============================================================================
 
-/// Emit bytecode for a for-of loop. The iterable expression has already been
+/// Emit bytecode for a for-of loop.  The iterable expression has already been
 /// evaluated into `iter_reg` and the RParen was consumed.
-/// Uses .length + numeric index access (iterator protocol deferred).
+/// Uses the ES6 iterator protocol: Symbol.iterator → .next() → {value, done}.
 fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare) {
     // Declare loop variable register
     ushort loop_var;
@@ -5159,54 +5174,104 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
 
     uint name_idx = self.add_string_constant(var_name);
 
-    // Get .length of the iterable
-    uint length_str_idx = self.add_string_constant("length");
-    ushort len_str_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)len_str_reg, length_str_idx, 0);
-    ushort len_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)len_reg, (uint)iter_reg, (uint)len_str_reg);
-    self.free_reg(len_str_reg);
+    // === Iterator Protocol ===
 
-    // Initialize index to 0
-    ushort idx_reg = self.alloc_reg();
-    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, 0));
+    // Step 1: Get Symbol.iterator method from iterable
+    //   sym = GETVAR "Symbol"
+    //   symbol_val = GETPROP sym, "iterator"   (the well-known symbol value)
+    //   method = GETPROP iter_reg, symbol_val   (iterable[Symbol.iterator] → the method)
+    ushort sym_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
 
+    ushort iter_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+
+    ushort symbol_val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+    self.free_reg(iter_key_reg);
+    self.free_reg(sym_reg);
+    // symbol_val_reg holds the Symbol.iterator well-known symbol
+
+    // Look up the method on the iterable using the symbol as property key
+    ushort method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
+    self.free_reg(symbol_val_reg);
+    // method_reg is top of register stack, holds iterable[Symbol.iterator]
+
+    // Step 2: Call iterable[Symbol.iterator]() to get the iterator object
+    //   this_slot = iter_reg            (this = iterable)
+    //   CALL method_reg, method_reg, 0  (iterator = iterable[Symbol.iterator].call(iterable))
+    ushort this_slot = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+    self.free_reg(this_slot);
+    // method_reg is top, now holds the iterator object
+
+    // Step 3: Get .next method from iterator
+    //   next_key = LDCONST "next"
+    //   next = GETPROP iterator, next_key
+    ushort next_reg = self.alloc_reg();
+    ushort next_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+    self.free_reg(next_key_reg);
+    // next_reg is top (.next method), method_reg below (iterator)
+
+    // Step 4: Set up callee + this pair for .next() calls
+    //   callee = next_reg        (.next method)
+    //   callee_this = method_reg (iterator, as this for .next())
+    ushort callee_reg = self.alloc_reg();
+    ushort callee_this_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+
+    // Loop start
     uint loop_start = self.code_count;
-    self.push_loop(loop_start, true);
+    self.push_loop(loop_start, false);
 
-    // Check: idx < len
-    ushort cmp_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LT, (uint)cmp_reg, (uint)idx_reg, (uint)len_reg);
-    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cmp_reg);
-    self.free_reg(cmp_reg);
+    // Step 5: Call .next() each iteration
+    //   result = CALL callee, 0    (result = next.call(iterator))
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
-    // Get element: iterable[idx] (numeric index → string key via get_prop_key)
+    // Step 6: Extract .done
+    //   done_key = LDCONST "done"
+    //   done = GETPROP result, done_key
+    ushort done_key_reg = self.alloc_reg();
+    ushort done_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+    // Step 7: Extract .value
+    //   value_key = LDCONST "value"
+    //   val = GETPROP result, value_key
+    ushort value_key_reg = self.alloc_reg();
     ushort val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)iter_reg, (uint)idx_reg);
+    self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
 
-    // Assign to loop variable
+    // Step 8: Assign to loop variable
     self.emit_abc(Opcode.LDREG, (uint)loop_var, (uint)val_reg, 0);
-    self.free_reg(val_reg);
 
-    // Store in environment
     if (is_bare) {
         self.emit_a_bc(Opcode.PUTVAR, (uint)loop_var, name_idx);
     } else {
         self.emit_var_store(loop_var, name_idx, is_lexical, is_const);
     }
 
-    // Body
+    // Free loop-iteration temps (reverse order — stack discipline)
+    self.free_reg(val_reg);
+    self.free_reg(value_key_reg);
+    self.free_reg(done_reg);
+    self.free_reg(done_key_reg);
+    self.free_reg(result_reg);
+
+    // Step 9: Body
     self.statement()!;
 
-    // Fix continue target: continue should jump to the increment, not the LT.
-    // Without this, continue creates an infinite loop on the same index.
+    // Continue target: jump back to .next() call
     self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
-
-    // Increment index: idx = idx + 1
-    ushort one_reg = self.alloc_reg();
-    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one_reg, 1));
-    self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one_reg);
-    self.free_reg(one_reg);
 
     // Jump back to loop start
     int back_offset = (int)loop_start - (int)self.code_count - 1;
@@ -5215,9 +5280,11 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     self.patch_jump(exit_jump);
     self.pop_loop();
 
-    self.free_reg(idx_reg);
-    self.free_reg(len_reg);
-    self.free_reg(iter_reg);
+    // Free loop-overhead registers
+    self.free_reg(callee_this_reg);
+    self.free_reg(callee_reg);
+    self.free_reg(next_reg);
+    self.free_reg(method_reg);
     self.pop_scope_to(saved_scope);
     self.free_regs_to(saved_reg);
 }

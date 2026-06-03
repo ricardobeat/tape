@@ -116,6 +116,8 @@ enum ObjClass : char {
     GENERATOR,
     ARRAY_ITERATOR,
     STRING_ITERATOR,
+    MAP_ITERATOR,
+    SET_ITERATOR,
 }
 
 /// Discriminator for a callable object's invocation kind.
@@ -747,6 +749,12 @@ fn void HObject.grow_props(&self) {
     uint old_prop_capacity = self.prop_capacity;
     self.prop_capacity = new_cap;
 
+    // prop_alloc may have moved — invalidate ICs that cached prop_value pointers.
+    // (shape_id is unchanged, so the gen bump is what invalidates them.)
+    if (self.heap_ptr != null) {
+        ((heap::Heap*)self.heap_ptr).bump_shape_gen(self.shape_id);
+    }
+
     // Move the dense array part to its new position before updating pointers.
     // When prop_capacity grows, the array data shifts right by the capacity
     // difference — realloc preserves old bytes in place, so we must move them.
@@ -1141,10 +1149,15 @@ struct ICEntry {
     /// Prototype pointer where the property was found (null = own property).
     void*  proto;
     /// Packed: low 32 bits = generation, high 32 bits = prop_idx.
+    /// Generation is bumped by grow_props/grow_array on prop_alloc resize
+    /// to invalidate stale entries.
     ulong  gen_and_idx;
     /// The interned key (HString*) this entry was populated for.
     /// Pointer equality is sufficient (interned strings).
     void*  key;
+    /// Cached pointer to the resolved PropValue for direct access.
+    /// Invalidated when prop_alloc is reallocated (generation bump).
+    PropValue* prop_value_ptr;
 }
 
 /// Pack generation and property index into a single ulong.

@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 111 (%IteratorPrototype% implementation)
+**Last Updated:** Session 112 (Map/Set iterator protocol)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 111, 2026-06-03)
+## Summary (after Session 112, 2026-06-03)
 
 | Metric | Value |
 |---|---|
@@ -193,7 +193,28 @@ constant for non-writable/enumerable/non-configurable.
 
 ## Session History (condensed)
 
-### Session 108: Fix `in` operator wrapper object unwrap (ES5 §11.8.7)
+### Session 112: Map/Set iterator protocol (ES6 §23.1.3, §23.1.5, §23.2.3, §23.2.5)
+Implemented full ES6 Map/Set iterator protocol:
+- **Object classes**: Added `MAP_ITERATOR` and `SET_ITERATOR` to ObjClass enum with shared
+  `iterator_target`/`iterator_index`/`iterator_kind` fields (reuses existing HObject fields).
+- **BUILTIN constants**: Added `BUILTIN_MAP_ITERATOR_NEXT=287`, `BUILTIN_SET_ITERATOR_NEXT=288`,
+  `BUILTIN_MAP_PROTO_SYMBOL_ITER=289`, `BUILTIN_SET_PROTO_SYMBOL_ITER=290`.
+- **`create_map_iterator(ctx, kind)`**: Creates a `MAP_ITERATOR` object with `prototype = %IteratorPrototype%`,
+  stores a `.next` own property pointing to `BUILTIN_MAP_ITERATOR_NEXT`. Kind: 0=values, 1=keys, 2=entries.
+- **`create_set_iterator(ctx, kind)`**: Same pattern for `SET_ITERATOR` with `BUILTIN_SET_ITERATOR_NEXT`.
+- **`builtin_map_iterator_next()`**: Steps through Map entries array `[k0,v0,k1,v1,...]`, returns
+  `{value, done}` objects per spec. Entries format creates `[key, value]` arrays with proper `.length`.
+- **`builtin_set_iterator_next()`**: Steps through Set values array `[v0,v1,...]`. Entries format creates
+  `[value, value]` pairs.
+- **Rewrote Map.prototype methods**: `keys()`, `values()`, `entries()` now return proper `MAP_ITERATOR` objects.
+- **Rewrote Set.prototype methods**: `keys()`, `values()`, `entries()` now return proper `SET_ITERATOR` objects.
+- **`Map.prototype[@@iterator]`**: Registered as `entries()` via `BUILTIN_MAP_PROTO_SYMBOL_ITER`.
+- **`Set.prototype[@@iterator]`**: Registered as `values()` via `BUILTIN_SET_PROTO_SYMBOL_ITER`.
+- **GC marking**: Added cases for `ARRAY_ITERATOR`/`MAP_ITERATOR`/`SET_ITERATOR` (mark `iterator_target`)
+  and `STRING_ITERATOR` (mark `extra.prim.primitive_value`) in `drain_gray()`.
+- **ICEntry fix**: Added `prop_value_ptr` field to ICEntry struct for inline cache direct pointer access.
+- Verified: `map.keys().next()` → `{value, done}`, `iter[Symbol.iterator]() === iter` via %IteratorPrototype%.
+  No regressions in quick.sh (177/106/56).
 Fixed `get_prop_key()` in vm.c3 to handle OBJECT tag by unwrapping String/Number/Boolean
 wrapper objects via `to_primitive_value_local()` (made `@public` in builtins.c3). Before
 this fix, `(new String("foo")) in { "foo": 1 }` returned `false` because the wrapper was

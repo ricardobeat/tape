@@ -1264,6 +1264,17 @@ fn void Heap.drain_gray(&self) {
             case ObjClass.DATE:
                 self.mark_tval(&obj.extra.prim.primitive_value);
                 break;
+            case ObjClass.ARRAY_ITERATOR:
+            case ObjClass.MAP_ITERATOR:
+            case ObjClass.SET_ITERATOR:
+                // Mark the iterated object (target can be collected otherwise)
+                if (obj.iterator_target != null) {
+                    self.mark_hobject(obj.iterator_target);
+                }
+                break;
+            case ObjClass.STRING_ITERATOR:
+                self.mark_tval(&obj.extra.prim.primitive_value);
+                break;
             default:
                 break;
         }

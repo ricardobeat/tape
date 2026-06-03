@@ -1740,6 +1740,26 @@ fn TVal? Vm.run(Vm* vm) {
             ra.set_undefined();
             break;
 
+        // === IN-PLACE FASTINT ++ / -- ===
+        // Fused LDINT 1 + ADD/SUB pair. Hot for loop counters and similar.
+        case Opcode.INC:
+            if (ra.is_fastint()) {
+                ra.set_fastint(ra.get_fastint() + 1L);
+            } else {
+                // Slow path: convert to number, increment, store back
+                double d = vm_to_number(ra);
+                ra.set_number(d + 1.0);
+            }
+            break;
+        case Opcode.DEC:
+            if (ra.is_fastint()) {
+                ra.set_fastint(ra.get_fastint() - 1L);
+            } else {
+                double d = vm_to_number(ra);
+                ra.set_number(d - 1.0);
+            }
+            break;
+
         // === BITWISE ===
 
         case Opcode.BAND:

@@ -369,6 +369,16 @@ enum Opcode : char {
     /// Same encoding as RETUNDEF (NONE format).
     RETUNDEF_GEN,
 
+    // ---- Fastint arithmetic fusion ----------------------------------------
+
+    /// `A = A + 1` (in-place fastint increment). Hot loop counter idiom.
+    /// Falls back to `A = A + 1` general path if A is not a fastint.
+    /// A-only format: A=target_reg, B=0, C=0.
+    INC,
+    /// `A = A - 1` (in-place fastint decrement).
+    /// A-only format: A=target_reg, B=0, C=0.
+    DEC,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -444,6 +454,8 @@ fn OpFormat get_op_format(Opcode op) {
         case WITH_END:  return NONE;
         case PUSH_LEX:   return NONE;
         case POP_LEX:    return NONE;
+        case INC:        return NONE;
+        case DEC:        return NONE;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -646,7 +658,12 @@ fn usz Instruction.disassemble(&self, char[] buf) {
             pos = write_uint(buf, pos, self.get_abc());
 
         case NONE:
-            // nothing extra
+            // For INC/DEC show the target register even though they
+            // use no formal operands.
+            if (op == Opcode.INC || op == Opcode.DEC) {
+                pos = write_str(buf, pos, "r");
+                pos = write_uint(buf, pos, self.a);
+            }
             break;
     }
 
@@ -991,6 +1008,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.YIELD_STAR.ordinal]  = "YIELD_STAR",
     [Opcode.RET_GEN.ordinal]     = "RET_GEN",
     [Opcode.RETUNDEF_GEN.ordinal] = "RETUNDEF_GEN",
+    [Opcode.INC.ordinal]          = "INC",
+    [Opcode.DEC.ordinal]          = "DEC",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
