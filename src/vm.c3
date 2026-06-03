@@ -4727,8 +4727,16 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
+                obj.flags.exotic_stringobj = true;
                 obj.prototype = vm.heap.string_proto;
-                obj.extra.prim.primitive_value.set_string(ra.get_heapptr());
+                HString* prim_str = (HString*)ra.get_heapptr();
+                obj.extra.prim.primitive_value.set_string(prim_str);
+                // Set .length and indexed character properties (ES5 §15.5.5.1)
+                HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                TVal len_tv;
+                len_tv.set_fastint((long)prim_str.clen);
+                obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+                builtins::populate_string_indexed_props(obj, prim_str, vm.heap);
             } else if (ra.is_number() || ra.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { rb.set_null(); break; }
@@ -5006,8 +5014,16 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
+                obj.flags.exotic_stringobj = true;
                 obj.prototype = vm.heap.string_proto;
-                obj.extra.prim.primitive_value.set_string(obj_val.get_heapptr());
+                HString* prim_str = (HString*)obj_val.get_heapptr();
+                obj.extra.prim.primitive_value.set_string(prim_str);
+                // Set .length and indexed character properties (ES5 §15.5.5.1)
+                HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                TVal len_tv;
+                len_tv.set_fastint((long)prim_str.clen);
+                obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+                builtins::populate_string_indexed_props(obj, prim_str, vm.heap);
             } else if (obj_val.is_number() || obj_val.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { break; }

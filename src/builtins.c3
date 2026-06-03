@@ -1197,6 +1197,26 @@ fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
 // String constructor builtins
 // ============================================================================
 
+/// Populate indexed character properties on a String wrapper object (ES5 §15.5.5.1).
+/// Each character position becomes a non-writable, enumerable, non-configurable own property.
+fn void populate_string_indexed_props(HObject* obj, HString* s, Heap* heap) {
+    for (uint i = 0; i < s.clen; i++) {
+        char[16] key_buf;
+        int key_len = libc::snprintf(&key_buf, 16, "%u", i);
+        if (key_len <= 0 || key_len >= 16) continue;
+        HString* key = heap.str_intern(key_buf[:(uint)key_len]);
+        if (key == null) continue;
+        uint cp = s.char_at(i);
+        char[4] cbuf;
+        uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+        HString* char_str = heap.str_intern(cbuf[:cblen]);
+        if (char_str == null) continue;
+        TVal char_tv;
+        char_tv.set_string(char_str);
+        obj.put_prop(key, char_tv, hobject::PROP_FLAGS_NEC);
+    }
+}
+
 /// ToString then return string primitive (function call) or
 /// a String wrapper object (constructor call).
 fn void builtin_string(BuiltinContext* ctx) {
@@ -1214,6 +1234,7 @@ fn void builtin_string(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
+        obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
         obj.extra.prim.primitive_value.set_string(s);
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
@@ -1221,6 +1242,8 @@ fn void builtin_string(BuiltinContext* ctx) {
         TVal len_tv;
         len_tv.set_fastint((long)s.clen);
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        // Set indexed character properties (ES5 §15.5.5.1)
+        populate_string_indexed_props(obj, s, ctx.heap);
         ctx.result.set_object(obj);
     } else {
         ctx.result.set_string(s);
@@ -3898,6 +3921,7 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) return false;
         HObject* obj = obj_raw;
+        obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
         HString* prim_str = (HString*)val.get_heapptr();
         obj.extra.prim.primitive_value.set_string(prim_str);
@@ -3906,6 +3930,8 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         TVal len_tv;
         len_tv.set_fastint((long)prim_str.clen);
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        // Set indexed character properties (ES5 §15.5.5.1)
+        populate_string_indexed_props(obj, prim_str, ctx.heap);
         ctx.result.set_object(obj);
         return true;
     }
@@ -4003,8 +4029,17 @@ fn void builtin_object(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
+        obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
-        obj.extra.prim.primitive_value.set_string(arg.get_heapptr());
+        HString* prim_str = (HString*)arg.get_heapptr();
+        obj.extra.prim.primitive_value.set_string(prim_str);
+        // Set .length own property (ES5 §15.5.5.1)
+        HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        TVal len_tv;
+        len_tv.set_fastint((long)prim_str.clen);
+        obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        // Set indexed character properties (ES5 §15.5.5.1)
+        populate_string_indexed_props(obj, prim_str, ctx.heap);
         ctx.result.set_object(obj);
         return;
     }
@@ -4494,47 +4529,9 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     }
 
     // String exotic [[GetOwnProperty]] — ES5 §15.5.5.1
-    // Numeric indices on String exotic objects return character descriptors
-    if (obj.get_class() == hobject::ObjClass.STRING &&
-        obj.extra.prim.primitive_value.is_string()) {
-        HString* key_str = (HString*)key;
-        char[] kd = key_str.get_data();
-        // Check if key is a valid numeric index
-        if (kd.len > 0 && kd.len <= 10) {
-            bool is_numeric = true;
-            ulong arr_idx = 0;
-            for (usz i = 0; i < kd.len; i++) {
-                if (kd[i] < '0' || kd[i] > '9') { is_numeric = false; break; }
-                arr_idx = arr_idx * 10 + (ulong)(kd[i] - '0');
-            }
-            if (is_numeric) {
-                HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
-                if (arr_idx < (ulong)prim_str.clen) {
-                    // Return character descriptor: {value, writable:false, enumerable:true, configurable:false}
-                    uint cp = prim_str.char_at((uint)arr_idx);
-                    char[4] cbuf;
-                    uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
-                    uint chash = ctx.heap.hash_string(cbuf[:cblen]);
-                    HString* char_str = ctx.heap.str_table_lookup(cbuf[:cblen], chash);
-                    if (char_str == null) {
-                        HString*? new_s = hstring::hstring_alloc(ctx.heap, cbuf[:cblen], chash);
-                        if (catch alloc_err = new_s) { ctx.result.set_undefined(); return; }
-                        ctx.heap.str_table_insert(new_s);
-                        char_str = new_s;
-                    }
-                    TVal char_tv; char_tv.set_string(char_str);
-                    HObject* desc;
-                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, false, true, false);
-                    if (desc == null) { ctx.result.set_undefined(); return; }
-                    ctx.result.set_object(desc);
-                    return;
-                }
-                // Index out of range → property doesn't exist
-                ctx.result.set_undefined();
-                return;
-            }
-        }
-    }
+    // Numeric indices on String exotic objects return character descriptors.
+    // This runs AFTER the default lookup as a fallback (step 1 of spec: try
+    // default first, then synthesize if not found).
 
     // Look up own property (not prototype chain - don't fall through to array_part
     // unless the key matches a numeric index and this is an Array)
@@ -4592,6 +4589,31 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
             ctx.result.set_object(desc);
             return;
         }
+
+        // String exotic fallback — ES5 §15.5.5.1 step 3-4:
+        // If default lookup returned undefined and P is a string index,
+        // synthesize a character descriptor with writable:true, enumerable:true, configurable:true.
+        if (obj.get_class() == hobject::ObjClass.STRING &&
+            obj.extra.prim.primitive_value.is_string() &&
+            is_numeric && kd.len > 0 && kd.len <= 10) {
+            HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+            if (arr_idx < (ulong)prim_str.clen) {
+                uint cp = prim_str.char_at((uint)arr_idx);
+                char[4] cbuf;
+                uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                HString* char_str = ctx.heap.str_intern(cbuf[:cblen]);
+                if (char_str != null) {
+                    TVal char_tv; char_tv.set_string(char_str);
+                    HObject* desc;
+                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, false, true, false);
+                    if (desc != null) {
+                        ctx.result.set_object(desc);
+                        return;
+                    }
+                }
+            }
+        }
+
         ctx.result.set_undefined();
         return;
     }
