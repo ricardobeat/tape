@@ -1216,6 +1216,11 @@ fn void builtin_string(BuiltinContext* ctx) {
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.string_proto;
         obj.extra.prim.primitive_value.set_string(s);
+        // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
+        HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        TVal len_tv;
+        len_tv.set_fastint((long)s.clen);
+        obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
         ctx.result.set_object(obj);
     } else {
         ctx.result.set_string(s);
@@ -2657,9 +2662,8 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
     }
     buf[total] = 0;
 
-    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf[:total], ctx.heap.hash_string(buf[:total]));
-    if (try result = result_raw) {
-        ctx.heap.str_table_insert(result);
+    HString* result = ctx.heap.str_intern(buf[:total]);
+    if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf);
@@ -2676,9 +2680,8 @@ fn void builtin_string_proto_trimStart(BuiltinContext* ctx) {
     if (start == 0) {
         ctx.result.set_string(s_hstr); return;
     }
-    HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[start..len], ctx.heap.hash_string(data[start..len]));
-    if (try result = result_raw) {
-        ctx.heap.str_table_insert(result);
+    HString* result = ctx.heap.str_intern(data[start..len]);
+    if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
 }
@@ -2694,9 +2697,8 @@ fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
     if (end == len) {
         ctx.result.set_string(s_hstr); return;
     }
-    HString*? result_raw = hstring::hstring_alloc(ctx.heap, data[0..end], ctx.heap.hash_string(data[0..end]));
-    if (try result = result_raw) {
-        ctx.heap.str_table_insert(result);
+    HString* result = ctx.heap.str_intern(data[0..end]);
+    if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
 }
@@ -2777,9 +2779,8 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     buf_ptr[total] = 0;
 
     char[] buf_slice = buf_ptr[:total];
-    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
-    if (try result = result_raw) {
-        ctx.heap.str_table_insert(result);
+    HString* result = ctx.heap.str_intern(buf_slice);
+    if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
@@ -2825,9 +2826,8 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     buf_ptr[total] = 0;
 
     char[] buf_slice = buf_ptr[:total];
-    HString*? result_raw = hstring::hstring_alloc(ctx.heap, buf_slice, ctx.heap.hash_string(buf_slice));
-    if (try result = result_raw) {
-        ctx.heap.str_table_insert(result);
+    HString* result = ctx.heap.str_intern(buf_slice);
+    if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
     ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
@@ -3859,6 +3859,75 @@ fn void builtin_number_isSafeInteger(BuiltinContext* ctx) {
 // Object constructor builtins
 // ============================================================================
 
+/// ToObject — ES5 §9.9
+/// Wraps primitives into proper exotic wrapper objects.
+/// Returns the object directly for OBJECT type. Returns false for null/undefined.
+/// Sets ctx.result and returns true on success. Returns false on allocation failure.
+fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
+    // Already an object
+    if (val.is_object()) {
+        *ctx.result = val;
+        return true;
+    }
+    // null/undefined → caller should throw TypeError
+    if (val.is_null() || val.is_undefined()) {
+        return false;
+    }
+    // Boolean → Boolean exotic object
+    if (val.is_boolean()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
+        if (catch err = obj_raw) return false;
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.bool_proto;
+        obj.extra.prim.primitive_value.set_boolean(val.get_boolean());
+        ctx.result.set_object(obj);
+        return true;
+    }
+    // Number/fastint → Number exotic object
+    if (val.is_number() || val.is_fastint()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
+        if (catch err = obj_raw) return false;
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.number_proto;
+        obj.extra.prim.primitive_value = val;
+        ctx.result.set_object(obj);
+        return true;
+    }
+    // String → String exotic object with .length own property
+    if (val.is_string()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
+        if (catch err = obj_raw) return false;
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.string_proto;
+        HString* prim_str = (HString*)val.get_heapptr();
+        obj.extra.prim.primitive_value.set_string(prim_str);
+        // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
+        HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        TVal len_tv;
+        len_tv.set_fastint((long)prim_str.clen);
+        obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        ctx.result.set_object(obj);
+        return true;
+    }
+    return false;
+}
+
+/// Helper: build a property descriptor object for a data property
+fn void builtin_build_data_descriptor(Heap* heap, HObject** out, TVal value, bool writable, bool enumerable, bool configurable) {
+    HObject*? desc_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = desc_raw) { *out = null; return; }
+    HObject* desc = desc_raw;
+    desc.prototype = heap.object_proto;
+    desc.put_prop(builtin_intern_string(heap, "value"), value, hobject::PROP_FLAGS_WEC);
+    TVal w_tv; w_tv.set_boolean(writable);
+    desc.put_prop(builtin_intern_string(heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
+    TVal e_tv; e_tv.set_boolean(enumerable);
+    desc.put_prop(builtin_intern_string(heap, "enumerable"), e_tv, hobject::PROP_FLAGS_WEC);
+    TVal c_tv; c_tv.set_boolean(configurable);
+    desc.put_prop(builtin_intern_string(heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
+    *out = desc;
+}
+
 /// Object() as function (ES5 §15.2.1.1) or new Object() as constructor (§15.2.2.1).
 /// If value is null/undefined/absent, returns a new empty Object.
 /// If value is already an Object, returns it.
@@ -3968,14 +4037,12 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives
-        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err = wrapped) {
+        // ToObject wrapper for primitives — use proper exotic class
+        if (!builtin_to_object(ctx, arg)) {
             ctx.result.set_undefined();
             return;
         }
-        obj = wrapped;
-        obj.prototype = ctx.heap.object_proto;
+        obj = (HObject*)ctx.result.get_heapptr();
     }
     // First pass: count enumerable own properties (both named and dense array indices)
     uint count = 0;
@@ -4018,13 +4085,11 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
                 ctx.result.set_undefined();
                 return;
             }
-            uint hash = ctx.heap.hash_string(buf[..len]);
-            HString*? key = hstring::hstring_alloc(ctx.heap, buf[..len], hash);
-            if (catch err = key) {
+            HString* key = ctx.heap.str_intern(buf[..len]);
+            if (key == null) {
                 ctx.result.set_undefined();
                 return;
             }
-            ctx.heap.str_table_insert(key);
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -4084,14 +4149,12 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives
-        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err = wrapped) {
+        // ToObject wrapper for primitives — use proper exotic class
+        if (!builtin_to_object(ctx, arg)) {
             ctx.result.set_undefined();
             return;
         }
-        obj = wrapped;
-        obj.prototype = ctx.heap.object_proto;
+        obj = (HObject*)ctx.result.get_heapptr();
     }
     // First pass: count all own properties (named, both enumerable and non-enumerable)
     uint count = 0;
@@ -4134,13 +4197,11 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                 ctx.result.set_undefined();
                 return;
             }
-            uint hash = ctx.heap.hash_string(buf[..len]);
-            HString*? key = hstring::hstring_alloc(ctx.heap, buf[..len], hash);
-            if (catch err = key) {
+            HString* key = ctx.heap.str_intern(buf[..len]);
+            if (key == null) {
                 ctx.result.set_undefined();
                 return;
             }
-            ctx.heap.str_table_insert(key);
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -4314,17 +4375,13 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         } else if (key_val.is_fastint()) {
             int len = libc::snprintf(&key_buf, 64, "%ld", key_val.get_fastint());
             if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
-            HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-            if (catch err2 = key_str) { ctx.result.set_undefined(); return; }
-            ctx.heap.str_table_insert(key_str);
-            key = key_str;
+            key = ctx.heap.str_intern(key_buf[:len]);
+            if (key == null) { ctx.result.set_undefined(); return; }
         } else if (key_val.is_number()) {
             int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
             if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
-            HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-            if (catch err3 = key_str) { ctx.result.set_undefined(); return; }
-            ctx.heap.str_table_insert(key_str);
-            key = key_str;
+            key = ctx.heap.str_intern(key_buf[:len]);
+            if (key == null) { ctx.result.set_undefined(); return; }
         } else {
             ctx.result.set_undefined();
             return;
@@ -4385,21 +4442,24 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     }
 
     if (!arg0.is_object()) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err1 = err_raw) {
+        // ToObject: wrap primitives into proper exotic wrapper objects (ES5 §15.2.3.3)
+        if (arg0.is_null() || arg0.is_undefined()) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyDescriptor called on non-object");
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+            return;
+        }
+        if (!builtin_to_object(ctx, arg0)) {
             ctx.result.set_undefined();
             return;
         }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyDescriptor called on non-object");
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
-        return;
+        arg0 = *ctx.result;
     }
     HObject* obj = (HObject*)arg0.get_heapptr();
 
@@ -4419,30 +4479,61 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
-        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-        if (catch err2 = key_str) {
-            ctx.result.set_undefined();
-            return;
-        }
-        ctx.heap.str_table_insert(key_str);
-        key = key_str;
+        key = ctx.heap.str_intern(key_buf[:len]);
     } else if (key_val.is_number()) {
         int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
         }
-        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-        if (catch err3 = key_str) {
-            ctx.result.set_undefined();
-            return;
-        }
-        ctx.heap.str_table_insert(key_str);
-        key = key_str;
+        key = ctx.heap.str_intern(key_buf[:len]);
     } else {
         // For other types (boolean, null, undefined), just return undefined
         ctx.result.set_undefined();
         return;
+    }
+
+    // String exotic [[GetOwnProperty]] — ES5 §15.5.5.1
+    // Numeric indices on String exotic objects return character descriptors
+    if (obj.get_class() == hobject::ObjClass.STRING &&
+        obj.extra.prim.primitive_value.is_string()) {
+        HString* key_str = (HString*)key;
+        char[] kd = key_str.get_data();
+        // Check if key is a valid numeric index
+        if (kd.len > 0 && kd.len <= 10) {
+            bool is_numeric = true;
+            ulong arr_idx = 0;
+            for (usz i = 0; i < kd.len; i++) {
+                if (kd[i] < '0' || kd[i] > '9') { is_numeric = false; break; }
+                arr_idx = arr_idx * 10 + (ulong)(kd[i] - '0');
+            }
+            if (is_numeric) {
+                HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+                if (arr_idx < (ulong)prim_str.clen) {
+                    // Return character descriptor: {value, writable:false, enumerable:true, configurable:false}
+                    uint cp = prim_str.char_at((uint)arr_idx);
+                    char[4] cbuf;
+                    uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                    uint chash = ctx.heap.hash_string(cbuf[:cblen]);
+                    HString* char_str = ctx.heap.str_table_lookup(cbuf[:cblen], chash);
+                    if (char_str == null) {
+                        HString*? new_s = hstring::hstring_alloc(ctx.heap, cbuf[:cblen], chash);
+                        if (catch alloc_err = new_s) { ctx.result.set_undefined(); return; }
+                        ctx.heap.str_table_insert(new_s);
+                        char_str = new_s;
+                    }
+                    TVal char_tv; char_tv.set_string(char_str);
+                    HObject* desc;
+                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, false, true, false);
+                    if (desc == null) { ctx.result.set_undefined(); return; }
+                    ctx.result.set_object(desc);
+                    return;
+                }
+                // Index out of range → property doesn't exist
+                ctx.result.set_undefined();
+                return;
+            }
+        }
     }
 
     // Look up own property (not prototype chain - don't fall through to array_part
@@ -4783,26 +4874,14 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
-        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-        if (catch err2 = key_str) {
-            ctx.result.set_undefined();
-            return;
-        }
-        ctx.heap.str_table_insert(key_str);
-        key = key_str;
+        key = ctx.heap.str_intern(key_buf[:len]);
     } else if (key_val.is_number()) {
         int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
         if (len < 0 || len >= 64) {
             ctx.result.set_undefined();
             return;
         }
-        HString*? key_str = hstring::hstring_alloc(ctx.heap, key_buf[:len], 0);
-        if (catch err3 = key_str) {
-            ctx.result.set_undefined();
-            return;
-        }
-        ctx.heap.str_table_insert(key_str);
-        key = key_str;
+        key = ctx.heap.str_intern(key_buf[:len]);
     } else {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (catch err4 = err_raw) {
@@ -5563,11 +5642,9 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives
-        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
-        obj = wrapped;
-        obj.prototype = ctx.heap.object_proto;
+        // ToObject wrapper for primitives — use proper exotic class
+        if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
+        obj = (HObject*)ctx.result.get_heapptr();
     }
     // Count enumerable own properties
     uint count = 0;
@@ -5609,10 +5686,8 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         if (!obj.array_part()[i].is_undefined()) {
             int slen = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
             if (slen < 0) continue;
-            uint hash = ctx.heap.hash_string(buf[..slen]);
-            HString*? key_s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
-            if (catch err5 = key_s) continue;
-            ctx.heap.str_table_insert(key_s);
+            HString* key_s = ctx.heap.str_intern(buf[..slen]);
+            if (key_s == null) continue;
             HObject*? pair_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (catch err6 = pair_raw2) continue;
             HObject* pair2 = pair_raw2;
@@ -5984,12 +6059,7 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
             char[32] buf;
             int slen = libc::snprintf(&buf[0], 32, "%g", key_val.get_number());
             if (slen > 0) {
-                uint hash = ctx.heap.hash_string(buf[..slen]);
-                HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
-                if (try ss = s) {
-                    ctx.heap.str_table_insert(ss);
-                    key_str = ss;
-                }
+                key_str = ctx.heap.str_intern(buf[..slen]);
             }
         } else if (key_val.is_object()) {
             // Symbol objects: skip per spec (Symbol keys are not string-coerced)
@@ -5999,13 +6069,8 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
             char[64] buf;
             char* repr = "[object Object]";
             int slen = 15;
-            uint hash = ctx.heap.hash_string(buf[..slen]);
             libc::memcpy(&buf, repr, (usz)slen);
-            HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
-            if (try ss = s) {
-                ctx.heap.str_table_insert(ss);
-                key_str = ss;
-            }
+            key_str = ctx.heap.str_intern(buf[..slen]);
         } else {
             // ToPropertyKey: toString for null/undefined/boolean
             char[64] buf;
@@ -6020,11 +6085,7 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
             }
             uint hash = ctx.heap.hash_string(buf[..slen]);
             libc::memcpy(&buf, repr, (usz)slen);
-            HString*? s = hstring::hstring_alloc(ctx.heap, buf[..slen], hash);
-            if (try ss = s) {
-                ctx.heap.str_table_insert(ss);
-                key_str = ss;
-            }
+            key_str = ctx.heap.str_intern(buf[..slen]);
         }
         if (key_str != null) {
             obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
@@ -14156,12 +14217,10 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
     // Set .value — single character string
     HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
     char[1] ch = { data[idx] };
-    uint hash = heap.hash_string(ch[:1]);
-    HString*? char_str = hstring::hstring_alloc(heap, ch[:1], hash);
-    if (try s = char_str) {
-        heap.str_table_insert(s);
+    HString* char_str = heap.str_intern(ch[:1]);
+    if (char_str != null) {
         TVal value_tv;
-        value_tv.set_string(s);
+        value_tv.set_string(char_str);
         result.put_prop(value_key, value_tv, hobject::PROP_FLAGS_WEC);
     }
 
@@ -14774,24 +14833,20 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
 
 fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     char[] print_name = "print";
-    uint print_hash = heap.hash_string(print_name);
-    HString*? print_key = hstring::hstring_alloc(heap, print_name, print_hash);
-    if (catch err = print_key) {
+    HString* print_key = heap.str_intern(print_name);
+    if (print_key == null) {
         return false;
     }
-    heap.str_table_insert(print_key);
 
     TVal print_val;
     print_val.set_lightfunc((void*)(usz)BUILTIN_PRINT);
     env::env_declare(global_env, print_key, print_val);
 
     char[] console_name = "console";
-    uint console_hash = heap.hash_string(console_name);
-    HString*? console_key = hstring::hstring_alloc(heap, console_name, console_hash);
-    if (catch err = console_key) {
+    HString* console_key = heap.str_intern(console_name);
+    if (console_key == null) {
         return false;
     }
-    heap.str_table_insert(console_key);
 
     HObject*? console_obj = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = console_obj) {
@@ -14802,12 +14857,10 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     console_val.set_object(console_obj);
 
     char[] log_name = "log";
-    uint log_hash = heap.hash_string(log_name);
-    HString*? log_key = hstring::hstring_alloc(heap, log_name, log_hash);
-    if (catch err = log_key) {
+    HString* log_key = heap.str_intern(log_name);
+    if (log_key == null) {
         return false;
     }
-    heap.str_table_insert(log_key);
 
     TVal log_val;
     log_val.set_lightfunc((void*)(usz)BUILTIN_CONSOLE_LOG);

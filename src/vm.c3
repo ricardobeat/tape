@@ -418,17 +418,7 @@ fn TVal get_prop_with_proto(HObject* obj, void* key) {
 
 /// Intern a raw byte slice into the VM's string table.
 fn HString* intern_string(Vm* vm, char[] data) {
-    uint hash = vm.heap.hash_string(data);
-    HString* existing = vm.heap.str_table_lookup(data, hash);
-    if (existing != null) {
-        return existing;
-    }
-    HString*? new_s = hstring::hstring_alloc(vm.heap, data, hash);
-    if (try s = new_s) {
-        vm.heap.str_table_insert(s);
-        return s;
-    }
-    return null;
+    return vm.heap.str_intern(data);
 }
 
 /// Return the interned typeof string for a TVal per ES spec.
@@ -493,18 +483,7 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
     if (len < 0 || len >= 64) {
         return null;
     }
-    char[] s = buf[:len];
-    uint hash = vm.heap.hash_string(s);
-    HString* existing = vm.heap.str_table_lookup(s, hash);
-    if (existing != null) {
-        return existing;
-    }
-    HString*? new_s = hstring::hstring_alloc(vm.heap, s, hash);
-    if (try hstr = new_s) {
-        vm.heap.str_table_insert(hstr);
-        return hstr;
-    }
-    return null;
+    return vm.heap.str_intern(buf[:len]);
 }
 
 /// Convert a FASTINT to an interned HString* using fast int-to-string.
@@ -514,18 +493,7 @@ fn HString*? vm_fastint_to_string(Vm* vm, long val) {
     if (len <= 0 || len >= (int)types::FORMAT_BUF) {
         return null;
     }
-    char[] s = buf[:len];
-    uint hash = vm.heap.hash_string(s);
-    HString* existing = vm.heap.str_table_lookup(s, hash);
-    if (existing != null) {
-        return existing;
-    }
-    HString*? new_s = hstring::hstring_alloc(vm.heap, s, hash);
-    if (try hstr = new_s) {
-        vm.heap.str_table_insert(hstr);
-        return hstr;
-    }
-    return null;
+    return vm.heap.str_intern(buf[:len]);
 }
 
 /// Convert a TVal to an interned HString*.
@@ -2108,6 +2076,25 @@ fn TVal? Vm.run(Vm* vm) {
                         ra.set_fastint((long)hobj.array_used);
                         break;
                     }
+                    // STRING exotic: numeric index returns character from primitive value
+                    if (hobj.get_class() == hobject::ObjClass.STRING && (rc.is_fastint() || rc.is_number())) {
+                        long sidx = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
+                        if (sidx >= 0 && hobj.extra.prim.primitive_value.is_string()) {
+                            HString* prim_str = (HString*)hobj.extra.prim.primitive_value.get_heapptr();
+                            if (sidx < (long)prim_str.clen) {
+                                uint cp = prim_str.char_at((uint)sidx);
+                                char[4] sbuf;
+                                uint sblen = hstring::encode_codepoint(cp, sbuf[:4]);
+                                HString* interned = intern_string(vm, sbuf[:sblen]);
+                                if (interned != null) {
+                                    ra.set_string(interned);
+                                } else {
+                                    return VM_ERROR~;
+                                }
+                                break;
+                            }
+                        }
+                    }
                     hobject::PropLookupResult res = hobj.get_prop_or_accessor_proto(key, true);
                     if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                         TVal obj_val;
@@ -2185,12 +2172,47 @@ fn TVal? Vm.run(Vm* vm) {
                         ra.set_undefined();
                     }
                 } else {
-                    // Auto-box string primitive: walk String.prototype chain
+                    // Auto-box string primitive
+                    HString* str_prim = (HString*)rb.get_heapptr();
+
+                    // Fast path: numeric index → character at index
+                    long str_idx = -1;
+                    if (rc.is_fastint()) {
+                        str_idx = rc.get_fastint();
+                    } else if (rc.is_number()) {
+                        double d = rc.get_number();
+                        if (d >= 0 && d == (double)(long)d) {
+                            str_idx = (long)d;
+                        }
+                    }
+                    if (str_idx >= 0 && str_idx < (long)str_prim.clen) {
+                        uint cp = str_prim.char_at((uint)str_idx);
+                        char[4] cbuf;
+                        uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                        HString* interned = intern_string(vm, cbuf[:cblen]);
+                        if (interned != null) {
+                            ra.set_string(interned);
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+
                     HString* key = get_prop_key(vm, rc);
-                    if (key != null && vm.heap.string_proto != null) {
-                        TVal? result = vm.heap.string_proto.get_prop_proto(key);
-                        if (try v = result) {
-                            *ra = v;
+                    if (key != null) {
+                        // Fast path: .length → string character count
+                        if (key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra.set_fastint((long)h_str.clen);
+                            break;
+                        }
+                        // Slow path: walk String.prototype chain
+                        if (vm.heap.string_proto != null) {
+                            TVal? result = vm.heap.string_proto.get_prop_proto(key);
+                            if (try v = result) {
+                                *ra = v;
+                            } else {
+                                ra.set_undefined();
+                            }
                         } else {
                             ra.set_undefined();
                         }
@@ -2932,8 +2954,45 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            // Handle bound function objects — dispatch to builtin_bound_call
+            if (hobj.extra.func.callable_kind == hobject::CallableKind.BOUND_FN) {
+                if (hobj.extra.func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                    builtins::BuiltinContext ctx;
+                    ctx.vm = vm;
+                    ctx.regs = vm.valstack;
+                    ctx.base_reg = (ushort)((act.bottom - vm.valstack) + callee_reg + 2);
+                    ctx.argc = (ushort)nargs;
+                    ctx.result = regs_base + result_reg;
+                    ctx.heap = vm.heap;
+                    ctx.this_val = regs_base[callee_reg + 1];
+                    ctx.is_constructor = false;
+                    ctx.needs_re_dispatch = false;
+                    ctx.re_nargs = 0;
+                    ctx.global_env = vm.global_env;
+                    ctx.should_throw = false;
+                    ctx.callee_obj = hobj;
+                    builtins::dispatch_builtin(fn_idx, &ctx);
+
+                    if (ctx.should_throw) {
+                        if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+
+                    if (ctx.needs_re_dispatch) {
+                        func_val = regs_base[callee_reg];
+                        hobj = (HObject*)func_val.get_heapptr();
+                        nargs = ctx.re_nargs;
+                        // Fall through to compiled function handling below
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -3604,8 +3663,45 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            // Handle builtin function objects (e.g., Number as OBJECT tag)
-            if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            // Handle bound function objects — dispatch to builtin_bound_call
+            if (hobj.extra.func.callable_kind == hobject::CallableKind.BOUND_FN) {
+                if (hobj.extra.func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                    builtins::BuiltinContext ctx;
+                    ctx.vm = vm;
+                    ctx.regs = vm.valstack;
+                    ctx.base_reg = (ushort)((act.bottom - vm.valstack) + callee_reg + 2);
+                    ctx.argc = (ushort)nargs;
+                    ctx.result = regs_base + result_reg;
+                    ctx.heap = vm.heap;
+                    ctx.this_val = regs_base[callee_reg + 1];
+                    ctx.is_constructor = false;
+                    ctx.needs_re_dispatch = false;
+                    ctx.re_nargs = 0;
+                    ctx.global_env = vm.global_env;
+                    ctx.should_throw = false;
+                    ctx.callee_obj = hobj;
+                    builtins::dispatch_builtin(fn_idx, &ctx);
+
+                    if (ctx.should_throw) {
+                        if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+
+                    if (ctx.needs_re_dispatch) {
+                        func_val = regs_base[callee_reg];
+                        hobj = (HObject*)func_val.get_heapptr();
+                        nargs = ctx.re_nargs;
+                        // Fall through to compiled function handling below
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;

@@ -1640,6 +1640,24 @@ fn void Heap.str_table_insert(&self, HString* hstr) {
     self.str_table_used++;
 }
 
+/**
+ * Intern a string: return the existing copy if one exists, otherwise
+ * allocate, insert, and return the new copy.  Returns null on alloc failure.
+ */
+fn HString* Heap.str_intern(&self, char[] data) {
+    uint hash = self.hash_string(data);
+    HString* existing = self.str_table_lookup(data, hash);
+    if (existing != null) {
+        return existing;
+    }
+    HString*? new_s = hstring::hstring_alloc(self, data, hash);
+    if (try s = new_s) {
+        self.str_table_insert(s);
+        return s;
+    }
+    return null;
+}
+
 // ============================================================================
 // PRNG (xorshift32)
 // ============================================================================

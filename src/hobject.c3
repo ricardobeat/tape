@@ -240,6 +240,14 @@ const PropFlags PROP_FLAGS_NWC = {
     .is_accessor  = false
 };
 
+/// Non-writable, non-enumerable, non-configurable — String exotic .length (ES5 §15.5.5.1)
+const PropFlags PROP_FLAGS_NNC = {
+    .writable     = false,
+    .enumerable   = false,
+    .configurable = false,
+    .is_accessor  = false
+};
+
 /// Result of searching for an accessor property on the prototype chain.
 struct AccessorResult {
     /// The getter or setter TVal (function), or undefined if not found.
