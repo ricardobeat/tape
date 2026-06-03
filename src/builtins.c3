@@ -171,7 +171,10 @@ const uint BUILTIN_REGEXP_PROTO_GET_DOTALL     = 282;
 const uint BUILTIN_REGEXP_PROTO_GET_STICKY     = 283;
 const uint BUILTIN_REGEXP_PROTO_GET_UNICODE    = 284;
 
-const uint BUILTIN_COUNT                         = 285;
+// Array.from (ES6 §22.1.2.1)
+const uint BUILTIN_ARRAY_FROM                  = 285;
+
+const uint BUILTIN_COUNT                         = 286;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -6850,6 +6853,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 270: return { "next", 0 };
         case 271: return { "[Symbol.iterator]", 0 };
         case 272: return { "[Symbol.iterator]", 0 };
+        case 285: return { "from", 1 };
         default: return { "", -1 };
     }
 }
@@ -8122,6 +8126,298 @@ fn void builtin_math_imul(BuiltinContext* ctx) {
     int a = (int)(uint)x;
     int b = (int)(uint)y;
     ctx.result.set_fastint((long)(a * b));
+}
+
+/// Array.from(items[, mapfn[, thisArg]]) — ES6 §22.1.2.1
+///
+/// Creates a new Array from an iterable or array-like object.
+/// Supports an optional mapfn applied to each element.
+fn void builtin_array_from(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Step 1: Get items (first arg) — use undefined if missing
+    TVal items;
+    if (ctx.argc > 0) {
+        items = ctx.regs[ctx.base_reg];
+    } else {
+        items.set_undefined();
+    }
+
+    // Step 2: Check mapfn (second arg, optional)
+    TVal mapfn;
+    bool mapping = false;
+    TVal this_arg;
+    if (ctx.argc > 1) {
+        mapfn = ctx.regs[ctx.base_reg + 1];
+        if (!mapfn.is_undefined() && !mapfn.is_null()) {
+            bool callable = false;
+            if (mapfn.is_lightfunc()) {
+                callable = true;
+            } else if (mapfn.is_object() && mapfn.get_heapptr() != null) {
+                HObject* fn_obj = (HObject*)mapfn.get_heapptr();
+                callable = fn_obj.is_callable();
+            }
+            if (!callable) {
+                HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(heap, "The second argument to Array.from is not callable");
+                    if (msg_str != null) {
+                        TVal msg_val;
+                        msg_val.set_string(msg_str);
+                        HString* msg_key = builtin_intern_string(heap, "message");
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                }
+                ctx.result.set_undefined();
+                return;
+            }
+            mapping = true;
+            if (ctx.argc > 2) {
+                this_arg = ctx.regs[ctx.base_reg + 2];
+            } else {
+                this_arg.set_undefined();
+            }
+        }
+    }
+
+    // Step 3: Try iterable path — get @@iterator from items
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    bool use_iter = false;
+    TVal iterator;
+    TVal iterable = items;
+
+    if (iter_sym != null) {
+        // GetMethod(items, @@iterator) — ToObject if needed for property access
+        HObject* items_obj = null;
+        if (items.is_object() && items.get_heapptr() != null) {
+            items_obj = (HObject*)items.get_heapptr();
+        } else if (!items.is_undefined() && !items.is_null()) {
+            // Wrap primitive in temporary object to look up @@iterator
+            HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+            if (try w = wrapped) {
+                items_obj = w;
+                // For strings, set the wrapped primitive value
+                if (items.is_string()) {
+                    items_obj.extra.prim.primitive_value = items;
+                }
+                HString* proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+                if (proto_key != null && heap.string_proto != null) {
+                    TVal proto_tv; proto_tv.set_object(heap.string_proto);
+                    PropFlags pf; pf.writable = false; pf.enumerable = false; pf.configurable = false; pf.is_accessor = false;
+                    items_obj.put_prop(proto_key, proto_tv, pf);
+                }
+            }
+        }
+
+        if (items_obj != null) {
+            TVal? iter_method_opt = items_obj.get_prop_proto(iter_sym);
+            if (try iter_method = iter_method_opt) {
+                bool callable = false;
+                if (iter_method.is_lightfunc()) {
+                    callable = true;
+                } else if (iter_method.is_object() && iter_method.get_heapptr() != null) {
+                    HObject* fn_hobj = (HObject*)iter_method.get_heapptr();
+                    callable = fn_hobj.is_callable();
+                }
+                if (callable && heap.call_fn != null && ctx.vm != null) {
+                    iterator = heap.call_fn(ctx.vm, iter_method, null, 0, items);
+                    use_iter = true;
+                }
+            }
+        }
+    }
+
+    if (use_iter) {
+        // === Iterable path ===
+        HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+        HObject* arr = arr_raw;
+        arr.prototype = heap.array_proto;
+
+        HString* next_key = builtin_intern_string(heap, "next");
+        HString* done_key = builtin_intern_string(heap, "done");
+        HString* value_key = builtin_intern_string(heap, "value");
+
+        uint k = 0;
+        while (heap.call_fn != null && ctx.vm != null) {
+            if (!iterator.is_object() || iterator.get_heapptr() == null) break;
+            HObject* iter_obj = (HObject*)iterator.get_heapptr();
+
+            TVal? next_method_opt = iter_obj.get_prop_proto(next_key);
+            TVal next_method;
+            if (try nm = next_method_opt) {
+                next_method = nm;
+            } else { break; }
+
+            bool callable = false;
+            if (next_method.is_lightfunc()) {
+                callable = true;
+            } else if (next_method.is_object() && next_method.get_heapptr() != null) {
+                callable = ((HObject*)next_method.get_heapptr()).is_callable();
+            }
+            if (!callable) break;
+
+            TVal result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+            if (!result.is_object() || result.get_heapptr() == null) break;
+
+            HObject* result_obj = (HObject*)result.get_heapptr();
+            TVal? done_opt = result_obj.get_prop_proto(done_key);
+            bool done = false;
+            if (try dv = done_opt) {
+                done = builtin_to_boolean(&dv);
+            }
+            if (done) break;
+
+            TVal? value_opt = result_obj.get_prop_proto(value_key);
+            TVal next_value;
+            if (try vv = value_opt) {
+                next_value = vv;
+            } else { break; }
+
+            // Apply mapfn if mapping
+            TVal final_value = next_value;
+            if (mapping) {
+                TVal[2] map_args;
+                map_args[0] = next_value;
+                TVal k_tv; k_tv.set_fastint((long)k);
+                map_args[1] = k_tv;
+                final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
+            }
+
+            // arr[k] = final_value
+            char[16] buf;
+            int slen = libc::snprintf(&buf, 16, "%u", k);
+            if (slen > 0 && slen < 16) {
+                HString* pk = builtin_intern_string(heap, buf[:slen]);
+                arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
+            }
+            k++;
+        }
+
+        HString* len_key = builtin_intern_string(heap, "length");
+        if (len_key != null) {
+            TVal len_tv; len_tv.set_fastint((long)k);
+            arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+        }
+
+        ctx.result.set_object(arr);
+        return;
+    }
+
+    // === Array-like path ===
+    // Step: items must not be null or undefined
+    if (items.is_undefined() || items.is_null()) {
+        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(heap, "Cannot convert undefined or null to object");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+        }
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // ToObject — handle strings specially (direct char access)
+    HObject* array_like;
+    bool is_string_prim = items.is_string();
+    HString* str_val = null;
+    if (is_string_prim) {
+        str_val = (HString*)items.get_heapptr();
+    } else if (items.is_object() && items.get_heapptr() != null) {
+        array_like = (HObject*)items.get_heapptr();
+    } else {
+        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = wrapped) { ctx.result.set_undefined(); return; }
+        array_like = wrapped;
+        array_like.extra.prim.primitive_value = items;
+    }
+
+    // Get .length
+    HString* len_key = builtin_intern_string(heap, "length");
+    uint len = 0;
+    if (is_string_prim) {
+        len = str_val.clen;
+    } else if (len_key != null) {
+        TVal? len_opt = array_like.get_prop_proto(len_key);
+        if (try lv = len_opt) {
+            double len_d = builtin_to_number_getdouble(ctx, &lv);
+            if (len_d <= 0) {
+                len = 0;
+            } else if (math::is_inf(len_d)) {
+                len = 0xFFFFFFFF;  // max uint
+            } else if (len_d > (double)0xFFFFFFFF) {
+                len = 0xFFFFFFFF;
+            } else {
+                len = (uint)(long)len_d;
+            }
+        }
+    }
+
+    // Create result array
+    HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = heap.array_proto;
+
+    for (uint k = 0; k < len; k++) {
+        char[16] buf;
+        int slen = libc::snprintf(&buf, 16, "%u", k);
+        TVal k_value;
+        k_value.set_undefined();
+
+        if (is_string_prim && str_val != null) {
+            // String primitive: direct character access by byte index
+            char* data = str_val.get_cstr();
+            uint blen = str_val.blen;
+            if (k < blen) {
+                char[2] char_buf;
+                char_buf[0] = data[k];
+                char_buf[1] = 0;
+                HString* ch_str = builtin_intern_string(heap, char_buf[:1]);
+                if (ch_str != null) k_value.set_string(ch_str);
+            }
+        } else if (slen > 0 && slen < 16) {
+            HString* pk = builtin_intern_string(heap, buf[:slen]);
+            TVal? elem_opt = array_like.get_prop_proto(pk);
+            if (try elem = elem_opt) {
+                k_value = elem;
+            }
+        }
+
+        TVal final_value = k_value;
+        if (mapping) {
+            TVal[2] map_args;
+            map_args[0] = k_value;
+            TVal k_tv; k_tv.set_fastint((long)k);
+            map_args[1] = k_tv;
+            if (heap.call_fn != null && ctx.vm != null) {
+                final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
+            }
+        }
+
+        if (slen > 0 && slen < 16) {
+            HString* pk = builtin_intern_string(heap, buf[:slen]);
+            arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
+        }
+    }
+
+    // Set arr.length = len
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint((long)len);
+        arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    ctx.result.set_object(arr);
 }
 
 /// Array.isArray(arg) — ES6 §22.1.2.2
@@ -14868,6 +15164,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_string_proto_repeat(ctx);
         case BUILTIN_ARRAY_OF:
             builtin_array_of(ctx);
+        case BUILTIN_ARRAY_FROM:
+            builtin_array_from(ctx);
         case BUILTIN_ARRAY_PROTO_FILL:
             builtin_array_proto_fill(ctx);
         case BUILTIN_ARRAY_PROTO_INCLUDES:
@@ -16627,6 +16925,13 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     TVal of_tv;
     of_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_OF);
     arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WC);
+
+    // Add Array.from (ES6 §22.1.2.1) as static method on the constructor
+    HString* from_key = builtin_intern_string(heap, "from");
+    if (from_key == null) return false;
+    TVal from_tv;
+    from_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_FROM);
+    arr.put_prop(from_key, from_tv, hobject::PROP_FLAGS_WC);
 
     // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Array");
