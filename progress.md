@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 110 (Array.from implementation)
+**Last Updated:** Session 111 (%IteratorPrototype% implementation)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 110, 2026-06-03)
+## Summary (after Session 111, 2026-06-03)
 
 | Metric | Value |
 |---|---|
@@ -214,6 +214,22 @@ Implemented `Array.from(items[, mapfn[, thisArg]])` with dual-path algorithm:
 - **Metadata**: Registered `BUILTIN_ARRAY_FROM=285` with arity=1, registered as static method on
   `Array` constructor via lightfunc. +12 test262 passes in Phase 5 (2410 from 2398).
 - Verified both nanbox and nonanbox builds pass. No regressions in `quick.sh` (177/106/56).
+
+### Session 111: %IteratorPrototype% shared prototype (ES6 §25.1.2)
+
+Implemented `%IteratorPrototype%` — the shared prototype for all built-in iterators:
+- **Heap field**: Added `iterator_proto` to Heap struct with init and GC mark.
+- **`%IteratorPrototype%` object**: Created in `register_iterator_prototype()` before prototype wiring,
+  stored in `heap.iterator_proto`. Prototype set to `Object.prototype` during wiring.
+- **`[Symbol.iterator]()` method**: Added `BUILTIN_ITERATOR_PROTO_SYMBOL_ITER` (builtin index 286)
+  that returns `this` — enables `iter[Symbol.iterator]() === iter` per spec.
+- **Wired to iterators**: Changed `iter.prototype = null` to `iter.prototype = heap.iterator_proto`
+  for both `ARRAY_ITERATOR` and `STRING_ITERATOR` creation sites (3 locations: `builtin_array_proto_symbol_iter`,
+  `create_array_iterator`, `builtin_string_proto_symbol_iter`).
+- **Dependency for Map/Set iterators**: This prototype is required before Map/Set iterator methods
+  can return proper iterator objects instead of Arrays.
+- Verified: `Object.getPrototypeOf(iter) !== null` now true, `iter[Symbol.iterator]() === iter` works.
+  No regressions in quick.sh (177/106/56).
 
 ### Session 109: Fix Number wrapper valueOf/toPrimitive fastint corruption
 Fixed 3 identical bugs where `primitive_value.get_number()` was called when the TVal might

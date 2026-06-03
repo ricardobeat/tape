@@ -174,7 +174,10 @@ const uint BUILTIN_REGEXP_PROTO_GET_UNICODE    = 284;
 // Array.from (ES6 §22.1.2.1)
 const uint BUILTIN_ARRAY_FROM                  = 285;
 
-const uint BUILTIN_COUNT                         = 286;
+// %IteratorPrototype%[@@iterator] (ES6 §25.1.2.1)
+const uint BUILTIN_ITERATOR_PROTO_SYMBOL_ITER  = 286;
+
+const uint BUILTIN_COUNT                         = 287;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -14709,7 +14712,7 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
     HObject* iter = iter_raw;
     iter.iterator_target = iterable;
     iter.iterator_index = 0;
-    iter.prototype = null;
+    iter.prototype = heap.iterator_proto;
 
     // Add .next method as an own property
     HString* next_key = builtin_intern_string(heap, "next");
@@ -14748,7 +14751,7 @@ fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
     iter.iterator_target = iterable;
     iter.iterator_index = 0;
     iter.iterator_kind = kind;
-    iter.prototype = null;
+    iter.prototype = heap.iterator_proto;
     HString* next_key = builtin_intern_string(heap, "next");
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -14808,7 +14811,7 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     // Store the string as primitive_value (for GC tracing via mark_tval)
     iter.extra.prim.primitive_value.set_string(str_data);
     iter.iterator_index = 0;
-    iter.prototype = null;
+    iter.prototype = heap.iterator_proto;
 
     // Add .next method as an own property
     HString* next_key = builtin_intern_string(heap, "next");
@@ -14826,6 +14829,11 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     }
 
     ctx.result.set_object(iter);
+}
+
+/// %IteratorPrototype%[@@iterator] (ES6 §25.1.2.1) — returns `this`.
+fn void builtin_iterator_proto_symbol_iter(BuiltinContext* ctx) {
+    *ctx.result = ctx.this_val;
 }
 
 /// Array iterator .next() — returns {value, done}.
@@ -15572,6 +15580,8 @@ fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
             builtin_array_proto_entries(ctx);
         case BUILTIN_OBJECT_FROMENTRIES:
             builtin_object_fromEntries(ctx);
+        case BUILTIN_ITERATOR_PROTO_SYMBOL_ITER:
+            builtin_iterator_proto_symbol_iter(ctx);
         default:
             ctx.result.set_undefined();
     }
@@ -15638,6 +15648,48 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
         }
     }
     ctx.result.set_undefined();
+}
+
+/// Create %IteratorPrototype% (ES6 §25.1.2).
+/// %IteratorPrototype% has [Symbol.iterator]() that returns `this`.
+fn bool register_iterator_prototype(Heap* heap) {
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = null;  // will be wired to object_proto later
+    heap.iterator_proto = proto;
+
+    // Add [Symbol.iterator]() → returns `this`
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    if (iter_sym != null) {
+        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (catch err = fn_raw) return false;
+        HObject* fn_obj = fn_raw;
+        fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ITERATOR_PROTO_SYMBOL_ITER;
+        fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
+        fn_obj.flags.callable = true;
+        fn_obj.prototype = heap.function_proto;
+        // Set .name
+        HString* name_key = builtin_intern_string(heap, "name");
+        HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
+        if (name_key != null && name_val != null) {
+            TVal name_tv;
+            name_tv.set_string(name_val);
+            fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+        }
+        // Set .length = 0
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key != null) {
+            TVal len_tv;
+            len_tv.set_fastint(0);
+            fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+        }
+        TVal iter_tv;
+        iter_tv.set_object(fn_obj);
+        proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    return true;
 }
 
 fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
@@ -15767,6 +15819,10 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // separately as a simple builtin).
     if (!register_generator_constructor(global_env, heap)) return false;
 
+    // Register %IteratorPrototype% (ES6 §25.1.2) — shared prototype for all
+    // built-in iterators, providing [Symbol.iterator]() that returns `this`.
+    if (!register_iterator_prototype(heap)) return false;
+
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
     if (heap.bool_proto != null)   heap.bool_proto.prototype = heap.object_proto;
@@ -15783,6 +15839,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.symbol_proto != null) heap.symbol_proto.prototype = heap.object_proto;
     if (heap.promise_proto != null) heap.promise_proto.prototype = heap.object_proto;
     if (heap.generator_proto != null) heap.generator_proto.prototype = heap.object_proto;
+    if (heap.iterator_proto != null)  heap.iterator_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects
