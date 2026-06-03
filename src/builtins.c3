@@ -593,7 +593,7 @@ fn TVal to_primitive_value_local(TVal* val) @public {
         if (cls == hobject::ObjClass.NUMBER &&
             (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
             TVal result;
-            result.set_number(obj.extra.prim.primitive_value.get_number());
+            result.set_number(obj.extra.prim.primitive_value.get_number_or_fastint());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
@@ -3787,7 +3787,11 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
             (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
-            ctx.result.set_number(obj.extra.prim.primitive_value.get_number());
+            if (obj.extra.prim.primitive_value.is_fastint()) {
+                ctx.result.set_fastint(obj.extra.prim.primitive_value.get_fastint());
+            } else {
+                ctx.result.set_number(obj.extra.prim.primitive_value.get_number());
+            }
             return;
         }
     } else if (this_val.is_number()) {

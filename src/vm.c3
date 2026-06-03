@@ -627,7 +627,7 @@ fn TVal to_primitive_value(TVal* val) {
         if (cls == hobject::ObjClass.NUMBER &&
             (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
             TVal result;
-            result.set_number(obj.extra.prim.primitive_value.get_number());
+            result.set_number(obj.extra.prim.primitive_value.get_number_or_fastint());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
