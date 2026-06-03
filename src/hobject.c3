@@ -329,6 +329,7 @@ struct HObjectPrimitive {
 struct HObjectRegExp {
     TVal              pattern_str;
     void*             regexp_data;
+    int               flags;       // JS flag bits: 1=g, 2=i, 4=m
 }
 
 /// Generator: suspended execution state + captured env.

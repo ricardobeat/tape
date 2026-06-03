@@ -2562,6 +2562,7 @@ fn TVal? Vm.run(Vm* vm) {
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
                                 obj.extra.regexp.regexp_data = compiled;
+                                obj.extra.regexp.flags = js_flags;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.extra.prim.primitive_value.set_string(pattern_hs);
@@ -2599,6 +2600,7 @@ fn TVal? Vm.run(Vm* vm) {
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
                                 obj.extra.regexp.regexp_data = null;
+                                obj.extra.regexp.flags = js_flags;
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.extra.prim.primitive_value.set_string(pattern_hs);
                                 ra.set_object(obj);
