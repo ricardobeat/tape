@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 105 (RegExp prototype chain wiring)
+**Last Updated:** Session 106 (JSON.stringify replacer/toJSON)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (fresh run, 2026-06-03)
@@ -81,7 +81,8 @@ for-in, instanceof, delete, in operator, switch/case, labeled break/continue,
 with statement, eval.
 
 ### Phase 8: ES5 Built-in Objects ✅
-JSON.parse/stringify, Date (constructors, getters, setters, UTC, toISOString),
+JSON.parse/stringify (with replacer function/array, toJSON, wrapper objects),
+Date (constructors, getters, setters, UTC, toISOString),
 RegExp (libregexp), Object.keys/getPrototypeOf/getOwnPropertyDescriptor/
 isExtensible/preventExtensions/getOwnPropertyNames/defineProperty/is/hasOwn/setPrototypeOf.
 
@@ -159,7 +160,8 @@ constant for non-writable/enumerable/non-configurable.
    Eagerly populate indexed properties in String constructor + ToObject.
 3. ~~RegExp .constructor/.prototype chain~~ — ✅ DONE (Session 105).
    Fixed prototype class to ObjClass.OBJECT, constructor ref to function object, toString flags.
-4. **JSON.stringify edge cases** — replacer/space array handling.
+4. ~~JSON.stringify edge cases~~ — ✅ DONE (Session 106).
+   Replacer function/array, toJSON, wrapper object, type unwrapping.
 
 ### Deferred
 
@@ -168,6 +170,7 @@ constant for non-writable/enumerable/non-configurable.
 - Private class fields/methods
 - Nested/advanced destructuring patterns
 - Reflect, Proxy
+- `in` operator with empty string key (pre-existing bug, affects wrapper test)
 
 ---
 
@@ -182,6 +185,19 @@ constant for non-writable/enumerable/non-configurable.
 ---
 
 ## Session History (condensed)
+
+### Session 106: JSON.stringify replacer/toJSON/edge cases (ES5 §15.12.3)
+Implemented full JSON.stringify per ES5 spec: (1) toJSON method — objects with
+callable toJSON property have it called with the property key before serialization.
+(2) Replacer function — called with (key, value) where holder is parent object;
+wrapper object {"": value} created for root calls per spec. (3) Replacer array —
+toPropertyList built from unique string/number elements with dense array fast
+path; objects serialized using only listed keys. (4) Type unwrapping — String/
+Number/Boolean wrapper objects returned by toJSON/replacer are converted to
+primitives. (5) Added vm pointer and has_replacer_array flag to JsonSerializeCtx.
+Fixed pre-existing bug where string space parameter gap was stored in wrong
+buffer. Fixed dense array element reading in replacer array parsing. All 66
+test262 JSON.stringify tests now pass.
 
 ### Session 105: RegExp prototype chain wiring (ES5 §15.10.6)
 Fixed three issues with RegExp prototype chain: (1) Changed RegExp.prototype

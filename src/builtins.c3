@@ -9242,6 +9242,7 @@ fn usz json_escape_string(char* src, uint len, char* buf, usz buf_size) {
 /// Writes to buf starting at offset, updates offset.
 struct JsonSerializeCtx {
     Heap* heap;
+    void* vm;                    // VM pointer for calling JS functions
     char* buf;
     usz buf_size;
     usz offset;
@@ -9250,23 +9251,129 @@ struct JsonSerializeCtx {
     usz gap_len;
     /// Current stack depth for cycle detection
     uint depth;
+    /// Replacer function (undefined if none)
+    TVal replacer_func;
+    /// Property list from replacer array (null if none)
+    HString** prop_keys;
+    uint prop_key_count;
+    /// True when a replacer array was provided (even if empty)
+    bool has_replacer_array;
 }
 
 const uint JSON_MAX_DEPTH = 128;
+
+/// Apply toJSON + replacer function + type unwrapping per ES5 §15.12.3
+/// SerializeJSONProperty steps 1-4. Returns the processed value.
+/// If the result should be omitted (undefined/functions), sets *omit=true.
+fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal holder, bool* omit) {
+    *omit = false;
+
+    // Step 2: Check toJSON on objects
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
+        HString* toJSON_key = builtin_intern_string(jctx.heap, "toJSON");
+        TVal? toJSON_val = obj.get_prop_proto(toJSON_key);
+        if (try toJSON_fn = toJSON_val) {
+            bool callable = false;
+            if (toJSON_fn.is_object() && toJSON_fn.get_heapptr() != null) {
+                HObject* fn_hobj = (HObject*)toJSON_fn.get_heapptr();
+                callable = fn_hobj.is_callable();
+            } else if (toJSON_fn.is_lightfunc()) {
+                callable = true;
+            }
+            if (callable) {
+                TVal key_tv;
+                key_tv.set_string(key);
+                TVal[1] json_args;
+                json_args[0] = key_tv;
+                if (jctx.heap.call_fn != null && jctx.vm != null) {
+                    val = jctx.heap.call_fn(jctx.vm, toJSON_fn, &json_args[0], 1, val);
+                }
+            }
+        }
+    }
+
+    // Step 3: Call replacer function
+    if (!jctx.replacer_func.is_undefined()) {
+        bool callable = false;
+        if (jctx.replacer_func.is_object() && jctx.replacer_func.get_heapptr() != null) {
+            HObject* fn_hobj = (HObject*)jctx.replacer_func.get_heapptr();
+            callable = fn_hobj.is_callable();
+        } else if (jctx.replacer_func.is_lightfunc()) {
+            callable = true;
+        }
+        if (callable) {
+            TVal key_tv;
+            key_tv.set_string(key);
+            TVal[2] rep_args;
+            rep_args[0] = key_tv;
+            rep_args[1] = val;
+            if (jctx.heap.call_fn != null && jctx.vm != null) {
+                val = jctx.heap.call_fn(jctx.vm, jctx.replacer_func, &rep_args[0], 2, holder);
+            }
+        }
+    }
+
+    // Step 4: Unwrap wrapper objects (String/Number/Boolean)
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
+        ObjClass cls = obj.get_class();
+        if (cls == ObjClass.STRING) {
+            if (obj.extra.prim.primitive_value.is_string()) {
+                val = obj.extra.prim.primitive_value;
+            }
+        } else if (cls == ObjClass.NUMBER) {
+            val = obj.extra.prim.primitive_value;
+        } else if (cls == ObjClass.BOOLEAN) {
+            if (obj.extra.prim.primitive_value.is_boolean()) {
+                val = obj.extra.prim.primitive_value;
+            }
+        }
+    }
+
+    // Step 5-12: Determine if value should be omitted
+    // undefined and functions → omit
+    if (val.is_undefined()) { *omit = true; return val; }
+    if (val.is_lightfunc()) { *omit = true; return val; }
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
+        if (obj.get_class() == ObjClass.FUNCTION) { *omit = true; return val; }
+    }
+
+    return val;
+}
+
+/// Check if a value is an array-like object per ES5 spec (HasProperty with "length")
+fn bool json_is_array(HObject* obj) {
+    return obj.get_class() == ObjClass.ARRAY ||
+           obj.get_class() == ObjClass.ARGUMENTS;
+}
 
 /// Serialize an object's properties
 fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     if (jctx.offset >= jctx.buf_size) return -1;
     jctx.buf[jctx.offset++] = '{';
 
-    // Check if object has properties
+    // Create holder TVal for replacer calls
+    TVal holder;
+    holder.set_object(obj);
+
+    // Build the key list: use property_list if replacer array, else own properties
+    bool has_replacer = jctx.has_replacer_array;
     bool has_props = false;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null &&
-            !obj.prop_values()[i].flags.is_accessor) {
-            has_props = true;
-            break;
+
+
+    if (!has_replacer) {
+        // Check if object has own properties
+        for (uint i = 0; i < obj.prop_count; i++) {
+            if (obj.shape.props()[i].key != null &&
+                !obj.prop_values()[i].flags.is_accessor) {
+                has_props = true;
+                break;
+            }
         }
+    } else {
+        has_props = true;
     }
 
     if (!has_props) {
@@ -9275,22 +9382,26 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         return 0;
     }
 
-    // Need to get property keys in order
-    // For simplicity, iterate the entry table (will work for most cases)
     bool first = true;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null &&
-            !obj.prop_values()[i].flags.is_accessor) {
-            HString* key_hstr = (HString*)obj.shape.props()[i].key;
-            TVal val = obj.prop_values()[i].data.value;
 
-            // Skip undefined and function values
-            if (val.is_undefined()) continue;
-            if (val.is_lightfunc()) continue;
-            if (val.is_object() && val.get_heapptr() != null) {
-                HObject* vobj = (HObject*)val.get_heapptr();
-                if (vobj.get_class() == ObjClass.FUNCTION) continue;
+    if (has_replacer) {
+        // Iterate property list from replacer array
+        for (uint p = 0; p < jctx.prop_key_count; p++) {
+            HString* key_hstr = jctx.prop_keys[p];
+
+            // Get value from object
+            TVal? val_opt = obj.get_prop_proto(key_hstr);
+            TVal val;
+            if (try v = val_opt) {
+                val = v;
+            } else {
+                val.set_undefined();
             }
+
+            // Apply toJSON + replacer
+            bool omit = false;
+            val = json_check_property(jctx, key_hstr, val, holder, &omit);
+            if (omit) continue;
 
             if (!first) {
                 if (jctx.offset >= jctx.buf_size) return -1;
@@ -9310,7 +9421,6 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             // Key
             char* key_data = key_hstr.get_cstr();
             uint key_len = key_hstr.blen;
-            usz needed = (usz)(key_len * 6 + 4); // worst case escape
             char[1024] key_buf;
             usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
             usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
@@ -9334,6 +9444,63 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             jctx.depth--;
             if (r != 0) return r;
         }
+    } else {
+        // Iterate own properties (original path, but with json_check_property)
+        for (uint i = 0; i < obj.prop_count; i++) {
+            if (obj.shape.props()[i].key != null &&
+                !obj.prop_values()[i].flags.is_accessor) {
+                HString* key_hstr = (HString*)obj.shape.props()[i].key;
+                TVal val = obj.prop_values()[i].data.value;
+
+                // Apply toJSON + replacer (even without explicit replacer, this
+                // handles the spec correctly — when replacer_func is undefined
+                // the check just does toJSON + type unwrapping)
+                bool omit = false;
+                val = json_check_property(jctx, key_hstr, val, holder, &omit);
+                if (omit) continue;
+
+                if (!first) {
+                    if (jctx.offset >= jctx.buf_size) return -1;
+                    jctx.buf[jctx.offset++] = ',';
+                }
+                first = false;
+
+                // Indentation
+                if (jctx.gap_len > 0) {
+                    if (jctx.offset >= jctx.buf_size) return -1;
+                    jctx.buf[jctx.offset++] = '\n';
+                    for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                        jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+                    }
+                }
+
+                // Key
+                char* key_data = key_hstr.get_cstr();
+                uint key_len = key_hstr.blen;
+                char[1024] key_buf;
+                usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
+                usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
+                for (usz k = 0; k < copy; k++) {
+                    jctx.buf[jctx.offset++] = key_buf[k];
+                }
+
+                if (jctx.offset + 2 > jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = ':';
+                if (jctx.gap_len > 0) {
+                    jctx.buf[jctx.offset++] = ' ';
+                }
+
+                // Value
+                jctx.depth++;
+                if (jctx.depth > JSON_MAX_DEPTH) {
+                    jctx.depth--;
+                    return -1;
+                }
+                int r = json_serialize_val(jctx, &val);
+                jctx.depth--;
+                if (r != 0) return r;
+            }
+        }
     }
 
     if (jctx.gap_len > 0) {
@@ -9353,6 +9520,10 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
 fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     if (jctx.offset >= jctx.buf_size) return -1;
     jctx.buf[jctx.offset++] = '[';
+
+    // Create holder TVal for replacer calls
+    TVal holder;
+    holder.set_object(arr);
 
     // Check if dense array fast path is available for element reads
     bool is_dense = (arr.get_class() == ObjClass.ARRAY || arr.get_class() == ObjClass.ARGUMENTS)
@@ -9389,10 +9560,13 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
             }
             // undefined in array_part means hole — fall through to prop lookup
         }
+
+        // Build the index key for this element
+        char[16] idx_buf;
+        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+        HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
+
         if (!found) {
-            char[16] idx_buf;
-            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-            HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
             TVal? elem_prop = arr.get_prop_proto(idx_key);
             if (try e = elem_prop) {
                 elem = e;
@@ -9401,6 +9575,10 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
                 elem.set_undefined();
             }
         }
+
+        // Apply toJSON + replacer
+        bool omit = false;
+        elem = json_check_property(jctx, idx_key, elem, holder, &omit);
 
         if (!first) {
             if (jctx.offset >= jctx.buf_size) return -1;
@@ -9417,8 +9595,8 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
             }
         }
 
-        // null for undefined elements
-        if (elem.is_undefined()) {
+        // null for omitted/undefined elements
+        if (omit || elem.is_undefined()) {
             if (jctx.offset + 5 > jctx.buf_size) return -1;
             libc::memcpy(jctx.buf + jctx.offset, "null", 4);
             jctx.offset += 4;
@@ -9577,16 +9755,149 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    TVal* value = &ctx.regs[ctx.base_reg];
+    TVal value = ctx.regs[ctx.base_reg];
 
-    // Check replacer (for now, only pass it through — we handle function/array later)
-    // Check space parameter
+    // Process replacer argument
+    TVal replacer_func;
+    replacer_func.set_undefined();
+    HString** prop_keys = null;
+    uint prop_key_count = 0;
+    bool has_replacer_array_flag = false;
+
+    if (ctx.argc > 1) {
+        TVal replacer = ctx.regs[ctx.base_reg + 1];
+
+        if (replacer.is_object() && replacer.get_heapptr() != null) {
+            HObject* robj = (HObject*)replacer.get_heapptr();
+            if (robj.is_callable()) {
+                replacer_func = replacer;
+            } else if (robj.get_class() == ObjClass.ARRAY) {
+                // Build PropertyList from array elements
+                // Max 256 keys in property list
+                HString*[256] temp_keys;
+                uint count = 0;
+                has_replacer_array_flag = true;
+
+                // Get length
+                HString* len_key = builtin_intern_string(ctx.heap, "length");
+                TVal? len_prop = robj.get_prop_proto(len_key);
+                uint arr_len = 0;
+                if (try l = len_prop) {
+                    if (l.is_fastint()) {
+                        arr_len = (uint)l.get_fastint();
+                    } else if (l.is_number()) {
+                        arr_len = (uint)(long)l.get_number();
+                    }
+                }
+
+
+                bool is_dense = robj.get_class() == ObjClass.ARRAY && robj.array_part() != null;
+
+                for (uint i = 0; i < arr_len && count < 256; i++) {
+                    // Read element: try dense array fast path, then prop lookup
+                    TVal elem;
+                    bool found = false;
+                    if (is_dense && i < robj.array_size) {
+                        TVal av = robj.array_part()[i];
+                        if (!av.is_undefined()) {
+                            elem = av;
+                            found = true;
+                        }
+                    }
+                    if (!found) {
+                        char[16] idx_buf;
+                        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
+                        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+                        TVal? elem_opt = robj.get_prop_proto(idx_key);
+                        if (try e = elem_opt) {
+                            elem = e;
+                            found = true;
+                        }
+                    }
+                    if (!found) continue;
+
+                    // Convert to string key per spec:
+                    // String → use as-is
+                    // Number → ToString
+                    // String object → ToString (via .toString())
+                    // Number object → ToString (via .toString())
+                    // Everything else → skip
+                    HString* str_key = null;
+
+                    if (elem.is_string()) {
+                        str_key = (HString*)elem.get_heapptr();
+                    } else if (elem.is_fastint()) {
+                        char[32] num_buf;
+                        int num_len = libc::snprintf(&num_buf, 32, "%ld", elem.get_fastint());
+                        str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                    } else if (elem.is_number()) {
+                        char[64] num_buf;
+                        int num_len = libc::snprintf(&num_buf, 64, "%.17g", elem.get_number());
+                        str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                    } else if (elem.is_object() && elem.get_heapptr() != null) {
+                        HObject* eobj = (HObject*)elem.get_heapptr();
+                        if (eobj.get_class() == ObjClass.STRING &&
+                            eobj.extra.prim.primitive_value.is_string()) {
+                            str_key = (HString*)eobj.extra.prim.primitive_value.get_heapptr();
+                        } else if (eobj.get_class() == ObjClass.NUMBER) {
+                            TVal pv = eobj.extra.prim.primitive_value;
+                            if (pv.is_fastint()) {
+                                char[32] num_buf;
+                                int num_len = libc::snprintf(&num_buf, 32, "%ld", pv.get_fastint());
+                                str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                            } else if (pv.is_number()) {
+                                char[64] num_buf;
+                                int num_len = libc::snprintf(&num_buf, 64, "%.17g", pv.get_number());
+                                str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                            }
+                        }
+                    }
+
+                    if (str_key == null) continue;
+
+                    // Deduplicate: check if already in list
+                    bool dup = false;
+                    for (uint d = 0; d < count; d++) {
+                        if (temp_keys[d] == str_key) { dup = true; break; }
+                    }
+                    if (dup) continue;
+
+                    temp_keys[count] = str_key;
+                    count++;
+                }
+
+                if (count > 0) {
+                    prop_keys = (HString**)libc::malloc(count * HString*::size);
+                    if (prop_keys != null) {
+                        libc::memcpy(prop_keys, &temp_keys[0], count * HString*::size);
+                        prop_key_count = count;
+                    }
+                }
+
+            }
+        }
+        // Non-callable, non-array replacer → ignore (leave replacer_func undefined)
+    }
+
+    // Check space parameter — unwrap Number/String wrappers
     uint space_num = 0;
     char[16] gap_buf;
     usz gap_len = 0;
 
     if (ctx.argc > 2) {
-        TVal* space_arg = &ctx.regs[ctx.base_reg + 2];
+        TVal space_arg = ctx.regs[ctx.base_reg + 2];
+
+        // Unwrap Number/String wrapper objects
+        if (space_arg.is_object() && space_arg.get_heapptr() != null) {
+            HObject* sobj = (HObject*)space_arg.get_heapptr();
+            if (sobj.get_class() == ObjClass.NUMBER) {
+                space_arg = sobj.extra.prim.primitive_value;
+            } else if (sobj.get_class() == ObjClass.STRING &&
+                       sobj.extra.prim.primitive_value.is_string()) {
+                space_arg = sobj.extra.prim.primitive_value;
+            }
+        }
+
         if (space_arg.is_fastint()) {
             space_num = (uint)space_arg.get_fastint();
             if (space_num > 10) space_num = 10;
@@ -9612,14 +9923,39 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         for (uint i = 0; i < gap_len && i < 16; i++) {
             gap_str[i] = ' ';
         }
-    } else if (gap_len == 0) {
-        // Keep gap empty
+    } else if (gap_len > 0) {
+        // String gap: copy from gap_buf to gap_str
+        for (usz i = 0; i < gap_len && i < 16; i++) {
+            gap_str[i] = gap_buf[i];
+        }
     }
 
-    // Serialize
+    // Apply root-level toJSON + replacer per spec:
+    // 1. Create wrapper = { "": value }
+    // 2. If ReplacerFunction: value = Call(replacer, wrapper, ["", value])
+    // 3. Process the result
+
+    // Create wrapper object
+    HObject*? wrapper_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch werr = wrapper_raw) {
+        ctx.result.set_undefined();
+        if (prop_keys != null) libc::free(prop_keys);
+        return;
+    }
+    HObject* wrapper = wrapper_raw;
+
+    TVal wrapper_tv;
+    wrapper_tv.set_object(wrapper);
+
+    // Set wrapper[""] = value
+    HString* empty_key = builtin_intern_string(ctx.heap, "");
+    wrapper.put_prop(empty_key, value, hobject::PROP_FLAGS_WEC);
+
+    // Initialize serialization context
     char[16384] buf;
     JsonSerializeCtx jctx;
     jctx.heap = ctx.heap;
+    jctx.vm = ctx.vm;
     jctx.buf = &buf;
     jctx.buf_size = 16384;
     jctx.offset = 0;
@@ -9627,8 +9963,26 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     jctx.gap = &gap_str;
     jctx.gap_len = gap_len;
     jctx.depth = 0;
+    jctx.replacer_func = replacer_func;
+    jctx.prop_keys = prop_keys;
+    jctx.prop_key_count = prop_key_count;
+    jctx.has_replacer_array = has_replacer_array_flag;
 
-    int result = json_serialize_val(&jctx, value);
+    // Apply root-level check: get value from wrapper, apply toJSON + replacer
+    bool root_omit = false;
+    TVal root_val = json_check_property(&jctx, empty_key, value, wrapper_tv, &root_omit);
+
+    if (root_omit) {
+        ctx.result.set_undefined();
+        if (prop_keys != null) libc::free(prop_keys);
+        return;
+    }
+
+    // Serialize the processed value
+    int result = json_serialize_val(&jctx, &root_val);
+
+    if (prop_keys != null) libc::free(prop_keys);
+
     if (result != 0) {
         ctx.result.set_undefined();
         return;
