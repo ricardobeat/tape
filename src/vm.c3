@@ -2725,101 +2725,215 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.ARRSPRD: {
-            // A = target array reg, B = index reg (in/out), C = source array reg
-            if (ra.is_object() && rc.is_object()) {
-                HObject* target = (HObject*)ra.get_heapptr();
-                HObject* source = (HObject*)rc.get_heapptr();
-                if (source != null) {
-                    // Get source .length
-                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    TVal len_tv = get_prop_with_proto(source, len_key);
-                    long src_len = 0;
-                    if (len_tv.is_fastint()) {
-                        src_len = len_tv.get_fastint();
-                    } else if (len_tv.is_number()) {
-                        src_len = (long)len_tv.get_number();
-                    }
+            // A = target array reg, B = index reg (in/out), C = source reg
+            // Uses ES6 iterator protocol (§12.2.5.3 ArrayAccumulation SpreadElement)
+            if (!ra.is_object() || ra.get_heapptr() == null) break;
+            HObject* target = (HObject*)ra.get_heapptr();
+            TVal src_tv = *rc;
 
-                    // Get current index
-                    long idx = 0;
-                    if (rb.is_fastint()) {
-                        idx = rb.get_fastint();
-                    } else if (rb.is_number()) {
-                        idx = (long)rb.get_number();
+            // null/undefined → TypeError: not iterable
+            if (src_tv.is_null() || src_tv.is_undefined()) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_str = intern_string(vm, "cannot spread null/undefined");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
+                    TVal err_val; err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                } else { return VM_ERROR~; }
+                break;
+            }
 
-                    // Copy elements
-                    for (long i = 0; i < src_len; i++) {
-                        char[16] ibuf;
-                        int ilen = libc::snprintf(&ibuf, 16, "%ld", idx + i);
-                        if (ilen > 0 && ilen < 16) {
-                            HString* key = intern_string(vm, ibuf[:ilen]);
-                            if (key != null) {
-                                char[16] jbuf;
-                                int jlen = libc::snprintf(&jbuf, 16, "%ld", i);
-                                if (jlen > 0 && jlen < 16) {
-                                    HString* src_key = intern_string(vm, jbuf[:jlen]);
-                                    if (src_key != null) {
-                                        TVal elem = get_prop_with_proto(source, src_key);
-                                        target.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Get current target index
+            long idx = 0;
+            if (rb.is_fastint()) {
+                idx = rb.get_fastint();
+            } else if (rb.is_number()) {
+                idx = (long)rb.get_number();
+            }
 
-                    // Update index register
-                    rb.set_fastint(idx + src_len);
+            // --- Iterator protocol ---
+            HString* iter_sym = vm.heap.iterator_symbol;
+            TVal iter_method;
+            bool has_method = false;
+            if (iter_sym != null) {
+                TVal? method_opt;
+                if (src_tv.is_object() && src_tv.get_heapptr() != null) {
+                    method_opt = ((HObject*)src_tv.get_heapptr()).get_prop_proto(iter_sym);
+                } else if (src_tv.is_string() && vm.heap.string_proto != null) {
+                    method_opt = vm.heap.string_proto.get_prop_proto(iter_sym);
+                }
+                if (try m = method_opt) {
+                    iter_method = m;
+                    bool callable = iter_method.is_lightfunc() ||
+                        (iter_method.is_object() && iter_method.get_heapptr() != null &&
+                         ((HObject*)iter_method.get_heapptr()).is_callable());
+                    has_method = callable;
                 }
             }
+            if (!has_method) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_str = intern_string(vm, "xxx is not iterable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val; err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) { return VM_ERROR~; }
+                } else { return VM_ERROR~; }
+                break;
+            }
+
+            // Call @@iterator() with this = source
+            TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
+            if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
+
+            // Loop: next() → {value, done}
+            HString* next_key = intern_string(vm, "next");
+            HString* done_key = intern_string(vm, "done");
+            HString* value_key = intern_string(vm, "value");
+            uint k = 0;
+            while (vm.heap.call_fn != null) {
+                HObject* iter_obj = (HObject*)iterator.get_heapptr();
+                TVal? next_opt = iter_obj.get_prop_proto(next_key);
+                TVal next_method;
+                if (try nm = next_opt) { next_method = nm; } else { break; }
+                bool callable = next_method.is_lightfunc() ||
+                    (next_method.is_object() && next_method.get_heapptr() != null &&
+                     ((HObject*)next_method.get_heapptr()).is_callable());
+                if (!callable) { break; }
+
+                TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
+                if (!result.is_object() || result.get_heapptr() == null) { break; }
+
+                HObject* result_obj = (HObject*)result.get_heapptr();
+                TVal? done_opt = result_obj.get_prop_proto(done_key);
+                bool done = false;
+                if (try dv = done_opt) { done = builtins::builtin_to_boolean(&dv); }
+                if (done) { break; }
+
+                TVal? value_opt = result_obj.get_prop_proto(value_key);
+                if (try vv = value_opt) {
+                    char[16] ibuf;
+                    int ilen = libc::snprintf(&ibuf, 16, "%ld", idx + (long)k);
+                    if (ilen > 0 && ilen < 16) {
+                        HString* pk = intern_string(vm, ibuf[:ilen]);
+                        target.put_prop(pk, vv, hobject::PROP_FLAGS_WEC);
+                    }
+                    k++;
+                } else { break; }
+            }
+            // Update index register with elements actually inserted
+            rb.set_fastint(idx + (long)k);
             break;
         }
 
         case Opcode.SPREAD_ARG: {
-            // A = dest start reg, B = count out reg, C = source array reg
-            if (rc.is_object()) {
-                HObject* source = (HObject*)rc.get_heapptr();
-                if (source != null) {
-                    // Get source .length
-                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    TVal len_tv = get_prop_with_proto(source, len_key);
-                    long src_len = 0;
-                    if (len_tv.is_fastint()) {
-                        src_len = len_tv.get_fastint();
-                    } else if (len_tv.is_number()) {
-                        src_len = (long)len_tv.get_number();
+            // A = dest start reg, B = count out reg, C = source reg
+            // Uses ES6 iterator protocol (§12.3.5.1 ArgumentListEvaluation SpreadElement)
+            TVal src_tv = *rc;
+
+            // null/undefined → TypeError
+            if (src_tv.is_null() || src_tv.is_undefined()) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_str = intern_string(vm, "cannot spread null/undefined");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
-
-                    uint dest_start = insn.a;
-                    uint count_reg = insn.b;
-
-                    // Copy elements from source array into consecutive registers
-                    for (long i = 0; i < src_len; i++) {
-                        TVal* dest_slot = regs_base + dest_start + (uint)i;
-                        char[16] jbuf;
-                        int jlen = libc::snprintf(&jbuf, 16, "%ld", i);
-                        if (jlen > 0 && jlen < 16) {
-                            HString* src_key = intern_string(vm, jbuf[:jlen]);
-                            if (src_key != null) {
-                                TVal elem = get_prop_with_proto(source, src_key);
-                                dest_slot.set_fastint(elem.get_fastint());
-                                dest_slot.set_number(elem.get_number());
-                                dest_slot.set_object(elem.get_heapptr());
-                            } else {
-                                dest_slot.set_undefined();
-                            }
-                        }
-                    }
-
-                    // Store count in output register
-                    TVal* count_slot = regs_base + count_reg;
-                    count_slot.set_fastint(src_len);
-                }
-            } else {
-                // Non-object: spread 0 elements, store 0
-                TVal* count_slot = regs_base + insn.b;
-                count_slot.set_fastint(0);
+                    TVal err_val; err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                } else { return VM_ERROR~; }
+                break;
             }
+
+            // --- Iterator protocol ---
+            HString* iter_sym = vm.heap.iterator_symbol;
+            TVal iter_method;
+            bool has_method = false;
+            if (iter_sym != null) {
+                TVal? method_opt;
+                if (src_tv.is_object() && src_tv.get_heapptr() != null) {
+                    method_opt = ((HObject*)src_tv.get_heapptr()).get_prop_proto(iter_sym);
+                } else if (src_tv.is_string() && vm.heap.string_proto != null) {
+                    method_opt = vm.heap.string_proto.get_prop_proto(iter_sym);
+                }
+                if (try m = method_opt) {
+                    iter_method = m;
+                    bool callable = iter_method.is_lightfunc() ||
+                        (iter_method.is_object() && iter_method.get_heapptr() != null &&
+                         ((HObject*)iter_method.get_heapptr()).is_callable());
+                    has_method = callable;
+                }
+            }
+            if (!has_method) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_str = intern_string(vm, "xxx is not iterable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_val; err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                } else { return VM_ERROR~; }
+                break;
+            }
+
+            // Call @@iterator() with this = source
+            TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
+            if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
+
+            uint dest_start = insn.a;
+            uint count_reg = insn.b;
+
+            // Loop: next() → {value, done}
+            HString* next_key = intern_string(vm, "next");
+            HString* done_key = intern_string(vm, "done");
+            HString* value_key = intern_string(vm, "value");
+            uint k = 0;
+            while (vm.heap.call_fn != null) {
+                HObject* iter_obj = (HObject*)iterator.get_heapptr();
+                TVal? next_opt = iter_obj.get_prop_proto(next_key);
+                TVal next_method;
+                if (try nm = next_opt) { next_method = nm; } else { break; }
+                bool callable = next_method.is_lightfunc() ||
+                    (next_method.is_object() && next_method.get_heapptr() != null &&
+                     ((HObject*)next_method.get_heapptr()).is_callable());
+                if (!callable) { break; }
+
+                TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
+                if (!result.is_object() || result.get_heapptr() == null) { break; }
+
+                HObject* result_obj = (HObject*)result.get_heapptr();
+                TVal? done_opt = result_obj.get_prop_proto(done_key);
+                bool done = false;
+                if (try dv = done_opt) { done = builtins::builtin_to_boolean(&dv); }
+                if (done) { break; }
+
+                TVal? value_opt = result_obj.get_prop_proto(value_key);
+                if (try vv = value_opt) {
+                    TVal* dest_slot = regs_base + dest_start + k;
+                    *dest_slot = vv;
+                    k++;
+                } else { break; }
+            }
+
+            // Store count in output register
+            TVal* count_slot = regs_base + count_reg;
+            count_slot.set_fastint((long)k);
             break;
         }
 

@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 112 (Map/Set iterator protocol)
+**Last Updated:** Session 113 (Spread iterator protocol)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 112, 2026-06-03)
@@ -173,7 +173,6 @@ constant for non-writable/enumerable/non-configurable.
 
 ### Deferred
 
-- Iterator protocol (for-of, spread, Array.from, generators)
 - Async microtask scheduling (Promise tests)
 - Private class fields/methods
 - Nested/advanced destructuring patterns
@@ -222,6 +221,17 @@ not unwrapped — `get_prop_key` fell through to the default case returning "und
 the property key. Added OBJECT case that unwraps the value and recurses for correct
 ToPropertyKey conversion. +8 Phase 5, +5 Phase 7, +15 Phase 8 test262 passes. Also
 discovered pre-existing Number wrapper valueOf() bug (returns NaN) — added to deferred.
+
+### Session 113: Spread operator uses iterator protocol (ES6 §12.2.5.3, §12.3.5.1)
+Implemented ES6 iterator protocol for both array spread (`[...iter]`) and function call spread (`fn(...iter)`):
+- **`ARRSPRD` handler**: Rewrote `vm.c3` ARRSPRD case to use `@@iterator` instead of array-like `.length`+numeric-index copy. Now calls `Symbol.iterator` on source, loops `.next()`/`.done`/`.value` per spec, inserts values into target array at dynamic index. Throws TypeError for non-iterable sources (null, undefined, primitives without `@@iterator`).
+- **`SPREAD_ARG` handler**: Rewrote `vm.c3` SPREAD_ARG case with same iterator protocol, writing values to consecutive registers instead of array properties.
+- **TypeError on non-iterable**: Both handlers throw TypeError when `@@iterator` is absent or not callable.
+- **String iterable**: Strings work via `String.prototype[Symbol.iterator]` (checks `string_proto` for `@@iterator`).
+- **Set/Map iterable**: Spread works with Set, Map, Map.keys(), Map.values(), Map.entries().
+- **Backward compatible**: All existing tests pass with no regressions (quick.sh: 177/106/56). Verified both nanbox and nonanbox builds.
+- Removed old array-like spread path (`.length` + numeric indices) entirely.
+
 
 ### Session 110: Array.from (ES6 §22.1.2.1)
 
@@ -368,5 +378,5 @@ obj[key] = value compiled to GETPROP instead of PUTPROP. Phase 3: +813 pass.
 
 ## Suggested Next Task
 
-**Iterator protocol helpers** — Map/Set/other built-ins need `%IteratorPrototype%` and proper iterator creation.
-Or: **Property descriptor edge cases** — Phase 3/5/6 failures show descriptor gaps.
+**Property descriptor edge cases** — Phase 3/5/6 failures show descriptor gaps that could unblock hundreds of tests.
+Or: **Async microtask scheduling** — Promise `.then()` callbacks don't run asynchronously, causing ~200+ Promise test failures.
