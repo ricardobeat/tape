@@ -2399,13 +2399,34 @@ fn TVal? Vm.run(Vm* vm) {
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
-                // Fast path: dense array indexed store (a[i] = v where i is a non-negative integer)
-                // set_array_idx handles lazy allocation of array_part when array_size == 0.
+                // Fast path: dense array indexed store (a[i] = v where i is a valid array index)
+                // ES5 §15.4: array index P satisfies ToString(ToUint32(P))===P && ToUint32(P)≠2^32−1
+                // Cap at 2^24 to avoid insane allocations for sparse arrays with huge indices.
                 if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS)
                     && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
-                    if (idx_long >= 0) {
-                        hobj.set_array_idx((uint)idx_long, *rc);
+                    if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
+                        uint idx = (uint)idx_long;
+                        hobj.set_array_idx(idx, *rc);
+                        // Update .length if idx >= current length
+                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        if (len_str != null) {
+                            int len_slot = hobj.find_prop_idx(len_str);
+                            if (len_slot >= 0) {
+                                TVal cur = hobj.prop_values()[len_slot].data.value;
+                                uint cur_len = 0;
+                                if (cur.is_fastint()) {
+                                    cur_len = (uint)cur.get_fastint();
+                                } else if (cur.is_number()) {
+                                    cur_len = (uint)cur.get_number();
+                                }
+                                if (idx >= cur_len) {
+                                    TVal new_len;
+                                    new_len.set_fastint((long)(idx + 1));
+                                    hobj.prop_values()[len_slot].data.value = new_len;
+                                }
+                            }
+                        }
                         break;
                     }
                 }

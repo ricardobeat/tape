@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 115 (Property descriptor edge cases: SameValue, field presence, String exotic writable)
+**Last Updated:** Session 116 (Array length tracking: indexed store updates .length, non-array-index guard, overflow-safe growth)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 115, 2026-06-05)
+## Summary (after Session 116, 2026-06-05)
 
 | Metric | Value |
 |---|---|
@@ -194,6 +194,21 @@ constant for non-writable/enumerable/non-configurable.
 ---
 
 ## Session History (condensed)
+
+### Session 116: Array length tracking in PUTPROP (ES5 §15.4.5.1, §15.4)
+Fixed three related bugs in dense array indexed store:
+- **PUTPROP length update**: `arr[i] = val` now updates `.length` to `max(length, i+1)` when
+  the index is a valid array index (< 2^32−1). Previously `.length` was never updated on
+  indexed stores, causing `x[100] = 1` to report length 0 instead of 101.
+- **Non-array-index guard**: Index 4294967295 (2^32−1) is NOT an array index per ES5 §15.4.
+  Added `idx < 0xFFFFFFFF` guard so it falls through to the sparse property path instead
+  of entering the dense array fast path.
+- **Max-index cap + overflow protection**: Indices ≥ 16M fall through to sparse property
+  storage, preventing insane memory allocations. Added overflow guard in `set_array_idx`
+  growth loop to prevent uint overflow at 2^31 (was infinite loop).
+- Fixed 5+ previously timing-out test262 tests: S15.4.5.2_A1_T2, S15.4.5.1_A2.1_T1,
+  S15.4_A1.1_T10, 15.4.5.1-5-1, 15.4.5.1-5-2.
+- Verified: quick.sh baseline stable at 177/106/56, no regressions.
 
 ### Session 115: Property descriptor edge cases (ES5 §8.12.9, §15.5.5.1)
 Fixed three correctness bugs in property descriptor handling:
