@@ -250,9 +250,9 @@ const PropFlags PROP_FLAGS_NNC = {
     .is_accessor  = false
 };
 
-/// Non-writable, enumerable, non-configurable — String exotic indexed properties (ES5 §15.5.5.1)
+/// Writable, enumerable, non-configurable — String exotic indexed properties (ES5 §15.5.5.1)
 const PropFlags PROP_FLAGS_NEC = {
-    .writable     = false,
+    .writable     = true,
     .enumerable   = true,
     .configurable = false,
     .is_accessor  = false

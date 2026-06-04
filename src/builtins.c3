@@ -4631,7 +4631,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 if (char_str != null) {
                     TVal char_tv; char_tv.set_string(char_str);
                     HObject* desc;
-                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, false, true, false);
+                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, true, true, false);
                     if (desc != null) {
                         ctx.result.set_object(desc);
                         return;
@@ -5030,11 +5030,18 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         bool has_value_field   = (ctx.regs[ctx.base_reg + 2].is_object()); // already validated
         // We've already extracted descriptor fields above, so check what was present
 
-        // Check configurable constraint
+        // Check configurable constraint — ES5 §8.12.9 step 8
         if (!cur_flags.configurable) {
             bool reject = false;
-            if (desc_flags.configurable != cur_flags.configurable) reject = true;
-            if (desc_flags.enumerable != cur_flags.enumerable) reject = true;
+            // Only reject if the field is actually present in the descriptor AND differs
+            bool desc_has_conf = false;
+            bool desc_has_enum = false;
+            HString* tmp_conf_k = builtin_intern_string(ctx.heap, "configurable");
+            HString* tmp_enum_k = builtin_intern_string(ctx.heap, "enumerable");
+            if (tmp_conf_k != null) desc_has_conf = desc_obj.find_prop_idx(tmp_conf_k) >= 0;
+            if (tmp_enum_k != null) desc_has_enum = desc_obj.find_prop_idx(tmp_enum_k) >= 0;
+            if (desc_has_conf && desc_flags.configurable != cur_flags.configurable) reject = true;
+            if (desc_has_enum && desc_flags.enumerable != cur_flags.enumerable) reject = true;
             if (reject) {
                 HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (catch err7 = err_raw) {
@@ -5133,24 +5140,27 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             }
 
             if (has_val_in_desc) {
-                // If non-writable and non-configurable, value can only be set once
+                // ES5 §8.12.9 step 9: If non-configurable and non-writable, reject only if
+                // the new value differs from the current value (SameValue check).
                 if (!cur_flags.configurable && !cur_flags.writable) {
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (catch err10 = err_raw) {
-                        ctx.result.set_undefined();
+                    if (!same_value(cur_value, desc_vals[0])) {
+                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (catch err10 = err_raw) {
+                            ctx.result.set_undefined();
+                            return;
+                        }
+                        HObject* err = err_raw;
+                        err.prototype = ctx.heap.type_err_proto;
+                        HString* msg_key8 = builtin_intern_string(ctx.heap, "message");
+                        HString* msg_str8 = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
+                        if (msg_key8 == null || msg_str8 == null) { ctx.result.set_undefined(); return; }
+                        TVal msg_tv;
+                        msg_tv.set_string(msg_str8);
+                        err.put_prop(msg_key8, msg_tv, hobject::PROP_FLAGS_WEC);
+                        ctx.should_throw = true;
+                        ctx.throw_value.set_object(err);
                         return;
                     }
-                    HObject* err = err_raw;
-                    err.prototype = ctx.heap.type_err_proto;
-                    HString* msg_key8 = builtin_intern_string(ctx.heap, "message");
-                    HString* msg_str8 = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
-                    if (msg_key8 == null || msg_str8 == null) { ctx.result.set_undefined(); return; }
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_str8);
-                    err.put_prop(msg_key8, msg_tv, hobject::PROP_FLAGS_WEC);
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                    return;
                 }
                 current.data.value = desc_vals[0];
             }
