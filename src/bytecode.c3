@@ -711,6 +711,9 @@ bitstruct FuncFlags : uint {
     bool  has_direct_eval: 15;
     /// Function is a constructor method.
     bool  is_constructable: 16;
+    /// Function never creates local bindings — the CALL fast path can
+    /// skip `env_create_function_scope` and reuse the parent env directly.
+    bool  needs_env       : 17;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -837,6 +840,12 @@ macro bool CompiledFunction.is_async(&self) {
 /// Returns `true` when the function can be used as a constructor.
 macro bool CompiledFunction.is_constructable(&self) {
     return self.flags.is_constructable;
+}
+
+/// Returns `true` when the function has no local bindings and the CALL fast
+/// path can skip `env_create_function_scope`.
+macro bool CompiledFunction.needs_env(&self) {
+    return self.flags.needs_env;
 }
 
 /// Returns `true` when the function uses `arguments`.

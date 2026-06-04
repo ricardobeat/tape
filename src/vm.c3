@@ -2995,8 +2995,15 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act = &vm.activations[vm.activation_count];
                     vm.activation_count++;
 
-                    EnvRecord* fast_var_env = hobj_fast.extra.func.var_env;
-                    if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.extra.func.var_env)) { fast_var_env = fv_f; }
+                    EnvRecord* fast_var_env;
+                    // Skip env allocation when the callee has no local bindings —
+                    // the parent's env is sufficient (no var hoisting needed).
+                    if (target_fast.needs_env()) {
+                        fast_var_env = hobj_fast.extra.func.var_env;
+                        if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.extra.func.var_env)) { fast_var_env = fv_f; }
+                    } else {
+                        fast_var_env = hobj_fast.extra.func.var_env;
+                    }
                     new_act.parent = act;
                     new_act.func = target_fast;
                     new_act.var_env = fast_var_env;
@@ -3018,11 +3025,11 @@ fn TVal? Vm.run(Vm* vm) {
 
                     // Copy args: in the sliding-window model new_regs == old_args
                     // Values are already in place — just zero the unused registers.
-                    // Direct loop instead of libc::memset to allow compiler inlining/unrolling.
+                    // memset lowers to rep stosq / stp xzr, ... on x86/aarch64;
+                    // C3 will not auto-vectorize the per-element store loop.
                     uint zero_count = new_nregs - nargs;
-                    TVal* zero_dst = &new_regs[nargs];
-                    for (uint zi = 0; zi < zero_count; zi++) {
-                        zero_dst[zi].bits = 0;
+                    if (zero_count > 0) {
+                        libc::memset(&new_regs[nargs], 0, (usz)zero_count * TVal::size);
                     }
 
                     vm.valstack_top = new_regs + new_nregs;

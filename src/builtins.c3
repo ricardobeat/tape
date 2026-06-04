@@ -15182,567 +15182,301 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
     ctx.result.set_object(result);
 }
 
+// Function-pointer dispatch table — replaces the 278-arm switch with a single
+// indirect call. BUILTIN_COUNT is one past the highest valid index; the bounds
+// check below mirrors the old `default:` arm (set_undefined on the result).
+BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
+    [BUILTIN_AGGREGATE_ERROR] = &builtin_aggregate_error,
+    [BUILTIN_ARRAY] = &builtin_array,
+    [BUILTIN_ARRAY_FROM] = &builtin_array_from,
+    [BUILTIN_ARRAY_ISARRAY] = &builtin_array_isArray,
+    [BUILTIN_ARRAY_ITERATOR_NEXT] = &builtin_array_iterator_next,
+    [BUILTIN_ARRAY_OF] = &builtin_array_of,
+    [BUILTIN_ARRAY_PROTO_AT] = &builtin_array_proto_at,
+    [BUILTIN_ARRAY_PROTO_CONCAT] = &builtin_array_proto_concat,
+    [BUILTIN_ARRAY_PROTO_COPYWITHIN] = &builtin_array_proto_copyWithin,
+    [BUILTIN_ARRAY_PROTO_ENTRIES] = &builtin_array_proto_entries,
+    [BUILTIN_ARRAY_PROTO_FILL] = &builtin_array_proto_fill,
+    [BUILTIN_ARRAY_PROTO_FLAT] = &builtin_array_proto_flat,
+    [BUILTIN_ARRAY_PROTO_INCLUDES] = &builtin_array_proto_includes,
+    [BUILTIN_ARRAY_PROTO_INDEXOF] = &builtin_array_proto_indexOf,
+    [BUILTIN_ARRAY_PROTO_JOIN] = &builtin_array_proto_join,
+    [BUILTIN_ARRAY_PROTO_KEYS] = &builtin_array_proto_keys,
+    [BUILTIN_ARRAY_PROTO_LASTINDEXOF] = &builtin_array_proto_lastIndexOf,
+    [BUILTIN_ARRAY_PROTO_POP] = &builtin_array_proto_pop,
+    [BUILTIN_ARRAY_PROTO_PUSH] = &builtin_array_proto_push,
+    [BUILTIN_ARRAY_PROTO_REVERSE] = &builtin_array_proto_reverse,
+    [BUILTIN_ARRAY_PROTO_SHIFT] = &builtin_array_proto_shift,
+    [BUILTIN_ARRAY_PROTO_SLICE] = &builtin_array_proto_slice,
+    [BUILTIN_ARRAY_PROTO_SORT] = &builtin_array_proto_sort,
+    [BUILTIN_ARRAY_PROTO_SPLICE] = &builtin_array_proto_splice,
+    [BUILTIN_ARRAY_PROTO_SYMBOL_ITER] = &builtin_array_proto_symbol_iter,
+    [BUILTIN_ARRAY_PROTO_TOREVERSED] = &builtin_array_proto_toReversed,
+    [BUILTIN_ARRAY_PROTO_TOSORTED] = &builtin_array_proto_toSorted,
+    [BUILTIN_ARRAY_PROTO_TOSPLICED] = &builtin_array_proto_toSpliced,
+    [BUILTIN_ARRAY_PROTO_TOSTRING] = &builtin_array_proto_toString,
+    [BUILTIN_ARRAY_PROTO_UNSHIFT] = &builtin_array_proto_unshift,
+    [BUILTIN_ARRAY_PROTO_VALUES] = &builtin_array_proto_values,
+    [BUILTIN_ARRAY_PROTO_WITH] = &builtin_array_proto_with,
+    [BUILTIN_BOOLEAN] = &builtin_boolean,
+    [BUILTIN_BOOLEAN_PROTO_TOSTRING] = &builtin_boolean_proto_toString,
+    [BUILTIN_BOOLEAN_PROTO_VALUEOF] = &builtin_boolean_proto_valueOf,
+    [BUILTIN_BOUND_CALL] = &builtin_bound_call,
+    [BUILTIN_CONSOLE_LOG] = &builtin_console_log,
+    [BUILTIN_DATE] = &builtin_date,
+    [BUILTIN_DATE_NOW] = &builtin_date_now,
+    [BUILTIN_DATE_PARSE] = &builtin_date_parse,
+    [BUILTIN_DATE_PROTO_GETDATE] = &builtin_date_proto_getDate,
+    [BUILTIN_DATE_PROTO_GETDAY] = &builtin_date_proto_getDay,
+    [BUILTIN_DATE_PROTO_GETFULLYEAR] = &builtin_date_proto_getFullYear,
+    [BUILTIN_DATE_PROTO_GETHOURS] = &builtin_date_proto_getHours,
+    [BUILTIN_DATE_PROTO_GETMILLISECONDS] = &builtin_date_proto_getMilliseconds,
+    [BUILTIN_DATE_PROTO_GETMINUTES] = &builtin_date_proto_getMinutes,
+    [BUILTIN_DATE_PROTO_GETMONTH] = &builtin_date_proto_getMonth,
+    [BUILTIN_DATE_PROTO_GETSECONDS] = &builtin_date_proto_getSeconds,
+    [BUILTIN_DATE_PROTO_GETTIME] = &builtin_date_proto_getTime,
+    [BUILTIN_DATE_PROTO_GETTIMEZONEOFFSET] = &builtin_date_proto_getTimezoneOffset,
+    [BUILTIN_DATE_PROTO_GETUTCDATE] = &builtin_date_proto_getUTCDate,
+    [BUILTIN_DATE_PROTO_GETUTCDAY] = &builtin_date_proto_getUTCDay,
+    [BUILTIN_DATE_PROTO_GETUTCFULLYEAR] = &builtin_date_proto_getUTCFullYear,
+    [BUILTIN_DATE_PROTO_GETUTCHOURS] = &builtin_date_proto_getUTCHours,
+    [BUILTIN_DATE_PROTO_GETUTCMILLISECONDS] = &builtin_date_proto_getUTCMilliseconds,
+    [BUILTIN_DATE_PROTO_GETUTCMINUTES] = &builtin_date_proto_getUTCMinutes,
+    [BUILTIN_DATE_PROTO_GETUTCMONTH] = &builtin_date_proto_getUTCMonth,
+    [BUILTIN_DATE_PROTO_GETUTCSECONDS] = &builtin_date_proto_getUTCSeconds,
+    [BUILTIN_DATE_PROTO_SETDATE] = &builtin_date_proto_setDate,
+    [BUILTIN_DATE_PROTO_SETFULLYEAR] = &builtin_date_proto_setFullYear,
+    [BUILTIN_DATE_PROTO_SETHOURS] = &builtin_date_proto_setHours,
+    [BUILTIN_DATE_PROTO_SETMILLISECONDS] = &builtin_date_proto_setMilliseconds,
+    [BUILTIN_DATE_PROTO_SETMINUTES] = &builtin_date_proto_setMinutes,
+    [BUILTIN_DATE_PROTO_SETMONTH] = &builtin_date_proto_setMonth,
+    [BUILTIN_DATE_PROTO_SETSECONDS] = &builtin_date_proto_setSeconds,
+    [BUILTIN_DATE_PROTO_SETTIME] = &builtin_date_proto_setTime,
+    [BUILTIN_DATE_PROTO_SETUTCDATE] = &builtin_date_proto_setUTCDate,
+    [BUILTIN_DATE_PROTO_SETUTCFULLYEAR] = &builtin_date_proto_setUTCFullYear,
+    [BUILTIN_DATE_PROTO_SETUTCHOURS] = &builtin_date_proto_setUTCHours,
+    [BUILTIN_DATE_PROTO_SETUTCMILLISECONDS] = &builtin_date_proto_setUTCMilliseconds,
+    [BUILTIN_DATE_PROTO_SETUTCMINUTES] = &builtin_date_proto_setUTCMinutes,
+    [BUILTIN_DATE_PROTO_SETUTCMONTH] = &builtin_date_proto_setUTCMonth,
+    [BUILTIN_DATE_PROTO_SETUTCSECONDS] = &builtin_date_proto_setUTCSeconds,
+    [BUILTIN_DATE_PROTO_TOGMTSTRING] = &builtin_date_proto_toUTCString,
+    [BUILTIN_DATE_PROTO_TOISOSTRING] = &builtin_date_proto_toISOString,
+    [BUILTIN_DATE_PROTO_TOJSON] = &builtin_date_proto_toJSON,
+    [BUILTIN_DATE_PROTO_TOLOCALEDATESTRING] = &builtin_date_proto_toLocaleDateString,
+    [BUILTIN_DATE_PROTO_TOLOCALESTRING] = &builtin_date_proto_toLocaleString,
+    [BUILTIN_DATE_PROTO_TOLOCALETIMESTRING] = &builtin_date_proto_toLocaleTimeString,
+    [BUILTIN_DATE_PROTO_TOSTRING] = &builtin_date_proto_toString,
+    [BUILTIN_DATE_PROTO_TOUTCSTRING] = &builtin_date_proto_toUTCString,
+    [BUILTIN_DATE_PROTO_VALUEOF] = &builtin_date_proto_valueOf,
+    [BUILTIN_DATE_UTC] = &builtin_date_utc,
+    [BUILTIN_DECODE_URI] = &builtin_decode_uri,
+    [BUILTIN_DECODE_URI_COMPONENT] = &builtin_decode_uri_component,
+    [BUILTIN_ENCODE_URI] = &builtin_encode_uri,
+    [BUILTIN_ENCODE_URI_COMPONENT] = &builtin_encode_uri_component,
+    [BUILTIN_ERROR] = &builtin_error,
+    [BUILTIN_ERROR_PROTO_TOSTRING] = &builtin_error_prototype_to_string,
+    [BUILTIN_EVAL] = &builtin_eval,
+    [BUILTIN_EVAL_ERROR] = &builtin_eval_error,
+    [BUILTIN_FUNCTION] = &builtin_function,
+    [BUILTIN_FUNCTION_PROTO_APPLY] = &builtin_function_proto_apply,
+    [BUILTIN_FUNCTION_PROTO_BIND] = &builtin_function_proto_bind,
+    [BUILTIN_FUNCTION_PROTO_CALL] = &builtin_function_proto_call,
+    [BUILTIN_GENERATOR_FUNCTION] = &builtin_generator_function,
+    [BUILTIN_GENERATOR_PROTO_NEXT] = &builtin_generator_proto_next,
+    [BUILTIN_GENERATOR_PROTO_RETURN] = &builtin_generator_proto_return,
+    [BUILTIN_GENERATOR_PROTO_THROW] = &builtin_generator_proto_throw,
+    [BUILTIN_IS_FINITE] = &builtin_is_finite,
+    [BUILTIN_IS_NAN] = &builtin_is_nan,
+    [BUILTIN_ITERATOR_PROTO_SYMBOL_ITER] = &builtin_iterator_proto_symbol_iter,
+    [BUILTIN_JSON_PARSE] = &builtin_json_parse,
+    [BUILTIN_JSON_STRINGIFY] = &builtin_json_stringify,
+    [BUILTIN_MAP] = &builtin_map,
+    [BUILTIN_MAP_ITERATOR_NEXT] = &builtin_map_iterator_next,
+    [BUILTIN_MAP_PROTO_CLEAR] = &builtin_map_proto_clear,
+    [BUILTIN_MAP_PROTO_DELETE] = &builtin_map_proto_delete,
+    [BUILTIN_MAP_PROTO_ENTRIES] = &builtin_map_proto_entries,
+    [BUILTIN_MAP_PROTO_FOREACH] = &builtin_map_proto_forEach,
+    [BUILTIN_MAP_PROTO_GET] = &builtin_map_proto_get,
+    [BUILTIN_MAP_PROTO_HAS] = &builtin_map_proto_has,
+    [BUILTIN_MAP_PROTO_KEYS] = &builtin_map_proto_keys,
+    [BUILTIN_MAP_PROTO_SET] = &builtin_map_proto_set,
+    [BUILTIN_MAP_PROTO_SYMBOL_ITER] = &builtin_map_proto_symbol_iter,
+    [BUILTIN_MAP_PROTO_VALUES] = &builtin_map_proto_values,
+    [BUILTIN_MATH_ABS] = &builtin_math_abs,
+    [BUILTIN_MATH_ACOS] = &builtin_math_acos,
+    [BUILTIN_MATH_ACOSH] = &builtin_math_acosh,
+    [BUILTIN_MATH_ASIN] = &builtin_math_asin,
+    [BUILTIN_MATH_ASINH] = &builtin_math_asinh,
+    [BUILTIN_MATH_ATAN] = &builtin_math_atan,
+    [BUILTIN_MATH_ATAN2] = &builtin_math_atan2,
+    [BUILTIN_MATH_ATANH] = &builtin_math_atanh,
+    [BUILTIN_MATH_CBRT] = &builtin_math_cbrt,
+    [BUILTIN_MATH_CEIL] = &builtin_math_ceil,
+    [BUILTIN_MATH_CLZ32] = &builtin_math_clz32,
+    [BUILTIN_MATH_COS] = &builtin_math_cos,
+    [BUILTIN_MATH_COSH] = &builtin_math_cosh,
+    [BUILTIN_MATH_EXP] = &builtin_math_exp,
+    [BUILTIN_MATH_EXPM1] = &builtin_math_expm1,
+    [BUILTIN_MATH_FLOOR] = &builtin_math_floor,
+    [BUILTIN_MATH_FROUND] = &builtin_math_fround,
+    [BUILTIN_MATH_HYPOT] = &builtin_math_hypot,
+    [BUILTIN_MATH_IMUL] = &builtin_math_imul,
+    [BUILTIN_MATH_LOG] = &builtin_math_log,
+    [BUILTIN_MATH_LOG10] = &builtin_math_log10,
+    [BUILTIN_MATH_LOG1P] = &builtin_math_log1p,
+    [BUILTIN_MATH_LOG2] = &builtin_math_log2,
+    [BUILTIN_MATH_MAX] = &builtin_math_max,
+    [BUILTIN_MATH_MIN] = &builtin_math_min,
+    [BUILTIN_MATH_POW] = &builtin_math_pow,
+    [BUILTIN_MATH_RANDOM] = &builtin_math_random,
+    [BUILTIN_MATH_ROUND] = &builtin_math_round,
+    [BUILTIN_MATH_SIGN] = &builtin_math_sign,
+    [BUILTIN_MATH_SIN] = &builtin_math_sin,
+    [BUILTIN_MATH_SINH] = &builtin_math_sinh,
+    [BUILTIN_MATH_SQRT] = &builtin_math_sqrt,
+    [BUILTIN_MATH_TAN] = &builtin_math_tan,
+    [BUILTIN_MATH_TANH] = &builtin_math_tanh,
+    [BUILTIN_MATH_TRUNC] = &builtin_math_trunc,
+    [BUILTIN_NUMBER] = &builtin_number,
+    [BUILTIN_NUMBER_ISFINITE] = &builtin_number_isFinite,
+    [BUILTIN_NUMBER_ISINTEGER] = &builtin_number_isInteger,
+    [BUILTIN_NUMBER_ISNAN] = &builtin_number_isNaN,
+    [BUILTIN_NUMBER_ISSAFEINTEGER] = &builtin_number_isSafeInteger,
+    [BUILTIN_NUMBER_PROTO_TOEXPONENTIAL] = &builtin_number_proto_toExponential,
+    [BUILTIN_NUMBER_PROTO_TOFIXED] = &builtin_number_proto_toFixed,
+    [BUILTIN_NUMBER_PROTO_TOPRECISION] = &builtin_number_proto_toPrecision,
+    [BUILTIN_NUMBER_PROTO_TOSTRING] = &builtin_number_proto_toString,
+    [BUILTIN_NUMBER_PROTO_VALUEOF] = &builtin_number_proto_valueOf,
+    [BUILTIN_OBJECT] = &builtin_object,
+    [BUILTIN_OBJECT_ASSIGN] = &builtin_object_assign,
+    [BUILTIN_OBJECT_CREATE] = &builtin_object_create,
+    [BUILTIN_OBJECT_DEFINEPROPERTIES] = &builtin_object_defineProperties,
+    [BUILTIN_OBJECT_DEFINEPROPERTY] = &builtin_object_defineProperty,
+    [BUILTIN_OBJECT_ENTRIES] = &builtin_object_entries,
+    [BUILTIN_OBJECT_FREEZE] = &builtin_object_freeze,
+    [BUILTIN_OBJECT_FROMENTRIES] = &builtin_object_fromEntries,
+    [BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR] = &builtin_object_getOwnPropertyDescriptor,
+    [BUILTIN_OBJECT_GETOWNPROPERTYNAMES] = &builtin_object_getOwnPropertyNames,
+    [BUILTIN_OBJECT_GETPROTOTYPEOF] = &builtin_object_getPrototypeOf,
+    [BUILTIN_OBJECT_HASOWN] = &builtin_object_hasOwn,
+    [BUILTIN_OBJECT_IS] = &builtin_object_is,
+    [BUILTIN_OBJECT_ISEXTENSIBLE] = &builtin_object_isExtensible,
+    [BUILTIN_OBJECT_ISFROZEN] = &builtin_object_isFrozen,
+    [BUILTIN_OBJECT_ISSEALED] = &builtin_object_isSealed,
+    [BUILTIN_OBJECT_KEYS] = &builtin_object_keys,
+    [BUILTIN_OBJECT_PREVENTEXTENSIONS] = &builtin_object_preventExtensions,
+    [BUILTIN_OBJECT_PROTO_HASOWNPROPERTY] = &builtin_object_proto_hasOwnProperty,
+    [BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF] = &builtin_object_proto_isPrototypeOf,
+    [BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE] = &builtin_object_proto_propertyIsEnumerable,
+    [BUILTIN_OBJECT_PROTO_TOLOCALESTRING] = &builtin_object_proto_toLocaleString,
+    [BUILTIN_OBJECT_PROTO_TOSTRING] = &builtin_object_proto_toString,
+    [BUILTIN_OBJECT_PROTO_VALUEOF] = &builtin_object_proto_valueOf,
+    [BUILTIN_OBJECT_SEAL] = &builtin_object_seal,
+    [BUILTIN_OBJECT_SETPROTOTYPEOF] = &builtin_object_setPrototypeOf,
+    [BUILTIN_OBJECT_VALUES] = &builtin_object_values,
+    [BUILTIN_PARSE_FLOAT] = &builtin_parse_float,
+    [BUILTIN_PARSE_INT] = &builtin_parse_int,
+    [BUILTIN_PRINT] = &builtin_print,
+    [BUILTIN_PROMISE] = &builtin_promise,
+    [BUILTIN_PROMISE_ALL] = &builtin_promise_all,
+    [BUILTIN_PROMISE_ALLSETTLED] = &builtin_promise_allsettled,
+    [BUILTIN_PROMISE_ANY] = &builtin_promise_any,
+    [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,
+    [BUILTIN_PROMISE_PROTO_FINALLY] = &builtin_promise_proto_finally,
+    [BUILTIN_PROMISE_PROTO_THEN] = &builtin_promise_proto_then,
+    [BUILTIN_PROMISE_RACE] = &builtin_promise_race,
+    [BUILTIN_PROMISE_REJECT] = &builtin_promise_reject,
+    [BUILTIN_PROMISE_REJECT_CALLBACK] = &builtin_promise_reject_callback,
+    [BUILTIN_PROMISE_RESOLVE] = &builtin_promise_resolve,
+    [BUILTIN_PROMISE_RESOLVE_CALLBACK] = &builtin_promise_resolve_callback,
+    [BUILTIN_RANGE_ERROR] = &builtin_range_error,
+    [BUILTIN_REFERENCE_ERROR] = &builtin_reference_error,
+    [BUILTIN_REGEXP] = &builtin_regexp,
+    [BUILTIN_REGEXP_PROTO_EXEC] = &builtin_regexp_proto_exec,
+    [BUILTIN_REGEXP_PROTO_GET_DOTALL] = &builtin_regexp_proto_get_dotAll,
+    [BUILTIN_REGEXP_PROTO_GET_FLAGS] = &builtin_regexp_proto_get_flags,
+    [BUILTIN_REGEXP_PROTO_GET_GLOBAL] = &builtin_regexp_proto_get_global,
+    [BUILTIN_REGEXP_PROTO_GET_IGNORECASE] = &builtin_regexp_proto_get_ignoreCase,
+    [BUILTIN_REGEXP_PROTO_GET_MULTILINE] = &builtin_regexp_proto_get_multiline,
+    [BUILTIN_REGEXP_PROTO_GET_SOURCE] = &builtin_regexp_proto_get_source,
+    [BUILTIN_REGEXP_PROTO_GET_STICKY] = &builtin_regexp_proto_get_sticky,
+    [BUILTIN_REGEXP_PROTO_GET_UNICODE] = &builtin_regexp_proto_get_unicode,
+    [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
+    [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
+    [BUILTIN_RESET_GLOBALS] = &builtin_reset_globals,
+    [BUILTIN_SET] = &builtin_set,
+    [BUILTIN_SET_ITERATOR_NEXT] = &builtin_set_iterator_next,
+    [BUILTIN_SET_PROTO_ADD] = &builtin_set_proto_add,
+    [BUILTIN_SET_PROTO_CLEAR] = &builtin_set_proto_clear,
+    [BUILTIN_SET_PROTO_DELETE] = &builtin_set_proto_delete,
+    [BUILTIN_SET_PROTO_ENTRIES] = &builtin_set_proto_entries,
+    [BUILTIN_SET_PROTO_FOREACH] = &builtin_set_proto_forEach,
+    [BUILTIN_SET_PROTO_HAS] = &builtin_set_proto_has,
+    [BUILTIN_SET_PROTO_KEYS] = &builtin_set_proto_keys,
+    [BUILTIN_SET_PROTO_SYMBOL_ITER] = &builtin_set_proto_symbol_iter,
+    [BUILTIN_SET_PROTO_VALUES] = &builtin_set_proto_values,
+    [BUILTIN_STRING] = &builtin_string,
+    [BUILTIN_STRING_FROMCHARCODE] = &builtin_string_fromcharcode,
+    [BUILTIN_STRING_FROMCODEPOINT] = &builtin_string_fromcodepoint,
+    [BUILTIN_STRING_ITERATOR_NEXT] = &builtin_string_iterator_next,
+    [BUILTIN_STRING_PROTO_AT] = &builtin_string_proto_at,
+    [BUILTIN_STRING_PROTO_CHARAT] = &builtin_string_proto_charAt,
+    [BUILTIN_STRING_PROTO_CHARCODEAT] = &builtin_string_proto_charCodeAt,
+    [BUILTIN_STRING_PROTO_CODEPOINTAT] = &builtin_string_proto_codePointAt,
+    [BUILTIN_STRING_PROTO_CONCAT] = &builtin_string_proto_concat,
+    [BUILTIN_STRING_PROTO_ENDSWITH] = &builtin_string_proto_endsWith,
+    [BUILTIN_STRING_PROTO_INCLUDES] = &builtin_string_proto_includes,
+    [BUILTIN_STRING_PROTO_INDEXOF] = &builtin_string_proto_indexOf,
+    [BUILTIN_STRING_PROTO_LASTINDEXOF] = &builtin_string_proto_lastIndexOf,
+    [BUILTIN_STRING_PROTO_MATCH] = &builtin_string_proto_match,
+    [BUILTIN_STRING_PROTO_PADEND] = &builtin_string_proto_padEnd,
+    [BUILTIN_STRING_PROTO_PADSTART] = &builtin_string_proto_padStart,
+    [BUILTIN_STRING_PROTO_REPEAT] = &builtin_string_proto_repeat,
+    [BUILTIN_STRING_PROTO_REPLACE] = &builtin_string_proto_replace,
+    [BUILTIN_STRING_PROTO_SEARCH] = &builtin_string_proto_search,
+    [BUILTIN_STRING_PROTO_SLICE] = &builtin_string_proto_slice,
+    [BUILTIN_STRING_PROTO_SPLIT] = &builtin_string_proto_split,
+    [BUILTIN_STRING_PROTO_STARTSWITH] = &builtin_string_proto_startsWith,
+    [BUILTIN_STRING_PROTO_SUBSTR] = &builtin_string_proto_substr,
+    [BUILTIN_STRING_PROTO_SUBSTRING] = &builtin_string_proto_substring,
+    [BUILTIN_STRING_PROTO_SYMBOL_ITER] = &builtin_string_proto_symbol_iter,
+    [BUILTIN_STRING_PROTO_TOLOWERCASE] = &builtin_string_proto_toLowerCase,
+    [BUILTIN_STRING_PROTO_TOSTRING] = &builtin_string_proto_toString,
+    [BUILTIN_STRING_PROTO_TOUPPERCASE] = &builtin_string_proto_toUpperCase,
+    [BUILTIN_STRING_PROTO_TRIM] = &builtin_string_proto_trim,
+    [BUILTIN_STRING_PROTO_TRIMEND] = &builtin_string_proto_trimEnd,
+    [BUILTIN_STRING_PROTO_TRIMSTART] = &builtin_string_proto_trimStart,
+    [BUILTIN_STRING_PROTO_VALUEOF] = &builtin_string_proto_valueOf,
+    [BUILTIN_SYMBOL] = &builtin_symbol,
+    [BUILTIN_SYMBOL_FOR] = &builtin_symbol_for,
+    [BUILTIN_SYMBOL_KEYFOR] = &builtin_symbol_keyfor,
+    [BUILTIN_SYMBOL_PROTO_TOSTRING] = &builtin_symbol_proto_toString,
+    [BUILTIN_SYMBOL_PROTO_VALUEOF] = &builtin_symbol_proto_valueOf,
+    [BUILTIN_SYNTAX_ERROR] = &builtin_syntax_error,
+    [BUILTIN_TYPE_ERROR] = &builtin_type_error,
+    [BUILTIN_URI_ERROR] = &builtin_uri_error,
+    [BUILTIN_WEAKMAP] = &builtin_weakmap,
+    [BUILTIN_WEAKMAP_PROTO_DELETE] = &builtin_weakmap_proto_delete,
+    [BUILTIN_WEAKMAP_PROTO_GET] = &builtin_weakmap_proto_get,
+    [BUILTIN_WEAKMAP_PROTO_HAS] = &builtin_weakmap_proto_has,
+    [BUILTIN_WEAKMAP_PROTO_SET] = &builtin_weakmap_proto_set,
+    [BUILTIN_WEAKSET] = &builtin_weakset,
+    [BUILTIN_WEAKSET_PROTO_ADD] = &builtin_weakset_proto_add,
+    [BUILTIN_WEAKSET_PROTO_DELETE] = &builtin_weakset_proto_delete,
+    [BUILTIN_WEAKSET_PROTO_HAS] = &builtin_weakset_proto_has,
+};
+
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
-    switch (fn_index) {
-        case BUILTIN_PRINT:
-            builtin_print(ctx);
-        case BUILTIN_CONSOLE_LOG:
-            builtin_console_log(ctx);
-        case BUILTIN_PARSE_INT:
-            builtin_parse_int(ctx);
-        case BUILTIN_PARSE_FLOAT:
-            builtin_parse_float(ctx);
-        case BUILTIN_IS_NAN:
-            builtin_is_nan(ctx);
-        case BUILTIN_IS_FINITE:
-            builtin_is_finite(ctx);
-        case BUILTIN_ERROR:
-            builtin_error(ctx);
-        case BUILTIN_TYPE_ERROR:
-            builtin_type_error(ctx);
-        case BUILTIN_RANGE_ERROR:
-            builtin_range_error(ctx);
-        case BUILTIN_REFERENCE_ERROR:
-            builtin_reference_error(ctx);
-        case BUILTIN_SYNTAX_ERROR:
-            builtin_syntax_error(ctx);
-        case BUILTIN_EVAL_ERROR:
-            builtin_eval_error(ctx);
-        case BUILTIN_URI_ERROR:
-            builtin_uri_error(ctx);
-        case BUILTIN_AGGREGATE_ERROR:
-            builtin_aggregate_error(ctx);
-        case BUILTIN_ERROR_PROTO_TOSTRING:
-            builtin_error_prototype_to_string(ctx);
-        case BUILTIN_BOOLEAN:
-            builtin_boolean(ctx);
-        case BUILTIN_BOOLEAN_PROTO_TOSTRING:
-            builtin_boolean_proto_toString(ctx);
-        case BUILTIN_BOOLEAN_PROTO_VALUEOF:
-            builtin_boolean_proto_valueOf(ctx);
-        case BUILTIN_STRING:
-            builtin_string(ctx);
-        case BUILTIN_STRING_PROTO_TOSTRING:
-            builtin_string_proto_toString(ctx);
-        case BUILTIN_STRING_PROTO_VALUEOF:
-            builtin_string_proto_valueOf(ctx);
-        case BUILTIN_STRING_FROMCHARCODE:
-            builtin_string_fromcharcode(ctx);
-        case BUILTIN_STRING_FROMCODEPOINT:
-            builtin_string_fromcodepoint(ctx);
-        case BUILTIN_ARRAY_PROTO_FLAT:
-            builtin_array_proto_flat(ctx);
-        case BUILTIN_ARRAY_PROTO_TOREVERSED:
-            builtin_array_proto_toReversed(ctx);
-        case BUILTIN_ARRAY_PROTO_TOSORTED:
-            builtin_array_proto_toSorted(ctx);
-        case BUILTIN_ARRAY_PROTO_TOSPLICED:
-            builtin_array_proto_toSpliced(ctx);
-        case BUILTIN_ARRAY_PROTO_WITH:
-            builtin_array_proto_with(ctx);
-        case BUILTIN_NUMBER:
-            builtin_number(ctx);
-        case BUILTIN_NUMBER_PROTO_TOSTRING:
-            builtin_number_proto_toString(ctx);
-        case BUILTIN_NUMBER_PROTO_VALUEOF:
-            builtin_number_proto_valueOf(ctx);
-        case BUILTIN_NUMBER_PROTO_TOFIXED:
-            builtin_number_proto_toFixed(ctx);
-        case BUILTIN_NUMBER_PROTO_TOEXPONENTIAL:
-            builtin_number_proto_toExponential(ctx);
-        case BUILTIN_NUMBER_PROTO_TOPRECISION:
-            builtin_number_proto_toPrecision(ctx);
-        case BUILTIN_NUMBER_ISNAN:
-            builtin_number_isNaN(ctx);
-        case BUILTIN_NUMBER_ISFINITE:
-            builtin_number_isFinite(ctx);
-        case BUILTIN_NUMBER_ISINTEGER:
-            builtin_number_isInteger(ctx);
-        case BUILTIN_NUMBER_ISSAFEINTEGER:
-            builtin_number_isSafeInteger(ctx);
-        case BUILTIN_OBJECT:
-            builtin_object(ctx);
-        case BUILTIN_OBJECT_PROTO_TOSTRING:
-            builtin_object_proto_toString(ctx);
-        case BUILTIN_OBJECT_PROTO_HASOWNPROPERTY:
-            builtin_object_proto_hasOwnProperty(ctx);
-        case BUILTIN_OBJECT_PROTO_PROPERTYISENUMERABLE:
-            builtin_object_proto_propertyIsEnumerable(ctx);
-        case BUILTIN_OBJECT_PROTO_ISPROTOTYPEOF:
-            builtin_object_proto_isPrototypeOf(ctx);
-        case BUILTIN_OBJECT_PROTO_TOLOCALESTRING:
-            builtin_object_proto_toLocaleString(ctx);
-        case BUILTIN_OBJECT_PROTO_VALUEOF:
-            builtin_object_proto_valueOf(ctx);
-        case BUILTIN_OBJECT_KEYS:
-            builtin_object_keys(ctx);
-        case BUILTIN_OBJECT_GETPROTOTYPEOF:
-            builtin_object_getPrototypeOf(ctx);
-        case BUILTIN_OBJECT_ISEXTENSIBLE:
-            builtin_object_isExtensible(ctx);
-        case BUILTIN_OBJECT_PREVENTEXTENSIONS:
-            builtin_object_preventExtensions(ctx);
-        case BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR:
-            builtin_object_getOwnPropertyDescriptor(ctx);
-        case BUILTIN_OBJECT_DEFINEPROPERTY:
-            builtin_object_defineProperty(ctx);
-        case BUILTIN_OBJECT_GETOWNPROPERTYNAMES:
-            builtin_object_getOwnPropertyNames(ctx);
-        case BUILTIN_OBJECT_DEFINEPROPERTIES:
-            builtin_object_defineProperties(ctx);
-        case BUILTIN_OBJECT_CREATE:
-            builtin_object_create(ctx);
-        case BUILTIN_OBJECT_SEAL:
-            builtin_object_seal(ctx);
-        case BUILTIN_OBJECT_FREEZE:
-            builtin_object_freeze(ctx);
-        case BUILTIN_OBJECT_ISSEALED:
-            builtin_object_isSealed(ctx);
-        case BUILTIN_OBJECT_ISFROZEN:
-            builtin_object_isFrozen(ctx);
-        case BUILTIN_OBJECT_ENTRIES:
-            builtin_object_entries(ctx);
-        case BUILTIN_OBJECT_VALUES:
-            builtin_object_values(ctx);
-        case BUILTIN_OBJECT_ASSIGN:
-            builtin_object_assign(ctx);
-        case BUILTIN_OBJECT_IS:
-            builtin_object_is(ctx);
-        case BUILTIN_OBJECT_HASOWN:
-            builtin_object_hasOwn(ctx);
-        case BUILTIN_OBJECT_SETPROTOTYPEOF:
-            builtin_object_setPrototypeOf(ctx);
-        case BUILTIN_STRING_PROTO_INCLUDES:
-            builtin_string_proto_includes(ctx);
-        case BUILTIN_STRING_PROTO_STARTSWITH:
-            builtin_string_proto_startsWith(ctx);
-        case BUILTIN_STRING_PROTO_ENDSWITH:
-            builtin_string_proto_endsWith(ctx);
-        case BUILTIN_STRING_PROTO_REPEAT:
-            builtin_string_proto_repeat(ctx);
-        case BUILTIN_ARRAY_OF:
-            builtin_array_of(ctx);
-        case BUILTIN_ARRAY_FROM:
-            builtin_array_from(ctx);
-        case BUILTIN_ARRAY_PROTO_FILL:
-            builtin_array_proto_fill(ctx);
-        case BUILTIN_ARRAY_PROTO_INCLUDES:
-            builtin_array_proto_includes(ctx);
-        case BUILTIN_STRING_PROTO_TRIMSTART:
-            builtin_string_proto_trimStart(ctx);
-        case BUILTIN_STRING_PROTO_TRIMEND:
-            builtin_string_proto_trimEnd(ctx);
-        case BUILTIN_STRING_PROTO_CODEPOINTAT:
-            builtin_string_proto_codePointAt(ctx);
-        case BUILTIN_STRING_PROTO_AT:
-            builtin_string_proto_at(ctx);
-        case BUILTIN_ARRAY_PROTO_AT:
-            builtin_array_proto_at(ctx);
-        case BUILTIN_ARRAY_PROTO_COPYWITHIN:
-            builtin_array_proto_copyWithin(ctx);
-        case BUILTIN_STRING_PROTO_PADSTART:
-            builtin_string_proto_padStart(ctx);
-        case BUILTIN_STRING_PROTO_PADEND:
-            builtin_string_proto_padEnd(ctx);
-        case BUILTIN_STRING_PROTO_LASTINDEXOF:
-            builtin_string_proto_lastIndexOf(ctx);
-        case BUILTIN_STRING_PROTO_MATCH:
-            builtin_string_proto_match(ctx);
-        case BUILTIN_STRING_PROTO_SEARCH:
-            builtin_string_proto_search(ctx);
-        case BUILTIN_ARRAY:
-            builtin_array(ctx);
-        case BUILTIN_MATH_ABS:
-            builtin_math_abs(ctx);
-        case BUILTIN_MATH_FLOOR:
-            builtin_math_floor(ctx);
-        case BUILTIN_MATH_CEIL:
-            builtin_math_ceil(ctx);
-        case BUILTIN_MATH_ROUND:
-            builtin_math_round(ctx);
-        case BUILTIN_MATH_MAX:
-            builtin_math_max(ctx);
-        case BUILTIN_MATH_MIN:
-            builtin_math_min(ctx);
-        case BUILTIN_MATH_POW:
-            builtin_math_pow(ctx);
-        case BUILTIN_MATH_SQRT:
-            builtin_math_sqrt(ctx);
-        case BUILTIN_MATH_EXP:
-            builtin_math_exp(ctx);
-        case BUILTIN_MATH_LOG:
-            builtin_math_log(ctx);
-        case BUILTIN_MATH_SIN:
-            builtin_math_sin(ctx);
-        case BUILTIN_MATH_COS:
-            builtin_math_cos(ctx);
-        case BUILTIN_MATH_TAN:
-            builtin_math_tan(ctx);
-        case BUILTIN_MATH_RANDOM:
-            builtin_math_random(ctx);
-        case BUILTIN_MATH_ACOS:
-            builtin_math_acos(ctx);
-        case BUILTIN_MATH_ASIN:
-            builtin_math_asin(ctx);
-        case BUILTIN_MATH_ATAN:
-            builtin_math_atan(ctx);
-        case BUILTIN_MATH_ATAN2:
-            builtin_math_atan2(ctx);
-        case BUILTIN_MATH_COSH:
-            builtin_math_cosh(ctx);
-        case BUILTIN_MATH_SINH:
-            builtin_math_sinh(ctx);
-        case BUILTIN_MATH_TANH:
-            builtin_math_tanh(ctx);
-        case BUILTIN_MATH_ACOSH:
-            builtin_math_acosh(ctx);
-        case BUILTIN_MATH_ASINH:
-            builtin_math_asinh(ctx);
-        case BUILTIN_MATH_ATANH:
-            builtin_math_atanh(ctx);
-        case BUILTIN_MATH_LOG2:
-            builtin_math_log2(ctx);
-        case BUILTIN_MATH_LOG10:
-            builtin_math_log10(ctx);
-        case BUILTIN_MATH_LOG1P:
-            builtin_math_log1p(ctx);
-        case BUILTIN_MATH_EXPM1:
-            builtin_math_expm1(ctx);
-        case BUILTIN_MATH_CBRT:
-            builtin_math_cbrt(ctx);
-        case BUILTIN_MATH_HYPOT:
-            builtin_math_hypot(ctx);
-        case BUILTIN_MATH_TRUNC:
-            builtin_math_trunc(ctx);
-        case BUILTIN_MATH_SIGN:
-            builtin_math_sign(ctx);
-        case BUILTIN_MATH_FROUND:
-            builtin_math_fround(ctx);
-        case BUILTIN_MATH_CLZ32:
-            builtin_math_clz32(ctx);
-        case BUILTIN_MATH_IMUL:
-            builtin_math_imul(ctx);
-        case BUILTIN_ARRAY_ISARRAY:
-            builtin_array_isArray(ctx);
-        case BUILTIN_STRING_PROTO_CHARAT:
-            builtin_string_proto_charAt(ctx);
-        case BUILTIN_STRING_PROTO_CHARCODEAT:
-            builtin_string_proto_charCodeAt(ctx);
-        case BUILTIN_STRING_PROTO_INDEXOF:
-            builtin_string_proto_indexOf(ctx);
-        case BUILTIN_STRING_PROTO_SLICE:
-            builtin_string_proto_slice(ctx);
-        case BUILTIN_STRING_PROTO_SUBSTRING:
-            builtin_string_proto_substring(ctx);
-        case BUILTIN_STRING_PROTO_SUBSTR:
-            builtin_string_proto_substr(ctx);
-        case BUILTIN_STRING_PROTO_TOUPPERCASE:
-            builtin_string_proto_toUpperCase(ctx);
-        case BUILTIN_STRING_PROTO_TOLOWERCASE:
-            builtin_string_proto_toLowerCase(ctx);
-        case BUILTIN_STRING_PROTO_TRIM:
-            builtin_string_proto_trim(ctx);
-        case BUILTIN_STRING_PROTO_SPLIT:
-            builtin_string_proto_split(ctx);
-        case BUILTIN_STRING_PROTO_CONCAT:
-            builtin_string_proto_concat(ctx);
-        case BUILTIN_STRING_PROTO_REPLACE:
-            builtin_string_proto_replace(ctx);
-        case BUILTIN_ARRAY_PROTO_TOSTRING:
-            builtin_array_proto_toString(ctx);
-        case BUILTIN_ARRAY_PROTO_JOIN:
-            builtin_array_proto_join(ctx);
-        case BUILTIN_ARRAY_PROTO_POP:
-            builtin_array_proto_pop(ctx);
-        case BUILTIN_ARRAY_PROTO_PUSH:
-            builtin_array_proto_push(ctx);
-        case BUILTIN_ARRAY_PROTO_REVERSE:
-            builtin_array_proto_reverse(ctx);
-        case BUILTIN_ARRAY_PROTO_SHIFT:
-            builtin_array_proto_shift(ctx);
-        case BUILTIN_ARRAY_PROTO_SLICE:
-            builtin_array_proto_slice(ctx);
-        case BUILTIN_ARRAY_PROTO_SORT:
-            builtin_array_proto_sort(ctx);
-        case BUILTIN_ARRAY_PROTO_SPLICE:
-            builtin_array_proto_splice(ctx);
-        case BUILTIN_ARRAY_PROTO_UNSHIFT:
-            builtin_array_proto_unshift(ctx);
-        case BUILTIN_ARRAY_PROTO_INDEXOF:
-            builtin_array_proto_indexOf(ctx);
-        case BUILTIN_ARRAY_PROTO_LASTINDEXOF:
-            builtin_array_proto_lastIndexOf(ctx);
-        case BUILTIN_ARRAY_PROTO_CONCAT:
-            builtin_array_proto_concat(ctx);
-        case BUILTIN_FUNCTION_PROTO_CALL:
-            builtin_function_proto_call(ctx);
-        case BUILTIN_FUNCTION_PROTO_APPLY:
-            builtin_function_proto_apply(ctx);
-        case BUILTIN_FUNCTION_PROTO_BIND:
-            builtin_function_proto_bind(ctx);
-        case BUILTIN_BOUND_CALL:
-            builtin_bound_call(ctx);
-        case BUILTIN_FUNCTION:
-            builtin_function(ctx);
-        case BUILTIN_EVAL:
-            builtin_eval(ctx);
-        case BUILTIN_JSON_PARSE:
-            builtin_json_parse(ctx);
-        case BUILTIN_JSON_STRINGIFY:
-            builtin_json_stringify(ctx);
-        case BUILTIN_DATE:
-            builtin_date(ctx);
-        case BUILTIN_DATE_NOW:
-            builtin_date_now(ctx);
-        case BUILTIN_DATE_UTC:
-            builtin_date_utc(ctx);
-        case BUILTIN_DATE_PARSE:
-            builtin_date_parse(ctx);
-        case BUILTIN_DATE_PROTO_TOSTRING:
-            builtin_date_proto_toString(ctx);
-        case BUILTIN_DATE_PROTO_TOJSON:
-            builtin_date_proto_toJSON(ctx);
-        case BUILTIN_DATE_PROTO_VALUEOF:
-            builtin_date_proto_valueOf(ctx);
-        case BUILTIN_DATE_PROTO_GETTIME:
-            builtin_date_proto_getTime(ctx);
-        case BUILTIN_DATE_PROTO_GETFULLYEAR:
-            builtin_date_proto_getFullYear(ctx);
-        case BUILTIN_DATE_PROTO_GETMONTH:
-            builtin_date_proto_getMonth(ctx);
-        case BUILTIN_DATE_PROTO_GETDATE:
-            builtin_date_proto_getDate(ctx);
-        case BUILTIN_DATE_PROTO_GETDAY:
-            builtin_date_proto_getDay(ctx);
-        case BUILTIN_DATE_PROTO_GETHOURS:
-            builtin_date_proto_getHours(ctx);
-        case BUILTIN_DATE_PROTO_GETMINUTES:
-            builtin_date_proto_getMinutes(ctx);
-        case BUILTIN_DATE_PROTO_GETSECONDS:
-            builtin_date_proto_getSeconds(ctx);
-        case BUILTIN_DATE_PROTO_GETMILLISECONDS:
-            builtin_date_proto_getMilliseconds(ctx);
-        case BUILTIN_DATE_PROTO_GETTIMEZONEOFFSET:
-            builtin_date_proto_getTimezoneOffset(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCFULLYEAR:
-            builtin_date_proto_getUTCFullYear(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCMONTH:
-            builtin_date_proto_getUTCMonth(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCDATE:
-            builtin_date_proto_getUTCDate(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCDAY:
-            builtin_date_proto_getUTCDay(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCHOURS:
-            builtin_date_proto_getUTCHours(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCMINUTES:
-            builtin_date_proto_getUTCMinutes(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCSECONDS:
-            builtin_date_proto_getUTCSeconds(ctx);
-        case BUILTIN_DATE_PROTO_GETUTCMILLISECONDS:
-            builtin_date_proto_getUTCMilliseconds(ctx);
-        case BUILTIN_DATE_PROTO_SETTIME:
-            builtin_date_proto_setTime(ctx);
-        case BUILTIN_DATE_PROTO_SETMILLISECONDS:
-            builtin_date_proto_setMilliseconds(ctx);
-        case BUILTIN_DATE_PROTO_SETSECONDS:
-            builtin_date_proto_setSeconds(ctx);
-        case BUILTIN_DATE_PROTO_SETMINUTES:
-            builtin_date_proto_setMinutes(ctx);
-        case BUILTIN_DATE_PROTO_SETHOURS:
-            builtin_date_proto_setHours(ctx);
-        case BUILTIN_DATE_PROTO_SETDATE:
-            builtin_date_proto_setDate(ctx);
-        case BUILTIN_DATE_PROTO_SETMONTH:
-            builtin_date_proto_setMonth(ctx);
-        case BUILTIN_DATE_PROTO_SETFULLYEAR:
-            builtin_date_proto_setFullYear(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCMILLISECONDS:
-            builtin_date_proto_setUTCMilliseconds(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCSECONDS:
-            builtin_date_proto_setUTCSeconds(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCMINUTES:
-            builtin_date_proto_setUTCMinutes(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCHOURS:
-            builtin_date_proto_setUTCHours(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCDATE:
-            builtin_date_proto_setUTCDate(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCMONTH:
-            builtin_date_proto_setUTCMonth(ctx);
-        case BUILTIN_DATE_PROTO_SETUTCFULLYEAR:
-            builtin_date_proto_setUTCFullYear(ctx);
-        case BUILTIN_DATE_PROTO_TOISOSTRING:
-            builtin_date_proto_toISOString(ctx);
-        case BUILTIN_DATE_PROTO_TOUTCSTRING:
-            builtin_date_proto_toUTCString(ctx);
-        case BUILTIN_DATE_PROTO_TOGMTSTRING:
-            builtin_date_proto_toUTCString(ctx);
-        case BUILTIN_DATE_PROTO_TOLOCALESTRING:
-            builtin_date_proto_toLocaleString(ctx);
-        case BUILTIN_DATE_PROTO_TOLOCALEDATESTRING:
-            builtin_date_proto_toLocaleDateString(ctx);
-        case BUILTIN_DATE_PROTO_TOLOCALETIMESTRING:
-            builtin_date_proto_toLocaleTimeString(ctx);
-        case BUILTIN_REGEXP:
-            builtin_regexp(ctx);
-        case BUILTIN_REGEXP_PROTO_TEST:
-            builtin_regexp_proto_test(ctx);
-        case BUILTIN_REGEXP_PROTO_EXEC:
-            builtin_regexp_proto_exec(ctx);
-        case BUILTIN_REGEXP_PROTO_TOSTRING:
-            builtin_regexp_proto_toString(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_FLAGS:
-            builtin_regexp_proto_get_flags(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_SOURCE:
-            builtin_regexp_proto_get_source(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_GLOBAL:
-            builtin_regexp_proto_get_global(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_IGNORECASE:
-            builtin_regexp_proto_get_ignoreCase(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_MULTILINE:
-            builtin_regexp_proto_get_multiline(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_DOTALL:
-            builtin_regexp_proto_get_dotAll(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_STICKY:
-            builtin_regexp_proto_get_sticky(ctx);
-        case BUILTIN_REGEXP_PROTO_GET_UNICODE:
-            builtin_regexp_proto_get_unicode(ctx);
-        case BUILTIN_RESET_GLOBALS:
-            builtin_reset_globals(ctx);
-        case BUILTIN_MAP:
-            builtin_map(ctx);
-        case BUILTIN_MAP_PROTO_SET:
-            builtin_map_proto_set(ctx);
-        case BUILTIN_MAP_PROTO_GET:
-            builtin_map_proto_get(ctx);
-        case BUILTIN_MAP_PROTO_HAS:
-            builtin_map_proto_has(ctx);
-        case BUILTIN_MAP_PROTO_DELETE:
-            builtin_map_proto_delete(ctx);
-        case BUILTIN_MAP_PROTO_CLEAR:
-            builtin_map_proto_clear(ctx);
-        case BUILTIN_MAP_PROTO_KEYS:
-            builtin_map_proto_keys(ctx);
-        case BUILTIN_MAP_PROTO_VALUES:
-            builtin_map_proto_values(ctx);
-        case BUILTIN_MAP_PROTO_ENTRIES:
-            builtin_map_proto_entries(ctx);
-        case BUILTIN_MAP_PROTO_FOREACH:
-            builtin_map_proto_forEach(ctx);
-        case BUILTIN_SET:
-            builtin_set(ctx);
-        case BUILTIN_SET_PROTO_ADD:
-            builtin_set_proto_add(ctx);
-        case BUILTIN_SET_PROTO_HAS:
-            builtin_set_proto_has(ctx);
-        case BUILTIN_SET_PROTO_DELETE:
-            builtin_set_proto_delete(ctx);
-        case BUILTIN_SET_PROTO_CLEAR:
-            builtin_set_proto_clear(ctx);
-        case BUILTIN_SET_PROTO_KEYS:
-            builtin_set_proto_keys(ctx);
-        case BUILTIN_SET_PROTO_VALUES:
-            builtin_set_proto_values(ctx);
-        case BUILTIN_SET_PROTO_ENTRIES:
-            builtin_set_proto_entries(ctx);
-        case BUILTIN_SET_PROTO_FOREACH:
-            builtin_set_proto_forEach(ctx);
-        case BUILTIN_WEAKMAP:
-            builtin_weakmap(ctx);
-        case BUILTIN_WEAKMAP_PROTO_SET:
-            builtin_weakmap_proto_set(ctx);
-        case BUILTIN_WEAKMAP_PROTO_GET:
-            builtin_weakmap_proto_get(ctx);
-        case BUILTIN_WEAKMAP_PROTO_HAS:
-            builtin_weakmap_proto_has(ctx);
-        case BUILTIN_WEAKMAP_PROTO_DELETE:
-            builtin_weakmap_proto_delete(ctx);
-        case BUILTIN_WEAKSET:
-            builtin_weakset(ctx);
-        case BUILTIN_WEAKSET_PROTO_ADD:
-            builtin_weakset_proto_add(ctx);
-        case BUILTIN_WEAKSET_PROTO_HAS:
-            builtin_weakset_proto_has(ctx);
-        case BUILTIN_WEAKSET_PROTO_DELETE:
-            builtin_weakset_proto_delete(ctx);
-        case BUILTIN_SYMBOL:
-            builtin_symbol(ctx);
-        case BUILTIN_SYMBOL_FOR:
-            builtin_symbol_for(ctx);
-        case BUILTIN_SYMBOL_KEYFOR:
-            builtin_symbol_keyfor(ctx);
-        case BUILTIN_SYMBOL_PROTO_TOSTRING:
-            builtin_symbol_proto_toString(ctx);
-        case BUILTIN_SYMBOL_PROTO_VALUEOF:
-            builtin_symbol_proto_valueOf(ctx);
-        case BUILTIN_PROMISE:
-            builtin_promise(ctx);
-        case BUILTIN_PROMISE_PROTO_THEN:
-            builtin_promise_proto_then(ctx);
-        case BUILTIN_PROMISE_PROTO_CATCH:
-            builtin_promise_proto_catch(ctx);
-        case BUILTIN_PROMISE_PROTO_FINALLY:
-            builtin_promise_proto_finally(ctx);
-        case BUILTIN_PROMISE_RESOLVE:
-            builtin_promise_resolve(ctx);
-        case BUILTIN_PROMISE_REJECT:
-            builtin_promise_reject(ctx);
-        case BUILTIN_PROMISE_ALL:
-            builtin_promise_all(ctx);
-        case BUILTIN_PROMISE_RACE:
-            builtin_promise_race(ctx);
-        case BUILTIN_PROMISE_ALLSETTLED:
-            builtin_promise_allsettled(ctx);
-        case BUILTIN_PROMISE_ANY:
-            builtin_promise_any(ctx);
-        case BUILTIN_PROMISE_RESOLVE_CALLBACK:
-            builtin_promise_resolve_callback(ctx);
-        case BUILTIN_PROMISE_REJECT_CALLBACK:
-            builtin_promise_reject_callback(ctx);
-        case BUILTIN_GENERATOR_FUNCTION:
-            builtin_generator_function(ctx);
-        case BUILTIN_GENERATOR_PROTO_NEXT:
-            builtin_generator_proto_next(ctx);
-        case BUILTIN_GENERATOR_PROTO_THROW:
-            builtin_generator_proto_throw(ctx);
-        case BUILTIN_GENERATOR_PROTO_RETURN:
-            builtin_generator_proto_return(ctx);
-        case BUILTIN_ENCODE_URI:
-            builtin_encode_uri(ctx);
-        case BUILTIN_ENCODE_URI_COMPONENT:
-            builtin_encode_uri_component(ctx);
-        case BUILTIN_DECODE_URI:
-            builtin_decode_uri(ctx);
-        case BUILTIN_DECODE_URI_COMPONENT:
-            builtin_decode_uri_component(ctx);
-        case BUILTIN_ARRAY_ITERATOR_NEXT:
-            builtin_array_iterator_next(ctx);
-        case BUILTIN_STRING_ITERATOR_NEXT:
-            builtin_string_iterator_next(ctx);
-        case BUILTIN_ARRAY_PROTO_SYMBOL_ITER:
-            builtin_array_proto_symbol_iter(ctx);
-        case BUILTIN_STRING_PROTO_SYMBOL_ITER:
-            builtin_string_proto_symbol_iter(ctx);
-        case BUILTIN_ARRAY_PROTO_KEYS:
-            builtin_array_proto_keys(ctx);
-        case BUILTIN_ARRAY_PROTO_VALUES:
-            builtin_array_proto_values(ctx);
-        case BUILTIN_ARRAY_PROTO_ENTRIES:
-            builtin_array_proto_entries(ctx);
-        case BUILTIN_OBJECT_FROMENTRIES:
-            builtin_object_fromEntries(ctx);
-        case BUILTIN_ITERATOR_PROTO_SYMBOL_ITER:
-            builtin_iterator_proto_symbol_iter(ctx);
-        case BUILTIN_MAP_ITERATOR_NEXT:
-            builtin_map_iterator_next(ctx);
-        case BUILTIN_SET_ITERATOR_NEXT:
-            builtin_set_iterator_next(ctx);
-        case BUILTIN_MAP_PROTO_SYMBOL_ITER:
-            builtin_map_proto_symbol_iter(ctx);
-        case BUILTIN_SET_PROTO_SYMBOL_ITER:
-            builtin_set_proto_symbol_iter(ctx);
-        default:
-            ctx.result.set_undefined();
+    if (fn_index >= BUILTIN_COUNT) {
+        ctx.result.set_undefined();
+        return;
     }
+    BuiltinFunc handler = builtin_dispatch_table[fn_index];
+    if (handler == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    handler(ctx);
 }
 
 // ============================================================================

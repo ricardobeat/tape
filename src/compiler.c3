@@ -234,6 +234,18 @@ struct CompilerContext {
 
     // arguments tracking
     bool uses_arguments;        // true when 'arguments' is referenced in function body
+
+    // Local binding tracking — used to decide needs_env optimisation.
+    // Set to true when the function body contains any var/function declarations
+    // that would be hoisted to the function scope.
+    bool has_local_bindings;
+
+    // Direct eval tracking — when true, the CALL path must create a fresh env.
+    bool has_direct_eval;
+
+    // Arrow/async tracking — needed for needs_env computation in finish().
+    bool is_arrow;
+    bool is_async;
 }
 
 // ============================================================================
@@ -383,6 +395,20 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_constructable = self.is_constructable;
     func.flags.is_generator = self.is_generator;
     func.flags.uses_arguments = self.uses_arguments;
+
+    // `needs_env` is false when the function is a plain non-arrow, non-generator,
+    // non-async function with no var/function declarations, no arguments, no eval,
+    // no rest params and no default params — the CALL fast path can reuse the
+    // parent's env directly, avoiding two allocations per call.
+    bool has_params_needing_env = self.has_rest || self.default_count > 0;
+    bool can_skip_env = !self.has_local_bindings
+                     && !self.uses_arguments
+                     && !self.has_direct_eval
+                     && !has_params_needing_env
+                     && !self.is_arrow
+                     && !self.is_generator
+                     && !self.is_async;
+    func.flags.needs_env = !can_skip_env;
     func.num_args = self.num_args;
     if (self.has_rest) {
         func.num_formals = self.rest_formal_count;
@@ -1165,6 +1191,11 @@ fn void? CompilerContext.var_declaration(&self) {
     bool is_const = (decl_tok.type == TokenType.CONST);
     bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
     ScopeKind kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
+
+    // var declarations are hoisted to function scope — need env allocation.
+    if (!is_lexical) {
+        self.has_local_bindings = true;
+    }
 
     // Parse one or more variable declarators
     for (;;) {
@@ -2149,6 +2180,9 @@ fn void? CompilerContext.expression_statement(&self) {
 /// Parse a function declaration (hoisted).
 fn void? CompilerContext.function_declaration(&self) {
     self.expect(TokenType.FUNCTION)!;
+
+    // Function declarations are hoisted to function scope — need env.
+    self.has_local_bindings = true;
 
     // Save and reset generator state: nested function declarations
     // inside a generator do not inherit the generator flag.
@@ -5027,6 +5061,9 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Strict-only engine: always strict
     arrow_ctx.is_strict = true;
     arrow_ctx.lexer.set_strict(true);
+
+    // Arrow functions use the parent scope — no fresh env needed.
+    arrow_ctx.is_arrow = true;
 
     // Propagate class context (for super expressions)
     arrow_ctx.in_class_body = self.in_class_body;
