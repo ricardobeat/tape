@@ -2175,20 +2175,6 @@ fn TVal? Vm.run(Vm* vm) {
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
 
-                // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
-                // Also handles ARGUMENTS exotic objects for arguments[i] access
-                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
-                    long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
-                    if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
-                        TVal? av = hobj.get_array_idx((uint)idx_long);
-                        if (try v = av) {
-                            *ra = v;
-                            break;
-                        }
-                        // Array hole — fall through to prototype chain lookup
-                    }
-                }
-
                 // Inline Cache fast path: check shape + key + generation
                 if (ic_base != null) {
                     uint pc_off = (uint)(curr_pc - 1 - code_base);
@@ -2212,6 +2198,26 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                         }
                     }
+                }
+
+                // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
+                // Also handles ARGUMENTS exotic objects for arguments[i] access
+                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
+                    long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
+                    if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
+                        TVal? av = hobj.get_array_idx((uint)idx_long);
+                        if (try v = av) {
+                            *ra = v;
+                            break;
+                        }
+                        // Array hole — fall through to prototype chain lookup
+                    }
+                }
+
+                // ARRAY exotic: .length fast path — return array_length directly
+                if (hobj.get_class() == hobject::ObjClass.ARRAY && rc.is_string() && rc.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                    ra.set_fastint((long)hobj.array_length);
+                    break;
                 }
 
                 void* key = get_prop_key(vm, rc);
@@ -2262,6 +2268,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 ic.proto = res.owner == hobj ? null : (void*)res.owner;
                                 ic.gen_and_idx = hobject::ic_pack(vm.heap.shapes[hobj.shape_id].generation, (ushort)owner_idx);
                                 ic.key = key;
+
                             }
                         }
                     } else {
@@ -2451,24 +2458,9 @@ fn TVal? Vm.run(Vm* vm) {
                     if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
                         uint idx = (uint)idx_long;
                         hobj.set_array_idx(idx, *rc);
-                        // Update .length if idx >= current length
-                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                        if (len_str != null) {
-                            int len_slot = hobj.find_prop_idx(len_str);
-                            if (len_slot >= 0) {
-                                TVal cur = hobj.prop_values()[len_slot].data.value;
-                                uint cur_len = 0;
-                                if (cur.is_fastint()) {
-                                    cur_len = (uint)cur.get_fastint();
-                                } else if (cur.is_number()) {
-                                    cur_len = (uint)cur.get_number();
-                                }
-                                if (idx >= cur_len) {
-                                    TVal new_len;
-                                    new_len.set_fastint((long)(idx + 1));
-                                    hobj.prop_values()[len_slot].data.value = new_len;
-                                }
-                            }
+                        // Update .length fast: use array_length field directly (ARRAY only)
+                        if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= hobj.array_length) {
+                            hobj.array_length = idx + 1;
                         }
                         break;
                     }
@@ -2490,6 +2482,26 @@ fn TVal? Vm.run(Vm* vm) {
                             break;
                         }
                     }
+                }
+
+                // ARRAY exotic: .length write fast path — update array_length directly
+                if (hobj.get_class() == hobject::ObjClass.ARRAY && rb.is_string() && rb.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                    uint new_len = 0;
+                    if (rc.is_fastint()) {
+                        new_len = (uint)rc.get_fastint();
+                    } else if (rc.is_number()) {
+                        new_len = (uint)rc.get_number();
+                    }
+                    hobj.array_length = new_len;
+                    // Also update the prop table for spec correctness
+                    HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                    int len_slot = hobj.find_prop_idx(len_str);
+                    if (len_slot >= 0) {
+                        TVal new_len_tv;
+                        new_len_tv.set_fastint((long)new_len);
+                        hobj.prop_values()[len_slot].data.value = new_len_tv;
+                    }
+                    break;
                 }
 
                 void* key = get_prop_key(vm, rb);
@@ -2780,6 +2792,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 uint count = insn.get_bc();
+                hobj.array_length = count;
                 HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_val;
                 len_val.set_fastint((long)count);

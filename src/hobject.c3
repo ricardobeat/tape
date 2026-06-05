@@ -38,6 +38,10 @@ faultdef OBJ_ALLOC_FAULT;
 // Constants
 // ============================================================================
 
+/// Cached pointer to the interned "length" string, set during heap init.
+/// Used by put_prop to sync array_length on LENGTH writes.
+void* builtin_length_key = null;
+
 /// Initial number of property entry slots when first allocated.
 const uint PROPS_INITIAL_CAPACITY = 8;
 
@@ -403,6 +407,10 @@ struct HObject {
     HObject*      iterator_target;
     uint          iterator_index;
     uint          iterator_kind;
+
+    // --- Array length shadow cache -----------------------------------------
+    /// Cached array length for fast reads. Synced by put_prop and SETALEN.
+    uint          array_length;
 }
 
 // ============================================================================
@@ -564,6 +572,14 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     if (idx >= 0) {
         self.prop_values()[idx].data.value = val;
         self.prop_values()[idx].flags = pflags;
+        // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
+        if (self.flags.exotic_array && key == builtin_length_key) {
+            if (val.is_fastint()) {
+                self.array_length = (uint)val.get_fastint();
+            } else if (val.is_number()) {
+                self.array_length = (uint)val.get_number();
+            }
+        }
         return true;
     }
 
@@ -581,6 +597,15 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     self.prop_values()[new_idx].data.value = val;
     self.prop_values()[new_idx].flags = pflags;
     self.prop_count++;
+
+    // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
+    if (self.flags.exotic_array && key == builtin_length_key) {
+        if (val.is_fastint()) {
+            self.array_length = (uint)val.get_fastint();
+        } else if (val.is_number()) {
+            self.array_length = (uint)val.get_number();
+        }
+    }
 
     // --- Transition shape to include the new property ---
     if (self.heap_ptr != null) {
@@ -848,6 +873,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         obj.flags.constructable = true;
     } else if (cls == ObjClass.ARRAY) {
         obj.flags.exotic_array = true;
+        obj.array_length = 0;
     } else if (cls == ObjClass.ARGUMENTS) {
         obj.flags.exotic_arguments = true;
     } else if (cls == ObjClass.PROXY) {

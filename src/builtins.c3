@@ -6500,9 +6500,12 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
 
 /// Get the 'length' property of an array-like object as a uint.
 fn uint array_get_length(HObject* obj, Heap* heap) {
-    // Fast path: dense array — length is stored as own property in the prop table.
-    // Use get_own_prop to skip prototype chain walk for the common case.
-    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+    // Fast path: ARRAY uses cached array_length field (no prop table walk).
+    if (obj.get_class() == ARRAY) {
+        return obj.array_length;
+    }
+    // ARGUMENTS and other array-likes: read from prop table.
+    if (obj.get_class() == ARGUMENTS) {
         HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (len_key == null) return 0;
         TVal? len_val = obj.get_prop(len_key);
@@ -6530,9 +6533,23 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
 
 /// Set the 'length' property of an array-like object.
 fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
-    // Fast path: for arrays/arguments, update the own 'length' property
-    // directly — avoids descriptor checks inside put_prop.
-    if (obj.get_class() == ARRAY || obj.get_class() == ARGUMENTS) {
+    // Fast path: ARRAY uses cached array_length field + prop table sync.
+    if (obj.get_class() == ARRAY) {
+        obj.array_length = len_val;
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key != null) {
+            int idx = obj.find_prop_idx(len_key);
+            if (idx >= 0) {
+                TVal tv;
+                tv.set_fastint((long)len_val);
+                obj.prop_values()[idx].data.value = tv;
+                return;
+            }
+        }
+        return;
+    }
+    // ARGUMENTS: update prop table directly.
+    if (obj.get_class() == ARGUMENTS) {
         HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (len_key != null) {
             int idx = obj.find_prop_idx(len_key);

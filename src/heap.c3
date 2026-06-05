@@ -472,6 +472,8 @@ fn void Heap.init_builtin_strs(&self) {
             }
         }
     }
+    // Cache the "length" pointer for HObject.put_prop array_length sync.
+    hobject::builtin_length_key = self.strs[BuiltinStr.LENGTH];
 }
 
 // ============================================================================

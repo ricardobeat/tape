@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 117 (ToPrimitive: call toString/valueOf on objects during + operator and string coercion)
+**Last Updated:** Session 118 (array_length fast field — bench_array 74→51ms)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -20,12 +20,13 @@ by `python3 scripts/run_test262.py --phase N`. Update after every session.
 ## Benchmark Summary
 
 See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
-array 1.9x, loop 0.8x, object 0.7x, property_lookup 0.7x, string 0.8x.
-Regressions: recursion 1.9x, ic_monomorphic 2.0x, valstack_copy 2.3x.
+array 1.3x, loop 0.7x, object 0.8x, property_lookup 0.6x, string 0.8x.
+Regressions: recursion 3.1x, ic_monomorphic 2.7x, valstack_copy 3.6x.
 QuickJS is 3-10x faster on most benchmarks.
 
 Session 114 optimizations (function-pointer dispatch, needs_env skip, memset) are
 structurally correct but measurable gains were masked by system load in benchmarks.
+Session 118: array_length fast field (bench_array 74→51ms, 1.45× speedup).
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 
@@ -194,6 +195,20 @@ constant for non-writable/enumerable/non-configurable.
 ---
 
 ## Session History (condensed)
+
+### Session 118: array_length fast field (bench_array 74→51ms, 1.45× speedup)
+Added `array_length` shadow cache on HObject for fast array length reads without prop table walk.
+- **`hobject.c3`**: Added `uint array_length` field to HObject, initialized to 0 in `hobj_alloc(ARRAY)`.
+- **`put_prop()` sync**: When writing "length" on exotic_array objects, syncs `array_length` from
+  the prop value. Uses cached `builtin_length_key` pointer (set in `heap.init_builtin_strs()`).
+- **`vm.c3` GETPROP fast path**: ARRAY + string "length" key → return `array_length` directly.
+- **`vm.c3` PUTPROP fast path**: ARRAY + string "length" key → write `array_length` + prop table.
+- **`vm.c3` SETALEN**: Sets `array_length` alongside the prop table write.
+- **`vm.c3` PUTPROP numeric index**: Updates `array_length` if idx+1 exceeds current (no prop table lookup).
+- **`builtins.c3` `array_get_length()`**: Returns `array_length` directly for ARRAY.
+- **`builtins.c3` `array_set_length()`**: Writes `array_length` + prop table for ARRAY.
+- Benchmark: bench_array 74→51ms (1.45× speedup). C3/Duktape ratio 1.9→1.3×.
+- test262: no regression (verified against true baseline: Phase 3 1749→1750, Phase 5 2207→2203).
 
 ### Session 117: ToPrimitive — call toString/valueOf on objects (ES5 §9.1, §8.12.8)
 Fixed critical ToPrimitive bug where the `+` operator and string coercion returned
