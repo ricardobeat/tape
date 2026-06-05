@@ -1174,33 +1174,20 @@ fn void shape_free(Shape* sh) {
 struct ICEntry {
     /// Shape ID of the object when this entry was populated.
     uint   shape_id;
+    /// Property index within the owner's prop_values[].
+    uint   prop_idx;
     /// Prototype pointer where the property was found (null = own property).
     void*  proto;
-    /// Packed: low 32 bits = generation, high 32 bits = prop_idx.
-    /// Generation is bumped by grow_props/grow_array on prop_alloc resize
-    /// to invalidate stale entries.
-    ulong  gen_and_idx;
     /// The interned key (HString*) this entry was populated for.
     /// Pointer equality is sufficient (interned strings).
     void*  key;
     /// Cached pointer to the resolved PropValue for direct access.
-    /// Invalidated when prop_alloc is reallocated (generation bump).
+    /// Invalidated when prop_alloc is reallocated (prop_alloc comparison).
     PropValue* prop_value_ptr;
-}
-
-/// Pack generation and property index into a single ulong.
-macro ulong ic_pack(uint gen, ushort idx) {
-    return ((ulong)idx << 32) | (ulong)gen;
-}
-
-/// Extract generation from packed ICEntry value.
-macro uint ic_gen(ulong v) {
-    return (uint)(v & 0xFFFFFFFF);
-}
-
-/// Extract property index from packed ICEntry value.
-macro ushort ic_idx(ulong v) {
-    return (ushort)(v >> 32);
+    /// Snapshot of the owner's prop_alloc pointer at population time.
+    /// IC hit requires this == owner.prop_alloc (single pointer comparison
+    /// replaces the old generation-dereference chain).
+    void*  cached_prop_alloc;
 }
 
 /// Per GETVAR/TYPEOFIDENT site inline cache. Stores the resolved

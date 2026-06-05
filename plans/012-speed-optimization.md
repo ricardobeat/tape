@@ -249,6 +249,17 @@ GETPROP fast path: if `flags.exotic_array` and key is `"length"`, return `arr.ar
 
 Benchmarks: system noise masked measurable gains. Structural correctness verified — 96/106 test files pass (same as baseline).
 
+### Session 119: Item #4 IC fast path completed (2026-06-05)
+
+| # | Fix | Status |
+|---|-----|--------|
+| 4 | IC fast path: prop_value_ptr + cached_prop_alloc | ✅ Done |
+
+Replaced gen_and_idx packed ulong with prop_idx + cached_prop_alloc. IC population now
+sets prop_value_ptr. Fast path uses direct pointer load and single prop_alloc comparison
+instead of generation dereference chain. ~13 ops → ~7 ops per IC hit. VM dispatch loop
+now dominates; IC fast path is minimal. No benchmark regression (noise-masked).
+
 ## Validation
 
 ```bash

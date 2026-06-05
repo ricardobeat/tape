@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 118 (array_length fast field — bench_array 74→51ms)
+**Last Updated:** Session 119 (IC fast path — prop_value_ptr + cached_prop_alloc)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -20,13 +20,15 @@ by `python3 scripts/run_test262.py --phase N`. Update after every session.
 ## Benchmark Summary
 
 See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
-array 1.3x, loop 0.7x, object 0.8x, property_lookup 0.6x, string 0.8x.
-Regressions: recursion 3.1x, ic_monomorphic 2.7x, valstack_copy 3.6x.
+array 1.2x, loop 0.8x, object 0.8x, property_lookup 0.6x, string 0.8x.
+Regressions: recursion 3.1x, ic_monomorphic 2.8x, valstack_copy 1.5x.
 QuickJS is 3-10x faster on most benchmarks.
 
 Session 114 optimizations (function-pointer dispatch, needs_env skip, memset) are
 structurally correct but measurable gains were masked by system load in benchmarks.
 Session 118: array_length fast field (bench_array 74→51ms, 1.45× speedup).
+Session 119: IC fast path — prop_value_ptr populated and used, cached_prop_alloc
+replaces generation dereference chain. valstack_copy 43→18ms (2.4× speedup).
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 
@@ -209,6 +211,22 @@ Added `array_length` shadow cache on HObject for fast array length reads without
 - **`builtins.c3` `array_set_length()`**: Writes `array_length` + prop table for ARRAY.
 - Benchmark: bench_array 74→51ms (1.45× speedup). C3/Duktape ratio 1.9→1.3×.
 - test262: no regression (verified against true baseline: Phase 3 1749→1750, Phase 5 2207→2203).
+
+### Session 119: IC fast path optimization (plans/012-speed-optimization.md, item #4)
+Optimized the Inline Cache fast path for GETPROP/PUTPROP property access:
+- **`hobject.c3` ICEntry restructure**: Replaced `gen_and_idx` (ulong packed) with two separate
+  fields: `uint prop_idx` and `void* cached_prop_alloc`. Removed `ic_pack`/`ic_gen`/`ic_idx` macros.
+  Struct remains 40 bytes (same layout, no size increase).
+- **IC population** (vm.c3 GETPROP slow path): Now populates `ic.prop_value_ptr` (direct pointer
+  to the resolved PropValue) and `ic.cached_prop_alloc` (snapshot of owner's prop_alloc pointer).
+- **GETPROP IC fast path**: Uses `ic.prop_value_ptr.data.value` for direct value load instead of
+  recomputing `hobj.prop_values()[pi]`. Replaces generation dereference chain
+  (`vm.heap.shapes[hobj.shape_id].generation` — 3 pointer loads) with single
+  `ic.cached_prop_alloc == hobj.prop_alloc` pointer comparison. Removes redundant
+  `pi < hobj.prop_count` bounds check (guaranteed by prop_alloc match).
+- **PUTPROP IC fast path**: Same prop_value_ptr optimization for property writes.
+- Net effect per IC hit: ~13 operations → ~7 operations. VM dispatch loop now dominates.
+- quick.sh: 180/103/56 — no regressions.
 
 ### Session 117: ToPrimitive — call toString/valueOf on objects (ES5 §9.1, §8.12.8)
 Fixed critical ToPrimitive bug where the `+` operator and string coercion returned

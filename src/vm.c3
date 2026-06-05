@@ -2175,25 +2175,22 @@ fn TVal? Vm.run(Vm* vm) {
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
 
-                // Inline Cache fast path: check shape + key + generation
+                // Inline Cache fast path: check shape + key + prop_alloc pointer
                 if (ic_base != null) {
                     uint pc_off = (uint)(curr_pc - 1 - code_base);
                     hobject::ICEntry* ic = ic_base + pc_off;
                     void* lookup_key = null;
                     if (rc.is_string()) lookup_key = rc.get_heapptr();
                     if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
-                        uint pi = hobject::ic_idx(ic.gen_and_idx);
-                        uint gen = hobject::ic_gen(ic.gen_and_idx);
                         if (ic.proto == null) {
-                            if (pi < hobj.prop_count
-                                && gen == vm.heap.shapes[hobj.shape_id].generation) {
-                                *ra = hobj.prop_values()[pi].data.value;
+                            if (ic.cached_prop_alloc == hobj.prop_alloc) {
+                                *ra = ic.prop_value_ptr.data.value;
                                 break;
                             }
-                        } else if (gen == vm.heap.shapes[ic.shape_id].generation) {
+                        } else {
                             HObject* proto = (HObject*)ic.proto;
-                            if (pi < proto.prop_count) {
-                                *ra = proto.prop_values()[pi].data.value;
+                            if (ic.cached_prop_alloc == proto.prop_alloc) {
+                                *ra = ic.prop_value_ptr.data.value;
                                 break;
                             }
                         }
@@ -2266,9 +2263,10 @@ fn TVal? Vm.run(Vm* vm) {
                             if (owner_idx >= 0) {
                                 ic.shape_id = hobj.shape_id;
                                 ic.proto = res.owner == hobj ? null : (void*)res.owner;
-                                ic.gen_and_idx = hobject::ic_pack(vm.heap.shapes[hobj.shape_id].generation, (ushort)owner_idx);
+                                ic.prop_idx = (uint)owner_idx;
                                 ic.key = key;
-
+                                ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
+                                ic.cached_prop_alloc = res.owner.prop_alloc;
                             }
                         }
                     } else {
@@ -2472,13 +2470,10 @@ fn TVal? Vm.run(Vm* vm) {
                     hobject::ICEntry* ic = ic_base + pc_off;
                     void* wkey = rb.get_heapptr();
                     if (wkey != null && ic.key == wkey && ic.shape_id == hobj.shape_id && ic.proto == null) {
-                        uint pi = hobject::ic_idx(ic.gen_and_idx);
-                        uint gen = hobject::ic_gen(ic.gen_and_idx);
-                        if (pi < hobj.prop_count
-                            && gen == vm.heap.shapes[hobj.shape_id].generation
-                            && !hobj.prop_values()[pi].flags.is_accessor
-                            && hobj.prop_values()[pi].flags.writable) {
-                            hobj.prop_values()[pi].data.value = *rc;
+                        if (ic.cached_prop_alloc == hobj.prop_alloc
+                            && !ic.prop_value_ptr.flags.is_accessor
+                            && ic.prop_value_ptr.flags.writable) {
+                            ic.prop_value_ptr.data.value = *rc;
                             break;
                         }
                     }
