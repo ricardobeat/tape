@@ -1628,6 +1628,17 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.ADD: {
             // ES5 §11.6.1: ToPrimitive both, then string concat or numeric add
+            // Fast path: FASTINT + FASTINT — most common in arithmetic benchmarks.
+            // Check this BEFORE OBJECT/STRING to avoid unnecessary tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                long sum = rb.get_fastint() + rc.get_fastint();
+                if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
+                    ra.set_fastint(sum);
+                } else {
+                    ra.set_number((double)sum);
+                }
+                break;
+            }
             TVal prim_b = *rb;
             TVal prim_c = *rc;
             if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb); }
@@ -1667,13 +1678,6 @@ fn TVal? Vm.run(Vm* vm) {
                     ra.set_string(interned);
                 } else {
                     ra.set_undefined();
-                }
-            } else if (pt_b == FASTINT && pt_c == FASTINT) {
-                long sum = prim_b.get_fastint() + prim_c.get_fastint();
-                if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
-                    ra.set_fastint(sum);
-                } else {
-                    ra.set_number((double)sum);
                 }
             } else {
                 double add_b = vm_to_number(&prim_b);
@@ -1865,6 +1869,12 @@ fn TVal? Vm.run(Vm* vm) {
             break;
 
         case Opcode.SEQ: {
+            // Fast path: FASTINT === FASTINT — most common in loop counters and
+            // arithmetic benchmarks. Short-circuit before full tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean(rb.get_fastint() == rc.get_fastint());
+                break;
+            }
             bool seq_r = false;
             TValTag tag_b = rb.get_tag();
             TValTag tag_c = rc.get_tag();
@@ -1899,6 +1909,11 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.SNEQ: {
+            // Fast path: FASTINT !== FASTINT — short-circuit before full tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean(rb.get_fastint() != rc.get_fastint());
+                break;
+            }
             bool sneq_r = true;
             TValTag tag_b = rb.get_tag();
             TValTag tag_c = rc.get_tag();

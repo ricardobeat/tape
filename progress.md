@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 119 (IC fast path — prop_value_ptr + cached_prop_alloc)
+**Last Updated:** Session 120 (FASTINT fast paths in ADD/SEQ/SNEQ)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -29,6 +29,10 @@ structurally correct but measurable gains were masked by system load in benchmar
 Session 118: array_length fast field (bench_array 74→51ms, 1.45× speedup).
 Session 119: IC fast path — prop_value_ptr populated and used, cached_prop_alloc
 replaces generation dereference chain. valstack_copy 43→18ms (2.4× speedup).
+Session 120: FASTINT fast paths in ADD/SEQ/SNEQ opcodes — reordered branches
+so FASTINT+FASTINT is checked first, avoiding OBJECT/STRING tag dispatch.
+No measurable benchmark improvement (branch predictor already handles old code).
+quick.sh: 180/103/56 — no regressions.
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 
