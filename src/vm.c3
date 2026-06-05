@@ -242,7 +242,7 @@ fn double vm_to_number(TVal* val) {
         case STRING:
             return builtins::builtin_string_to_number((HString*)val.get_heapptr());
         case OBJECT: {
-            TVal prim = to_primitive_value(val);
+            TVal prim = to_primitive_value(null, val);
             if (prim.get_tag() == OBJECT) return double::nan;
             return vm_to_number(&prim);
         }
@@ -525,8 +525,24 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
             return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
         case NULL_VAL:
             return (HString*)h.strs[heap::BuiltinStr.NULL_STR];
-        case OBJECT:
+        case OBJECT: {
+            // Call toString() on the object per ES5 §8.12 ToString
+            if (vm != null && vm.heap.call_fn != null && val.get_heapptr() != null) {
+                HObject* obj = (HObject*)val.get_heapptr();
+                HString* to_str_key = intern_string(vm, "toString");
+                if (to_str_key != null) {
+                    if (try toString_fn = obj.get_prop_proto(to_str_key)) {
+                        if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
+                            TVal result = h.call_fn(vm, toString_fn, null, 0, *val);
+                            if (try result_str = vm_to_string(vm, &result)) {
+                                return result_str;
+                            }
+                        }
+                    }
+                }
+            }
             return intern_string(vm, "[object Object]");
+        }
         case LIGHTFUNC:
             return intern_string(vm, "[function]");
         default:
@@ -613,11 +629,13 @@ fn double hstring_to_number(HString* hstr) {
 }
 
 /// Extract [[PrimitiveValue]] from Boolean/Number/String wrapper objects.
-/// For non-wrapper objects, returns the value unchanged.
-fn TVal to_primitive_value(TVal* val) {
+/// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
+/// Calls toString/valueOf on non-wrapper objects per spec.
+fn TVal to_primitive_value(Vm* vm, TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
+        // Fast path: wrapper objects unwrap directly
         if (cls == hobject::ObjClass.BOOLEAN &&
             obj.extra.prim.primitive_value.is_boolean()) {
             TVal result;
@@ -635,6 +653,31 @@ fn TVal to_primitive_value(TVal* val) {
             TVal result;
             result.set_string(obj.extra.prim.primitive_value.get_heapptr());
             return result;
+        }
+        // Generic objects: call valueOf(), then toString()
+        // Default hint for ToPrimitive without explicit hint is "Number" (ES5 §9.1)
+        if (vm != null && vm.heap.call_fn != null) {
+            Heap* h = vm.heap;
+            HString* valueof_key = intern_string(vm, "valueOf");
+            if (valueof_key != null) {
+                TVal? valueOf_val = obj.get_prop_proto(valueof_key);
+                if (try valueOf_fn = valueOf_val) {
+                    if (valueOf_fn.is_lightfunc() || (valueOf_fn.is_object() && valueOf_fn.get_heapptr() != null && ((HObject*)valueOf_fn.get_heapptr()).is_callable())) {
+                        TVal prim = h.call_fn(vm, valueOf_fn, null, 0, *val);
+                        if (!prim.is_object()) return prim;
+                    }
+                }
+            }
+            HString* to_str_key = intern_string(vm, "toString");
+            if (to_str_key != null) {
+                TVal? toString_val = obj.get_prop_proto(to_str_key);
+                if (try toString_fn = toString_val) {
+                    if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
+                        TVal prim = h.call_fn(vm, toString_fn, null, 0, *val);
+                        if (!prim.is_object()) return prim;
+                    }
+                }
+            }
         }
     }
     return *val;
@@ -780,14 +823,14 @@ fn bool abstract_eq(TVal* a, TVal* b) {
 
     // Object + Boolean/Number/String -> ToPrimitive
     if (a.is_object() && (b.is_boolean() || b.is_number() || b.is_fastint() || b.is_string())) {
-        TVal prim = to_primitive_value(a);
+        TVal prim = to_primitive_value(null, a);
         if (!prim.is_object()) {
             return abstract_eq(&prim, b);
         }
         return false;
     }
     if (b.is_object() && (a.is_boolean() || a.is_number() || a.is_fastint() || a.is_string())) {
-        TVal prim = to_primitive_value(b);
+        TVal prim = to_primitive_value(null, b);
         if (!prim.is_object()) {
             return abstract_eq(a, &prim);
         }
@@ -1587,8 +1630,8 @@ fn TVal? Vm.run(Vm* vm) {
             // ES5 §11.6.1: ToPrimitive both, then string concat or numeric add
             TVal prim_b = *rb;
             TVal prim_c = *rc;
-            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(rb); }
-            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(rc); }
+            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb); }
+            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc); }
             TValTag pt_b = prim_b.get_tag();
             TValTag pt_c = prim_c.get_tag();
             if (pt_b == STRING || pt_c == STRING) {
