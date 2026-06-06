@@ -423,6 +423,7 @@ $else
     self.tag     = OBJECT;
     self.pointer = ptr;
 $endif
+    if (ptr != null) { ((HeapHeader*)ptr).incref(); }
 }
 
 macro void TVal.set_buffer(&self, void* ptr) {
@@ -432,6 +433,7 @@ $else
     self.tag     = BUFFER;
     self.pointer = ptr;
 $endif
+    if (ptr != null) { ((HeapHeader*)ptr).incref(); }
 }
 
 macro void TVal.set_pointer(&self, void* ptr) {
@@ -532,6 +534,7 @@ $else
     tv.tag     = OBJECT;
     tv.pointer = ptr;
 $endif
+    if (ptr != null) { ((HeapHeader*)ptr).incref(); }
     return tv;
 }
 
@@ -543,6 +546,7 @@ $else
     tv.tag     = BUFFER;
     tv.pointer = ptr;
 $endif
+    if (ptr != null) { ((HeapHeader*)ptr).incref(); }
     return tv;
 }
 
@@ -602,6 +606,7 @@ bitstruct HeapFlags : uint {
 /// sweep phase can walk them.
 struct HeapHeader {
     HeapFlags    flags;
+    uint         refcount;
     HeapHeader*  next;
     HeapHeader*  prev;
 }
@@ -618,6 +623,12 @@ fn bool  HeapHeader.is_object(&self) { return self.flags.htype == HType.OBJECT; 
 fn bool  HeapHeader.is_string(&self) { return self.flags.htype == HType.STRING; }
 /// Returns true when this header belongs to a buffer.
 fn bool  HeapHeader.is_buffer(&self) { return self.flags.htype == HType.BUFFER; }
+
+/// Increments the reference count of this heap object.
+/// Safe to call on null pointers (no-op).
+fn void HeapHeader.incref(&self) {
+    self.refcount++;
+}
 
 // ---------------------------------------------------------------------------
 // HeapHeader — flag accessors
@@ -668,6 +679,7 @@ fn bool HeapHeader.is_readonly(&self)       { return self.flags.readonly; }
 fn void HeapHeader.init(&self, HType htype, HeapHeader** list_head) {
     self.flags       = {};
     self.flags.htype = htype;
+    self.refcount    = 1;
     self.prev        = null;
     self.next        = *list_head;
     if (*list_head != null) {

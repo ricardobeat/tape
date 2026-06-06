@@ -1057,6 +1057,54 @@ fn void Heap.free_string(&self, hstring::HString* s) {
 }
 
 // ============================================================================
+// Reference counting — decref + free when count reaches zero
+// ============================================================================
+
+/**
+ * Decrement the reference count of a heap-allocated object or buffer.
+ * When the count reaches zero the object is unlinked from the
+ * heap_allocated list and freed.
+ *
+ * Strings are NOT refcounted — they are managed by M&S sweep_strings.
+ * Calling this on a string is a no-op.
+ *
+ * Objects freed here are NOT visited by the subsequent mark-and-sweep
+ * sweep phase — they are already gone from the linked list.  M&S only
+ * needs to collect cycle garbage (objects with refcount > 0 but not
+ * reachable from roots).
+ */
+fn void Heap.decref(&self, HeapHeader* hdr) {
+    // Strings are not refcounted — M&S handles them.
+    if (hdr.is_string()) { return; }
+
+    if (--hdr.refcount == 0) {
+        hdr.unlink(&self.heap_allocated);
+        if (hdr.is_object()) {
+            hobject::hobject_free((HObject*)hdr);
+        } else {
+            // Buffer
+            self.free_func(self.heap_udata, hdr);
+        }
+    }
+}
+
+/**
+ * Decrement the reference count of the heap object or buffer held by
+ * a TVal.  Strings are ignored (M&S-managed).
+ * Safe to call on any TVal — non-heap values and strings are silently
+ * ignored.  Typically called BEFORE overwriting a VM register or TVal
+ * slot that holds a heap pointer.
+ */
+fn void Heap.decref_tval(&self, TVal* tv) {
+    if (tv.is_object() || tv.is_buffer()) {
+        void* ptr = tv.get_heapptr();
+        if (ptr != null) {
+            self.decref((HeapHeader*)ptr);
+        }
+    }
+}
+
+// ============================================================================
 // Managed-object linked-list operations (doubly-linked via HeapHeader)
 // ============================================================================
 

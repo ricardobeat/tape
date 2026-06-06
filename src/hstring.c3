@@ -96,6 +96,7 @@ const usz HSTRING_HDR_SIZE = HString::size;
 struct HString {
     /// Combined HeapHeader-compatible + string-specific flags.
     HStringFlags flags;
+    uint         refcount;
     /// Next pointer in the string table chain (singly-linked).
     HString* next;
 

@@ -370,6 +370,7 @@ union HObjectExtra {
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
     ObjFlags      flags;
+    uint          refcount;
     HeapHeader*   next;
     HeapHeader*   prev;
 
@@ -867,6 +868,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     obj.flags.htype      = HType.OBJECT;
     obj.flags.extensible = true;
     obj.flags.obj_class  = cls;
+    obj.refcount         = 1;
 
     if (cls == ObjClass.FUNCTION) {
         obj.flags.callable      = true;
