@@ -102,6 +102,7 @@ struct GeneratorState {
     void* saved_pc;           // Instruction* (opaque)
     void* var_env;            // EnvRecord* (opaque)
     void* lex_env;            // EnvRecord* (opaque)
+    void* cat;                // Catcher* chain head (opaque) — saved across yields
     TVal this_binding;
     TVal resume_value;        // value passed by .next()
     ResumeKind resume_kind;   // how the generator was resumed

@@ -3437,7 +3437,7 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act_r.func = target;
                     new_act_r.var_env = gs.var_env;
                     new_act_r.lex_env = gs.lex_env;
-                    new_act_r.cat = null;
+                    new_act_r.cat = gs.cat;
                     new_act_r.curr_pc = gs.saved_pc;
                     new_act_r.bottom = new_bottom_r;
                     new_act_r.retval = regs_base + result_reg;
@@ -4270,11 +4270,11 @@ fn TVal? Vm.run(Vm* vm) {
                 if (rk == THROW) {
                     // Inject exception: find the nearest catcher in the generator
                     TVal throw_val = gs_lr.throw_value;
-                    vm.heap.resume_gen = null;
 
                     if (!vm_throw_value(vm, throw_val, act, &curr_pc, &needs_restart)) {
                         // No catcher in generator — pop activation and
                         // propagate error to the caller's catcher chain.
+                        vm.heap.resume_gen = null;
                         gs_lr.state = GEN_COMPLETED;
 
                         if (vm.activation_count > 0) {
@@ -4299,6 +4299,12 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                             }
                         }
+                    } else {
+                        // Catcher found in generator — the exception will be caught.
+                        // Keep resume_gen set but switch to NEXT so the next YIELD
+                        // properly saves state and sets gs.state = GEN_SUSPENDED_YIELD.
+                        gs_lr.resume_kind = NEXT;
+                        gs_lr.resume_value.set_undefined();
                     }
                     needs_restart = true;
                     break;
@@ -4371,6 +4377,7 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.saved_pc = curr_pc;  // curr_pc already points past YIELD
                 gs.var_env = act.var_env;
                 gs.lex_env = act.lex_env;
+                gs.cat = act.cat;
                 vm.heap.tval_copy_ref(&gs.this_binding, &act.this_binding);
                 gs.state = GEN_SUSPENDED_YIELD;
 
@@ -4456,6 +4463,9 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             vm.heap.did_yield = true;
+
+            // Store the yielded value for IteratorResult creation below
+            vm.heap.tval_copy_ref(&vm.heap.yield_value, &ra[0]);
 
             // Pop activation and return to caller (the .next() builtin's context)
             if (vm.activation_count > 0) {

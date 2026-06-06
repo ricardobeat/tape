@@ -10335,6 +10335,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         return;
     }
     HObject* wrapper = wrapper_raw;
+    wrapper.prototype = ctx.heap.object_proto;
 
     TVal wrapper_tv;
     wrapper_tv.set_object(wrapper);
