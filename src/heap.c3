@@ -1104,6 +1104,24 @@ fn void Heap.decref_tval(&self, TVal* tv) {
     }
 }
 
+/// Copy a TVal from src to dst with proper refcounting.
+/// - Decrements the old dst reference (may free the object if refcount reaches 0)
+/// - Copies the bits verbatim
+/// - Increments the new src reference if it holds a heap object or buffer
+/// - Safe when dst == src (no-op in that case)
+fn void Heap.tval_copy_ref(&self, TVal* dst, TVal* src) {
+    if (dst != src) {
+        self.decref_tval(dst);
+        *dst = *src;
+        if (src.is_object() || src.is_buffer()) {
+            void* ptr = src.get_heapptr();
+            if (ptr != null) {
+                ((HeapHeader*)ptr).incref();
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Managed-object linked-list operations (doubly-linked via HeapHeader)
 // ============================================================================

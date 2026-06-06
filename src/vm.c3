@@ -164,7 +164,7 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
         Catcher* cat = (Catcher*)search_act.cat;
         while (cat != null) {
             if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
-                cat.thrown_val = thrown_val;
+                vm.heap.tval_copy_ref(&cat.thrown_val, &thrown_val);
                 cat.flags &= ~CATCHER_FLAG_CATCH_ENABLED;
                 *curr_pc = cat.catch_pc;
                 search_act.curr_pc = *curr_pc;
@@ -190,7 +190,7 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                 return true;
             }
             if (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) {
-                cat.thrown_val = thrown_val;
+                vm.heap.tval_copy_ref(&cat.thrown_val, &thrown_val);
                 *curr_pc = cat.finally_pc;
                 search_act.curr_pc = *curr_pc;
                 *needs_restart = true;
@@ -963,7 +963,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
 
     // Set up 'this' binding from slot idx_func+1
     TVal* this_slot = caller_bottom + idx_func + 1;
-    new_act.this_binding = *this_slot;
+    vm.heap.tval_copy_ref(&new_act.this_binding, this_slot);
 
     // Move valstack_bottom to new activation
     vm.valstack_bottom = new_bottom;
@@ -1020,7 +1020,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
             }
             regs_base = act.bottom;
         } else {
-            regs_base[result_reg] = *ctx.result;
+            vm.heap.tval_copy_ref(&regs_base[result_reg], ctx.result);
         }
         return false;
     }
@@ -1043,8 +1043,8 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     TVal* caller_regs = act.bottom;
     // Recompute new_bottom after realloc (act.bottom may have moved)
     new_bottom = act.bottom + frame_start;
-    caller_regs[callee_reg] = getter_fn;
-    caller_regs[callee_reg + 1] = *this_val;
+    vm.heap.tval_copy_ref(&caller_regs[callee_reg], &getter_fn);
+    vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], this_val);
 
     if (vm.activation_count >= MAX_CALLS) {
         caller_regs[result_reg].set_undefined();
@@ -1065,7 +1065,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.bottom = new_bottom;
     new_act.retval = act.bottom + result_reg;
     new_act.flags = ACT_FLAG_STRICT;
-    new_act.this_binding = *this_val;
+    vm.heap.tval_copy_ref(&new_act.this_binding, this_val);
 
     // Clear registers and copy args (getters have 0 args)
     TVal* new_regs = new_act.bottom;
@@ -1082,23 +1082,39 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     return true;
 }
 
+/// Decrement the reference count of every register in the given activation.
+/// Must be called BEFORE the activation is popped, while the register range
+/// is still valid.  Safe to call on activations with null func (no registers).
+fn void decref_callee_regs(Vm* vm, Activation* callee_act) {
+    if (callee_act.func == null) return;
+    CompiledFunction* callee_func = (CompiledFunction*)callee_act.func;
+    uint nregs = callee_func.num_regs;
+    TVal* regs = callee_act.bottom;
+    for (uint i = 0; i < nregs; i++) {
+        vm.heap.decref_tval(&regs[i]);
+    }
+}
+
 /// val: the return value (or undefined for RETUNDEF)
 /// @inline: critical hot-path, called on every RET instruction.
 fn TVal handle_return(Vm* vm, TVal val) @inline {
     if (vm.activation_count == 0) {
-        vm.return_val = val;
+        vm.heap.tval_copy_ref(&vm.return_val, &val);
         return val;
     }
 
     Activation* callee_act = curr_act(vm);
     TVal* callee_result = callee_act.retval;
 
+    // Decrement references for all callee registers before popping
+    decref_callee_regs(vm, callee_act);
+
     // Pop activation
     vm.activation_count--;
 
     // If we just popped the last activation, there is no caller
     if (vm.activation_count == 0) {
-        vm.return_val = val;
+        vm.heap.tval_copy_ref(&vm.return_val, &val);
         return val;
     }
 
@@ -1121,7 +1137,7 @@ fn TVal handle_return(Vm* vm, TVal val) @inline {
             }
         }
         TVal* result_slot = callee_result;
-        *result_slot = final_val;
+        vm.heap.tval_copy_ref(result_slot, &final_val);
     }
 
     // Restore valstack_top to match caller's nregs
@@ -1373,7 +1389,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.bottom = vm.valstack;
             act.retval = null;
             act.flags = ACT_FLAG_STRICT;
-            act.this_binding = this_val;
+            vm.heap.tval_copy_ref(&act.this_binding, &this_val);
 
             // Allocate value stack for function
             uint nregs = target.num_regs;
@@ -1388,7 +1404,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             }
             uint copy_n = nargs < nregs ? nargs : nregs;
             for (uint i = 0; i < copy_n; i++) {
-                vm.valstack[i] = args[i];
+                vm.heap.tval_copy_ref(&vm.valstack[i], &args[i]);
             }
             vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
             vm.valstack_bottom = vm.valstack;
@@ -1460,7 +1476,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
 
     TVal this_val;
     this_val.set_undefined();
-    entry_act.this_binding = this_val;
+    vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
 
     // Allocate value stack slots for the function (nregs = total register count)
     uint nregs = func.num_regs;
@@ -1526,12 +1542,16 @@ fn TVal? Vm.run(Vm* vm) {
                 // Inline handle_return for fall-off-end — avoids function call overhead.
                 Activation* callee_act = &vm.activations[vm.activation_count - 1];
                 TVal* callee_result = callee_act.retval;
+
+                // Decref callee registers before popping
+                decref_callee_regs(vm, callee_act);
+
                 vm.activation_count--;
 
                 if (vm.activation_count == 0) {
                     TVal undef_val;
                     undef_val.set_undefined();
-                    vm.return_val = undef_val;
+                    vm.heap.tval_copy_ref(&vm.return_val, &undef_val);
                     return vm.return_val;
                 }
 
@@ -1548,7 +1568,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                     }
                 }
-                *callee_result = final_val;
+                vm.heap.tval_copy_ref(callee_result, &final_val);
 
                 CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
                 vm.valstack_top = caller_act.bottom + caller_func.num_regs;
@@ -1581,7 +1601,7 @@ fn TVal? Vm.run(Vm* vm) {
         // === LOAD / STORE ===
 
         case Opcode.LDREG:
-            *ra = *rb;
+            vm.heap.tval_copy_ref(ra, rb);
             break;
 
         case Opcode.LDCONST: {
@@ -1621,7 +1641,7 @@ fn TVal? Vm.run(Vm* vm) {
             break;
 
         case Opcode.LDTHIS:
-            *ra = act.this_binding;
+            vm.heap.tval_copy_ref(ra, &act.this_binding);
             break;
 
         // === ARITHMETIC ===
@@ -2199,13 +2219,13 @@ fn TVal? Vm.run(Vm* vm) {
                     if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
                         if (ic.proto == null) {
                             if (ic.cached_prop_alloc == hobj.prop_alloc) {
-                                *ra = ic.prop_value_ptr.data.value;
+                                vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
                                 break;
                             }
                         } else {
                             HObject* proto = (HObject*)ic.proto;
                             if (ic.cached_prop_alloc == proto.prop_alloc) {
-                                *ra = ic.prop_value_ptr.data.value;
+                                vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
                                 break;
                             }
                         }
@@ -2219,7 +2239,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
                         if (try v = av) {
-                            *ra = v;
+                            vm.heap.tval_copy_ref(ra, &v);
                             break;
                         }
                         // Array hole — fall through to prototype chain lookup
@@ -2269,7 +2289,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
-                        *ra = res.data_val;
+                        vm.heap.tval_copy_ref(ra, &res.data_val);
                         // Populate IC for this site
                         if (res.owner != null && ic_base != null) {
                             uint pc_off = (uint)(curr_pc - 1 - code_base);
@@ -2329,7 +2349,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (key != null) {
                         TVal? result = vm.heap.symbol_proto.get_prop_proto(key);
                         if (try v = result) {
-                            *ra = v;
+                            vm.heap.tval_copy_ref(ra, &v);
                         } else {
                             ra.set_undefined();
                         }
@@ -2374,7 +2394,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (vm.heap.string_proto != null) {
                             TVal? result = vm.heap.string_proto.get_prop_proto(key);
                             if (try v = result) {
-                                *ra = v;
+                                vm.heap.tval_copy_ref(ra, &v);
                             } else {
                                 ra.set_undefined();
                             }
@@ -2391,7 +2411,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && vm.heap.number_proto != null) {
                     TVal? result = vm.heap.number_proto.get_prop_proto(key);
                     if (try v = result) {
-                        *ra = v;
+                        vm.heap.tval_copy_ref(ra, &v);
                     } else {
                         ra.set_undefined();
                     }
@@ -2404,7 +2424,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && vm.heap.bool_proto != null) {
                     TVal? result = vm.heap.bool_proto.get_prop_proto(key);
                     if (try v = result) {
-                        *ra = v;
+                        vm.heap.tval_copy_ref(ra, &v);
                     } else {
                         ra.set_undefined();
                     }
@@ -2443,7 +2463,7 @@ fn TVal? Vm.run(Vm* vm) {
                         // Walk Function.prototype for .call, .apply, .bind, etc.
                         TVal? result = vm.heap.function_proto.get_prop_proto(key);
                         if (try v = result) {
-                            *ra = v;
+                            vm.heap.tval_copy_ref(ra, &v);
                         } else {
                             ra.set_undefined();
                         }
@@ -2488,7 +2508,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.cached_prop_alloc == hobj.prop_alloc
                             && !ic.prop_value_ptr.flags.is_accessor
                             && ic.prop_value_ptr.flags.writable) {
-                            ic.prop_value_ptr.data.value = *rc;
+                            vm.heap.tval_copy_ref(&ic.prop_value_ptr.data.value, rc);
                             break;
                         }
                     }
@@ -2509,7 +2529,8 @@ fn TVal? Vm.run(Vm* vm) {
                     if (len_slot >= 0) {
                         TVal new_len_tv;
                         new_len_tv.set_fastint((long)new_len);
-                        hobj.prop_values()[len_slot].data.value = new_len_tv;
+                        hobject::PropValue* props = hobj.prop_values();
+                        vm.heap.tval_copy_ref(&props[len_slot].data.value, &new_len_tv);
                     }
                     break;
                 }
@@ -2537,11 +2558,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 new_bottom = act.bottom + frame_start;
                                 TVal* caller_regs = act.bottom;
 
-                                caller_regs[callee_reg] = acc.accessor_fn;
+                                vm.heap.tval_copy_ref(&caller_regs[callee_reg], &acc.accessor_fn);
                                 TVal obj_tv;
                                 obj_tv.set_object(acc.this_obj);
-                                caller_regs[callee_reg + 1] = obj_tv;
-                                caller_regs[callee_reg + 2] = put_val;
+                                vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
+                                vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
 
                                 Activation* new_act = &vm.activations[vm.activation_count];
                                 vm.activation_count++;
@@ -2557,12 +2578,12 @@ fn TVal? Vm.run(Vm* vm) {
                                 new_act.bottom = new_bottom;
                                 new_act.retval = act.bottom + (uint)insn.a;
                                 new_act.flags = ACT_FLAG_STRICT;
-                                new_act.this_binding = obj_tv;
+                                vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
                                 TVal* new_regs = new_act.bottom;
                                 libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
                                 // Copy arg (the value being set)
-                                new_regs[0] = put_val;
+                                vm.heap.tval_copy_ref(&new_regs[0], &put_val);
 
                                 vm.valstack_top = new_regs + target.num_regs;
                                 vm.valstack_bottom = new_act.bottom;
@@ -2600,7 +2621,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 break;
                             }
                             // Update value, preserve existing flags
-                            entry.data.value = put_val;
+                            vm.heap.tval_copy_ref(&entry.data.value, &put_val);
                         } else {
                             // Property doesn't exist: check extensibility
                             if (hobj.flags.extensible) {
@@ -3102,9 +3123,9 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.flags = ACT_FLAG_STRICT;
                     // Arrow functions use lexical this (inherited from enclosing scope)
                     if (target_fast.is_arrow()) {
-                        new_act.this_binding = act.this_binding;
+                        vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
                     } else {
-                        new_act.this_binding = regs_base[callee_reg + 1];
+                        vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
                     }
 
                     TVal* new_regs = new_act.bottom;
@@ -3413,13 +3434,13 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act_r.bottom = new_bottom_r;
                     new_act_r.retval = regs_base + result_reg;
                     new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD;
-                    new_act_r.this_binding = gs.this_binding;
+                    vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);
 
                     // Copy saved registers to valstack
                     TVal* new_regs_r = new_act_r.bottom;
                     uint new_nregs_r = target.num_regs;
                     for (uint i = 0; i < new_nregs_r; i++) {
-                        new_regs_r[i] = gs.saved_regs[i];
+                        vm.heap.tval_copy_ref(&new_regs_r[i], &gs.saved_regs[i]);
                     }
 
                     vm.valstack_top = new_regs_r + new_nregs_r;
@@ -3459,7 +3480,7 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.saved_pc = target.code;
                 gs.var_env = hobj.extra.gen.var_env;
                 gs.lex_env = hobj.extra.gen.lex_env;
-                gs.this_binding = regs_base[callee_reg + 1];
+                vm.heap.tval_copy_ref(&gs.this_binding, &regs_base[callee_reg + 1]);
 
                 // Allocate and copy saved registers
                 usz regs_bytes = (usz)target.num_regs * TVal::size;
@@ -3478,8 +3499,8 @@ fn TVal? Vm.run(Vm* vm) {
                 uint copy_count = target.has_rest() ? (uint)target.num_formals : nargs;
                 if (copy_count > target.num_regs) copy_count = target.num_regs;
                 for (uint i = 0; i < copy_count; i++) {
-                    base[i] = old_args[i];
-                    gs.saved_regs[i] = old_args[i];
+                    vm.heap.tval_copy_ref(&base[i], &old_args[i]);
+                    vm.heap.tval_copy_ref(&gs.saved_regs[i], &old_args[i]);
                 }
                 for (uint i = copy_count; i < target.num_regs; i++) {
                     base[i].set_undefined();
@@ -3570,9 +3591,9 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.flags = ACT_FLAG_STRICT;
             // Arrow functions use lexical this (inherited from enclosing scope)
             if (target.is_arrow()) {
-                new_act.this_binding = act.this_binding;
+                vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
             } else {
-                new_act.this_binding = regs_base[callee_reg + 1];
+                vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
             }
 
             TVal* new_regs = new_act.bottom;
@@ -3584,7 +3605,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Only copy the formal parameters (not the rest parameter)
                 uint copy_count = (uint)target.num_formals;
                 for (uint i = 0; i < nargs && i < copy_count; i++) {
-                    new_regs[i] = old_args[i];
+                    vm.heap.tval_copy_ref(&new_regs[i], &old_args[i]);
                 }
 
                 // Build rest array from overflow args
@@ -3626,7 +3647,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Skip self-copy when they point to the same location.
                 if (new_regs != old_args) {
                     for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
-                        new_regs[i] = old_args[i];
+                        vm.heap.tval_copy_ref(&new_regs[i], &old_args[i]);
                     }
                 }
                 if (nargs < new_nregs) {
@@ -3806,7 +3827,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
-            new_act.this_binding = regs_base[callee_reg + 1];
+            vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
             new_act.new_target = new_target;  // Pass through new.target
 
             TVal* new_regs = new_act.bottom;
@@ -3817,7 +3838,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (super_target.has_rest()) {
                 uint copy_count = (uint)super_target.num_formals;
                 for (uint i = 0; i < nargs && i < copy_count; i++) {
-                    new_regs[i] = old_args[i];
+                    vm.heap.tval_copy_ref(&new_regs[i], &old_args[i]);
                 }
                 uint rest_idx = copy_count;
                 uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
@@ -3849,7 +3870,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 for (uint i = 0; i < nargs && i < new_nregs; i++) {
-                    new_regs[i] = old_args[i];
+                    vm.heap.tval_copy_ref(&new_regs[i], &old_args[i]);
                 }
                 if (nargs < new_nregs) {
                     libc::memset(&new_regs[nargs], 0, (usz)(new_nregs - nargs) * TVal::size);
@@ -4103,7 +4124,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Step 3: Place new object in this-slot
             TVal this_tval;
             this_tval.set_object(new_obj);
-            regs_base[callee_reg + 1] = this_tval;
+            vm.heap.tval_copy_ref(&regs_base[callee_reg + 1], &this_tval);
             uint frame_start = callee_reg + 2;
             TVal* new_bottom = regs_base + frame_start;
             uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
@@ -4137,7 +4158,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
-            new_act.this_binding = this_tval;
+            vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
 
             TVal* new_regs2 = new_act.bottom;
@@ -4148,7 +4169,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (target.has_rest()) {
                 uint copy_count = (uint)target.num_formals;
                 for (uint i = 0; i < nargs && i < copy_count; i++) {
-                    new_regs2[i] = old_args2[i];
+                    vm.heap.tval_copy_ref(&new_regs2[i], &old_args2[i]);
                 }
 
                 uint rest_idx = copy_count;
@@ -4183,7 +4204,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 for (uint i = 0; i < nargs && i < (uint)target.num_args; i++) {
-                    new_regs2[i] = old_args2[i];
+                    vm.heap.tval_copy_ref(&new_regs2[i], &old_args2[i]);
                 }
                 if (nargs < new_nregs2) {
                     libc::memset(&new_regs2[nargs], 0, (usz)(new_nregs2 - nargs) * TVal::size);
@@ -4239,7 +4260,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     // Unhandled — set error for the VM to return
                                     vm.has_error = true;
                                     TVal* ret_slot = caller_act.retval;
-                                    ret_slot[0] = throw_val;
+                                    vm.heap.tval_copy_ref(&ret_slot[0], &throw_val);
                                 }
                             }
                         }
@@ -4270,7 +4291,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                             // Write return value to caller's return slot
                             TVal* ret_slot = caller_act.retval;
-                            ret_slot[0] = ret_val;
+                            vm.heap.tval_copy_ref(&ret_slot[0], &ret_val);
                         }
                     }
                     needs_restart = true;
@@ -4278,7 +4299,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
 
                 // Normal NEXT — load resume value
-                ra[0] = gs_lr.resume_value;
+                vm.heap.tval_copy_ref(&ra[0], &gs_lr.resume_value);
             } else {
                 ra[0].set_undefined();
             }
@@ -4294,16 +4315,16 @@ fn TVal? Vm.run(Vm* vm) {
                 // Save current state
                 TVal* regs_base_r = act.bottom;
                 for (uint i = 0; i < gs.num_regs; i++) {
-                    gs.saved_regs[i] = regs_base_r[i];
+                    vm.heap.tval_copy_ref(&gs.saved_regs[i], &regs_base_r[i]);
                 }
                 gs.saved_pc = curr_pc;  // curr_pc already points past YIELD
                 gs.var_env = act.var_env;
                 gs.lex_env = act.lex_env;
-                gs.this_binding = act.this_binding;
+                vm.heap.tval_copy_ref(&gs.this_binding, &act.this_binding);
                 gs.state = GEN_SUSPENDED_YIELD;
 
                 // Store the yielded value
-                vm.heap.yield_value = ra[0];
+                vm.heap.tval_copy_ref(&vm.heap.yield_value, &ra[0]);
 
                 // Check resume kind for throw/return injection
                 ResumeKind rkind = gs.resume_kind;
@@ -4321,7 +4342,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                         // Write the exception as the result (will be caught by try/catch inside generator)
                         TVal* ret_slot = ret_byteoff;
-                        ret_slot[0] = gs.throw_value;
+                        vm.heap.tval_copy_ref(&ret_slot[0], &gs.throw_value);
 
                         vm.activation_count--;
                         if (vm.activation_count > 0) {
@@ -4408,7 +4429,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // Write wrapped result to caller's frame
                 TVal* ret_slot = ret_byteoff;
-                ret_slot[0] = wrapped_val;
+                vm.heap.tval_copy_ref(&ret_slot[0], &wrapped_val);
 
                 vm.activation_count--;
                 if (vm.activation_count > 0) {
@@ -4439,10 +4460,14 @@ fn TVal? Vm.run(Vm* vm) {
             TVal val = *ra;
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
             TVal* callee_result = callee_act.retval;
+
+            // Decref callee registers before popping
+            decref_callee_regs(vm, callee_act);
+
             vm.activation_count--;
 
             if (vm.activation_count == 0) {
-                vm.return_val = val;
+                vm.heap.tval_copy_ref(&vm.return_val, &val);
                 return vm.return_val;
             }
             // Write return value to caller's result register
@@ -4450,12 +4475,12 @@ fn TVal? Vm.run(Vm* vm) {
                 // Constructor: if callee returned an object, use it; otherwise use 'this'
                 if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
                     if (val.is_object()) {
-                        *callee_result = val;
+                        vm.heap.tval_copy_ref(callee_result, &val);
                     } else {
-                        *callee_result = callee_act.this_binding;
+                        vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
                     }
                 } else {
-                    *callee_result = val;
+                    vm.heap.tval_copy_ref(callee_result, &val);
                 }
             }
             // Restore caller state and restart dispatch loop
@@ -4473,19 +4498,23 @@ fn TVal? Vm.run(Vm* vm) {
             // Inline handle_return — eliminates function call overhead.
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
             TVal* callee_result = callee_act.retval;
+
+            // Decref callee registers before popping
+            decref_callee_regs(vm, callee_act);
+
             vm.activation_count--;
 
             if (vm.activation_count == 0) {
-                vm.return_val = undef_val;
+                vm.heap.tval_copy_ref(&vm.return_val, &undef_val);
                 return vm.return_val;
             }
             // Write return value to caller's result register
             if (callee_result != null) {
                 // Constructor: return 'this' (the newly created object)
                 if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
-                    *callee_result = callee_act.this_binding;
+                    vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
                 } else {
-                    *callee_result = undef_val;
+                    vm.heap.tval_copy_ref(callee_result, &undef_val);
                 }
             }
             // Restore caller state and restart dispatch loop
@@ -4500,7 +4529,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Generator return: mark completed, wrap in IteratorResult
             GeneratorState* gs = vm.heap.resume_gen;
             gs.state = GEN_COMPLETED;
-            vm.heap.yield_value = ra[0];
+            vm.heap.tval_copy_ref(&vm.heap.yield_value, &ra[0]);
             vm.heap.did_yield = false;
             vm.heap.resume_gen = null;
 
@@ -4522,7 +4551,7 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* ret_act = &vm.activations[vm.activation_count - 1];
             TVal* ret_byteoff = ret_act.retval;
             TVal* ret_slot = ret_byteoff;
-            ret_slot[0] = wrapped_val;
+            vm.heap.tval_copy_ref(&ret_slot[0], &wrapped_val);
 
             vm.activation_count--;
             if (vm.activation_count > 0) {
@@ -4544,14 +4573,14 @@ fn TVal? Vm.run(Vm* vm) {
 
             GeneratorState* gs2 = vm.heap.resume_gen;
             gs2.state = GEN_COMPLETED;
-            vm.heap.yield_value = undef_val;
+            vm.heap.tval_copy_ref(&vm.heap.yield_value, &undef_val);
             vm.heap.did_yield = false;
             vm.heap.resume_gen = null;
 
             Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
             TVal* ret_byteoff2 = ret_act2.retval;
             TVal* ret_slot2 = ret_byteoff2;
-            ret_slot2[0] = undef_val;
+            vm.heap.tval_copy_ref(&ret_slot2[0], &undef_val);
 
             vm.activation_count--;
             if (vm.activation_count > 0) {
@@ -4585,7 +4614,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
                                 TVal v = b.prop_values()[vic.prop_idx].data.value;
                                 if (!env::is_tdz_sentinel(&v)) {
-                                    *ra = v;
+                                    vm.heap.tval_copy_ref(ra, &v);
                                     break;
                                 }
                                 // TDZ: fall through to slow path (error)
@@ -4629,7 +4658,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     return VM_ERROR~;
                                 }
                             } else {
-                                *ra = v;
+                                vm.heap.tval_copy_ref(ra, &v);
                                 found = true;
                                 ic_env = cur;
                                 ic_prop_idx = idx;
@@ -4643,7 +4672,7 @@ fn TVal? Vm.run(Vm* vm) {
                         // Not in lex_env — search var_env (only needed with `with` blocks)
                         TVal? result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
-                            *ra = v2;
+                            vm.heap.tval_copy_ref(ra, &v2);
                             found = true;
                         }
                     }
@@ -4983,13 +5012,13 @@ fn TVal? Vm.run(Vm* vm) {
                     void* key = name_val.get_heapptr();
                     TVal? result = env::env_get_at_depth(act.lex_env, depth, key);
                     if (try v = result) {
-                        *ra = v;
+                        vm.heap.tval_copy_ref(ra, &v);
                     } else {
                         // Also check var_env if different
                         if (act.lex_env != act.var_env) {
                             result = env::env_get_at_depth(act.var_env, depth, key);
                             if (try v2 = result) {
-                                *ra = v2;
+                                vm.heap.tval_copy_ref(ra, &v2);
                                 break;
                             }
                         }
@@ -5043,7 +5072,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                obj.extra.prim.primitive_value = *ra;
+                vm.heap.tval_copy_ref(&obj.extra.prim.primitive_value, ra);
             } else {
                 rb.set_null();
                 break;
@@ -5141,7 +5170,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Read the thrown exception from the nearest catcher
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null) {
-                *ra = cat.thrown_val;
+                vm.heap.tval_copy_ref(ra, &cat.thrown_val);
 
                 // Clear thrown value
                 cat.thrown_val.set_undefined();
@@ -5213,9 +5242,10 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.prop_values()[idx].flags.is_accessor) {
+                    hobject::PropValue* initget_props = hobj.prop_values();
+                    if (idx >= 0 && initget_props[idx].flags.is_accessor) {
                         // Update existing accessor's getter
-                        hobj.prop_values()[idx].data.getter = getter_val;
+                        vm.heap.tval_copy_ref(&initget_props[idx].data.getter, &getter_val);
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -5224,8 +5254,9 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.prop_values()[new_idx].data.getter = getter_val;
-                            hobj.prop_values()[new_idx].setter = undef;
+                            hobject::PropValue* initget_new_props = hobj.prop_values();
+                            vm.heap.tval_copy_ref(&initget_new_props[new_idx].data.getter, &getter_val);
+                            vm.heap.tval_copy_ref(&initget_new_props[new_idx].setter, &undef);
                         }
                     }
                 }
@@ -5243,9 +5274,10 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0 && hobj.prop_values()[idx].flags.is_accessor) {
+                    hobject::PropValue* initset_props = hobj.prop_values();
+                    if (idx >= 0 && initset_props[idx].flags.is_accessor) {
                         // Update existing accessor's setter
-                        hobj.prop_values()[idx].setter = setter_val;
+                        vm.heap.tval_copy_ref(&initset_props[idx].setter, &setter_val);
                     } else {
                         // Create new accessor property
                         TVal undef;
@@ -5254,8 +5286,9 @@ fn TVal? Vm.run(Vm* vm) {
                         // Find it again (put_prop may have grown the array)
                         int new_idx = hobj.find_prop_idx(key);
                         if (new_idx >= 0) {
-                            hobj.prop_values()[new_idx].data.getter = undef;
-                            hobj.prop_values()[new_idx].setter = setter_val;
+                            hobject::PropValue* initset_new_props = hobj.prop_values();
+                            vm.heap.tval_copy_ref(&initset_new_props[new_idx].data.getter, &undef);
+                            vm.heap.tval_copy_ref(&initset_new_props[new_idx].setter, &setter_val);
                         }
                     }
                 }
@@ -5330,7 +5363,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                obj.extra.prim.primitive_value = obj_val;
+                vm.heap.tval_copy_ref(&obj.extra.prim.primitive_value, &obj_val);
             } else {
                 // POINTER or BUFFER
                 break;
