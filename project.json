@@ -21,7 +21,8 @@
     "duktape_c3": {
       "type": "executable",
       "sources": [ "src", "benchmarks/duktape_c3.c3" ],
-      "opt": "O2"
+      "opt": "O2",
+      "fp-math": "relaxed"
     }
   }
 }
