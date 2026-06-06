@@ -3883,6 +3883,9 @@ fn TVal? Vm.run(Vm* vm) {
             vm.valstack_top = new_regs + new_nregs;
             vm.valstack_bottom = new_act.bottom;
 
+            // Save caller resume point before switching activation
+            act.curr_pc = curr_pc;
+
             needs_restart = true;
             break;
         }
