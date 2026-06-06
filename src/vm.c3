@@ -3590,7 +3590,9 @@ fn TVal? Vm.run(Vm* vm) {
             vm.activation_count++;
 
             EnvRecord* call_var_env2 = hobj.extra.func.var_env;
-            if (try fv_c2 = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { call_var_env2 = fv_c2; }
+            if (target.needs_env()) {
+                if (try fv_c2 = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { call_var_env2 = fv_c2; }
+            }
             new_act.parent = act;
             new_act.func = target;
             new_act.var_env = call_var_env2;

@@ -283,6 +283,9 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     ctx.eval_mode = true;
     ctx.eval_acc_reg = ctx.alloc_reg();
 
+    // Initialize eval result accumulator to undefined (for empty eval)
+    ctx.emit_abc(Opcode.LDUNDEF, (uint)ctx.eval_acc_reg, 0, 0);
+
     // Check for "use strict" directive prologue at eval level
     ctx.parse_directives()!;
 
@@ -294,7 +297,13 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     // Return the accumulated eval result (or undefined if no expression)
     ctx.emit_a_bc(Opcode.RET, (uint)ctx.eval_acc_reg, 0);
 
-    return ctx.finish()!;
+    CompiledFunction*? result = ctx.finish()!;
+    if (try func = result) {
+        // Eval code must NOT get its own scope — var declarations must go
+        // to the enclosing scope (global env), not a fresh function scope.
+        func.flags.needs_env = false;
+    }
+    return result;
 }
 
 /// Compile a function expression or declaration.

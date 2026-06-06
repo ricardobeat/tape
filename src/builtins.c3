@@ -9720,10 +9720,9 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
 
 
     if (!has_replacer) {
-        // Check if object has own properties
+        // Check if object has own properties (including accessor properties with getters)
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.shape.props()[i].key != null &&
-                !obj.prop_values()[i].flags.is_accessor) {
+            if (obj.shape.props()[i].key != null) {
                 has_props = true;
                 break;
             }
@@ -9804,60 +9803,74 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     } else {
         // Iterate own properties (original path, but with json_check_property)
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.shape.props()[i].key != null &&
-                !obj.prop_values()[i].flags.is_accessor) {
-                HString* key_hstr = (HString*)obj.shape.props()[i].key;
-                TVal val = obj.prop_values()[i].data.value;
-
-                // Apply toJSON + replacer (even without explicit replacer, this
-                // handles the spec correctly — when replacer_func is undefined
-                // the check just does toJSON + type unwrapping)
-                bool omit = false;
-                val = json_check_property(jctx, key_hstr, val, holder, &omit);
-                if (jctx.error) return -1;
-                if (omit) continue;
-
-                if (!first) {
-                    if (jctx.offset >= jctx.buf_size) return -1;
-                    jctx.buf[jctx.offset++] = ',';
+            if (obj.shape.props()[i].key == null) continue;
+            HString* key_hstr = (HString*)obj.shape.props()[i].key;
+            TVal val;
+            if (obj.prop_values()[i].flags.is_accessor) {
+                // Invoke the getter to get the property value
+                TVal getter_fn = obj.prop_values()[i].data.getter;
+                if (getter_fn.is_undefined() || getter_fn.is_null()) {
+                    val.set_undefined();
+                } else if (jctx.heap.call_fn != null && jctx.vm != null) {
+                    TVal holder_tv;
+                    holder_tv.set_object(obj);
+                    val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder_tv);
+                    if (jctx.heap.has_error) { jctx.error = true; return -1; }
+                } else {
+                    continue;
                 }
-                first = false;
-
-                // Indentation
-                if (jctx.gap_len > 0) {
-                    if (jctx.offset >= jctx.buf_size) return -1;
-                    jctx.buf[jctx.offset++] = '\n';
-                    for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
-                        jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
-                    }
-                }
-
-                // Key
-                char* key_data = key_hstr.get_cstr();
-                uint key_len = key_hstr.blen;
-                char[1024] key_buf;
-                usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
-                usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
-                for (usz k = 0; k < copy; k++) {
-                    jctx.buf[jctx.offset++] = key_buf[k];
-                }
-
-                if (jctx.offset + 2 > jctx.buf_size) return -1;
-                jctx.buf[jctx.offset++] = ':';
-                if (jctx.gap_len > 0) {
-                    jctx.buf[jctx.offset++] = ' ';
-                }
-
-                // Value
-                jctx.depth++;
-                if (jctx.depth > JSON_MAX_DEPTH) {
-                    jctx.depth--;
-                    return -1;
-                }
-                int r = json_serialize_val(jctx, &val);
-                jctx.depth--;
-                if (r != 0) return r;
+            } else {
+                val = obj.prop_values()[i].data.value;
             }
+
+            // Apply toJSON + replacer (even without explicit replacer, this
+            // handles the spec correctly — when replacer_func is undefined
+            // the check just does toJSON + type unwrapping)
+            bool omit = false;
+            val = json_check_property(jctx, key_hstr, val, holder, &omit);
+            if (jctx.error) return -1;
+            if (omit) continue;
+
+            if (!first) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = ',';
+            }
+            first = false;
+
+            // Indentation
+            if (jctx.gap_len > 0) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = '\n';
+                for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                    jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+                }
+            }
+
+            // Key
+            char* key_data = key_hstr.get_cstr();
+            uint key_len = key_hstr.blen;
+            char[1024] key_buf;
+            usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
+            usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
+            for (usz k = 0; k < copy; k++) {
+                jctx.buf[jctx.offset++] = key_buf[k];
+            }
+
+            if (jctx.offset + 2 > jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = ':';
+            if (jctx.gap_len > 0) {
+                jctx.buf[jctx.offset++] = ' ';
+            }
+
+            // Value
+            jctx.depth++;
+            if (jctx.depth > JSON_MAX_DEPTH) {
+                jctx.depth--;
+                return -1;
+            }
+            int r = json_serialize_val(jctx, &val);
+            jctx.depth--;
+            if (r != 0) return r;
         }
     }
 
