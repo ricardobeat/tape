@@ -260,6 +260,16 @@ sets prop_value_ptr. Fast path uses direct pointer load and single prop_alloc co
 instead of generation dereference chain. ~13 ops → ~7 ops per IC hit. VM dispatch loop
 now dominates; IC fast path is minimal. No benchmark regression (noise-masked).
 
+### Session 121: max_heap_reg decref skip + memset (2026-06-07)
+
+Added `uint max_heap_reg` to Activation struct — tracks highest register index that
+ever held a heap ref (object/buffer). Initialized to 0 on every CALL. `decref_callee_regs`
+returns immediately when `max_heap_reg == 0`, skipping the O(nregs) register loop.
+Added `track_heap_store()` helper called after every `tval_copy_ref(ra, ...)` and
+`ra.set_object(...)` in the VM dispatch — updates max_heap_reg when storing a heap ref.
+Replaced remaining `.bits = 0` zero loops in CALL fast paths with `libc::memset`.
+quick.sh: 182/101/56 — +2 passes vs baseline 180/103/56.
+
 ## Validation
 
 ```bash

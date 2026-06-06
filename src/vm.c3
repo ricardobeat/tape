@@ -65,6 +65,9 @@ struct Activation {
     HObject* new_target;
     /// Value stack pointer to function (borrowed; for lightfuncs)
     TVal tv_func;
+    /// Highest register index that ever held a heap ref (object/buffer).
+    /// 0 means no heap refs in any register — decref_callee_regs can skip.
+    uint max_heap_reg;
 }
 
 const uint ACT_FLAG_STRICT         = 1u << 0;
@@ -935,6 +938,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     }
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
+    new_act.max_heap_reg = 0;
 
     // Compute new valstack bottom (after func + this + args)
     TVal* new_bottom = caller_bottom + ((uint)idx_func + 2);
@@ -1053,6 +1057,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
 
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
+    new_act.max_heap_reg = 0;
 
     EnvRecord* invoke_getter_var_env = func_obj.extra.func.var_env;
     if (try fv_ig = env::env_create_function_scope(vm.heap, func_obj.extra.func.var_env)) { invoke_getter_var_env = fv_ig; }
@@ -1082,15 +1087,30 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     return true;
 }
 
+/// Track a heap-ref store in the current activation.  Call after any
+/// instruction that writes an object or buffer TVal into a register.
+/// Updates max_heap_reg so decref_callee_regs can skip non-heap registers.
+fn void track_heap_store(Activation* act, TVal* val, uint reg_idx) @inline {
+    if (val.is_object() || val.is_buffer()) {
+        if (val.get_heapptr() != null && reg_idx > act.max_heap_reg) {
+            act.max_heap_reg = reg_idx;
+        }
+    }
+}
+
 /// Decrement the reference count of every register in the given activation.
 /// Must be called BEFORE the activation is popped, while the register range
 /// is still valid.  Safe to call on activations with null func (no registers).
+/// Fast-path: if max_heap_reg == 0, no register ever held a heap ref — skip.
 fn void decref_callee_regs(Vm* vm, Activation* callee_act) {
     if (callee_act.func == null) return;
+    if (callee_act.max_heap_reg == 0) return;  // fast path: no heap refs
     CompiledFunction* callee_func = (CompiledFunction*)callee_act.func;
     uint nregs = callee_func.num_regs;
     TVal* regs = callee_act.bottom;
-    for (uint i = 0; i < nregs; i++) {
+    uint limit = callee_act.max_heap_reg;
+    if (limit >= nregs) limit = nregs - 1;
+    for (uint i = 0; i <= limit; i++) {
         vm.heap.decref_tval(&regs[i]);
     }
 }
@@ -1602,6 +1622,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.LDREG:
             vm.heap.tval_copy_ref(ra, rb);
+            track_heap_store(act, ra, (uint)insn.a);
             break;
 
         case Opcode.LDCONST: {
@@ -1642,6 +1663,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.LDTHIS:
             vm.heap.tval_copy_ref(ra, &act.this_binding);
+            track_heap_store(act, ra, (uint)insn.a);
             break;
 
         // === ARITHMETIC ===
@@ -2220,12 +2242,14 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.proto == null) {
                             if (ic.cached_prop_alloc == hobj.prop_alloc) {
                                 vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
+                                track_heap_store(act, ra, (uint)insn.a);
                                 break;
                             }
                         } else {
                             HObject* proto = (HObject*)ic.proto;
                             if (ic.cached_prop_alloc == proto.prop_alloc) {
                                 vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
+                                track_heap_store(act, ra, (uint)insn.a);
                                 break;
                             }
                         }
@@ -2240,6 +2264,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
                         if (try v = av) {
                             vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(act, ra, (uint)insn.a);
                             break;
                         }
                         // Array hole — fall through to prototype chain lookup
@@ -2290,6 +2315,7 @@ fn TVal? Vm.run(Vm* vm) {
                         break;
                     } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                         vm.heap.tval_copy_ref(ra, &res.data_val);
+                        track_heap_store(act, ra, (uint)insn.a);
                         // Populate IC for this site
                         if (res.owner != null && ic_base != null) {
                             uint pc_off = (uint)(curr_pc - 1 - code_base);
@@ -2350,6 +2376,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal? result = vm.heap.symbol_proto.get_prop_proto(key);
                         if (try v = result) {
                             vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(act, ra, (uint)insn.a);
                         } else {
                             ra.set_undefined();
                         }
@@ -2395,6 +2422,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal? result = vm.heap.string_proto.get_prop_proto(key);
                             if (try v = result) {
                                 vm.heap.tval_copy_ref(ra, &v);
+                                track_heap_store(act, ra, (uint)insn.a);
                             } else {
                                 ra.set_undefined();
                             }
@@ -2412,6 +2440,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal? result = vm.heap.number_proto.get_prop_proto(key);
                     if (try v = result) {
                         vm.heap.tval_copy_ref(ra, &v);
+                        track_heap_store(act, ra, (uint)insn.a);
                     } else {
                         ra.set_undefined();
                     }
@@ -2425,6 +2454,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal? result = vm.heap.bool_proto.get_prop_proto(key);
                     if (try v = result) {
                         vm.heap.tval_copy_ref(ra, &v);
+                        track_heap_store(act, ra, (uint)insn.a);
                     } else {
                         ra.set_undefined();
                     }
@@ -2456,6 +2486,7 @@ fn TVal? Vm.run(Vm* vm) {
                         HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
                         if (proto_obj != null) {
                             ra.set_object(proto_obj);
+                            track_heap_store(act, ra, (uint)insn.a);
                         } else {
                             ra.set_undefined();
                         }
@@ -2464,6 +2495,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal? result = vm.heap.function_proto.get_prop_proto(key);
                         if (try v = result) {
                             vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(act, ra, (uint)insn.a);
                         } else {
                             ra.set_undefined();
                         }
@@ -2566,6 +2598,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                                 Activation* new_act = &vm.activations[vm.activation_count];
                                 vm.activation_count++;
+                                new_act.max_heap_reg = 0;
 
                                 EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
                                 if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
@@ -2691,6 +2724,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (try o = new_obj) {
                 o.prototype = vm.heap.object_proto;
                 ra.set_object(o);
+                track_heap_store(act, ra, (uint)insn.a);
             } else {
                 ra.set_undefined();
             }
@@ -2702,6 +2736,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (try a = new_arr) {
                 a.prototype = vm.heap.array_proto;
                 ra.set_object(a);
+                track_heap_store(act, ra, (uint)insn.a);
                 if (insn.a == 251) {
                 }
             } else {
@@ -2786,6 +2821,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 lastindex_tv.set_fastint(0);
                                 obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
                                 ra.set_object(obj);
+                                track_heap_store(act, ra, (uint)insn.a);
                             } else {
                                 // If alloc failed, free the compiled regexp
                                 re_bindings::re_free(compiled);
@@ -2802,6 +2838,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 obj.extra.prim.primitive_value.set_string(pattern_hs);
                                 ra.set_object(obj);
+                                track_heap_store(act, ra, (uint)insn.a);
                             } else {
                                 ra.set_undefined();
                             }
@@ -3102,6 +3139,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                     Activation* new_act = &vm.activations[vm.activation_count];
                     vm.activation_count++;
+                    new_act.max_heap_reg = 0;
 
                     EnvRecord* fast_var_env;
                     // Skip env allocation when the callee has no local bindings —
@@ -3143,9 +3181,7 @@ fn TVal? Vm.run(Vm* vm) {
                     }
                     // Zero remaining registers (temps)
                     if (undef_limit < new_nregs) {
-                        for (uint i = undef_limit; i < new_nregs; i++) {
-                            new_regs[i].bits = 0;
-                        }
+                        libc::memset(&new_regs[undef_limit], 0, (usz)(new_nregs - undef_limit) * TVal::size);
                     }
 
                     vm.valstack_top = new_regs + new_nregs;
@@ -3432,6 +3468,7 @@ fn TVal? Vm.run(Vm* vm) {
                     // Push activation
                     Activation* new_act_r = &vm.activations[vm.activation_count];
                     vm.activation_count++;
+                    new_act_r.max_heap_reg = 0;
 
                     new_act_r.parent = act;
                     new_act_r.func = target;
@@ -3588,6 +3625,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
+            new_act.max_heap_reg = 0;
 
             EnvRecord* call_var_env2 = hobj.extra.func.var_env;
             if (target.needs_env()) {
@@ -3680,11 +3718,7 @@ fn TVal? Vm.run(Vm* vm) {
                     }
                     // Zero remaining registers (temps)
                     if (undef_limit < new_nregs) {
-                        uint zc = new_nregs - undef_limit;
-                        TVal* zd = &new_regs[undef_limit];
-                        for (uint zi = 0; zi < zc; zi++) {
-                            zd[zi].bits = 0;
-                        }
+                        libc::memset(&new_regs[undef_limit], 0, (usz)(new_nregs - undef_limit) * TVal::size);
                     }
                 }
             }
@@ -3845,6 +3879,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
+            new_act.max_heap_reg = 0;
 
             EnvRecord* super_var_env = super_hobj.extra.func.var_env;
             if (try fv_su = env::env_create_function_scope(vm.heap, super_hobj.extra.func.var_env)) { super_var_env = fv_su; }
@@ -3922,6 +3957,7 @@ fn TVal? Vm.run(Vm* vm) {
             HObject* nt = act.new_target;
             if (nt != null) {
                 ra.set_object(nt);
+                track_heap_store(act, ra, (uint)insn.a);
             } else {
                 ra.set_undefined();
             }
@@ -4179,6 +4215,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
+            new_act.max_heap_reg = 0;
 
             EnvRecord* ctor_var_env = hobj.extra.func.var_env;
             if (try fv_ct = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { ctor_var_env = fv_ct; }
@@ -4692,6 +4729,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 TVal v = b.prop_values()[vic.prop_idx].data.value;
                                 if (!env::is_tdz_sentinel(&v)) {
                                     vm.heap.tval_copy_ref(ra, &v);
+                                    track_heap_store(act, ra, (uint)insn.a);
                                     break;
                                 }
                                 // TDZ: fall through to slow path (error)
@@ -4737,6 +4775,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                             } else {
                                 vm.heap.tval_copy_ref(ra, &v);
+                                track_heap_store(act, ra, (uint)insn.a);
                                 found = true;
                                 ic_env = cur;
                                 ic_prop_idx = idx;
@@ -4751,6 +4790,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal? result = env::env_get(act.var_env, key);
                         if (try v2 = result) {
                             vm.heap.tval_copy_ref(ra, &v2);
+                            track_heap_store(act, ra, (uint)insn.a);
                             found = true;
                         }
                     }
@@ -5070,6 +5110,7 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     ra.set_object(func_obj);
+                    track_heap_store(act, ra, (uint)insn.a);
                 } else {
                     ra.set_undefined();
                 }
@@ -5091,12 +5132,14 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal? result = env::env_get_at_depth(act.lex_env, depth, key);
                     if (try v = result) {
                         vm.heap.tval_copy_ref(ra, &v);
+                        track_heap_store(act, ra, (uint)insn.a);
                     } else {
                         // Also check var_env if different
                         if (act.lex_env != act.var_env) {
                             result = env::env_get_at_depth(act.var_env, depth, key);
                             if (try v2 = result) {
                                 vm.heap.tval_copy_ref(ra, &v2);
+                                track_heap_store(act, ra, (uint)insn.a);
                                 break;
                             }
                         }
@@ -5253,6 +5296,7 @@ fn TVal? Vm.run(Vm* vm) {
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null) {
                 vm.heap.tval_copy_ref(ra, &cat.thrown_val);
+                track_heap_store(act, ra, (uint)insn.a);
 
                 // Clear thrown value
                 cat.thrown_val.set_undefined();

@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 120 (FASTINT fast paths in ADD/SEQ/SNEQ)
+**Last Updated:** Session 121 (max_heap_reg decref skip + memset)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -33,6 +33,11 @@ Session 120: FASTINT fast paths in ADD/SEQ/SNEQ opcodes — reordered branches
 so FASTINT+FASTINT is checked first, avoiding OBJECT/STRING tag dispatch.
 No measurable benchmark improvement (branch predictor already handles old code).
 quick.sh: 180/103/56 — no regressions.
+Session 121: max_heap_reg tracking in Activation — decref_callee_regs skips
+the entire register loop when no register ever held a heap ref (object/buffer).
+Pure-arithmetic functions (fib, add2, identity) skip O(nregs) decref on return.
+Replaced remaining .bits=0 zero loops with libc::memset in CALL fast paths.
+quick.sh: 182/101/56 — +2 passes, no regressions.
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 
