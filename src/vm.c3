@@ -4262,8 +4262,9 @@ fn TVal? Vm.run(Vm* vm) {
                                                     &caller_act.curr_pc, &needs_restart)) {
                                     // Unhandled — set error for the VM to return
                                     vm.has_error = true;
-                                    TVal* ret_slot = caller_act.retval;
-                                    vm.heap.tval_copy_ref(&ret_slot[0], &throw_val);
+                                    if (caller_act.retval != null) {
+                                        vm.heap.tval_copy_ref(caller_act.retval, &throw_val);
+                                    }
                                 }
                             }
                         }
@@ -4274,10 +4275,26 @@ fn TVal? Vm.run(Vm* vm) {
 
                 if (rk == RETURN) {
                     // Inject return: mark generator complete, return to caller
-                    TVal ret_val = gs_lr.return_value;
+                    TVal ret_val_raw = gs_lr.return_value;
                     gs_lr.state = GEN_COMPLETED;
                     gs_lr.resume_kind = NEXT;
                     vm.heap.resume_gen = null;
+
+                    // Wrap in IteratorResult {value: ret_val, done: true}
+                    HObject*? robj_raw2 = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                    TVal ret_val;
+                    if (try robj2 = robj_raw2) {
+                        robj2.prototype = vm.heap.object_proto;
+                        HString* val_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                        if (val_key2 != null) robj2.put_prop(val_key2, ret_val_raw, hobject::PROP_FLAGS_WEC);
+                        HString* done_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                        TVal done_val2;
+                        done_val2.set_boolean(true);
+                        if (done_key2 != null) robj2.put_prop(done_key2, done_val2, hobject::PROP_FLAGS_WEC);
+                        ret_val.set_object(robj2);
+                    } else {
+                        ret_val = ret_val_raw;
+                    }
 
                     // Pop the generator activation
                     if (vm.activation_count > 0) {
@@ -4292,9 +4309,9 @@ fn TVal? Vm.run(Vm* vm) {
                                 vm.valstack_top = caller_act.bottom + caller_func.num_regs;
                             }
 
-                            // Write return value to caller's return slot
-                            TVal* ret_slot = caller_act.retval;
-                            vm.heap.tval_copy_ref(&ret_slot[0], &ret_val);
+                            if (ret_byteoff != null) {
+                                vm.heap.tval_copy_ref(ret_byteoff, &ret_val);
+                            }
                         }
                     }
                     needs_restart = true;
@@ -4387,7 +4404,7 @@ fn TVal? Vm.run(Vm* vm) {
                         Activation* yield_act = &vm.activations[vm.activation_count - 1];
                         TVal* ret_byteoff = yield_act.retval;
                         TVal* ret_slot = ret_byteoff;
-                        ret_slot[0] = wrapped_val;
+                        vm.heap.tval_copy_ref(ret_slot, &wrapped_val);
 
                         vm.activation_count--;
                         if (vm.activation_count > 0) {
@@ -4673,6 +4690,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                         return VM_ERROR~;
                                     }
+                                    found = true; // prevent duplicate error
                                 } else {
                                     return VM_ERROR~;
                                 }
