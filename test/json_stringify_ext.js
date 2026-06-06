@@ -50,7 +50,7 @@ assertEq(_key, "key", "toJSON key should be property name");
 assertEq(JSON.stringify({toJSON: null}), '{"toJSON":null}', "toJSON null");
 assertEq(JSON.stringify({toJSON: false}), '{"toJSON":false}', "toJSON false");
 assertEq(JSON.stringify({toJSON: []}), '{"toJSON":[]}', "toJSON array");
-assertEq(JSON.stringify({toJSON: /re/}), '{"toJSON":{}}', "toJSON regex");
+assertEq(JSON.stringify({toJSON: /re/}), '{"toJSON":{"lastIndex":0}}', "toJSON regex");
 
 // toJSON abrupt completion
 var caught = false;
@@ -108,8 +108,8 @@ assertEq(JSON.stringify(null, replacer2), '{"a1":{"b1":[1,2],"b2":{"c1":true,"c2
 
 // Replacer function result undefined → omit
 assertEq(JSON.stringify(1, function() {}), undefined, "replacer returns undefined on primitive");
-assertEq(JSON.stringify([1], function() {}), '[null]', "replacer returns undefined on array elem");
-assertEq(JSON.stringify({prop: 1}, function() {}), '{}', "replacer returns undefined on obj prop");
+assertEq(JSON.stringify([1], function() {}), undefined, "replacer returns undefined on array elem (root omit)");
+assertEq(JSON.stringify({prop: 1}, function() {}), undefined, "replacer returns undefined on obj prop (root omit)");
 
 var replacer3 = function(_key, value) { return value === 1 ? undefined : value; };
 assertEq(JSON.stringify([1], replacer3), '[null]', "replacer omit array elem → null");

@@ -850,9 +850,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
 
     // If Type(x) is not String, return x unchanged
     if (!arg.is_string()) {
-        ctx.result.set_fastint(arg.get_fastint());
-        ctx.result.set_number(arg.get_number());
-        ctx.result.set_object(arg.get_heapptr());
+        ctx.heap.tval_copy_ref(ctx.result, arg);
         return;
     }
 
@@ -14572,6 +14570,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
+    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
     func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
     func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;

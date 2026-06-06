@@ -1,4 +1,6 @@
 // Math methods test
+function assert_sameValue(a, b, msg) { if (a !== b) throw new Error("FAIL: " + msg + " — got " + a + ", expected " + b); }
+function assert_isNaN(v, msg) { if (typeof v !== 'number' || !isNaN(v)) throw new Error("FAIL: " + msg + " — got " + v); }
 assert_sameValue(Math.abs(-5), 5, 'Math.abs(-5) === 5');
 assert_sameValue(Math.abs(0), 0, 'Math.abs(0) === 0');
 assert_isNaN(Math.abs(NaN), 'Math.abs(NaN) is NaN');

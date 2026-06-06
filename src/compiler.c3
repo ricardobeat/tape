@@ -33,7 +33,7 @@ faultdef CONST_OVERFLOW;
 // Constants
 // ============================================================================
 
-const uint MAX_REGISTERS  = 256;
+const uint MAX_REGISTERS  = 512;
 const uint MAX_PARAMS     = 32;
 const uint MAX_CODE        = 4096;
 const uint MAX_CONSTANTS   = 1024;
@@ -559,8 +559,8 @@ fn ushort CompilerContext.alloc_reg(&self) {
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
     }
-    if (self.next_reg > 255) {
-        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+    if (self.next_reg > MAX_REGISTERS) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max %d)", self.next_reg, MAX_REGISTERS - 1);
         libc::abort();
     }
     return reg;
@@ -573,8 +573,8 @@ fn ushort CompilerContext.alloc_regs(&self, ushort count) {
     if (self.next_reg > self.max_reg) {
         self.max_reg = self.next_reg;
     }
-    if (self.next_reg > 255) {
-        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max 255)", self.next_reg);
+    if (self.next_reg > MAX_REGISTERS) {
+        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max %d)", self.next_reg, MAX_REGISTERS - 1);
         libc::abort();
     }
     return first;
@@ -5284,7 +5284,7 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
 
     // Loop start
     uint loop_start = self.code_count;
-    self.push_loop(loop_start, false);
+    self.push_loop(loop_start, true);
 
     // Step 5: Call .next() each iteration
     //   result = CALL callee, 0    (result = next.call(iterator))

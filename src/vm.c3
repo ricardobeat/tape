@@ -1360,7 +1360,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             CompiledFunction* saved_current_func = vm.current_func;
 
             Activation[MAX_CALLS] saved_acts;
-            libc::memcpy(&saved_acts, &vm.activations, saved_act_count * TVal::size * 5);
+            libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
 
             // Save valstack content
             uint used_slots = 0;
@@ -1427,7 +1427,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             // Restore VM state
             vm.activation_count = saved_act_count;
             vm.current_func = saved_current_func;
-            libc::memcpy(&vm.activations, &saved_acts, saved_act_count * TVal::size * 5);
+            libc::memcpy(&vm.activations, &saved_acts, saved_act_count * Activation::size);
             vm.valstack_bottom = saved_valstack_bottom;
             vm.valstack_top = saved_valstack_top;
             vm.valstack = cur_valstack;
