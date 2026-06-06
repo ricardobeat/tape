@@ -9801,26 +9801,44 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             if (r != 0) return r;
         }
     } else {
-        // Iterate own properties (original path, but with json_check_property)
-        for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.shape.props()[i].key == null) continue;
-            HString* key_hstr = (HString*)obj.shape.props()[i].key;
+        // Snapshot property keys before iterating, so that getters that delete
+        // properties don't cause keys to be skipped (ES5 §15.12.3 step 4.b).
+        HString*[64] snap_keys;
+        ushort[64] snap_indices;
+        uint snap_count = 0;
+        for (uint i = 0; i < obj.prop_count && snap_count < 64; i++) {
+            if (obj.shape.props()[i].key != null) {
+                snap_keys[snap_count] = (HString*)obj.shape.props()[i].key;
+                snap_indices[snap_count] = (ushort)i;
+                snap_count++;
+            }
+        }
+
+        for (uint si = 0; si < snap_count; si++) {
+            HString* key_hstr = snap_keys[si];
+            uint pi = snap_indices[si];
             TVal val;
-            if (obj.prop_values()[i].flags.is_accessor) {
-                // Invoke the getter to get the property value
-                TVal getter_fn = obj.prop_values()[i].data.getter;
-                if (getter_fn.is_undefined() || getter_fn.is_null()) {
-                    val.set_undefined();
-                } else if (jctx.heap.call_fn != null && jctx.vm != null) {
-                    TVal holder_tv;
-                    holder_tv.set_object(obj);
-                    val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder_tv);
-                    if (jctx.heap.has_error) { jctx.error = true; return -1; }
+            // Check if property still exists and read its value
+            if (pi < obj.prop_count && obj.shape.props()[pi].key == key_hstr) {
+                if (obj.prop_values()[pi].flags.is_accessor) {
+                    // Invoke the getter to get the property value
+                    TVal getter_fn = obj.prop_values()[pi].data.getter;
+                    if (getter_fn.is_undefined() || getter_fn.is_null()) {
+                        val.set_undefined();
+                    } else if (jctx.heap.call_fn != null && jctx.vm != null) {
+                        TVal holder_tv;
+                        holder_tv.set_object(obj);
+                        val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder_tv);
+                        if (jctx.heap.has_error) { jctx.error = true; return -1; }
+                    } else {
+                        continue;
+                    }
                 } else {
-                    continue;
+                    val = obj.prop_values()[pi].data.value;
                 }
             } else {
-                val = obj.prop_values()[i].data.value;
+                // Property was deleted (e.g., by a getter) — treat as undefined
+                val.set_undefined();
             }
 
             // Apply toJSON + replacer (even without explicit replacer, this
