@@ -1129,8 +1129,13 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     NameSpan[MAX_PRESCAN_NAMES] lex_spans;
     uint num_lex = self.pre_scan_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
 
-    // Push a new lexical scope for let/const declarations inside this block
-    self.emit_simple(Opcode.PUSH_LEX);
+    // Push a new lexical scope for let/const declarations inside this block.
+    // Skip when the block has no let/const — saves an allocation on every
+    // function call (most functions have no block-scoped variables).
+    bool has_lex = num_lex > 0;
+    if (has_lex) {
+        self.emit_simple(Opcode.PUSH_LEX);
+    }
 
     // TDZ-initialize every let/const declaration found by the pre-scan.
     // This ensures that accessing the variable before its declaration
@@ -1164,7 +1169,9 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     self.expect(TokenType.RBRACE)!;
 
     // Pop the lexical scope, removing any let/const bindings from this block
-    self.emit_simple(Opcode.POP_LEX);
+    if (has_lex) {
+        self.emit_simple(Opcode.POP_LEX);
+    }
 
     self.pop_scope_to(saved_depth);
     self.free_regs_to(saved_reg);
@@ -2719,7 +2726,12 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Push a function-level lexical scope for let/const at function top level.
     // This sits above the block-level PUSH_LEX emitted by block() so that
     // function-level let/const go into a scope that outlives inner blocks.
-    self.emit_simple(Opcode.PUSH_LEX);
+    // Skip when there are no default parameters (the only case that needs
+    // a function-level scope distinct from the block scope).
+    bool has_func_lex = self.default_count > 0;
+    if (has_func_lex) {
+        self.emit_simple(Opcode.PUSH_LEX);
+    }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
     for (ushort di = 0; di < self.default_count; di++) {
@@ -2771,7 +2783,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Pop the function-level lexical scope.
     // NOTE: for functions with explicit return, this POP_LEX won't execute,
     // but that's harmless — the activation is destroyed on return.
-    self.emit_simple(Opcode.POP_LEX);
+    if (has_func_lex) {
+        self.emit_simple(Opcode.POP_LEX);
+    }
 
     // Emit implicit return undefined if no explicit return
     // Check if last instruction is a return
@@ -2923,8 +2937,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
     inner_ctx.expect(TokenType.RPAREN)!;
 
-    // Push a function-level lexical scope for let/const at function top level
-    inner_ctx.emit_simple(Opcode.PUSH_LEX);
+    // Push a function-level lexical scope for let/const at function top level.
+    // Skip when there are no default parameters.
+    bool inner_has_func_lex = inner_ctx.default_count > 0;
+    if (inner_has_func_lex) {
+        inner_ctx.emit_simple(Opcode.PUSH_LEX);
+    }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
     for (ushort di = 0; di < inner_ctx.default_count; di++) {
@@ -2974,7 +2992,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     inner_ctx.block(true)!;
 
     // Pop the function-level lexical scope
-    inner_ctx.emit_simple(Opcode.POP_LEX);
+    if (inner_has_func_lex) {
+        inner_ctx.emit_simple(Opcode.POP_LEX);
+    }
 
     // Add implicit return undefined
     bool has_return = false;
