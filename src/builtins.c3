@@ -9609,6 +9609,8 @@ struct JsonSerializeCtx {
     uint prop_key_count;
     /// True when a replacer array was provided (even if empty)
     bool has_replacer_array;
+    /// Set when a call_fn error occurred (toJSON/replacer threw)
+    bool error;
 }
 
 const uint JSON_MAX_DEPTH = 128;
@@ -9639,6 +9641,7 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
                 json_args[0] = key_tv;
                 if (jctx.heap.call_fn != null && jctx.vm != null) {
                     val = jctx.heap.call_fn(jctx.vm, toJSON_fn, &json_args[0], 1, val);
+                    if (jctx.heap.has_error) { jctx.error = true; *omit = true; return val; }
                 }
             }
         }
@@ -9661,6 +9664,7 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
             rep_args[1] = val;
             if (jctx.heap.call_fn != null && jctx.vm != null) {
                 val = jctx.heap.call_fn(jctx.vm, jctx.replacer_func, &rep_args[0], 2, holder);
+                if (jctx.heap.has_error) { jctx.error = true; *omit = true; return val; }
             }
         }
     }
@@ -9702,6 +9706,7 @@ fn bool json_is_array(HObject* obj) {
 
 /// Serialize an object's properties
 fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
+    if (jctx.error) return -1;
     if (jctx.offset >= jctx.buf_size) return -1;
     jctx.buf[jctx.offset++] = '{';
 
@@ -9752,6 +9757,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             // Apply toJSON + replacer
             bool omit = false;
             val = json_check_property(jctx, key_hstr, val, holder, &omit);
+            if (jctx.error) return -1;
             if (omit) continue;
 
             if (!first) {
@@ -9808,6 +9814,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
                 // the check just does toJSON + type unwrapping)
                 bool omit = false;
                 val = json_check_property(jctx, key_hstr, val, holder, &omit);
+                if (jctx.error) return -1;
                 if (omit) continue;
 
                 if (!first) {
@@ -9869,6 +9876,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
 
 /// Serialize an array
 fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
+    if (jctx.error) return -1;
     if (jctx.offset >= jctx.buf_size) return -1;
     jctx.buf[jctx.offset++] = '[';
 
@@ -10101,6 +10109,8 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
 
 /// JSON.stringify(value [, replacer [, space]]) — ES5 §15.12.3
 fn void builtin_json_stringify(BuiltinContext* ctx) {
+    // Clear any stale error flag
+    ctx.heap.has_error = false;
     // Get the value
     if (ctx.argc < 1) {
         ctx.result.set_undefined();
@@ -10323,6 +10333,14 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     bool root_omit = false;
     TVal root_val = json_check_property(&jctx, empty_key, value, wrapper_tv, &root_omit);
 
+    if (jctx.error || ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        if (prop_keys != null) libc::free(prop_keys);
+        return;
+    }
+
     if (root_omit) {
         ctx.result.set_undefined();
         if (prop_keys != null) libc::free(prop_keys);
@@ -10331,6 +10349,14 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
 
     // Serialize the processed value
     int result = json_serialize_val(&jctx, &root_val);
+
+    if (jctx.error || ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        if (prop_keys != null) libc::free(prop_keys);
+        return;
+    }
 
     if (prop_keys != null) libc::free(prop_keys);
 

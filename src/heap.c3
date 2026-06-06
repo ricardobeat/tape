@@ -155,6 +155,12 @@ struct Heap {
     // Longjmp state for error handling
     LongjmpState lj;
 
+    // Error flag: set by the VM when an unhandled throw occurs.
+    // Cleared before each top-level call. Checked by builtins (e.g. JSON)
+    // that call back into JS and need to detect errors from call_fn.
+    bool has_error;
+    TVal error_value;
+
     // Simple xorshift32 PRNG state
     uint rnd_state;
 

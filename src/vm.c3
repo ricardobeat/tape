@@ -3132,12 +3132,20 @@ fn TVal? Vm.run(Vm* vm) {
                     uint new_nregs = target_fast.num_regs;
 
                     // Copy args: in the sliding-window model new_regs == old_args
-                    // Values are already in place — just zero the unused registers.
-                    // memset lowers to rep stosq / stp xzr, ... on x86/aarch64;
-                    // C3 will not auto-vectorize the per-element store loop.
-                    uint zero_count = new_nregs - nargs;
-                    if (zero_count > 0) {
-                        libc::memset(&new_regs[nargs], 0, (usz)zero_count * TVal::size);
+                    // Values are already in place — set missing parameter registers
+                    // to undefined so default parameter checks (param !== undefined) work.
+                    uint formals = (uint)target_fast.num_formals;
+                    uint undef_limit = formals < new_nregs ? formals : new_nregs;
+                    if (nargs < undef_limit) {
+                        for (uint i = nargs; i < undef_limit; i++) {
+                            new_regs[i].set_undefined();
+                        }
+                    }
+                    // Zero remaining registers (temps)
+                    if (undef_limit < new_nregs) {
+                        for (uint i = undef_limit; i < new_nregs; i++) {
+                            new_regs[i].bits = 0;
+                        }
                     }
 
                     vm.valstack_top = new_regs + new_nregs;
@@ -3611,6 +3619,11 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(&new_regs[i], &old_args[i]);
                 }
 
+                // Set missing formals to undefined (for default param checks)
+                for (uint i = nargs; i < copy_count; i++) {
+                    new_regs[i].set_undefined();
+                }
+
                 // Build rest array from overflow args
                 uint rest_idx = copy_count;
                 uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
@@ -3654,10 +3667,22 @@ fn TVal? Vm.run(Vm* vm) {
                     }
                 }
                 if (nargs < new_nregs) {
-                    uint zc = new_nregs - nargs;
-                    TVal* zd = &new_regs[nargs];
-                    for (uint zi = 0; zi < zc; zi++) {
-                        zd[zi].bits = 0;
+                    // Set missing parameter registers to undefined (for default param checks).
+                    // Only formal parameter slots need undefined; temp registers can stay zero.
+                    uint formals = (uint)target.num_formals;
+                    uint undef_limit = formals < new_nregs ? formals : new_nregs;
+                    if (nargs < undef_limit) {
+                        for (uint zi = nargs; zi < undef_limit; zi++) {
+                            new_regs[zi].set_undefined();
+                        }
+                    }
+                    // Zero remaining registers (temps)
+                    if (undef_limit < new_nregs) {
+                        uint zc = new_nregs - undef_limit;
+                        TVal* zd = &new_regs[undef_limit];
+                        for (uint zi = 0; zi < zc; zi++) {
+                            zd[zi].bits = 0;
+                        }
                     }
                 }
             }
@@ -4265,6 +4290,7 @@ fn TVal? Vm.run(Vm* vm) {
                                                     &caller_act.curr_pc, &needs_restart)) {
                                     // Unhandled — set error for the VM to return
                                     vm.has_error = true;
+                                    vm.heap.has_error = true;
                                     if (caller_act.retval != null) {
                                         vm.heap.tval_copy_ref(caller_act.retval, &throw_val);
                                     }
@@ -5201,6 +5227,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.THROW: {
             TVal thrown_val = *ra;
             if (!vm_throw_value(vm, thrown_val, act, &curr_pc, &needs_restart)) {
+                vm.has_error = true;
+                vm.heap.has_error = true;
+                vm.heap.tval_copy_ref(&vm.heap.error_value, &thrown_val);
+                vm.heap.tval_copy_ref(&vm.return_val, &thrown_val);
                 return VM_ERROR~;
             }
             break;
