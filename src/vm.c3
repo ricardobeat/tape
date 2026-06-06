@@ -3446,6 +3446,9 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.valstack_top = new_regs_r + new_nregs_r;
                     vm.valstack_bottom = new_act_r.bottom;
 
+                    // Save caller resume point before switching activation
+                    act.curr_pc = curr_pc;
+
                     needs_restart = true;
                     break;
                 }
@@ -4568,19 +4571,35 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.RETUNDEF_GEN: {
             // Generator return undefined: mark completed
-            TVal undef_val;
-            undef_val.set_undefined();
-
             GeneratorState* gs2 = vm.heap.resume_gen;
             gs2.state = GEN_COMPLETED;
-            vm.heap.tval_copy_ref(&vm.heap.yield_value, &undef_val);
             vm.heap.did_yield = false;
             vm.heap.resume_gen = null;
+
+            // Wrap in IteratorResult {value: undefined, done: true}
+            HObject*? robj_raw2 = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+            TVal wrapped_val2;
+            if (try robj2 = robj_raw2) {
+                robj2.prototype = vm.heap.object_proto;
+                HString* val_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                TVal undef_val2;
+                undef_val2.set_undefined();
+                if (val_key2 != null) robj2.put_prop(val_key2, undef_val2, hobject::PROP_FLAGS_WEC);
+                HString* done_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                TVal done_val2;
+                done_val2.set_boolean(true);
+                if (done_key2 != null) robj2.put_prop(done_key2, done_val2, hobject::PROP_FLAGS_WEC);
+                wrapped_val2.set_object(robj2);
+            } else {
+                TVal undef_val2;
+                undef_val2.set_undefined();
+                wrapped_val2 = undef_val2;
+            }
 
             Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
             TVal* ret_byteoff2 = ret_act2.retval;
             TVal* ret_slot2 = ret_byteoff2;
-            vm.heap.tval_copy_ref(&ret_slot2[0], &undef_val);
+            vm.heap.tval_copy_ref(&ret_slot2[0], &wrapped_val2);
 
             vm.activation_count--;
             if (vm.activation_count > 0) {
