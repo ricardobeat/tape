@@ -15295,19 +15295,27 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_ARRAY_PROTO_AT] = &builtin_array_proto_at,
     [BUILTIN_ARRAY_PROTO_CONCAT] = &builtin_array_proto_concat,
     [BUILTIN_ARRAY_PROTO_COPYWITHIN] = &builtin_array_proto_copyWithin,
+    [BUILTIN_ARRAY_PROTO_EVERY] = &builtin_array_proto_every,
     [BUILTIN_ARRAY_PROTO_ENTRIES] = &builtin_array_proto_entries,
     [BUILTIN_ARRAY_PROTO_FILL] = &builtin_array_proto_fill,
+    [BUILTIN_ARRAY_PROTO_FILTER] = &builtin_array_proto_filter,
     [BUILTIN_ARRAY_PROTO_FLAT] = &builtin_array_proto_flat,
+    [BUILTIN_ARRAY_PROTO_FLATMAP] = &builtin_array_proto_flatMap,
+    [BUILTIN_ARRAY_PROTO_FOREACH] = &builtin_array_proto_forEach,
     [BUILTIN_ARRAY_PROTO_INCLUDES] = &builtin_array_proto_includes,
     [BUILTIN_ARRAY_PROTO_INDEXOF] = &builtin_array_proto_indexOf,
     [BUILTIN_ARRAY_PROTO_JOIN] = &builtin_array_proto_join,
     [BUILTIN_ARRAY_PROTO_KEYS] = &builtin_array_proto_keys,
     [BUILTIN_ARRAY_PROTO_LASTINDEXOF] = &builtin_array_proto_lastIndexOf,
+    [BUILTIN_ARRAY_PROTO_MAP] = &builtin_array_proto_map,
     [BUILTIN_ARRAY_PROTO_POP] = &builtin_array_proto_pop,
     [BUILTIN_ARRAY_PROTO_PUSH] = &builtin_array_proto_push,
+    [BUILTIN_ARRAY_PROTO_REDUCE] = &builtin_array_proto_reduce,
+    [BUILTIN_ARRAY_PROTO_REDUCERIGHT] = &builtin_array_proto_reduceRight,
     [BUILTIN_ARRAY_PROTO_REVERSE] = &builtin_array_proto_reverse,
     [BUILTIN_ARRAY_PROTO_SHIFT] = &builtin_array_proto_shift,
     [BUILTIN_ARRAY_PROTO_SLICE] = &builtin_array_proto_slice,
+    [BUILTIN_ARRAY_PROTO_SOME] = &builtin_array_proto_some,
     [BUILTIN_ARRAY_PROTO_SORT] = &builtin_array_proto_sort,
     [BUILTIN_ARRAY_PROTO_SPLICE] = &builtin_array_proto_splice,
     [BUILTIN_ARRAY_PROTO_SYMBOL_ITER] = &builtin_array_proto_symbol_iter,
@@ -16886,6 +16894,11 @@ fn void arr_throw_type_error(Heap* heap, char[] msg) {
 
 /// Helper: check if numeric key exists on object.
 fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
+    // Fast path: dense array storage
+    if (obj.get_class() == hobject::ObjClass.ARRAY) {
+        if (try v = obj.get_array_idx(key)) { return true; }
+        return false;
+    }
     char[16] buf;
     int slen = libc::snprintf(&buf, 16, "%u", key);
     if (slen <= 0 || slen >= 16) return false;
@@ -16897,6 +16910,14 @@ fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
 
 /// Helper: get value at numeric index, returns false if not present.
 fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
+    // Fast path: dense array storage
+    if (obj.get_class() == hobject::ObjClass.ARRAY) {
+        if (try v = obj.get_array_idx(key)) {
+            *out = v;
+            return true;
+        }
+        return false;
+    }
     char[16] buf;
     int slen = libc::snprintf(&buf, 16, "%u", key);
     if (slen <= 0 || slen >= 16) return false;

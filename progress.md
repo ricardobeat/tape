@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 126 (constructor .name/.length properties)
+**Last Updated:** Session 127 (Array iteration dispatch table fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -81,6 +81,17 @@ Boolean was already correct (lightfunc with synthesized .name/.length).
 Both nanbox and nonanbox builds pass. quick.sh: 182/101/56 — no regressions.
 Verified zero regression across Phases 0-6 (fresh baseline comparison).
 
+Session 127: Array iteration dispatch table fix (+670 test262 passes).
+Fixed two bugs that collectively broke forEach, map, filter, every, some,
+reduce, reduceRight, and flatMap. (1) The `builtin_dispatch_table` was missing
+entries for all 8 methods (indices 291-297, 222), causing `dispatch_builtin`
+to return undefined/null silently. (2) `arr_has_prop`/`arr_get_elem` helpers
+used `get_prop_proto` (shape/prop-table lookup) but arrays store indexed
+elements in a separate dense array part via `get_array_idx`. Fixed by adding
+an ARRAY fast-path that reads directly from dense storage. Impact: Phase 3
++335 (1702→2037), Phase 5 +337 (2172→2509), Phase 6 +333 (694→1027).
+Both nanbox and nonanbox builds pass. quick.sh: 182/101/56 — no regressions.
+
 ## Per-Phase Status (fresh run, 2026-06-07)
 
 | Phase | Total | Pass | Fail | Skip | Notes |
@@ -88,10 +99,10 @@ Verified zero regression across Phases 0-6 (fresh baseline comparison).
 | 0-1: Core VM | 2,185 | 461 | 427 | 1,297 | VM, lexer, compiler ✅ |
 | 1: Calling Convention | 426 | 23 | 65 | 338 | Most skipped (noStrict) |
 | 2: Basic Operators | 1,969 | 532 | 612 | 825 | BigInt/gen skipped |
-| 3: Object System | 7,766 | 1,702 | 4,097 | 1,967 | defineProperty SameValue ✅ |
+| 3: Object System | 7,766 | 2,037 | 3,762 | 1,967 | defineProperty SameValue ✅ |
 | 4: Error Handling | 402 | 79 | 122 | 201 | Error names fixed |
-| 5: Built-in Constructors | 8,615 | 2,172 | 4,918 | 1,525 | String writable fixed ✅ |
-| 6: Prototype Methods | 4,713 | 694 | 3,083 | 936 | +1 from prop desc fixes |
+| 5: Built-in Constructors | 8,615 | 2,509 | 4,581 | 1,525 | +337 from array iter fix |
+| 6: Prototype Methods | 4,713 | 1,027 | 2,750 | 936 | +333 from array iter fix |
 | 7: ES5 Features | 1,240 | 160 | 133 | 947 | in operator fix ✅ |
 | 8: ES5 Built-in Objects | 2,747 | 574 | 710 | 1,463 | RegExp proto chain ✅ |
 | 11: Arrow/Templates | 427 | 59 | 44 | 324 | Working, edge cases |
