@@ -14550,6 +14550,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal promise_val;
     promise_val.set_object(ctor);
+    set_func_ctor_name_length(ctor, heap, "Promise", 1);
     env::env_declare_nonenum(global_env, promise_key, promise_val);
 
     return true;
@@ -16093,6 +16094,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal obj_val;
     obj_val.set_object(obj);
+    set_func_ctor_name_length(obj, heap, "Object", 1);
     env::env_declare_nonenum(global_env, obj_key, obj_val);
 
     return true;
@@ -16314,6 +16316,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal num_val;
     num_val.set_object(num);
+    set_func_ctor_name_length(num, heap, "Number", 1);
     env::env_declare_nonenum(global_env, num_key, num_val);
 
     return true;
@@ -16423,6 +16426,28 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
     val.set_lightfunc((void*)(usz)fn_index);
     env::env_declare_nonenum(global_env, key, val);
     return true;
+}
+
+/// Set .name and .length on a built-in constructor HObject.
+/// .name: non-writable, non-enumerable, configurable (ES6 §19)
+/// .length: writable, non-enumerable, configurable (ES5 §15)
+fn void set_func_ctor_name_length(HObject* func_obj, Heap* heap, char[] name, int length) {
+    HString* name_key = builtin_intern_string(heap, "name");
+    HString* name_hstr = builtin_intern_string(heap, name);
+    TVal name_tv; name_tv.set_string(name_hstr);
+    func_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv; length_tv.set_fastint((long)length);
+    func_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+}
+
+/// Set .name on a built-in constructor HObject (when .length is already set).
+fn void set_func_ctor_name(HObject* func_obj, Heap* heap, char[] name) {
+    HString* name_key = builtin_intern_string(heap, "name");
+    HString* name_hstr = builtin_intern_string(heap, name);
+    TVal name_tv; name_tv.set_string(name_hstr);
+    func_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
 }
 
 // ============================================================================
@@ -16731,6 +16756,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal str_val;
     str_val.set_object(str_obj);
+    set_func_ctor_name_length(str_obj, heap, "String", 1);
     env::env_declare_nonenum(global_env, str_key, str_val);
 
     return true;
@@ -17360,6 +17386,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal arr_val;
     arr_val.set_object(arr);
+    set_func_ctor_name_length(arr, heap, "Array", 1);
     env::env_declare_nonenum(global_env, arr_key, arr_val);
 
     return true;
@@ -17441,6 +17468,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal func_val;
     func_val.set_object(func_obj);
+    set_func_ctor_name(func_obj, heap, "Function");
     env::env_declare_nonenum(global_env, func_key, func_val);
 
     return true;
@@ -17632,6 +17660,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal date_val;
     date_val.set_object(date_obj);
+    set_func_ctor_name_length(date_obj, heap, "Date", 7);
     env::env_declare_nonenum(global_env, date_key, date_val);
 
     return true;
@@ -17714,6 +17743,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal regexp_val;
     regexp_val.set_object(regexp_obj);
+    set_func_ctor_name(regexp_obj, heap, "RegExp");
     env::env_declare_nonenum(global_env, regexp_key, regexp_val);
 
     return true;
@@ -17839,6 +17869,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal map_val;
     map_val.set_object(ctor);
+    set_func_ctor_name(ctor, heap, "Map");
     env::env_declare_nonenum(global_env, map_key, map_val);
 
     return true;
@@ -17960,6 +17991,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal set_val;
     set_val.set_object(ctor);
+    set_func_ctor_name(ctor, heap, "Set");
     env::env_declare_nonenum(global_env, set_key, set_val);
 
     return true;
@@ -18200,6 +18232,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal sym_val;
     sym_val.set_object(ctor);
+    set_func_ctor_name(ctor, heap, "Symbol");
     env::env_declare_nonenum(global_env, sym_key, sym_val);
 
     return true;
