@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 124 (RET restart avoidance)
+**Last Updated:** Session 125 (error propagation + non-enumerable globals)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -62,6 +62,13 @@ of setting needs_restart=true and breaking. Also fixed pre-existing bug in fall-
 end handler (was not restoring ic_base/var_ic_base).
 bench_recursion_deep 1635→1546ms (-5.4%). bench_function_call 64→56ms (-12.5%).
 All recursion benchmarks remain faster than Duktape (0.8×). quick.sh: 182/101/56.
+Session 125: Error propagation + non-enumerable globals.
+Fixed `string_proto_get_this` and `array_proto_get_this` to properly propagate
+TypeError via `ctx.throw_value` and `ctx.should_throw = true` instead of silently
+returning null when called on incompatible receivers. Added `env_declare_nonenum`
+function in env.c3 for registering built-in globals as non-enumerable per ES5 §15.1.
+Applied to Promise, print, console, Object, Number, and `this` registrations in
+builtins.c3. quick.sh: 182/101/56 — no regressions.
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 

@@ -1872,7 +1872,6 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         }
     }
     // TypeError: String.prototype method called on incompatible value
-    HString* type_str = builtin_intern_string(ctx.heap, "String");
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
@@ -1881,8 +1880,11 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         msg_val.set_string(msg_str);
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        // Store the error for bubbling — but for now just return null
+        TVal err_tv;
+        err_tv.set_object(err);
+        ctx.throw_value = err_tv;
     }
+    ctx.should_throw = true;
     return null;
 }
 
@@ -6492,7 +6494,11 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
+        TVal err_tv;
+        err_tv.set_object(err);
+        ctx.throw_value = err_tv;
     }
+    ctx.should_throw = true;
     return null;
 }
 
@@ -14544,7 +14550,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal promise_val;
     promise_val.set_object(ctor);
-    env::env_declare(global_env, promise_key, promise_val);
+    env::env_declare_nonenum(global_env, promise_key, promise_val);
 
     return true;
 }
@@ -15686,7 +15692,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     TVal print_val;
     print_val.set_lightfunc((void*)(usz)BUILTIN_PRINT);
-    env::env_declare(global_env, print_key, print_val);
+    env::env_declare_nonenum(global_env, print_key, print_val);
 
     char[] console_name = "console";
     HString* console_key = heap.str_intern(console_name);
@@ -15712,7 +15718,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     log_val.set_lightfunc((void*)(usz)BUILTIN_CONSOLE_LOG);
     console_obj.put_prop(log_key, log_val, hobject::PROP_FLAGS_NWC);
 
-    env::env_declare(global_env, console_key, console_val);
+    env::env_declare_nonenum(global_env, console_key, console_val);
 
     // Register parseInt
     if (!register_simple_builtin(global_env, heap, "parseInt", BUILTIN_PARSE_INT)) return false;
@@ -15851,7 +15857,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         if (gthis_key != null) {
             TVal gthis_tv;
             gthis_tv.set_object(global_env.bindings);
-            env::env_declare(global_env, gthis_key, gthis_tv);
+            env::env_declare_nonenum(global_env, gthis_key, gthis_tv);
         }
     }
 
@@ -16087,7 +16093,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal obj_val;
     obj_val.set_object(obj);
-    env::env_declare(global_env, obj_key, obj_val);
+    env::env_declare_nonenum(global_env, obj_key, obj_val);
 
     return true;
 }
@@ -16308,7 +16314,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal num_val;
     num_val.set_object(num);
-    env::env_declare(global_env, num_key, num_val);
+    env::env_declare_nonenum(global_env, num_key, num_val);
 
     return true;
 }
@@ -16368,7 +16374,7 @@ fn bool register_named_value(EnvRecord* global_env, Heap* heap, char[] name, TVa
         heap.str_table_insert(new_key);
         key = new_key;
     }
-    return env::env_declare(global_env, key, val);
+    return env::env_declare_nonenum(global_env, key, val);
 }
 
 fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
@@ -16394,7 +16400,7 @@ fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
     } else {
         val.set_number(number_val);
     }
-    env::env_declare(global_env, key, val);
+    env::env_declare_nonenum(global_env, key, val);
     return true;
 }
 
@@ -16415,7 +16421,7 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
 
     TVal val;
     val.set_lightfunc((void*)(usz)fn_index);
-    env::env_declare(global_env, key, val);
+    env::env_declare_nonenum(global_env, key, val);
     return true;
 }
 
@@ -16725,7 +16731,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal str_val;
     str_val.set_object(str_obj);
-    env::env_declare(global_env, str_key, str_val);
+    env::env_declare_nonenum(global_env, str_key, str_val);
 
     return true;
 }
@@ -17354,7 +17360,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal arr_val;
     arr_val.set_object(arr);
-    env::env_declare(global_env, arr_key, arr_val);
+    env::env_declare_nonenum(global_env, arr_key, arr_val);
 
     return true;
 }
@@ -17435,7 +17441,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal func_val;
     func_val.set_object(func_obj);
-    env::env_declare(global_env, func_key, func_val);
+    env::env_declare_nonenum(global_env, func_key, func_val);
 
     return true;
 }
@@ -17626,7 +17632,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal date_val;
     date_val.set_object(date_obj);
-    env::env_declare(global_env, date_key, date_val);
+    env::env_declare_nonenum(global_env, date_key, date_val);
 
     return true;
 }
@@ -17708,7 +17714,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal regexp_val;
     regexp_val.set_object(regexp_obj);
-    env::env_declare(global_env, regexp_key, regexp_val);
+    env::env_declare_nonenum(global_env, regexp_key, regexp_val);
 
     return true;
 }
@@ -17833,7 +17839,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal map_val;
     map_val.set_object(ctor);
-    env::env_declare(global_env, map_key, map_val);
+    env::env_declare_nonenum(global_env, map_key, map_val);
 
     return true;
 }
@@ -17954,7 +17960,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal set_val;
     set_val.set_object(ctor);
-    env::env_declare(global_env, set_key, set_val);
+    env::env_declare_nonenum(global_env, set_key, set_val);
 
     return true;
 }
@@ -18022,7 +18028,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal wm_val;
     wm_val.set_object(ctor);
-    env::env_declare(global_env, wm_key, wm_val);
+    env::env_declare_nonenum(global_env, wm_key, wm_val);
 
     return true;
 }
@@ -18089,7 +18095,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal ws_val;
     ws_val.set_object(ctor);
-    env::env_declare(global_env, ws_key, ws_val);
+    env::env_declare_nonenum(global_env, ws_key, ws_val);
 
     return true;
 }
@@ -18194,7 +18200,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal sym_val;
     sym_val.set_object(ctor);
-    env::env_declare(global_env, sym_key, sym_val);
+    env::env_declare_nonenum(global_env, sym_key, sym_val);
 
     return true;
 }

@@ -261,6 +261,12 @@ fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
 }
 
+/// Declare a non-enumerable binding (for built-in globals per ES spec §17).
+/// Built-in properties must be { writable: true, enumerable: false, configurable: true }.
+fn bool env_declare_nonenum(EnvRecord* env, void* key, TVal val) @inline {
+    return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WC);
+}
+
 // ============================================================================
 // TDZ sentinel for let/const declarations
 // ============================================================================
