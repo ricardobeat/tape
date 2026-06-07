@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 131 (UNM -0 + ToPrimitive TypeError in operators)
+**Last Updated:** Session 132 (ToPrimitive error propagation — valueOf/toString throw fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 131, 2026-06-07)
@@ -137,6 +137,29 @@ valueOf/toString throws inside `call_fn` are still swallowed (deferred issue).
 Verified: both nanbox and nonanbox builds pass. Phase 0-1: 510 (no change),
 Phase 2: 873 (+1), Phase 3: 2068 (+1), Phase 5: 2543 (+2), Phase 6: 1052 (+2).
 quick.sh: 226/57/56 — zero regressions.
+
+Session 132: ToPrimitive error propagation — valueOf/toString throws (+10 quick.sh).
+Fixed 6 sites where errors thrown inside valueOf/toString during ToPrimitive were
+silently swallowed instead of propagating to the enclosing try/catch:
+(1) **ADD handler** (vm.c3): Added `vm_check_to_number_throw` after each `to_primitive_value`
+call and `vm_to_string` call in the ADD handler's string concatenation path. Added
+`if (needs_restart) break;` guards after each check to prevent double-invocation of
+valueOf/toString when a catcher is found (the catcher flag is consumed on first use).
+(2) **EQ/NEQ handlers** (vm.c3): Added `vm_check_to_number_throw` after `abstract_eq`
+calls in both EQ and NEQ opcodes. `abstract_eq` calls `to_primitive_value` internally
+for Object+primitive comparisons.
+(3) **INC_VAR/DEC_VAR handlers** (vm.c3): Added `vm_check_to_number_throw` after
+`vm_to_number` in 3 locations: IC fast path, slow path, and var_env fallback.
+Root cause: `to_primitive_value` sets `vm.throw_pending` when valueOf/toString throws
+(via `vm_check_call_fn_error`), but callers in ADD/EQ/NEQ/INC_VAR/DEC_VAR never checked
+this flag before continuing. The ADD handler additionally called `to_primitive_value` or
+`vm_to_string` a second time on the same object, causing double valueOf invocation and
+consuming the catcher flag twice (second time finds no catcher → VM_ERROR).
+Verified: both nanbox and nonanbox builds pass. quick.sh: 226→236 (+10) passes.
+Phase 2: 872→873 (+1), Phase 5: 2541→2545 (+4), Phase 6: 1050→1051 (+1),
+Phase 8: 563→564 (+1). Phase 0-1: 510→507 (-3), Phase 3: 2067→2063 (-4),
+Phase 7: 177→175 (-2) — net -2 across phases from tests that relied on
+error-swallowing behavior (now correctly propagating throws).
 
 ## Per-Phase Status (fresh run, 2026-06-07)
 

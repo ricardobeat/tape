@@ -560,6 +560,7 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
                     if (try toString_fn = obj.get_prop_proto(to_str_key)) {
                         if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
                             TVal result = h.call_fn(vm, toString_fn, null, 0, *val);
+                            if (vm_check_call_fn_error(vm)) return null;
                             if (try result_str = vm_to_string(vm, &result)) {
                                 return result_str;
                             }
@@ -687,6 +688,23 @@ fn void vm_set_toprimitive_error(Vm* vm) {
     vm.throw_pending = true;
 }
 
+/// Check if call_fn caused an unhandled throw inside the called function.
+/// When call_fn invokes a compiled JS function that throws and no catcher
+/// is found, vm.has_error is set and vm.return_val contains the thrown error.
+/// This helper propagates that error into the deferred throw mechanism so
+/// the outer opcode handler can properly propagate it.
+/// Returns true if an error was detected (caller should return early).
+fn bool vm_check_call_fn_error(Vm* vm) @inline {
+    if (vm.has_error) {
+        vm.heap.tval_copy_ref(&vm.throw_value, &vm.return_val);
+        vm.throw_pending = true;
+        vm.has_error = false;
+        vm.heap.has_error = false;
+        return true;
+    }
+    return false;
+}
+
 /// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
 /// Calls Symbol.toPrimitive first (ES6 §7.1.1), then valueOf/toString.
 /// Sets vm.throw_pending if both valueOf and toString return non-primitives.
@@ -727,6 +745,7 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                     TVal[1] hint_args;
                     hint_args[0] = hint_val;
                     TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
+                    if (vm_check_call_fn_error(vm)) return *val;
                     if (!prim.is_object()) return prim;
                     // Object result from Symbol.toPrimitive — fall through to valueOf/toString
                 }
@@ -742,6 +761,7 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                 if (try valueOf_fn = valueOf_val) {
                     if (valueOf_fn.is_lightfunc() || (valueOf_fn.is_object() && valueOf_fn.get_heapptr() != null && ((HObject*)valueOf_fn.get_heapptr()).is_callable())) {
                         TVal prim = h.call_fn(vm, valueOf_fn, null, 0, *val);
+                        if (vm_check_call_fn_error(vm)) return *val;
                         if (!prim.is_object()) return prim;
                     }
                 }
@@ -752,6 +772,7 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                 if (try toString_fn = toString_val) {
                     if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
                         TVal prim = h.call_fn(vm, toString_fn, null, 0, *val);
+                        if (vm_check_call_fn_error(vm)) return *val;
                         if (!prim.is_object()) return prim;
                     }
                 }
@@ -1769,12 +1790,24 @@ fn TVal? Vm.run(Vm* vm) {
             TVal prim_b = *rb;
             TVal prim_c = *rc;
             if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb); }
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc); }
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             TValTag pt_b = prim_b.get_tag();
             TValTag pt_c = prim_c.get_tag();
             if (pt_b == STRING || pt_c == STRING) {
                 HString*? left_str = vm_to_string(vm, &prim_b);
+                if (vm.throw_pending) {
+                    if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                    break;
+                }
                 HString*? right_str = vm_to_string(vm, &prim_c);
+                if (vm.throw_pending) {
+                    if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                    break;
+                }
                 if (try ls = left_str && try rs = right_str) {
                     uint a_len = ls.blen;
                     uint b_len = rs.blen;
@@ -1989,6 +2022,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                             } else {
                                 double d = vm_to_number(vm,&old_val);
+                                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                                 b.prop_values()[vic.prop_idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
                             }
                             break;
@@ -2069,6 +2103,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                     } else {
                         double d = vm_to_number(vm,&old_val);
+                        if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                         cur.bindings.prop_values()[idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
                     }
                     found = true;
@@ -2094,6 +2129,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                         } else {
                             double d = vm_to_number(vm,&v2);
+                            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                             new_val.set_number(d + (is_inc ? 1.0 : -1.0));
                         }
                         env::env_put(act.var_env, key, new_val);
@@ -2208,10 +2244,12 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.EQ:
             ra.set_boolean(abstract_eq(vm, rb, rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             break;
 
         case Opcode.NEQ:
             ra.set_boolean(!abstract_eq(vm, rb, rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             break;
 
         case Opcode.SEQ: {
