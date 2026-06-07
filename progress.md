@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 123 (INC_VAR/DEC_VAR fused variable-arithmetic opcodes)
+**Last Updated:** Session 124 (RET restart avoidance)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -54,6 +54,14 @@ emits INC_VAR/DEC_VAR directly for `+= 1`, `-= 1`, prefix `++i`/`--i`, and
 postfix `i++`/`i--` patterns. Peephole pass also fuses any remaining GETVAR+INC+
 PUTVAR triples. VarIC used for both read and write on the IC fast path.
 bench_loop 55→45ms (1.22×, -18%). quick.sh: 182/101/56 — no regressions.
+Session 124: RET restart avoidance — inline caller state restoration in RET/RETUNDEF
+handlers, skipping the outer loop restart. Added `caller_valstack_top` to Activation
+struct, saved at every CALL site. RET/RETUNDEF now restore code_base/constants/
+ic_base/var_ic_base/curr_pc/regs_base inline and `continue` the inner loop instead
+of setting needs_restart=true and breaking. Also fixed pre-existing bug in fall-off-
+end handler (was not restoring ic_base/var_ic_base).
+bench_recursion_deep 1635→1546ms (-5.4%). bench_function_call 64→56ms (-12.5%).
+All recursion benchmarks remain faster than Duktape (0.8×). quick.sh: 182/101/56.
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 

@@ -68,6 +68,8 @@ struct Activation {
     /// Highest register index that ever held a heap ref (object/buffer).
     /// 0 means no heap refs in any register — decref_callee_regs can skip.
     uint max_heap_reg;
+    /// Caller's valstack_top saved at CALL time — restored on RET without recomputation.
+    TVal* caller_valstack_top;
 }
 
 const uint ACT_FLAG_STRICT         = 1u << 0;
@@ -939,6 +941,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
     new_act.max_heap_reg = 0;
+    new_act.caller_valstack_top = vm.valstack_top;
 
     // Compute new valstack bottom (after func + this + args)
     TVal* new_bottom = caller_bottom + ((uint)idx_func + 2);
@@ -1058,6 +1061,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     Activation* new_act = &vm.activations[vm.activation_count];
     vm.activation_count++;
     new_act.max_heap_reg = 0;
+    new_act.caller_valstack_top = vm.valstack_top;
 
     EnvRecord* invoke_getter_var_env = func_obj.extra.func.var_env;
     if (try fv_ig = env::env_create_function_scope(vm.heap, func_obj.extra.func.var_env)) { invoke_getter_var_env = fv_ig; }
@@ -1591,15 +1595,17 @@ fn TVal? Vm.run(Vm* vm) {
                 vm.heap.tval_copy_ref(callee_result, &final_val);
 
                 CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                vm.valstack_top = caller_act.bottom + caller_func.num_regs;
 
                 act = caller_act;
+                vm.valstack_top = caller_act.caller_valstack_top;
                 if (caller_func != vm.current_func) {
                     vm.current_func = caller_func;
                     code_base = caller_func.code;
                     code_count = caller_func.code_count;
                     code_end = code_base + code_count;
                     constants = caller_func.constants;
+                    ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                    var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
                     nregs = caller_func.num_regs;
                 }
                 curr_pc = act.curr_pc;
@@ -2787,6 +2793,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 Activation* new_act = &vm.activations[vm.activation_count];
                                 vm.activation_count++;
                                 new_act.max_heap_reg = 0;
+                                new_act.caller_valstack_top = vm.valstack_top;
 
                                 EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
                                 if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
@@ -3328,6 +3335,7 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act = &vm.activations[vm.activation_count];
                     vm.activation_count++;
                     new_act.max_heap_reg = 0;
+                    new_act.caller_valstack_top = vm.valstack_top;
 
                     EnvRecord* fast_var_env;
                     // Skip env allocation when the callee has no local bindings —
@@ -3657,6 +3665,7 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act_r = &vm.activations[vm.activation_count];
                     vm.activation_count++;
                     new_act_r.max_heap_reg = 0;
+                    new_act_r.caller_valstack_top = vm.valstack_top;
 
                     new_act_r.parent = act;
                     new_act_r.func = target;
@@ -3814,6 +3823,7 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
             new_act.max_heap_reg = 0;
+            new_act.caller_valstack_top = vm.valstack_top;
 
             EnvRecord* call_var_env2 = hobj.extra.func.var_env;
             if (target.needs_env()) {
@@ -4068,6 +4078,7 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
             new_act.max_heap_reg = 0;
+            new_act.caller_valstack_top = vm.valstack_top;
 
             EnvRecord* super_var_env = super_hobj.extra.func.var_env;
             if (try fv_su = env::env_create_function_scope(vm.heap, super_hobj.extra.func.var_env)) { super_var_env = fv_su; }
@@ -4404,6 +4415,7 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* new_act = &vm.activations[vm.activation_count];
             vm.activation_count++;
             new_act.max_heap_reg = 0;
+            new_act.caller_valstack_top = vm.valstack_top;
 
             EnvRecord* ctor_var_env = hobj.extra.func.var_env;
             if (try fv_ct = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { ctor_var_env = fv_ct; }
@@ -4769,12 +4781,24 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(callee_result, &val);
                 }
             }
-            // Restore caller state and restart dispatch loop
+            // Restore caller state inline — skip outer loop restart.
             act = &vm.activations[vm.activation_count - 1];
             vm.valstack_bottom = act.bottom;
-            vm.valstack_top = act.bottom + ((CompiledFunction*)act.func).num_regs;
-            needs_restart = true;
-            break;
+            vm.valstack_top = act.caller_valstack_top;
+            CompiledFunction* caller_func = (CompiledFunction*)act.func;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                code_base = caller_func.code;
+                code_count = caller_func.code_count;
+                code_end = code_base + code_count;
+                constants = caller_func.constants;
+                ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
+                nregs = caller_func.num_regs;
+            }
+            curr_pc = act.curr_pc;
+            regs_base = act.bottom;
+            continue;
         }
 
         case Opcode.RETUNDEF: {
@@ -4803,12 +4827,24 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(callee_result, &undef_val);
                 }
             }
-            // Restore caller state and restart dispatch loop
+            // Restore caller state inline — skip outer loop restart.
             act = &vm.activations[vm.activation_count - 1];
             vm.valstack_bottom = act.bottom;
-            vm.valstack_top = act.bottom + ((CompiledFunction*)act.func).num_regs;
-            needs_restart = true;
-            break;
+            vm.valstack_top = act.caller_valstack_top;
+            CompiledFunction* caller_func = (CompiledFunction*)act.func;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                code_base = caller_func.code;
+                code_count = caller_func.code_count;
+                code_end = code_base + code_count;
+                constants = caller_func.constants;
+                ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
+                nregs = caller_func.num_regs;
+            }
+            curr_pc = act.curr_pc;
+            regs_base = act.bottom;
+            continue;
         }
 
         case Opcode.RET_GEN: {

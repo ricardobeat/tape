@@ -205,6 +205,20 @@ vm.valstack_top = act.caller_valstack_top;
 
 **Execution order:** Start with #2 (quick win, low risk), then #1 (the big one). Run benchmarks after each. Defer #4 until we see the residual gap after #1.
 
+### Session 124: Items #2, #6 completed (2026-06-07)
+
+|| # | Fix | Status |
+|---|-----|--------|
+| 2 | RET restart avoidance (inline caller state restoration) | ✅ Done |
+| 6 | valstack_top cache on Activation (saved at CALL, restored on RET) | ✅ Done |
+
+Added `caller_valstack_top` to Activation. RET/RETUNDEF now restore all caller
+state inline (code_base, constants, ic_base, var_ic_base, nregs, curr_pc, regs_base)
+and `continue` the inner loop instead of setting needs_restart and breaking.
+Also fixed pre-existing bug: fall-off-end handler was not restoring ic_base/var_ic_base.
+bench_recursion_deep 1635→1546ms (-5.4%). bench_function_call 64→56ms (-12.5%).
+quick.sh: 182/101/56 — no regressions.
+
 ## Validation
 
 ```bash
