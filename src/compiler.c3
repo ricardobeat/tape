@@ -497,7 +497,7 @@ fn Token? CompilerContext.advance(&self) {
 /// Expect the next token to be of the given type; consume and return it.
 /// Returns COMPILE_ERROR if the type doesn't match.
 fn Token? CompilerContext.expect(&self, TokenType tt) {
-    Token tok = self.lexer.next_token()!;
+    Token tok = self.advance()!;
     if (tok.type != tt) {
         return COMPILE_ERROR~;
     }
@@ -507,12 +507,9 @@ fn Token? CompilerContext.expect(&self, TokenType tt) {
 /// If the next token matches `tt`, consume it and return true.
 /// Otherwise leave it unconsumed and return false.
 fn bool CompilerContext.match(&self, TokenType tt) {
-    if (try tok = self.lexer.peek()) {
-        if (tok.type == tt) {
-            // Consume it by calling next_token; ignore errors
-            if (try _consumed = self.lexer.next_token()) {
-                return true;
-            }
+    if (self.check(tt)) {
+        if (try _tok = self.advance()) {
+            return true;
         }
     }
     return false;
