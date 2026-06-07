@@ -237,7 +237,7 @@ fn TVal* ptr_from_byteoff(TVal* base, uint idx) @inline {
 
 /// ECMAScript ToNumber — convert any TVal to its numeric double value.
 /// Handles BOOLEAN→0/1, OBJECT→ToPrimitive→number, STRING→parse, etc.
-fn double vm_to_number(TVal* val) {
+fn double vm_to_number(Vm* vm, TVal* val) {
     switch (val.get_tag()) {
         case FASTINT: return (double)val.get_fastint();
         case NUMBER:  return val.get_number();
@@ -247,9 +247,9 @@ fn double vm_to_number(TVal* val) {
         case STRING:
             return builtins::builtin_string_to_number((HString*)val.get_heapptr());
         case OBJECT: {
-            TVal prim = to_primitive_value(null, val);
+            TVal prim = to_primitive_value(vm, val);
             if (prim.get_tag() == OBJECT) return double::nan;
-            return vm_to_number(&prim);
+            return vm_to_number(vm, &prim);
         }
         default: return double::nan;
     }
@@ -651,7 +651,7 @@ fn double hstring_to_number(HString* hstr) {
 
 /// Extract [[PrimitiveValue]] from Boolean/Number/String wrapper objects.
 /// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
-/// Calls toString/valueOf on non-wrapper objects per spec.
+/// Calls Symbol.toPrimitive first (ES6 §7.1.1), then valueOf/toString.
 fn TVal to_primitive_value(Vm* vm, TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
@@ -674,6 +674,25 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
             TVal result;
             result.set_string(obj.extra.prim.primitive_value.get_heapptr());
             return result;
+        }
+        // Check Symbol.toPrimitive (ES6 §7.1.1)
+        if (vm != null && vm.heap.call_fn != null && vm.heap.toprimitive_symbol != null) {
+            Heap* h = vm.heap;
+            HString* toprim_key = h.toprimitive_symbol;
+            TVal? toprim_val = obj.get_prop_proto(toprim_key);
+            if (try toprim_fn = toprim_val) {
+                if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
+                    // Call Symbol.toPrimitive(obj, hint) where hint defaults to "default"
+                    HString* default_str = intern_string(vm, "default");
+                    TVal hint_val;
+                    hint_val.set_string(default_str);
+                    TVal[1] hint_args;
+                    hint_args[0] = hint_val;
+                    TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
+                    if (!prim.is_object()) return prim;
+                    // Object result from Symbol.toPrimitive — fall through to valueOf/toString
+                }
+            }
         }
         // Generic objects: call valueOf(), then toString()
         // Default hint for ToPrimitive without explicit hint is "Number" (ES5 §9.1)
@@ -798,7 +817,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 }
 
 /// ECMAScript Abstract Equality Comparison (§7.2.14).
-fn bool abstract_eq(TVal* a, TVal* b) {
+fn bool abstract_eq(Vm* vm, TVal* a, TVal* b) {
     // Same type -> strict equality
     if (a.get_tag() == b.get_tag()) {
         return strict_eq(a, b);
@@ -822,12 +841,12 @@ fn bool abstract_eq(TVal* a, TVal* b) {
     if (a.is_boolean()) {
         TVal a_num;
         a_num.set_number(a.get_boolean() ? 1.0 : 0.0);
-        return abstract_eq(&a_num, b);
+        return abstract_eq(vm, &a_num, b);
     }
     if (b.is_boolean()) {
         TVal b_num;
         b_num.set_number(b.get_boolean() ? 1.0 : 0.0);
-        return abstract_eq(a, &b_num);
+        return abstract_eq(vm, a, &b_num);
     }
 
     // String + Number -> ToNumber(string)
@@ -844,16 +863,16 @@ fn bool abstract_eq(TVal* a, TVal* b) {
 
     // Object + Boolean/Number/String -> ToPrimitive
     if (a.is_object() && (b.is_boolean() || b.is_number() || b.is_fastint() || b.is_string())) {
-        TVal prim = to_primitive_value(null, a);
+        TVal prim = to_primitive_value(vm, a);
         if (!prim.is_object()) {
-            return abstract_eq(&prim, b);
+            return abstract_eq(vm, &prim, b);
         }
         return false;
     }
     if (b.is_object() && (a.is_boolean() || a.is_number() || a.is_fastint() || a.is_string())) {
-        TVal prim = to_primitive_value(null, b);
+        TVal prim = to_primitive_value(vm, b);
         if (!prim.is_object()) {
-            return abstract_eq(a, &prim);
+            return abstract_eq(vm, a, &prim);
         }
         return false;
     }
@@ -878,9 +897,11 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
         }
     }
     // NUMBER and FASTINT are the same ES type
-    if ((a.is_number() && b.is_fastint()) ||
-        (a.is_fastint() && b.is_number())) {
-        return vm_to_number(a) == vm_to_number(b);
+    if (a.is_number() && b.is_fastint()) {
+        return a.get_number() == (double)b.get_fastint();
+    }
+    if (a.is_fastint() && b.is_number()) {
+        return (double)a.get_fastint() == b.get_number();
     }
     return false;
 }
@@ -1744,8 +1765,8 @@ fn TVal? Vm.run(Vm* vm) {
                     ra.set_undefined();
                 }
             } else {
-                double add_b = vm_to_number(&prim_b);
-                double add_c = vm_to_number(&prim_c);
+                double add_b = vm_to_number(vm,&prim_b);
+                double add_c = vm_to_number(vm,&prim_c);
                 ra.set_number(add_b + add_c);
             }
         }
@@ -1759,8 +1780,8 @@ fn TVal? Vm.run(Vm* vm) {
                     ra.set_number((double)diff);
                 }
             } else {
-                double sub_b = vm_to_number(rb);
-                double sub_c = vm_to_number(rc);
+                double sub_b = vm_to_number(vm,rb);
+                double sub_c = vm_to_number(vm,rc);
                 ra.set_number(sub_b - sub_c);
             }
             break;
@@ -1775,15 +1796,15 @@ fn TVal? Vm.run(Vm* vm) {
                     ra.set_number((double)mul_result);
                 }
             } else {
-                double mul_b = vm_to_number(rb);
-                double mul_c = vm_to_number(rc);
+                double mul_b = vm_to_number(vm,rb);
+                double mul_c = vm_to_number(vm,rc);
                 ra.set_number(mul_b * mul_c);
             }
             break;
 
         case Opcode.DIV: {
-            double div_b = vm_to_number(rb);
-            double div_c = vm_to_number(rc);
+            double div_b = vm_to_number(vm,rb);
+            double div_c = vm_to_number(vm,rc);
             ra.set_number(div_b / div_c);
             break;
         }
@@ -1794,15 +1815,15 @@ fn TVal? Vm.run(Vm* vm) {
                 // Result always fits in FASTINT range
                 ra.set_fastint(mod_result);
             } else {
-                double mod_b = vm_to_number(rb);
-                double mod_c = vm_to_number(rc);
+                double mod_b = vm_to_number(vm,rb);
+                double mod_c = vm_to_number(vm,rc);
                 ra.set_number((mod_b % mod_c));
             }
             break;
 
         case Opcode.EXP: {
-            double exp_b = vm_to_number(rb);
-            double exp_c = vm_to_number(rc);
+            double exp_b = vm_to_number(vm,rb);
+            double exp_c = vm_to_number(vm,rc);
             ra.set_number(math::pow(exp_b, exp_c));
             break;
         }
@@ -1814,7 +1835,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Unary + on FASTINT stays FASTINT
                 ra.set_fastint(rb.get_fastint());
             } else {
-                double unp_b = vm_to_number(rb);
+                double unp_b = vm_to_number(vm,rb);
                 ra.set_number(unp_b);
             }
             break;
@@ -1824,7 +1845,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Unary - on FASTINT stays FASTINT (negation always fits)
                 ra.set_fastint(-rb.get_fastint());
             } else {
-                double unm_b = vm_to_number(rb);
+                double unm_b = vm_to_number(vm,rb);
                 ra.set_number(-unm_b);
             }
             break;
@@ -1832,7 +1853,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BNOT:
             // Bitwise NOT always produces Int32, always fits in FASTINT
         {
-            int bnot_b = toint32(vm_to_number(rb));
+            int bnot_b = toint32(vm_to_number(vm,rb));
             ra.set_fastint((long)(~bnot_b));
             break;
         }
@@ -1858,7 +1879,7 @@ fn TVal? Vm.run(Vm* vm) {
                 ra.set_fastint(ra.get_fastint() + 1L);
             } else {
                 // Slow path: convert to number, increment, store back
-                double d = vm_to_number(ra);
+                double d = vm_to_number(vm,ra);
                 ra.set_number(d + 1.0);
             }
             break;
@@ -1866,7 +1887,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (ra.is_fastint()) {
                 ra.set_fastint(ra.get_fastint() - 1L);
             } else {
-                double d = vm_to_number(ra);
+                double d = vm_to_number(vm,ra);
                 ra.set_number(d - 1.0);
             }
             break;
@@ -1903,7 +1924,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     b.prop_values()[vic.prop_idx].data.value.set_number((double)v);
                                 }
                             } else {
-                                double d = vm_to_number(&old_val);
+                                double d = vm_to_number(vm,&old_val);
                                 b.prop_values()[vic.prop_idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
                             }
                             break;
@@ -1983,7 +2004,7 @@ fn TVal? Vm.run(Vm* vm) {
                             cur.bindings.prop_values()[idx].data.value.set_number((double)v);
                         }
                     } else {
-                        double d = vm_to_number(&old_val);
+                        double d = vm_to_number(vm,&old_val);
                         cur.bindings.prop_values()[idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
                     }
                     found = true;
@@ -2008,7 +2029,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 new_val.set_number((double)v);
                             }
                         } else {
-                            double d = vm_to_number(&v2);
+                            double d = vm_to_number(vm,&v2);
                             new_val.set_number(d + (is_inc ? 1.0 : -1.0));
                         }
                         env::env_put(act.var_env, key, new_val);
@@ -2061,48 +2082,48 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BAND:
             // Bitwise ops always produce Int32, always fit in FASTINT
         {
-            int band_b = toint32(vm_to_number(rb));
-            int band_c = toint32(vm_to_number(rc));
+            int band_b = toint32(vm_to_number(vm,rb));
+            int band_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(band_b & band_c));
             break;
         }
 
         case Opcode.BOR:
         {
-            int bor_b = toint32(vm_to_number(rb));
-            int bor_c = toint32(vm_to_number(rc));
+            int bor_b = toint32(vm_to_number(vm,rb));
+            int bor_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(bor_b | bor_c));
             break;
         }
 
         case Opcode.BXOR:
         {
-            int bxor_b = toint32(vm_to_number(rb));
-            int bxor_c = toint32(vm_to_number(rc));
+            int bxor_b = toint32(vm_to_number(vm,rb));
+            int bxor_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(bxor_b ^ bxor_c));
             break;
         }
 
         case Opcode.SHL:
         {
-            int shl_b = toint32(vm_to_number(rb));
-            int shl_c = toint32(vm_to_number(rc));
+            int shl_b = toint32(vm_to_number(vm,rb));
+            int shl_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             break;
         }
 
         case Opcode.SHR:
         {
-            int shr_b = toint32(vm_to_number(rb));
-            int shr_c = toint32(vm_to_number(rc));
+            int shr_b = toint32(vm_to_number(vm,rb));
+            int shr_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             break;
         }
 
         case Opcode.USHR:
         {
-            uint ushr_b = (uint)toint32(vm_to_number(rb));
-            int  ushr_c = toint32(vm_to_number(rc));
+            uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
+            int  ushr_c = toint32(vm_to_number(vm,rc));
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             break;
         }
@@ -2110,11 +2131,11 @@ fn TVal? Vm.run(Vm* vm) {
         // === COMPARISON ===
 
         case Opcode.EQ:
-            ra.set_boolean(abstract_eq(rb, rc));
+            ra.set_boolean(abstract_eq(vm, rb, rc));
             break;
 
         case Opcode.NEQ:
-            ra.set_boolean(!abstract_eq(rb, rc));
+            ra.set_boolean(!abstract_eq(vm, rb, rc));
             break;
 
         case Opcode.SEQ: {
@@ -2203,7 +2224,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
-                result = vm_to_number(rb) < vm_to_number(rc);
+                result = vm_to_number(vm,rb) < vm_to_number(vm,rc);
             }
             ra.set_boolean(result);
             break;
@@ -2216,7 +2237,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
-                result = vm_to_number(rb) <= vm_to_number(rc);
+                result = vm_to_number(vm,rb) <= vm_to_number(vm,rc);
             }
             ra.set_boolean(result);
             break;
@@ -2229,7 +2250,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
-                result = vm_to_number(rb) > vm_to_number(rc);
+                result = vm_to_number(vm,rb) > vm_to_number(vm,rc);
             }
             ra.set_boolean(result);
             break;
@@ -2242,7 +2263,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
-                result = vm_to_number(rb) >= vm_to_number(rc);
+                result = vm_to_number(vm,rb) >= vm_to_number(vm,rc);
             }
             ra.set_boolean(result);
             break;

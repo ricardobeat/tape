@@ -13173,6 +13173,23 @@ fn HString* ensure_iterator_symbol(Heap* heap) {
     return sym;
 }
 
+/// Ensure the well-known @@toPrimitive symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_toprimitive_symbol(Heap* heap) {
+    if (heap.toprimitive_symbol != null) return heap.toprimitive_symbol;
+    char[] desc = "toPrimitive";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.toprimitive_symbol = existing;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.toprimitive_symbol = sym;
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -18236,6 +18253,17 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             TVal iter_val;
             iter_val.set_string(iter_sym);
             ctor.put_prop(iter_key, iter_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.toPrimitive as a well-known symbol property (non-writable, non-enumerable, non-configurable per ES6 §19.4.2.12)
+    HString* toprim_sym = ensure_toprimitive_symbol(heap);
+    if (toprim_sym != null) {
+        HString* toprim_key = builtin_intern_string(heap, "toPrimitive");
+        if (toprim_key != null) {
+            TVal toprim_val;
+            toprim_val.set_string(toprim_sym);
+            ctor.put_prop(toprim_key, toprim_val, hobject::PROP_FLAGS_NWC);
         }
     }
 

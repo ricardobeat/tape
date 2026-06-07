@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 128 (ToInt32 fix for bitwise operators)
+**Last Updated:** Session 129 (ToPrimitive: vm_to_number + Symbol.toPrimitive)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -101,6 +101,17 @@ Fast path: `(int)d` check for values already in int32 range. Slow path:
 Impact: quick.sh 182→186 (+4 passes: S9.5_A2.1_T2, S9.5_A2.2_T2, S9.5_A2.3_T2,
 S11.4.8_A3_T2). Both nanbox and nonanbox builds pass.
 
+Session 129: ToPrimitive: vm_to_number passes vm + Symbol.toPrimitive (ES6 §7.1.1).
+Fixed critical bug where `vm_to_number` passed `null` for `Vm*` to `to_primitive_value`,
+causing valueOf/toString to never be called on generic objects in arithmetic, bitwise,
+and comparison operators. All 39 call sites updated to pass `Vm*`. Also added
+`Symbol.toPrimitive` support: created well-known symbol via `ensure_toprimitive_symbol()`,
+registered on `Symbol` constructor, cached on `Heap.toprimitive_symbol` with GC rooting.
+`to_primitive_value` now checks `obj[Symbol.toPrimitive]` before falling through to
+valueOf/toString per ES6 §7.1.1. Updated `abstract_eq` to accept `Vm*` and forward it.
+Verified: custom tests for valueOf in arithmetic, Symbol.toPrimitive, and hint passing
+all pass. Both nanbox and nonanbox builds pass. quick.sh: 186/97/56 — no regressions.
+
 ## Per-Phase Status (fresh run, 2026-06-07)
 
 | Phase | Total | Pass | Fail | Skip | Notes |
@@ -176,7 +187,7 @@ Arrow functions, template literals, tagged templates, nested templates.
 Default/rest parameters, spread operator, destructuring (basic).
 for-of (no iterator protocol), classes (core: methods, extends, super,
 new.target, computed props, getters/setters, no private fields).
-Map, Set, WeakMap, WeakSet, Symbol, Promise (no microtask), Generators.
+Map, Set, WeakMap, WeakSet, Symbol (with Symbol.toPrimitive), Promise (no microtask), Generators.
 
 ---
 
@@ -254,6 +265,7 @@ constant for non-writable/enumerable/non-configurable.
 - Private class fields/methods
 - Nested/advanced destructuring patterns
 - Reflect, Proxy
+- Error propagation from nested call_fn (valueOf/toString throws inside to_primitive_value)
 
 ---
 

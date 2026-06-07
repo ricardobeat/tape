@@ -254,6 +254,9 @@ struct Heap {
     // Cached iterator symbol (lazily created, rooted via this field).
     HString*            iterator_symbol;
 
+    // Cached Symbol.toPrimitive (lazily created, rooted via this field).
+    HString*            toprimitive_symbol;
+
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
 
@@ -1465,6 +1468,11 @@ fn void Heap.mark_roots(&self) {
     // Mark the cached iterator symbol (may not be in strs[] or symbol registry)
     if (self.iterator_symbol != null) {
         ((HeapHeader*)self.iterator_symbol).set_reachable();
+    }
+
+    // Mark the cached Symbol.toPrimitive (may not be in strs[] or symbol registry)
+    if (self.toprimitive_symbol != null) {
+        ((HeapHeader*)self.toprimitive_symbol).set_reachable();
     }
 
     // Mark global checkpoint keys
