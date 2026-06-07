@@ -1859,6 +1859,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double sub_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double sub_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(sub_b - sub_c);
@@ -1877,6 +1878,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double mul_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double mul_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(mul_b * mul_c);
@@ -1886,6 +1888,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.DIV: {
             double div_b = vm_to_number(vm,rb);
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             double div_c = vm_to_number(vm,rc);
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_number(div_b / div_c);
@@ -1904,6 +1907,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double mod_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double mod_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number((mod_b % mod_c));
@@ -1913,6 +1917,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.EXP: {
             double exp_b = vm_to_number(vm,rb);
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             double exp_c = vm_to_number(vm,rc);
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_number(math::pow(exp_b, exp_c));
@@ -2188,6 +2193,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             int band_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int band_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(band_b & band_c));
@@ -2198,6 +2204,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             int bor_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int bor_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(bor_b | bor_c));
@@ -2208,6 +2215,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             int bxor_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int bxor_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(bxor_b ^ bxor_c));
@@ -2218,6 +2226,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             int shl_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int shl_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
@@ -2228,6 +2237,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             int shr_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int shr_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
@@ -2238,6 +2248,7 @@ fn TVal? Vm.run(Vm* vm) {
         {
             uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+            if (needs_restart) break;
             int  ushr_c = toint32(vm_to_number(vm,rc));
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
@@ -2344,6 +2355,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double lt_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double lt_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 result = lt_b < lt_c;
@@ -2361,6 +2373,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double le_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double le_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 result = le_b <= le_c;
@@ -2378,6 +2391,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double gt_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double gt_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 result = gt_b > gt_c;
@@ -2395,6 +2409,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 double ge_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
                 double ge_c = vm_to_number(vm,rc);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 result = ge_b >= ge_c;
