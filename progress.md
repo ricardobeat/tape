@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 134 (needs_restart guards in all binary operators)
+**Last Updated:** Session 135 (Date ToPrimitive hint — toString before valueOf)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 134, 2026-06-07)
+## Summary (after Session 135, 2026-06-07)
 
 | Metric | Value |
 |---|---|
@@ -191,6 +191,18 @@ instead of catching the first throw. Pattern: `if (needs_restart) break;` after
 the first `vm_check_to_number_throw` in each binary operator.
 Impact: Phase 0-1 510→511 (+1), Phase 2 910→924 (+14), Phase 6 1050→1060 (+10).
 quick.sh 256→260 (+4). Both nanbox and nonanbox builds pass.
+
+Session 135: Date ToPrimitive hint — toString before valueOf (ES5 §8.12.8).
+Fixed spec compliance bug where `to_primitive_value()` always called valueOf()
+before toString() for ALL objects. Per ES5 §8.12.8, Date objects must use
+"string" hint (toString first, then valueOf), while all other objects use
+"number" hint (valueOf first, then toString). The `+` operator calls
+ToPrimitive with no explicit hint, which defaults differently for Date vs
+other objects. Before the fix, `new Date(0) + new Date(0)` returned `0`
+(numeric addition of epoch values) instead of the concatenated toString
+representations. Added Date class check in `to_primitive_value()` to swap
+the call order for Date objects. quick.sh 260/23/56 — no regressions.
+Both nanbox and nonanbox builds pass.
 
 ## Per-Phase Status (fresh run, 2026-06-07)
 

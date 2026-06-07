@@ -753,25 +753,30 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
         }
         // Generic objects: call valueOf(), then toString()
         // Default hint for ToPrimitive without explicit hint is "Number" (ES5 §9.1)
+        // EXCEPT for Date objects, which use "string" hint (toString first, then valueOf)
         if (vm != null && vm.heap.call_fn != null) {
             Heap* h = vm.heap;
-            HString* valueof_key = intern_string(vm, "valueOf");
-            if (valueof_key != null) {
-                TVal? valueOf_val = obj.get_prop_proto(valueof_key);
-                if (try valueOf_fn = valueOf_val) {
-                    if (valueOf_fn.is_lightfunc() || (valueOf_fn.is_object() && valueOf_fn.get_heapptr() != null && ((HObject*)valueOf_fn.get_heapptr()).is_callable())) {
-                        TVal prim = h.call_fn(vm, valueOf_fn, null, 0, *val);
+            bool is_date = (cls == hobject::ObjClass.DATE);
+            // For Date: toString first, then valueOf. For others: valueOf first, then toString.
+            char[] first_name = is_date ? "toString" : "valueOf";
+            char[] second_name = is_date ? "valueOf" : "toString";
+            HString* first_key = intern_string(vm, first_name);
+            if (first_key != null) {
+                TVal? first_val = obj.get_prop_proto(first_key);
+                if (try first_fn = first_val) {
+                    if (first_fn.is_lightfunc() || (first_fn.is_object() && first_fn.get_heapptr() != null && ((HObject*)first_fn.get_heapptr()).is_callable())) {
+                        TVal prim = h.call_fn(vm, first_fn, null, 0, *val);
                         if (vm_check_call_fn_error(vm)) return *val;
                         if (!prim.is_object()) return prim;
                     }
                 }
             }
-            HString* to_str_key = intern_string(vm, "toString");
-            if (to_str_key != null) {
-                TVal? toString_val = obj.get_prop_proto(to_str_key);
-                if (try toString_fn = toString_val) {
-                    if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
-                        TVal prim = h.call_fn(vm, toString_fn, null, 0, *val);
+            HString* second_key = intern_string(vm, second_name);
+            if (second_key != null) {
+                TVal? second_val = obj.get_prop_proto(second_key);
+                if (try second_fn = second_val) {
+                    if (second_fn.is_lightfunc() || (second_fn.is_object() && second_fn.get_heapptr() != null && ((HObject*)second_fn.get_heapptr()).is_callable())) {
+                        TVal prim = h.call_fn(vm, second_fn, null, 0, *val);
                         if (vm_check_call_fn_error(vm)) return *val;
                         if (!prim.is_object()) return prim;
                     }
