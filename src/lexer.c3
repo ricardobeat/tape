@@ -9,6 +9,7 @@ module duktape::lexer;
 
 import duktape::types;
 import std::math;
+import libc;
 
 // ============================================================================
 // Fault codes
@@ -661,7 +662,8 @@ fn Token? Lexer.scan_number(&self) {
         }
     }
 
-    // Decimal integer part
+    // Decimal: scan digits (integer + optional fraction + optional exponent)
+    // to advance pos, then use strtod for precise parsing.
     bool dec_prev_was_digit = false;
     while (!self.at_end()) {
         c = self.peek_char();
@@ -673,7 +675,6 @@ fn Token? Lexer.scan_number(&self) {
             continue;
         }
         if (!is_digit(c)) break;
-        value = value * 10.0 + (double)(c - '0');
         self.pos++;
         self.col++;
         dec_prev_was_digit = true;
@@ -682,11 +683,10 @@ fn Token? Lexer.scan_number(&self) {
 
     // Fractional part
     if (!self.at_end() && self.peek_char() == '.') {
-        // Ensure it's not ... (ellipsis) - just check next char isn't '.'
+        // Ensure it's not ... (ellipsis)
         if (self.peek_char_at(1) != '.') {
             self.pos++;
             self.col++;
-            double frac = 0.1;
             bool frac_prev_was_digit = false;
             while (!self.at_end()) {
                 c = self.peek_char();
@@ -698,8 +698,6 @@ fn Token? Lexer.scan_number(&self) {
                     continue;
                 }
                 if (!is_digit(c)) break;
-                value = value + (double)(c - '0') * frac;
-                frac *= 0.1;
                 self.pos++;
                 self.col++;
                 frac_prev_was_digit = true;
@@ -712,16 +710,10 @@ fn Token? Lexer.scan_number(&self) {
     if (!self.at_end() && (self.peek_char() == 'e' || self.peek_char() == 'E')) {
         self.pos++;
         self.col++;
-        bool neg_exp = false;
         if (!self.at_end() && (self.peek_char() == '+' || self.peek_char() == '-')) {
-            neg_exp = self.peek_char() == '-';
             self.pos++;
             self.col++;
         }
-        if (self.at_end() || !is_digit(self.peek_char())) {
-            return LEX_ERROR~;
-        }
-        double exp_val = 0.0;
         bool exp_prev_was_digit = false;
         while (!self.at_end()) {
             c = self.peek_char();
@@ -733,14 +725,26 @@ fn Token? Lexer.scan_number(&self) {
                 continue;
             }
             if (!is_digit(c)) break;
-            exp_val = exp_val * 10.0 + (double)(c - '0');
             self.pos++;
             self.col++;
             exp_prev_was_digit = true;
         }
         if (!exp_prev_was_digit) return LEX_ERROR~;
-        if (neg_exp) exp_val = -exp_val;
-        value = value * math::pow(10.0, exp_val);
+    }
+
+    // Use strtod for precise parsing (handles subnormals, avoids frac*=0.1 rounding)
+    {
+        uint len = self.pos - start_pos;
+        char[64] buf;
+        if (len < 64) {
+            libc::memcpy(&buf, &self.source[start_pos], len);
+            buf[len] = 0;
+            char* endptr;
+            value = libc::strtod(&buf[0], &endptr);
+        } else {
+            // Fallback: should never happen for valid JS number literals
+            value = 0.0;
+        }
     }
 
     Token tok = make_token(TokenType.NUMBER, start_line, start_col);
