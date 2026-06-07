@@ -1895,8 +1895,12 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.MOD:
             if (rb.is_fastint() && rc.is_fastint() && rc.get_fastint() != 0) {
                 long mod_result = rb.get_fastint() % rc.get_fastint();
-                // Result always fits in FASTINT range
-                ra.set_fastint(mod_result);
+                if (mod_result == 0 && rb.get_fastint() < 0) {
+                    // -1 % 1 → -0: sign of zero matches dividend per ES5 §11.5.3
+                    ra.set_number(-0.0);
+                } else {
+                    ra.set_fastint(mod_result);
+                }
             } else {
                 double mod_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;

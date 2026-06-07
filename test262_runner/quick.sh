@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/../scripts/test262_skip.cfg"
 
 make_harness() {
   cat "$SCRIPT_DIR/../test262/harness/sta.js"
+  cat "$SCRIPT_DIR/../test262/harness/assert.js"
   echo 'var __test262_pass = 0, __test262_fail = 0;'
   echo 'Test262Error = function(m) { __test262_fail++; print("FAIL: " + (m || "")); };'
   echo 'Test262Error.prototype.toString = function() { return "Test262Error"; };'
