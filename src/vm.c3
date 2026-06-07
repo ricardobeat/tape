@@ -148,6 +148,11 @@ struct Vm {
 
     // Error state
     bool has_error;
+
+    // Pending throw from ToPrimitive/ToNumber (set by to_primitive_value,
+    // checked by opcode handlers that call vm_to_number)
+    TVal throw_value;
+    bool throw_pending;
 }
 
 // ============================================================================
@@ -650,8 +655,41 @@ fn double hstring_to_number(HString* hstr) {
 }
 
 /// Extract [[PrimitiveValue]] from Boolean/Number/String wrapper objects.
+/// After calling vm_to_number, check and throw if ToPrimitive failed.
+/// Returns false if a throw was initiated (caller should break out of handler).
+fn bool vm_check_to_number_throw(Vm* vm, Activation* act, Instruction** curr_pc, bool* needs_restart) {
+    if (vm.throw_pending) {
+        vm.throw_pending = false;
+        return vm_throw_value(vm, vm.throw_value, act, curr_pc, needs_restart);
+    }
+    return true;
+}
+
+/// Helper: create a TypeError and set vm.throw_pending for deferred throw.
+/// The opcode handler must check vm.throw_pending and call vm_throw_value.
+fn void vm_set_toprimitive_error(Vm* vm) {
+    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = vm.heap.type_err_proto;
+        HString* msg_str = intern_string(vm, "Cannot convert object to primitive value");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = intern_string(vm, "message");
+            if (msg_key != null) {
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        TVal err_val;
+        err_val.set_object(err);
+        vm.heap.tval_copy_ref(&vm.throw_value, &err_val);
+    }
+    vm.throw_pending = true;
+}
+
 /// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
 /// Calls Symbol.toPrimitive first (ES6 §7.1.1), then valueOf/toString.
+/// Sets vm.throw_pending if both valueOf and toString return non-primitives.
 fn TVal to_primitive_value(Vm* vm, TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
@@ -718,6 +756,8 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                     }
                 }
             }
+            // ES5 §8.12.8 step 7: neither valueOf nor toString returned a primitive
+            vm_set_toprimitive_error(vm);
         }
     }
     return *val;
@@ -1265,6 +1305,7 @@ fn Vm*? vm_create(Heap* heap) {
 
     vm.activation_count = 0;
     vm.has_error = false;
+    vm.throw_pending = false;
     vm.current_func = null;
     vm.curr_pc = null;
 
@@ -1302,6 +1343,7 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     vm.valstack_bottom = vm.valstack;
     vm.activation_count = 0;
     vm.has_error        = false;
+    vm.throw_pending    = false;
     vm.current_func     = null;
     vm.curr_pc          = null;
     vm.return_val.set_undefined();
@@ -1766,7 +1808,9 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double add_b = vm_to_number(vm,&prim_b);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 double add_c = vm_to_number(vm,&prim_c);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(add_b + add_c);
             }
         }
@@ -1781,7 +1825,9 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double sub_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 double sub_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(sub_b - sub_c);
             }
             break;
@@ -1797,14 +1843,18 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double mul_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 double mul_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(mul_b * mul_c);
             }
             break;
 
         case Opcode.DIV: {
             double div_b = vm_to_number(vm,rb);
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             double div_c = vm_to_number(vm,rc);
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_number(div_b / div_c);
             break;
         }
@@ -1816,14 +1866,18 @@ fn TVal? Vm.run(Vm* vm) {
                 ra.set_fastint(mod_result);
             } else {
                 double mod_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 double mod_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number((mod_b % mod_c));
             }
             break;
 
         case Opcode.EXP: {
             double exp_b = vm_to_number(vm,rb);
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             double exp_c = vm_to_number(vm,rc);
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_number(math::pow(exp_b, exp_c));
             break;
         }
@@ -1836,16 +1890,23 @@ fn TVal? Vm.run(Vm* vm) {
                 ra.set_fastint(rb.get_fastint());
             } else {
                 double unp_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(unp_b);
             }
             break;
 
         case Opcode.UNM:
             if (rb.is_fastint()) {
-                // Unary - on FASTINT stays FASTINT (negation always fits)
-                ra.set_fastint(-rb.get_fastint());
+                long unm_val = rb.get_fastint();
+                if (unm_val == 0) {
+                    // -0 must be NUMBER, not FASTINT (integers have no -0)
+                    ra.set_number(-0.0);
+                } else {
+                    ra.set_fastint(-unm_val);
+                }
             } else {
                 double unm_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(-unm_b);
             }
             break;
@@ -1854,6 +1915,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Bitwise NOT always produces Int32, always fits in FASTINT
         {
             int bnot_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(~bnot_b));
             break;
         }
@@ -1880,6 +1942,7 @@ fn TVal? Vm.run(Vm* vm) {
             } else {
                 // Slow path: convert to number, increment, store back
                 double d = vm_to_number(vm,ra);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(d + 1.0);
             }
             break;
@@ -1888,6 +1951,7 @@ fn TVal? Vm.run(Vm* vm) {
                 ra.set_fastint(ra.get_fastint() - 1L);
             } else {
                 double d = vm_to_number(vm,ra);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 ra.set_number(d - 1.0);
             }
             break;
@@ -2083,7 +2147,9 @@ fn TVal? Vm.run(Vm* vm) {
             // Bitwise ops always produce Int32, always fit in FASTINT
         {
             int band_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int band_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(band_b & band_c));
             break;
         }
@@ -2091,7 +2157,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BOR:
         {
             int bor_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int bor_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(bor_b | bor_c));
             break;
         }
@@ -2099,7 +2167,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BXOR:
         {
             int bxor_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int bxor_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(bxor_b ^ bxor_c));
             break;
         }
@@ -2107,7 +2177,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.SHL:
         {
             int shl_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int shl_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             break;
         }
@@ -2115,7 +2187,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.SHR:
         {
             int shr_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int shr_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             break;
         }
@@ -2123,7 +2197,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.USHR:
         {
             uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             int  ushr_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             break;
         }
@@ -2224,7 +2300,11 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
-                result = vm_to_number(vm,rb) < vm_to_number(vm,rc);
+                double lt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                double lt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                result = lt_b < lt_c;
             }
             ra.set_boolean(result);
             break;
@@ -2237,7 +2317,11 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
-                result = vm_to_number(vm,rb) <= vm_to_number(vm,rc);
+                double le_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                double le_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                result = le_b <= le_c;
             }
             ra.set_boolean(result);
             break;
@@ -2250,7 +2334,11 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
-                result = vm_to_number(vm,rb) > vm_to_number(vm,rc);
+                double gt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                double gt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                result = gt_b > gt_c;
             }
             ra.set_boolean(result);
             break;
@@ -2263,7 +2351,11 @@ fn TVal? Vm.run(Vm* vm) {
             } else if (rb.is_string() && rc.is_string()) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
-                result = vm_to_number(vm,rb) >= vm_to_number(vm,rc);
+                double ge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                double ge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                result = ge_b >= ge_c;
             }
             ra.set_boolean(result);
             break;
