@@ -1854,9 +1854,11 @@ fn void? CompilerContext.try_statement(&self) {
 
             ushort catch_var = self.declare_var(catch_param.str_value, VAR);
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
-            // For global scope, also PUTVAR the exception into the env so that
-            // subsequent GETVAR for the catch variable finds it.
-            if (self.is_global) {
+            // PUTVAR the exception into the env so that subsequent
+            // GETVAR/TYPEOFIDENT for the catch variable finds it.
+            // Required in ALL scopes (not just global) because the VM
+            // resolves catch variables via environment lookup, not register.
+            {
                 uint name_idx = self.add_string_constant(catch_param.str_value);
                 self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
             }
