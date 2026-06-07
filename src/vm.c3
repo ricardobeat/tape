@@ -249,8 +249,15 @@ fn double vm_to_number(Vm* vm, TVal* val) {
         case BOOLEAN: return val.get_boolean() ? 1.0 : 0.0;
         case UNDEFINED: return double::nan;
         case NULL_VAL:  return 0.0;
-        case STRING:
-            return builtins::builtin_string_to_number((HString*)val.get_heapptr());
+        case STRING: {
+            HString* hstr = (HString*)val.get_heapptr();
+            // ES6 §7.1.3: ToNumber(Symbol) throws TypeError
+            if (hstr != null && hstr.is_symbol()) {
+                vm_set_type_error(vm, "Cannot convert a Symbol value to a number");
+                return double::nan;
+            }
+            return builtins::builtin_string_to_number(hstr);
+        }
         case OBJECT: {
             TVal prim = to_primitive_value(vm, val);
             if (prim.get_tag() == OBJECT) return double::nan;
@@ -536,8 +543,15 @@ fn HString*? vm_fastint_to_string(Vm* vm, long val) {
 fn HString*? vm_to_string(Vm* vm, TVal* val) {
     Heap* h = vm.heap;
     switch (val.get_tag()) {
-        case STRING:
-            return (HString*)val.get_heapptr();
+        case STRING: {
+            HString* hstr = (HString*)val.get_heapptr();
+            // ES6 §7.1.12: ToString(Symbol) throws TypeError
+            if (hstr != null && hstr.is_symbol()) {
+                vm_set_type_error(vm, "Cannot convert a Symbol value to a string");
+                return null;
+            }
+            return hstr;
+        }
         case NUMBER:
             return vm_number_to_string(vm, val.get_number());
         case FASTINT:
@@ -688,6 +702,27 @@ fn void vm_set_toprimitive_error(Vm* vm) {
     vm.throw_pending = true;
 }
 
+/// Helper: create a TypeError with a custom message and set vm.throw_pending.
+fn void vm_set_type_error(Vm* vm, char[] msg) {
+    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = vm.heap.type_err_proto;
+        HString* msg_str = intern_string(vm, msg);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = intern_string(vm, "message");
+            if (msg_key != null) {
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        TVal err_val;
+        err_val.set_object(err);
+        vm.heap.tval_copy_ref(&vm.throw_value, &err_val);
+    }
+    vm.throw_pending = true;
+}
+
 /// Check if call_fn caused an unhandled throw inside the called function.
 /// When call_fn invokes a compiled JS function that throws and no catcher
 /// is found, vm.has_error is set and vm.return_val contains the thrown error.
@@ -747,7 +782,10 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                     TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
                     if (vm_check_call_fn_error(vm)) return *val;
                     if (!prim.is_object()) return prim;
-                    // Object result from Symbol.toPrimitive — fall through to valueOf/toString
+                    // ES6 §7.1.1 step 6.d: result is Object → TypeError
+                    // Signal caller via throw_pending (checked after return)
+                    vm_set_toprimitive_error(vm);
+                    return *val;
                 }
             }
         }
@@ -5488,6 +5526,7 @@ fn TVal? Vm.run(Vm* vm) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
                     func_obj.flags.constructable = template.is_constructable();
+                    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
                     func_obj.extra.func.comp_func = template;
                     func_obj.extra.func.var_env = act.var_env;
                     func_obj.extra.func.lex_env = act.lex_env;
