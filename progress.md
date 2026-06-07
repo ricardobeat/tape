@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 127 (Array iteration dispatch table fix)
+**Last Updated:** Session 128 (ToInt32 fix for bitwise operators)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -91,6 +91,15 @@ elements in a separate dense array part via `get_array_idx`. Fixed by adding
 an ARRAY fast-path that reads directly from dense storage. Impact: Phase 3
 +335 (1702→2037), Phase 5 +337 (2172→2509), Phase 6 +333 (694→1027).
 Both nanbox and nonanbox builds pass. quick.sh: 182/101/56 — no regressions.
+
+Session 128: ToInt32 fix for all 8 bitwise operators (ES5 §9.5).
+Fixed undefined behavior in BNOT, BAND, BOR, BXOR, SHL, SHR, USHR operators.
+All used bare `(int)vm_to_number()` which is UB for out-of-range doubles.
+Added `toint32()` helper using `math::floor` + modular arithmetic per ES5 §9.5.
+Fast path: `(int)d` check for values already in int32 range. Slow path:
+`floor(d / 2^32) * 2^32` for modular reduction. Handles NaN/Inf → 0.
+Impact: quick.sh 182→186 (+4 passes: S9.5_A2.1_T2, S9.5_A2.2_T2, S9.5_A2.3_T2,
+S11.4.8_A3_T2). Both nanbox and nonanbox builds pass.
 
 ## Per-Phase Status (fresh run, 2026-06-07)
 

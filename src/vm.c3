@@ -255,6 +255,22 @@ fn double vm_to_number(TVal* val) {
     }
 }
 
+/// ECMAScript ToInt32 — ES5 §9.5
+/// Converts a double to int32 using modular arithmetic (mod 2^32).
+/// Handles NaN → 0, Infinity → 0, and large values via fmod.
+fn int toint32(double d) @inline {
+    // Fast path: value already fits in int32
+    int i = (int)d;
+    if ((double)i == d) return i;
+    // Slow path: ES5 §9.5 ToInt32 via floor-mod
+    double q = d * (1.0 / 4294967296.0);  // d / 2^32
+    q = math::floor(q);                     // floor(d / 2^32)
+    double r = d - q * 4294967296.0;        // d mod 2^32 (always [0, 2^32))
+    // Values [0, 2^31) stay as-is, [2^31, 2^32) wrap to signed
+    if (r >= 2147483648.0) r -= 4294967296.0;
+    return (int)r;
+}
+
 /// ECMAScript truthiness.
 macro bool is_truthy(TVal* val) {
 $if types::USE_NANBOX:
@@ -1816,7 +1832,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BNOT:
             // Bitwise NOT always produces Int32, always fits in FASTINT
         {
-            int bnot_b = (int)vm_to_number(rb);
+            int bnot_b = toint32(vm_to_number(rb));
             ra.set_fastint((long)(~bnot_b));
             break;
         }
@@ -2045,48 +2061,48 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BAND:
             // Bitwise ops always produce Int32, always fit in FASTINT
         {
-            int band_b = (int)vm_to_number(rb);
-            int band_c = (int)vm_to_number(rc);
+            int band_b = toint32(vm_to_number(rb));
+            int band_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(band_b & band_c));
             break;
         }
 
         case Opcode.BOR:
         {
-            int bor_b = (int)vm_to_number(rb);
-            int bor_c = (int)vm_to_number(rc);
+            int bor_b = toint32(vm_to_number(rb));
+            int bor_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(bor_b | bor_c));
             break;
         }
 
         case Opcode.BXOR:
         {
-            int bxor_b = (int)vm_to_number(rb);
-            int bxor_c = (int)vm_to_number(rc);
+            int bxor_b = toint32(vm_to_number(rb));
+            int bxor_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(bxor_b ^ bxor_c));
             break;
         }
 
         case Opcode.SHL:
         {
-            int shl_b = (int)vm_to_number(rb);
-            int shl_c = (int)vm_to_number(rc);
+            int shl_b = toint32(vm_to_number(rb));
+            int shl_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             break;
         }
 
         case Opcode.SHR:
         {
-            int shr_b = (int)vm_to_number(rb);
-            int shr_c = (int)vm_to_number(rc);
+            int shr_b = toint32(vm_to_number(rb));
+            int shr_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             break;
         }
 
         case Opcode.USHR:
         {
-            uint ushr_b = (uint)(int)vm_to_number(rb);
-            int  ushr_c = (int)vm_to_number(rc);
+            uint ushr_b = (uint)toint32(vm_to_number(rb));
+            int  ushr_c = toint32(vm_to_number(rc));
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             break;
         }
