@@ -626,7 +626,7 @@ fn bool  HeapHeader.is_buffer(&self) { return self.flags.htype == HType.BUFFER; 
 
 /// Increments the reference count of this heap object.
 /// Safe to call on null pointers (no-op).
-fn void HeapHeader.incref(&self) {
+fn void HeapHeader.incref(&self) @inline {
     self.refcount++;
 }
 

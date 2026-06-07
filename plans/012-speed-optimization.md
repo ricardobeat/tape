@@ -270,6 +270,24 @@ Added `track_heap_store()` helper called after every `tval_copy_ref(ra, ...)` an
 Replaced remaining `.bits = 0` zero loops in CALL fast paths with `libc::memset`.
 quick.sh: 182/101/56 — +2 passes vs baseline 180/103/56.
 
+### Session 122: @inline refcount hot path + IC non-heap fast path (2026-06-07)
+
+| # | Fix | Status |
+|---|-----|--------|
+| — | @inline on HeapHeader.incref, Heap.decref_tval, Heap.tval_copy_ref | ✅ Done |
+| — | Non-heap fast path in GETPROP IC + GETVAR IC | ✅ Done |
+| — | Unified own-property/proto IC branches via ternary | ✅ Done |
+
+`@inline` on `tval_copy_ref`/`decref_tval` eliminates function-call overhead in every
+register-write path. For fastint/number values (the common case in arithmetic loops),
+the inlined compiler can now see that `is_object() || is_buffer()` is false and eliminate
+the entire decref/incref body. GETPROP and GETVAR IC fast paths additionally bypass
+`tval_copy_ref` entirely when dest is not a heap pointer: raw copy + conditional incref.
+recursion 775→394ms (2.0×, now faster than Duktape 467ms).
+recursion_deep 3432→1635ms (2.1×, faster than Duktape 1929ms).
+function_call 106→64ms (1.7×).
+quick.sh: 182/101/56 — no regressions.
+
 ## Validation
 
 ```bash

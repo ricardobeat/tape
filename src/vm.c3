@@ -2239,19 +2239,22 @@ fn TVal? Vm.run(Vm* vm) {
                     void* lookup_key = null;
                     if (rc.is_string()) lookup_key = rc.get_heapptr();
                     if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
-                        if (ic.proto == null) {
-                            if (ic.cached_prop_alloc == hobj.prop_alloc) {
-                                vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
-                                track_heap_store(act, ra, (uint)insn.a);
-                                break;
+                        HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
+                        if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
+                            // Fast path: when dest is not a heap pointer (common for
+                            // fastint/number results), skip decref and do a raw copy.
+                            TVal ic_val = ic.prop_value_ptr.data.value;
+                            if (!(ra.is_object() || ra.is_buffer())) {
+                                *ra = ic_val;
+                                if (ic_val.is_object() || ic_val.is_buffer()) {
+                                    void* ptr = ic_val.get_heapptr();
+                                    if (ptr != null) ((HeapHeader*)ptr).incref();
+                                }
+                            } else {
+                                vm.heap.tval_copy_ref(ra, &ic_val);
                             }
-                        } else {
-                            HObject* proto = (HObject*)ic.proto;
-                            if (ic.cached_prop_alloc == proto.prop_alloc) {
-                                vm.heap.tval_copy_ref(ra, &ic.prop_value_ptr.data.value);
-                                track_heap_store(act, ra, (uint)insn.a);
-                                break;
-                            }
+                            track_heap_store(act, ra, (uint)insn.a);
+                            break;
                         }
                     }
                 }
@@ -4728,7 +4731,15 @@ fn TVal? Vm.run(Vm* vm) {
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
                                 TVal v = b.prop_values()[vic.prop_idx].data.value;
                                 if (!env::is_tdz_sentinel(&v)) {
-                                    vm.heap.tval_copy_ref(ra, &v);
+                                    if (!(ra.is_object() || ra.is_buffer())) {
+                                        *ra = v;
+                                        if (v.is_object() || v.is_buffer()) {
+                                            void* ptr = v.get_heapptr();
+                                            if (ptr != null) ((HeapHeader*)ptr).incref();
+                                        }
+                                    } else {
+                                        vm.heap.tval_copy_ref(ra, &v);
+                                    }
                                     track_heap_store(act, ra, (uint)insn.a);
                                     break;
                                 }

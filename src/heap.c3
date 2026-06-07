@@ -1102,7 +1102,7 @@ fn void Heap.decref(&self, HeapHeader* hdr) {
  * ignored.  Typically called BEFORE overwriting a VM register or TVal
  * slot that holds a heap pointer.
  */
-fn void Heap.decref_tval(&self, TVal* tv) {
+fn void Heap.decref_tval(&self, TVal* tv) @inline {
     if (tv.is_object() || tv.is_buffer()) {
         void* ptr = tv.get_heapptr();
         if (ptr != null) {
@@ -1116,7 +1116,7 @@ fn void Heap.decref_tval(&self, TVal* tv) {
 /// - Copies the bits verbatim
 /// - Increments the new src reference if it holds a heap object or buffer
 /// - Safe when dst == src (no-op in that case)
-fn void Heap.tval_copy_ref(&self, TVal* dst, TVal* src) {
+fn void Heap.tval_copy_ref(&self, TVal* dst, TVal* src) @inline {
     if (dst != src) {
         self.decref_tval(dst);
         *dst = *src;
