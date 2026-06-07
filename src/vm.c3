@@ -1849,6 +1849,191 @@ fn TVal? Vm.run(Vm* vm) {
             }
             break;
 
+        // === VARIABLE ARITHMETIC FUSION ===
+        // Fused GETVAR + INC/PUTVAR.  Reads a variable by name, increments
+        // or decrements it, and writes it back in a single dispatch.
+        // Hot for loop counters: `for (i = 0; i < N; i++) { ... }`
+        case Opcode.INC_VAR:
+        case Opcode.DEC_VAR: {
+            uint bc = insn.get_bc();
+            if (bc >= vm.current_func.const_count) break;
+            TVal name_val = constants[bc];
+            if (!name_val.is_string()) break;
+            void* key = name_val.get_heapptr();
+            bool is_inc = (op == Opcode.INC_VAR);
+
+            // --- Variable IC fast path (read + op + write) ---
+            if (var_ic_base != null) {
+                uint pc_off = (uint)(curr_pc - 1 - code_base);
+                hobject::VarICEntry* vic = var_ic_base + pc_off;
+                if (vic.env != null && vic.key == key) {
+                    HObject* b = (HObject*)vic.bindings;
+                    if (b.shape_id == vic.shape_id
+                        && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                        TVal old_val = b.prop_values()[vic.prop_idx].data.value;
+                        if (!env::is_tdz_sentinel(&old_val)
+                            && b.prop_values()[vic.prop_idx].flags.writable) {
+                            if (old_val.is_fastint()) {
+                                long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
+                                if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
+                                    b.prop_values()[vic.prop_idx].data.value.set_fastint(v);
+                                } else {
+                                    b.prop_values()[vic.prop_idx].data.value.set_number((double)v);
+                                }
+                            } else {
+                                double d = vm_to_number(&old_val);
+                                b.prop_values()[vic.prop_idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
+                            }
+                            break;
+                        }
+                        vic.env = null;
+                    } else {
+                        vic.env = null;
+                    }
+                }
+            }
+
+            // --- Slow path: full env walk + op + write ---
+            bool found = false;
+            EnvRecord* ic_env = null;
+            int ic_prop_idx = -1;
+            EnvRecord* cur = act.lex_env;
+            while (cur != null) {
+                int idx = cur.bindings.find_prop_idx(key);
+                if (idx >= 0) {
+                    TVal old_val = cur.bindings.prop_values()[idx].data.value;
+                    if (env::is_tdz_sentinel(&old_val)) {
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.ref_err_proto;
+                            char[types::ERROR_MSG_BUF] ebuf;
+                            int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
+                                                      "%s is not defined", name_hstr.get_cstr());
+                            if (elen > 0 && elen < types::ERROR_MSG_BUF) {
+                                HString* emsg = intern_string(vm, ebuf[:elen]);
+                                TVal emsg_val;
+                                emsg_val.set_string(emsg);
+                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+                    if (!cur.bindings.prop_values()[idx].flags.writable) {
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            char[types::ERROR_MSG_BUF] ebuf;
+                            int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
+                                                      "Assignment to constant variable '%s'",
+                                                      name_hstr.get_cstr());
+                            if (elen > 0 && elen < types::ERROR_MSG_BUF) {
+                                HString* emsg = intern_string(vm, ebuf[:elen]);
+                                TVal emsg_val;
+                                emsg_val.set_string(emsg);
+                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+                    if (old_val.is_fastint()) {
+                        long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
+                        if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
+                            cur.bindings.prop_values()[idx].data.value.set_fastint(v);
+                        } else {
+                            cur.bindings.prop_values()[idx].data.value.set_number((double)v);
+                        }
+                    } else {
+                        double d = vm_to_number(&old_val);
+                        cur.bindings.prop_values()[idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
+                    }
+                    found = true;
+                    ic_env = cur;
+                    ic_prop_idx = idx;
+                    break;
+                }
+                cur = cur.parent;
+            }
+
+            if (!found) {
+                // var_env fallback (with-blocks)
+                if (act.lex_env != act.var_env) {
+                    TVal? result = env::env_get(act.var_env, key);
+                    if (try v2 = result) {
+                        TVal new_val;
+                        if (v2.is_fastint()) {
+                            long v = v2.get_fastint() + (is_inc ? 1L : -1L);
+                            if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
+                                new_val.set_fastint(v);
+                            } else {
+                                new_val.set_number((double)v);
+                            }
+                        } else {
+                            double d = vm_to_number(&v2);
+                            new_val.set_number(d + (is_inc ? 1.0 : -1.0));
+                        }
+                        env::env_put(act.var_env, key, new_val);
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    // ReferenceError
+                    HString* name_hstr = (HString*)key;
+                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = vm.heap.ref_err_proto;
+                        char[types::ERROR_MSG_BUF] ebuf;
+                        int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
+                                                  "%s is not defined", name_hstr.get_cstr());
+                        if (elen > 0 && elen < types::ERROR_MSG_BUF) {
+                            HString* emsg = intern_string(vm, ebuf[:elen]);
+                            TVal emsg_val;
+                            emsg_val.set_string(emsg);
+                            HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                        TVal err_val;
+                        err_val.set_object(err);
+                        if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                }
+            }
+
+            // Populate IC for next time
+            if (found && var_ic_base != null && ic_env != null) {
+                uint pc_off = (uint)(curr_pc - 1 - code_base);
+                hobject::VarICEntry* vic = var_ic_base + pc_off;
+                vic.env = ic_env;
+                vic.bindings = ic_env.bindings;
+                vic.shape_id = ic_env.bindings.shape_id;
+                vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                vic.prop_idx = (ushort)ic_prop_idx;
+                vic.key = key;
+            }
+            break;
+        }
+
         // === BITWISE ===
 
         case Opcode.BAND:

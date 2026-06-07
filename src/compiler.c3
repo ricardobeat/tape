@@ -356,6 +356,33 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     CompiledFunction* func = (CompiledFunction*)raw;
     func.flags.htype = HType.OBJECT;
 
+    // --- Peephole: fuse GETVAR + INC/DEC + PUTVAR into INC_VAR/DEC_VAR ---
+    // Pattern: GETVAR r, name  /  INC r  /  PUTVAR r, name
+    //   → NOP  /  INC_VAR name  /  NOP
+    // Saves 2 dispatches per loop iteration on the hot counter path.
+    if (self.code_count >= 3) {
+        for (uint i = 0; i + 2 < self.code_count; i++) {
+            Opcode op0 = self.code[i].op;
+            Opcode op1 = self.code[i + 1].op;
+            Opcode op2 = self.code[i + 2].op;
+            if (op0 == Opcode.GETVAR
+                && (op1 == Opcode.INC || op1 == Opcode.DEC)
+                && op2 == Opcode.PUTVAR) {
+                uint reg_a = self.code[i].a;
+                if (self.code[i + 1].a == reg_a && self.code[i + 2].a == reg_a) {
+                    uint name0 = self.code[i].get_bc();
+                    uint name2 = self.code[i + 2].get_bc();
+                    if (name0 == name2 && name0 < self.const_count) {
+                        Opcode fused = (op1 == Opcode.INC) ? Opcode.INC_VAR : Opcode.DEC_VAR;
+                        self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                        self.code[i + 1] = bytecode::make_a_bc(fused, 0, name0);
+                        self.code[i + 2] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    }
+                }
+            }
+        }
+    }
+
     // Copy instruction stream
     if (self.code_count > 0) {
         usz code_bytes = (usz)self.code_count * Instruction::size;
@@ -3149,17 +3176,30 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             double nv = num_tok2.num_value;
             if (nv == 1.0 && compound_op == Opcode.ADD) {
                 self.advance()!;  // consume the literal
-                self.emit_abc(Opcode.INC, (uint)left, 0, 0);
-                if (lhs_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                if (lhs_was_getvar && self.code_count > 0
+                    && self.code[self.code_count - 1].op == Opcode.GETVAR) {
+                    // Replace the GETVAR with INC_VAR: 1 instruction instead of 3
+                    uint name_idx = self.code[self.code_count - 1].get_bc();
+                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, 0, name_idx);
+                } else {
+                    self.emit_abc(Opcode.INC, (uint)left, 0, 0);
+                    if (lhs_was_getvar) {
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                    }
                 }
                 return left;
             }
             if (nv == 1.0 && compound_op == Opcode.SUB) {
                 self.advance()!;
-                self.emit_abc(Opcode.DEC, (uint)left, 0, 0);
-                if (lhs_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                if (lhs_was_getvar && self.code_count > 0
+                    && self.code[self.code_count - 1].op == Opcode.GETVAR) {
+                    uint name_idx = self.code[self.code_count - 1].get_bc();
+                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, 0, name_idx);
+                } else {
+                    self.emit_abc(Opcode.DEC, (uint)left, 0, 0);
+                    if (lhs_was_getvar) {
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                    }
                 }
                 return left;
             }
@@ -3568,11 +3608,16 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort op_inc = self.postfix_expr()!;
             bool inc_was_getvar = self.last_was_getvar;
             uint inc_getvar_name_idx = self.last_getvar_name_idx;
-            // Fuse LDINT 1 + ADD into a single INC opcode
-            self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
-            // Write back if the operand was a global variable
-            if (inc_was_getvar) {
-                self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
+            if (inc_was_getvar && self.code_count > 0
+                && self.code[self.code_count - 1].op == Opcode.GETVAR) {
+                // Replace GETVAR with INC_VAR: 1 dispatch instead of 3
+                uint name_idx = self.code[self.code_count - 1].get_bc();
+                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, 0, name_idx);
+            } else {
+                self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
+                if (inc_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
+                }
             }
             return op_inc;
 
@@ -3582,11 +3627,15 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort op_dec = self.postfix_expr()!;
             bool dec_was_getvar = self.last_was_getvar;
             uint dec_getvar_name_idx = self.last_getvar_name_idx;
-            // Fuse LDINT 1 + SUB into a single DEC opcode
-            self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
-            // Write back if the operand was a global variable
-            if (dec_was_getvar) {
-                self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
+            if (dec_was_getvar && self.code_count > 0
+                && self.code[self.code_count - 1].op == Opcode.GETVAR) {
+                uint name_idx = self.code[self.code_count - 1].get_bc();
+                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, 0, name_idx);
+            } else {
+                self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
+                if (dec_was_getvar) {
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
+                }
             }
             return op_dec;
 
@@ -3613,12 +3662,12 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        // Increment the operand (fused LDINT 1 + ADD)
-        self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
-
-        // Write back if the operand was a global variable
         if (lhs_was_getvar) {
-            self.emit_a_bc(Opcode.PUTVAR, (uint)operand, lhs_getvar_name_idx);
+            // Replace INC + PUTVAR with INC_VAR + NOP
+            self.emit_a_bc(Opcode.INC_VAR, 0, lhs_getvar_name_idx);
+            self.emit_abc(Opcode.NOP, 0, 0, 0);
+        } else {
+            self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
         }
 
         return saved;
@@ -3630,12 +3679,11 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        // Decrement the operand (fused LDINT 1 + SUB)
-        self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
-
-        // Write back if the operand was a global variable
         if (lhs_was_getvar) {
-            self.emit_a_bc(Opcode.PUTVAR, (uint)operand, lhs_getvar_name_idx);
+            self.emit_a_bc(Opcode.DEC_VAR, 0, lhs_getvar_name_idx);
+            self.emit_abc(Opcode.NOP, 0, 0, 0);
+        } else {
+            self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
         }
 
         return saved;

@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 122 (@inline refcount + IC non-heap fast path)
+**Last Updated:** Session 123 (INC_VAR/DEC_VAR fused variable-arithmetic opcodes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 117, 2026-06-05)
@@ -20,10 +20,10 @@ by `python3 scripts/run_test262.py --phase N`. Update after every session.
 ## Benchmark Summary
 
 See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
-array 0.7x, loop 0.4x, object 0.5x, property_lookup 0.4x, string 0.8x, arithmetic 0.4x.
-recursion 0.8x (faster than Duktape!), function_call 0.5x.
-Remaining: ic_monomorphic 1.2x, valstack_copy 3.0x.
-QuickJS is 2.6-5.3x faster on most benchmarks (down from 6-10x).
+array 0.7x, loop 0.3x, object 0.6x, property_lookup 0.4x, string 0.6x, arithmetic 0.4x.
+recursion 0.9x (faster than Duktape!), function_call 0.5x.
+Remaining: ic_monomorphic 1.3x, valstack_copy 3.2x.
+QuickJS is 2.5-5.0x faster on most benchmarks (down from 6-10x).
 
 Session 114 optimizations (function-pointer dispatch, needs_env skip, memset) are
 structurally correct but measurable gains were masked by system load in benchmarks.
@@ -48,6 +48,12 @@ recursion 775→394ms (2.0× speedup, now faster than Duktape 467ms).
 recursion_deep 3432→1635ms (2.1×, faster than Duktape 1929ms).
 function_call 106→64ms (1.7×). arithmetic 138→142ms (noise).
 quick.sh: 182/101/56 — no regressions.
+Session 123: INC_VAR/DEC_VAR fused variable-arithmetic opcodes. Added two new
+opcodes that combine GETVAR + INC/DEC + PUTVAR into a single dispatch. Compiler
+emits INC_VAR/DEC_VAR directly for `+= 1`, `-= 1`, prefix `++i`/`--i`, and
+postfix `i++`/`i--` patterns. Peephole pass also fuses any remaining GETVAR+INC+
+PUTVAR triples. VarIC used for both read and write on the IC fast path.
+bench_loop 55→45ms (1.22×, -18%). quick.sh: 182/101/56 — no regressions.
 
 ## Per-Phase Status (fresh run, 2026-06-05)
 

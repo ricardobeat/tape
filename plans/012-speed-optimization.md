@@ -288,6 +288,20 @@ recursion_deep 3432→1635ms (2.1×, faster than Duktape 1929ms).
 function_call 106→64ms (1.7×).
 quick.sh: 182/101/56 — no regressions.
 
+### Session 123: INC_VAR/DEC_VAR fused variable-arithmetic opcodes (2026-06-07)
+
+|| # | Fix | Status |
+|---|-----|--------|
+| 8a | INC_VAR/DEC_VAR fused opcodes + compiler emit + peephole | ✅ Done |
+
+Added INC_VAR (ordinal 86) and DEC_VAR (ordinal 87) opcodes that combine
+GETVAR + INC/DEC + PUTVAR into a single dispatch. The VarIC is used for both
+read and write on the IC fast path (direct prop_values access, no env walk).
+Compiler emits INC_VAR/DEC_VAR directly for `+= 1`, `-= 1`, prefix `++i`/`--i`,
+and postfix `i++`/`i--` patterns by replacing the already-emitted GETVAR.
+A peephole pass in `finish()` also catches any remaining GETVAR+INC+PUTVAR triples.
+bench_loop 55→45ms (1.22×, -18%). quick.sh: 182/101/56 — no regressions.
+
 ## Validation
 
 ```bash

@@ -379,6 +379,17 @@ enum Opcode : char {
     /// A-only format: A=target_reg, B=0, C=0.
     DEC,
 
+    // ---- Variable arithmetic fusion ---------------------------------------
+
+    /// `variable[constants[BC]] = variable[constants[BC]] + 1` — fused
+    /// GETVAR + INC + PUTVAR.  Reads a variable by name, increments it,
+    /// and writes it back in a single dispatch.  Uses the VarIC for both
+    /// read and write.  A-BC format: A=0 (unused), BC=constant pool index.
+    INC_VAR,
+    /// `variable[constants[BC]] = variable[constants[BC]] - 1` — fused
+    /// GETVAR + DEC + PUTVAR.  Same layout as INC_VAR.
+    DEC_VAR,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -456,6 +467,8 @@ fn OpFormat get_op_format(Opcode op) {
         case POP_LEX:    return NONE;
         case INC:        return NONE;
         case DEC:        return NONE;
+        case INC_VAR:    return A_BC;
+        case DEC_VAR:    return A_BC;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -1019,6 +1032,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.RETUNDEF_GEN.ordinal] = "RETUNDEF_GEN",
     [Opcode.INC.ordinal]          = "INC",
     [Opcode.DEC.ordinal]          = "DEC",
+    [Opcode.INC_VAR.ordinal]      = "INC_VAR",
+    [Opcode.DEC_VAR.ordinal]      = "DEC_VAR",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
