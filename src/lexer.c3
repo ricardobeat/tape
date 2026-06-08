@@ -665,21 +665,27 @@ fn Token? Lexer.scan_number(&self) {
     // Decimal: scan digits (integer + optional fraction + optional exponent)
     // to advance pos, then use strtod for precise parsing.
     bool dec_prev_was_digit = false;
-    while (!self.at_end()) {
-        c = self.peek_char();
-        if (c == '_') {
-            if (!dec_prev_was_digit) return LEX_ERROR~;
+
+    // Handle numbers starting with '.' (e.g., .5, .5e3)
+    if (c == '.') {
+        dec_prev_was_digit = true;  // implicit "0" before decimal point
+    } else {
+        while (!self.at_end()) {
+            c = self.peek_char();
+            if (c == '_') {
+                if (!dec_prev_was_digit) return LEX_ERROR~;
+                self.pos++;
+                self.col++;
+                dec_prev_was_digit = false;
+                continue;
+            }
+            if (!is_digit(c)) break;
             self.pos++;
             self.col++;
-            dec_prev_was_digit = false;
-            continue;
+            dec_prev_was_digit = true;
         }
-        if (!is_digit(c)) break;
-        self.pos++;
-        self.col++;
-        dec_prev_was_digit = true;
+        if (!dec_prev_was_digit) return LEX_ERROR~;
     }
-    if (!dec_prev_was_digit) return LEX_ERROR~;
 
     // Fractional part
     if (!self.at_end() && self.peek_char() == '.') {

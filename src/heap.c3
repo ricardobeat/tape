@@ -317,6 +317,9 @@ enum BuiltinStr : uint {
     SYMBOL,      // "symbol"
     NAME,        // "name"
     EMPTY,       // ""
+    NAN_STR,     // "NaN"
+    POSITIVE_INFINITY, // "Infinity"
+    NEGATIVE_INFINITY, // "-Infinity"
 }
 
 // ============================================================================
@@ -461,13 +464,14 @@ fn Heap*? create(
 /// is safe to call multiple times.
 fn void Heap.init_builtin_strs(&self) {
     // Each entry: (ZString literal, byte length)
-    ZString[19] literals = {
+    ZString[22] literals = {
         "undefined", "object", "boolean", "number", "string", "function",
         "true", "false", "null", "message", "prototype", "constructor",
-        "length", "value", "done", "arguments", "symbol", "name", ""
+        "length", "value", "done", "arguments", "symbol", "name", "",
+        "NaN", "Infinity", "-Infinity"
     };
-    uint[19] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9, 6, 4, 0 };
-    for (uint i = 0; i < 19; i++) {
+    uint[22] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9, 6, 4, 0, 3, 8, 9 };
+    for (uint i = 0; i < 22; i++) {
         char* ptr = (char*)literals[i];
         char[] data = ptr[:lengths[i]];
         uint h = self.hash_string(data);

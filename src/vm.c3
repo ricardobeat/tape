@@ -521,6 +521,15 @@ fn int int_to_buf(long val, char* buf, usz cap) {
 
 /// Convert a double to an interned HString* using snprintf.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
+    // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
+    if (math::is_nan(val)) {
+        return (HString*)vm.heap.strs[heap::BuiltinStr.NAN_STR];
+    }
+    if (math::is_inf(val)) {
+        return (HString*)((val > 0.0)
+            ? vm.heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
+            : vm.heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY]);
+    }
     char[64] buf;
     int len = libc::snprintf(&buf, 64, "%.17g", val);
     if (len < 0 || len >= 64) {
@@ -1639,7 +1648,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.curr_pc = func.code;  // Points into bytecode
     entry_act.bottom = vm.valstack;
     entry_act.retval = null;
-    entry_act.flags = ACT_FLAG_STRICT;
+    // ES5 §10.4.1: at the top level of a script, the global `this` is the
+    // global object in non-strict mode, and `undefined` in strict mode.
+    entry_act.flags = func.is_strict() ? ACT_FLAG_STRICT : 0;
 
     TVal this_val;
     this_val.set_undefined();

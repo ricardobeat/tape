@@ -973,8 +973,16 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
         case STRING:
             return (HString*)val.get_heapptr();
         case NUMBER: {
+            double d = val.get_number();
+            // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
+            if (math::is_nan(d)) return (HString*)heap.strs[heap::BuiltinStr.NAN_STR];
+            if (math::is_inf(d)) {
+                return (d > 0.0)
+                    ? (HString*)heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
+                    : (HString*)heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY];
+            }
             char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%.17g", val.get_number());
+            int len = libc::snprintf(&buf, 64, "%.17g", d);
             if (len < 0 || len >= 64) return null;
             return builtin_intern_string(heap, buf[:len]);
         }
@@ -5044,19 +5052,25 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             // Update accessor fields
             bool has_get_in_desc = false;
             bool has_set_in_desc = false;
+            bool has_enum_in_desc = false;
+            bool has_conf_in_desc = false;
             // Re-check which fields were in the descriptor
             HString* get_k = builtin_intern_string(ctx.heap, "get");
             HString* set_k = builtin_intern_string(ctx.heap, "set");
+            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
+            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
             if (get_k != null) has_get_in_desc = desc_obj.find_prop_idx(get_k) >= 0;
             if (set_k != null) has_set_in_desc = desc_obj.find_prop_idx(set_k) >= 0;
+            if (enum_k != null) has_enum_in_desc = desc_obj.find_prop_idx(enum_k) >= 0;
+            if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
 
             if (has_get_in_desc) current.data.getter = desc_vals[0];
             if (has_set_in_desc) current.setter = desc_vals[1];
 
-            // Update flags
+            // Update flags — only overwrite fields present in descriptor
             current.flags.is_accessor = true;
-            current.flags.enumerable = desc_flags.enumerable;
-            current.flags.configurable = desc_flags.configurable;
+            if (has_enum_in_desc) current.flags.enumerable   = desc_flags.enumerable;
+            if (has_conf_in_desc) current.flags.configurable = desc_flags.configurable;
         } else {
             // Update data property
             bool has_val_in_desc = false;
@@ -5275,8 +5289,8 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     if (has_get_in_desc_helper(ctx.heap, desc_obj)) current.data.getter = desc_vals[0];
                     if (has_set_in_desc_helper(ctx.heap, desc_obj)) current.setter = desc_vals[1];
                     current.flags.is_accessor = true;
-                    current.flags.enumerable = desc_flags.enumerable;
-                    current.flags.configurable = desc_flags.configurable;
+                    if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) current.flags.enumerable = desc_flags.enumerable;
+                    if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) current.flags.configurable = desc_flags.configurable;
                 } else {
                     // Basic data property update
                     if (has_value_in_desc_helper(ctx.heap, desc_obj)) {
@@ -9570,6 +9584,80 @@ struct JsonSerializeCtx {
 
 const uint JSON_MAX_DEPTH = 128;
 
+/// ES5 §15.12.3 step 5: Type unwrapping via ToString/ToNumber/ToBoolean.
+/// For String/Number wrapper objects, calls toString()/valueOf() (per spec)
+/// rather than reading the cached primitive_value (which ignores overrides).
+/// Returns the unwrapped TVal. Sets *had_error=true if the method threw.
+/// For non-wrapper objects, returns the value unchanged.
+fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
+    *had_error = false;
+    if (!val.is_object() || val.get_heapptr() == null) return val;
+    HObject* obj = (HObject*)val.get_heapptr();
+    ObjClass cls = obj.get_class();
+
+    // Boolean wrapper: just read [[BooleanData]] per spec
+    if (cls == ObjClass.BOOLEAN) {
+        if (obj.extra.prim.primitive_value.is_boolean()) {
+            TVal result;
+            result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
+            return result;
+        }
+        return val;
+    }
+
+    // String wrapper: ToString → call toString()
+    if (cls == ObjClass.STRING) {
+        HString* to_str_key = jctx.heap.str_intern("toString");
+        if (to_str_key == null) return val;
+        TVal? toString_fn_opt = obj.get_prop_proto(to_str_key);
+        if (try toString_fn = toString_fn_opt) {
+            bool callable = false;
+            if (toString_fn.is_object() && toString_fn.get_heapptr() != null) {
+                HObject* fn_hobj = (HObject*)toString_fn.get_heapptr();
+                callable = fn_hobj.is_callable();
+            } else if (toString_fn.is_lightfunc()) {
+                callable = true;
+            }
+            if (callable && jctx.heap.call_fn != null && jctx.vm != null) {
+                TVal result = jctx.heap.call_fn(jctx.vm, toString_fn, null, 0, val);
+                if (jctx.heap.has_error) { *had_error = true; return val; }
+                return result;
+            }
+        }
+        // No callable toString — fall back to primitive value
+        if (obj.extra.prim.primitive_value.is_string()) {
+            return obj.extra.prim.primitive_value;
+        }
+        return val;
+    }
+
+    // Number wrapper: ToNumber → call valueOf() first (per ES §9.3 / §15.12.3.4)
+    if (cls == ObjClass.NUMBER) {
+        HString* vo_key = jctx.heap.str_intern("valueOf");
+        if (vo_key != null) {
+            TVal? valueOf_fn_opt = obj.get_prop_proto(vo_key);
+            if (try valueOf_fn = valueOf_fn_opt) {
+                bool callable = false;
+                if (valueOf_fn.is_object() && valueOf_fn.get_heapptr() != null) {
+                    HObject* fn_hobj = (HObject*)valueOf_fn.get_heapptr();
+                    callable = fn_hobj.is_callable();
+                } else if (valueOf_fn.is_lightfunc()) {
+                    callable = true;
+                }
+                if (callable && jctx.heap.call_fn != null && jctx.vm != null) {
+                    TVal result = jctx.heap.call_fn(jctx.vm, valueOf_fn, null, 0, val);
+                    if (jctx.heap.has_error) { *had_error = true; return val; }
+                    return result;
+                }
+            }
+        }
+        // Fallback: primitive value
+        return obj.extra.prim.primitive_value;
+    }
+
+    return val;
+}
+
 /// Apply toJSON + replacer function + type unwrapping per ES5 §15.12.3
 /// SerializeJSONProperty steps 1-4. Returns the processed value.
 /// If the result should be omitted (undefined/functions), sets *omit=true.
@@ -9624,20 +9712,17 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
         }
     }
 
-    // Step 4: Unwrap wrapper objects (String/Number/Boolean)
+    // Step 4: Unwrap wrapper objects (String/Number/Boolean) per ES5 §15.12.3
+    // For String/Number wrappers, ToString/ToNumber calls toString()/valueOf()
+    // — must respect any overridden methods on the wrapper.
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         ObjClass cls = obj.get_class();
-        if (cls == ObjClass.STRING) {
-            if (obj.extra.prim.primitive_value.is_string()) {
-                val = obj.extra.prim.primitive_value;
-            }
-        } else if (cls == ObjClass.NUMBER) {
-            val = obj.extra.prim.primitive_value;
-        } else if (cls == ObjClass.BOOLEAN) {
-            if (obj.extra.prim.primitive_value.is_boolean()) {
-                val = obj.extra.prim.primitive_value;
-            }
+        if (cls == ObjClass.STRING || cls == ObjClass.NUMBER || cls == ObjClass.BOOLEAN) {
+            bool unwrap_err = false;
+            TVal unwrapped = json_unwrap_wrapper(jctx, val, &unwrap_err);
+            if (unwrap_err) { jctx.error = true; *omit = true; return unwrapped; }
+            val = unwrapped;
         }
     }
 
@@ -10183,19 +10268,69 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
                     } else if (elem.is_object() && elem.get_heapptr() != null) {
                         HObject* eobj = (HObject*)elem.get_heapptr();
-                        if (eobj.get_class() == ObjClass.STRING &&
-                            eobj.extra.prim.primitive_value.is_string()) {
-                            str_key = (HString*)eobj.extra.prim.primitive_value.get_heapptr();
+                        if (eobj.get_class() == ObjClass.STRING) {
+                            // ToString(value): call toString() to respect overrides
+                            HString* ts_key = ctx.heap.str_intern("toString");
+                            if (ts_key != null) {
+                                TVal? toString_fn_opt = eobj.get_prop_proto(ts_key);
+                                if (try toString_fn = toString_fn_opt) {
+                                    bool callable = false;
+                                    if (toString_fn.is_object() && toString_fn.get_heapptr() != null) {
+                                        callable = ((HObject*)toString_fn.get_heapptr()).is_callable();
+                                    } else if (toString_fn.is_lightfunc()) {
+                                        callable = true;
+                                    }
+                                    if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
+                                        TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
+                                        if (ctx.heap.has_error) { /* propagate later via ctx */ }
+                                        else if (res.is_string()) {
+                                            str_key = (HString*)res.get_heapptr();
+                                        }
+                                    }
+                                }
+                            }
+                            // Fallback: primitive value
+                            if (str_key == null && eobj.extra.prim.primitive_value.is_string()) {
+                                str_key = (HString*)eobj.extra.prim.primitive_value.get_heapptr();
+                            }
                         } else if (eobj.get_class() == ObjClass.NUMBER) {
-                            TVal pv = eobj.extra.prim.primitive_value;
-                            if (pv.is_fastint()) {
-                                char[32] num_buf;
-                                int num_len = libc::snprintf(&num_buf, 32, "%ld", pv.get_fastint());
-                                str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
-                            } else if (pv.is_number()) {
-                                char[64] num_buf;
-                                int num_len = libc::snprintf(&num_buf, 64, "%.17g", pv.get_number());
-                                str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                            // ToString(value): call toString() to respect overrides
+                            HString* ts_key = ctx.heap.str_intern("toString");
+                            if (ts_key != null) {
+                                TVal? toString_fn_opt = eobj.get_prop_proto(ts_key);
+                                if (try toString_fn = toString_fn_opt) {
+                                    bool callable = false;
+                                    if (toString_fn.is_object() && toString_fn.get_heapptr() != null) {
+                                        callable = ((HObject*)toString_fn.get_heapptr()).is_callable();
+                                    } else if (toString_fn.is_lightfunc()) {
+                                        callable = true;
+                                    }
+                                    if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
+                                        TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
+                                        if (ctx.heap.has_error) { /* propagate later via ctx */ }
+                                        else if (res.is_string()) {
+                                            str_key = (HString*)res.get_heapptr();
+                                        } else if (res.is_fastint() || res.is_number()) {
+                                            char[64] nb;
+                                            int nl = libc::snprintf(&nb, 64, "%.17g",
+                                                res.is_fastint() ? (double)res.get_fastint() : res.get_number());
+                                            str_key = builtin_intern_string(ctx.heap, nb[:nl]);
+                                        }
+                                    }
+                                }
+                            }
+                            // Fallback: primitive value
+                            if (str_key == null) {
+                                TVal pv = eobj.extra.prim.primitive_value;
+                                if (pv.is_fastint()) {
+                                    char[32] num_buf;
+                                    int num_len = libc::snprintf(&num_buf, 32, "%ld", pv.get_fastint());
+                                    str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                                } else if (pv.is_number()) {
+                                    char[64] num_buf;
+                                    int num_len = libc::snprintf(&num_buf, 64, "%.17g", pv.get_number());
+                                    str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                                }
                             }
                         }
                     }
@@ -10234,14 +10369,54 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     if (ctx.argc > 2) {
         TVal space_arg = ctx.regs[ctx.base_reg + 2];
 
-        // Unwrap Number/String wrapper objects
+        // Unwrap Number/String wrapper objects via ToString/ToNumber per spec
         if (space_arg.is_object() && space_arg.get_heapptr() != null) {
             HObject* sobj = (HObject*)space_arg.get_heapptr();
             if (sobj.get_class() == ObjClass.NUMBER) {
-                space_arg = sobj.extra.prim.primitive_value;
-            } else if (sobj.get_class() == ObjClass.STRING &&
-                       sobj.extra.prim.primitive_value.is_string()) {
-                space_arg = sobj.extra.prim.primitive_value;
+                // ToNumber(space) → call valueOf()
+                HString* vo_key = ctx.heap.str_intern("valueOf");
+                if (vo_key != null) {
+                    TVal? vo_opt = sobj.get_prop_proto(vo_key);
+                    if (try vo_fn = vo_opt) {
+                        bool callable = false;
+                        if (vo_fn.is_object() && vo_fn.get_heapptr() != null) {
+                            callable = ((HObject*)vo_fn.get_heapptr()).is_callable();
+                        } else if (vo_fn.is_lightfunc()) {
+                            callable = true;
+                        }
+                        if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
+                            TVal res = ctx.heap.call_fn(ctx.vm, vo_fn, null, 0, space_arg);
+                            if (ctx.heap.has_error) { /* propagate later */ }
+                            else { space_arg = res; }
+                        }
+                    }
+                }
+                if (space_arg.is_object() && space_arg.get_heapptr() != null) {
+                    space_arg = sobj.extra.prim.primitive_value;
+                }
+            } else if (sobj.get_class() == ObjClass.STRING) {
+                // ToString(space) → call toString()
+                HString* ts_key = ctx.heap.str_intern("toString");
+                if (ts_key != null) {
+                    TVal? ts_opt = sobj.get_prop_proto(ts_key);
+                    if (try ts_fn = ts_opt) {
+                        bool callable = false;
+                        if (ts_fn.is_object() && ts_fn.get_heapptr() != null) {
+                            callable = ((HObject*)ts_fn.get_heapptr()).is_callable();
+                        } else if (ts_fn.is_lightfunc()) {
+                            callable = true;
+                        }
+                        if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
+                            TVal res = ctx.heap.call_fn(ctx.vm, ts_fn, null, 0, space_arg);
+                            if (ctx.heap.has_error) { /* propagate later */ }
+                            else { space_arg = res; }
+                        }
+                    }
+                }
+                if (space_arg.is_object() && space_arg.get_heapptr() != null &&
+                    sobj.extra.prim.primitive_value.is_string()) {
+                    space_arg = sobj.extra.prim.primitive_value;
+                }
             }
         }
 
