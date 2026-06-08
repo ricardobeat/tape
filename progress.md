@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 142 (quick.sh Test262Error.prototype.constructor fix — +4 quick.sh passes)
+**Last Updated:** Session 143 (String.prototype locale methods + localeCompare)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 142, 2026-06-08)
@@ -205,6 +205,22 @@ representations. Added Date class check in `to_primitive_value()` to swap
 the call order for Date objects. quick.sh 260/23/56 — no regressions.
 Both nanbox and nonanbox builds pass.
 
+Session 143: String.prototype locale methods + localeCompare (+54 Phase 6).
+Added three missing String.prototype methods:
+(1) **toLocaleLowerCase** (builtins.c3): New handler `builtin_string_proto_toLocaleLowerCase`
+delegates to same ASCII lowercase logic as toLowerCase per ES5 §15.5.4.17 (locale-
+independent in default locale). New constant `BUILTIN_STRING_PROTO_TOLOCALELOWERCASE=298`.
+(2) **toLocaleUpperCase** (builtins.c3): Same pattern, delegates to uppercase logic per
+ES5 §15.5.4.19. New constant `BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE=299`.
+(3) **localeCompare** (builtins.c3): New handler `builtin_string_proto_localeCompare`
+implements lexicographic byte comparison per ES5 §15.5.4.12. Returns <0, 0, or >0.
+Uses `string_proto_get_this` for receiver validation and `builtin_to_string` for arg coercion.
+New constant `BUILTIN_STRING_PROTO_LOCALECOMPARE=300`.
+All three registered via `register_string_proto_method` on String.prototype with correct
+`.name`/`.length` descriptors. Added dispatch table entries. Bumped `BUILTIN_COUNT` to 301.
+Impact: Phase 6 1381→1435 (+54 passes). quick.sh 279/4/56 — no regressions.
+Both nanbox and nonanbox builds pass.
+
 Session 140: Symbol.toPrimitive getter + arguments object + Test262Error harness (+29 test262).
 Three fixes:
 (1) **Symbol.toPrimitive getter invocation** (vm.c3): `to_primitive_value()` now uses
@@ -300,19 +316,19 @@ CATCH. Impact: Phase 0-1 511→533 (+22), Phase 1 35→46 (+11), Phase 2 924→9
 Phase 6 1060→1141 (+81), Phase 7 177→182 (+5), Phase 8 561→607 (+46).
 quick.sh 260→269 (+9). Both nanbox and nonanbox builds pass.
 
-## Per-Phase Status (fresh run, 2026-06-08, after Session 142)
+## Per-Phase Status (fresh run, 2026-06-08, after Session 143)
 
 | Phase | Total | Pass | Fail | Skip | Notes |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 566 | 322 | 1,297 | +5 |
+| 0-1: Core VM | 2,185 | 566 | 322 | 1,297 | no change |
 | 1: Calling Convention | 426 | 47 | 41 | 338 | no change |
-| 2: Basic Operators | 1,969 | 952 | 192 | 825 | -1 noise |
-| 3: Object System | 7,767 | 3,124 | 2,676 | 1,967 | +26 |
-| 4: Error Handling | 402 | 119 | 82 | 201 | +1 |
-| 5: Built-in Constructors | 8,616 | 3,721 | 3,370 | 1,525 | +57 |
-| 6: Prototype Methods | 4,713 | 1,422 | 2,355 | 936 | +7 |
+| 2: Basic Operators | 1,969 | 952 | 192 | 825 | no change |
+| 3: Object System | 7,767 | 3,124 | 2,676 | 1,967 | no change |
+| 4: Error Handling | 402 | 119 | 82 | 201 | no change |
+| 5: Built-in Constructors | 8,616 | 3,721 | 3,370 | 1,525 | no change |
+| 6: Prototype Methods | 4,713 | 1,435 | 2,342 | 936 | +54 (locale methods) |
 | 7: ES5 Features | 1,240 | 182 | 111 | 947 | no change |
-| 8: ES5 Built-in Objects | 2,747 | 786 | 498 | 1,463 | +14 |
+| 8: ES5 Built-in Objects | 2,747 | 786 | 498 | 1,463 | no change |
 | 11: Arrow/Templates | 427 | 59 | 44 | 324 | Working, edge cases |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | All skipped |
 | 14: for-of | 751 | 5 | 27 | 719 | String enum helps |

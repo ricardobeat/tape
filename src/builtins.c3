@@ -190,7 +190,10 @@ const uint BUILTIN_ARRAY_PROTO_EVERY      = 294;
 const uint BUILTIN_ARRAY_PROTO_SOME       = 295;
 const uint BUILTIN_ARRAY_PROTO_REDUCE     = 296;
 const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 297;
-const uint BUILTIN_COUNT                         = 298;
+const uint BUILTIN_STRING_PROTO_TOLOCALELOWERCASE = 298;
+const uint BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE = 299;
+const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
+const uint BUILTIN_COUNT                         = 301;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2223,6 +2226,89 @@ fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
     ctx.result.set_string(result);
+}
+
+/// String.prototype.toLocaleLowerCase() — ES5 §15.5.4.17
+/// Identical to toLowerCase in default locale.
+fn void builtin_string_proto_toLocaleLowerCase(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    char[256] buf;
+    usz copy_len = len < 256 ? (usz)len : 256;
+    for (usz i = 0; i < copy_len; i++) {
+        char c = data[i];
+        if (c >= 'A' && c <= 'Z') {
+            buf[i] = (char)(c + 32);
+        } else {
+            buf[i] = c;
+        }
+    }
+    HString* lower = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.set_string(lower);
+}
+
+/// String.prototype.toLocaleUpperCase() — ES5 §15.5.4.19
+/// Identical to toUpperCase in default locale.
+fn void builtin_string_proto_toLocaleUpperCase(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    char* data = s_hstr.get_cstr();
+    uint len = s_hstr.blen;
+
+    char[256] buf;
+    usz copy_len = len < 256 ? (usz)len : 256;
+    for (usz i = 0; i < copy_len; i++) {
+        char c = data[i];
+        if (c >= 'a' && c <= 'z') {
+            buf[i] = (char)(c - 32);
+        } else {
+            buf[i] = c;
+        }
+    }
+    HString* upper = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    ctx.result.set_string(upper);
+}
+
+/// String.prototype.localeCompare(that) — ES5 §15.5.4.12
+/// Returns <0, 0, or >0 based on lexicographic comparison.
+fn void builtin_string_proto_localeCompare(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HString* that_hstr;
+    if (ctx.argc > 0) {
+        that_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    } else {
+        that_hstr = builtin_intern_string(ctx.heap, "undefined");
+    }
+    if (that_hstr == null) {
+        ctx.result.set_undefined();
+        return;
+    }
+    char* a = s_hstr.get_cstr();
+    uint a_len = s_hstr.blen;
+    char* b = that_hstr.get_cstr();
+    uint b_len = that_hstr.blen;
+    usz min_len = a_len < b_len ? (usz)a_len : (usz)b_len;
+    for (usz i = 0; i < min_len; i++) {
+        int diff = (int)a[i] - (int)b[i];
+        if (diff != 0) {
+            ctx.result.set_number((double)diff);
+            return;
+        }
+    }
+    ctx.result.set_number((double)((int)a_len - (int)b_len));
 }
 
 /// String.prototype.trim() — ES5 §15.5.4.20
@@ -15693,6 +15779,9 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_STRING_PROTO_TOSTRING] = &builtin_string_proto_toString,
     [BUILTIN_STRING_PROTO_TOUPPERCASE] = &builtin_string_proto_toUpperCase,
     [BUILTIN_STRING_PROTO_TRIM] = &builtin_string_proto_trim,
+    [BUILTIN_STRING_PROTO_TOLOCALELOWERCASE] = &builtin_string_proto_toLocaleLowerCase,
+    [BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE] = &builtin_string_proto_toLocaleUpperCase,
+    [BUILTIN_STRING_PROTO_LOCALECOMPARE] = &builtin_string_proto_localeCompare,
     [BUILTIN_STRING_PROTO_TRIMEND] = &builtin_string_proto_trimEnd,
     [BUILTIN_STRING_PROTO_TRIMSTART] = &builtin_string_proto_trimStart,
     [BUILTIN_STRING_PROTO_VALUEOF] = &builtin_string_proto_valueOf,
@@ -16831,6 +16920,9 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
     if (!register_string_proto_method(proto, heap, "match",      BUILTIN_STRING_PROTO_MATCH))      return false;
     if (!register_string_proto_method(proto, heap, "search",     BUILTIN_STRING_PROTO_SEARCH))     return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleLowerCase", BUILTIN_STRING_PROTO_TOLOCALELOWERCASE)) return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleUpperCase", BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE)) return false;
+    if (!register_string_proto_method(proto, heap, "localeCompare", BUILTIN_STRING_PROTO_LOCALECOMPARE)) return false;
 
     // Register String.prototype[@@iterator] (ES6 §21.1.3.30)
     {
