@@ -1816,8 +1816,17 @@ fn TVal? Vm.run(Vm* vm) {
         // === LOAD / STORE ===
 
         case Opcode.LDREG:
-            vm.heap.tval_copy_ref(ra, rb);
-            track_heap_store(act, ra, (uint)insn.a);
+            // Fast path: if source is not a heap ref (fastint, undefined, etc.),
+            // skip full refcounting — only decref dst if it held a heap pointer.
+            if (!(rb.is_object() || rb.is_buffer())) {
+                if (ra.is_object() || ra.is_buffer()) {
+                    vm.heap.decref_tval(ra);
+                }
+                *ra = *rb;
+            } else {
+                vm.heap.tval_copy_ref(ra, rb);
+                track_heap_store(act, ra, (uint)insn.a);
+            }
             break;
 
         case Opcode.LDCONST: {
@@ -3631,10 +3640,17 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.retval = regs_base + result_reg;
                     new_act.flags = ACT_FLAG_STRICT;
                     // Arrow functions use lexical this (inherited from enclosing scope)
-                    if (target_fast.is_arrow()) {
-                        vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
-                    } else {
-                        vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
+                    // Fast path: skip refcounting when this value is not a heap ref
+                    {
+                        TVal* this_src = target_fast.is_arrow() ? &act.this_binding : &regs_base[callee_reg + 1];
+                        if (!(this_src.is_object() || this_src.is_buffer())) {
+                            if (new_act.this_binding.is_object() || new_act.this_binding.is_buffer()) {
+                                vm.heap.decref_tval(&new_act.this_binding);
+                            }
+                            new_act.this_binding = *this_src;
+                        } else {
+                            vm.heap.tval_copy_ref(&new_act.this_binding, this_src);
+                        }
                     }
 
                     TVal* new_regs = new_act.bottom;
@@ -5053,7 +5069,15 @@ fn TVal? Vm.run(Vm* vm) {
                         vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
                     }
                 } else {
-                    vm.heap.tval_copy_ref(callee_result, &val);
+                    // Fast path: skip refcounting when return value is not a heap ref
+                    if (!(val.is_object() || val.is_buffer())) {
+                        if (callee_result.is_object() || callee_result.is_buffer()) {
+                            vm.heap.decref_tval(callee_result);
+                        }
+                        *callee_result = val;
+                    } else {
+                        vm.heap.tval_copy_ref(callee_result, &val);
+                    }
                 }
             }
             // Restore caller state inline — skip outer loop restart.
@@ -5099,7 +5123,11 @@ fn TVal? Vm.run(Vm* vm) {
                 if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
                     vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
                 } else {
-                    vm.heap.tval_copy_ref(callee_result, &undef_val);
+                    // undef_val is never a heap ref — only decref dst if needed
+                    if (callee_result.is_object() || callee_result.is_buffer()) {
+                        vm.heap.decref_tval(callee_result);
+                    }
+                    *callee_result = undef_val;
                 }
             }
             // Restore caller state inline — skip outer loop restart.
