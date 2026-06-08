@@ -2349,7 +2349,7 @@ fn void builtin_string_proto_trim(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
-/// String.prototype.split(separator, limit) — ES5 §15.5.4.14 (string-only separator)
+/// String.prototype.split(separator, limit) — ES5 §15.5.4.14
 fn void builtin_string_proto_split(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -2382,8 +2382,127 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         return;
     }
 
-    // Get separator string
-    HString* sep_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+    TVal* sep_val = &ctx.regs[ctx.base_reg];
+
+    // ── RegExp separator ─────────────────────────────────────────────────
+    if (is_regexp_object(sep_val)) {
+        HObject* rx = (HObject*)sep_val.get_heapptr();
+        char* input = data;
+        int input_len = (int)len;
+
+        uint limit = 0xFFFFFFFF;
+        if (ctx.argc > 1) {
+            double limit_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+            if (!math::is_nan(limit_d) && limit_d >= 0) {
+                limit = (uint)(long)limit_d;
+            }
+        }
+
+        HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+        TVal zero_tv; zero_tv.set_fastint(0);
+        rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+        uint arr_idx = 0;
+        int search_pos = 0;
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+
+        while (search_pos <= input_len && arr_idx < limit) {
+            int out_start = 0;
+            int out_end = 0;
+            int out_num_captures = 0;
+            int[re_bindings::RE_MAX_CAPTURES] caps_start;
+            int[re_bindings::RE_MAX_CAPTURES] caps_end;
+            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+            int result = re_bindings::re_exec(
+                rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                &out_start, &out_end, &out_num_captures,
+                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            );
+            if (result != re_bindings::RE_MATCH) break;
+
+            // Substring before match
+            uint substr_len = (uint)out_start - (uint)search_pos;
+            HString* substr;
+            if (substr_len == 0) {
+                substr = builtin_intern_string(ctx.heap, "");
+            } else if (substr_len < 256) {
+                char[256] buf;
+                for (usz i = 0; i < (usz)substr_len; i++) buf[i] = input[(usz)search_pos + i];
+                substr = builtin_intern_string(ctx.heap, buf[:substr_len]);
+            } else {
+                substr = builtin_intern_string(ctx.heap, input[search_pos : substr_len]);
+            }
+            TVal elem;
+            elem.set_string(substr);
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
+            arr.put_prop(builtin_intern_string(ctx.heap, idx_buf[:idx_len]), elem, hobject::PROP_FLAGS_WEC);
+            arr_idx++;
+
+            // Capture groups
+            int num_caps = out_num_captures;
+            if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+            for (int i = 0; i < num_caps && arr_idx < limit; i++) {
+                TVal cap_elem;
+                if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+                    usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+                    if (cap_len == 0) {
+                        cap_elem.set_string(builtin_intern_string(ctx.heap, ""));
+                    } else if (cap_len < 256) {
+                        char[256] cap_buf;
+                        for (usz j = 0; j < cap_len; j++) cap_buf[j] = input[(usz)caps_start[i] + j];
+                        cap_elem.set_string(builtin_intern_string(ctx.heap, cap_buf[:cap_len]));
+                    } else {
+                        cap_elem.set_string(builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
+                    }
+                } else {
+                    cap_elem.set_undefined();
+                }
+                char[16] ci_buf;
+                int ci_len = libc::snprintf(&ci_buf, 16, "%u", arr_idx);
+                arr.put_prop(builtin_intern_string(ctx.heap, ci_buf[:ci_len]), cap_elem, hobject::PROP_FLAGS_WEC);
+                arr_idx++;
+            }
+
+            if (out_end == search_pos) {
+                search_pos = out_end + 1;
+                if (search_pos > input_len) break;
+            } else {
+                search_pos = out_end;
+            }
+        }
+
+        // Remaining part
+        if (arr_idx < limit && search_pos <= input_len) {
+            uint substr_len = len - (uint)search_pos;
+            HString* substr;
+            if (substr_len == 0) {
+                substr = builtin_intern_string(ctx.heap, "");
+            } else if (substr_len < 256) {
+                char[256] buf;
+                for (usz i = 0; i < (usz)substr_len; i++) buf[i] = input[(usz)search_pos + i];
+                substr = builtin_intern_string(ctx.heap, buf[:substr_len]);
+            } else {
+                substr = builtin_intern_string(ctx.heap, input[search_pos : substr_len]);
+            }
+            TVal elem;
+            elem.set_string(substr);
+            char[16] idx_buf;
+            int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
+            arr.put_prop(builtin_intern_string(ctx.heap, idx_buf[:idx_len]), elem, hobject::PROP_FLAGS_WEC);
+            arr_idx++;
+        }
+
+        TVal len_val; len_val.set_fastint((long)arr_idx);
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(arr);
+        return;
+    }
+
+    // ── String separator ─────────────────────────────────────────────────
+    HString* sep_hstr = builtin_to_string(ctx.heap, sep_val);
     if (sep_hstr == null) {
         ctx.result.set_undefined();
         return;
@@ -2430,7 +2549,6 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     HString* len_key = builtin_intern_string(ctx.heap, "length");
 
     while (search_pos + sep_len <= len && arr_idx < limit) {
-        // Find separator
         int found_pos = -1;
         for (uint i = search_pos; i + sep_len <= len; i++) {
             bool match = true;
@@ -2440,15 +2558,11 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
                     break;
                 }
             }
-            if (match) {
-                found_pos = (int)i;
-                break;
-            }
+            if (match) { found_pos = (int)i; break; }
         }
 
         if (found_pos < 0) break;
 
-        // Extract substring from search_pos to found_pos
         uint substr_len = (uint)found_pos - search_pos;
         HString* substr;
         if (substr_len == 0) {
@@ -2456,13 +2570,10 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         } else {
             char[256] buf;
             usz copy_len = substr_len < 256 ? (usz)substr_len : 256;
-            for (usz i = 0; i < copy_len; i++) {
-                buf[i] = data[search_pos + i];
-            }
+            for (usz i = 0; i < copy_len; i++) buf[i] = data[search_pos + i];
             substr = builtin_intern_string(ctx.heap, buf[:copy_len]);
         }
 
-        // Add to array
         TVal elem;
         elem.set_string(substr);
         char[16] idx_buf;
@@ -2483,9 +2594,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         } else {
             char[256] buf;
             usz copy_len = substr_len < 256 ? (usz)substr_len : 256;
-            for (usz i = 0; i < copy_len; i++) {
-                buf[i] = data[search_pos + i];
-            }
+            for (usz i = 0; i < copy_len; i++) buf[i] = data[search_pos + i];
             substr = builtin_intern_string(ctx.heap, buf[:copy_len]);
         }
         TVal elem;
@@ -2552,7 +2661,71 @@ fn void builtin_string_proto_concat(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
-/// String.prototype.replace(searchValue, replaceValue) — ES5 §15.5.4.11 (string-only)
+/// Substitute $-patterns in a replace string (ES5 §15.5.4.11 step 10)
+fn HString* builtin_replace_substitute(Heap* heap, HString* replace_str,
+    char* input, int input_len,
+    int match_start, int match_end,
+    int* caps_start, int* caps_end, int num_caps) {
+
+    char* rep = replace_str.get_cstr();
+    uint rep_len = replace_str.blen;
+    char[4096] buf;
+    usz offset = 0;
+
+    for (usz i = 0; i < rep_len && offset < 4096; i++) {
+        if (rep[i] == '$' && i + 1 < rep_len) {
+            char next = rep[i + 1];
+            if (next == '$') {
+                buf[offset++] = '$';
+                i++;
+                continue;
+            }
+            if (next == '&') {
+                for (usz j = (usz)match_start; j < (usz)match_end && offset < 4096; j++) {
+                    buf[offset++] = input[j];
+                }
+                i++;
+                continue;
+            }
+            if (next == '`') {
+                for (usz j = 0; j < (usz)match_start && offset < 4096; j++) {
+                    buf[offset++] = input[j];
+                }
+                i++;
+                continue;
+            }
+            if (next == '\'') {
+                for (usz j = (usz)match_end; j < (usz)input_len && offset < 4096; j++) {
+                    buf[offset++] = input[j];
+                }
+                i++;
+                continue;
+            }
+            if (next >= '1' && next <= '9') {
+                int group_idx = next - '1';
+                i++;
+                if (i + 1 < rep_len && rep[i + 1] >= '0' && rep[i + 1] <= '9') {
+                    int two_digit = (next - '0') * 10 + (rep[i + 1] - '0');
+                    if (two_digit <= num_caps) {
+                        group_idx = two_digit - 1;
+                        i++;
+                    }
+                }
+                if (group_idx < num_caps && group_idx >= 0 &&
+                    caps_start[group_idx] >= 0 && caps_end[group_idx] >= 0) {
+                    for (usz j = (usz)caps_start[group_idx]; j < (usz)caps_end[group_idx] && offset < 4096; j++) {
+                        buf[offset++] = input[j];
+                    }
+                }
+                continue;
+            }
+        }
+        buf[offset++] = rep[i];
+    }
+    return builtin_intern_string(heap, buf[:offset]);
+}
+
+/// String.prototype.replace(searchValue, replaceValue) — ES5 §15.5.4.11
 fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -2560,27 +2733,201 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         return;
     }
 
-    // If not enough args or searchValue is RegExp-like (object), return string as-is
     if (ctx.argc < 1) {
         ctx.result.set_string(s_hstr);
         return;
     }
 
     TVal* search_val = &ctx.regs[ctx.base_reg];
+    char* input = s_hstr.get_cstr();
+    int input_len = (int)s_hstr.blen;
 
-    // If searchValue is an object (RegExp), return original string for now
-    if (search_val.is_object()) {
-        ctx.result.set_string(s_hstr);
-        return;
+    // ── RegExp searchValue ────────────────────────────────────────────────
+    if (is_regexp_object(search_val)) {
+        HObject* rx = (HObject*)search_val.get_heapptr();
+
+        HString* global_key = builtin_intern_string(ctx.heap, "global");
+        bool global_flag = false;
+        if (try gv = rx.get_prop(global_key)) {
+            if (gv.is_boolean()) global_flag = gv.get_boolean();
+        }
+
+        bool replace_is_fn = false;
+        TVal replace_val;
+        replace_val.set_undefined();
+        if (ctx.argc > 1) {
+            replace_val = ctx.regs[ctx.base_reg + 1];
+            if (replace_val.is_object() && replace_val.get_heapptr() != null &&
+                ((HObject*)replace_val.get_heapptr()).is_callable()) {
+                replace_is_fn = true;
+            }
+        }
+
+        if (!global_flag) {
+            // ── Non-global: single match ──────────────────────────────────
+            int out_start = 0;
+            int out_end = 0;
+            int out_num_captures = 0;
+            int[re_bindings::RE_MAX_CAPTURES] caps_start;
+            int[re_bindings::RE_MAX_CAPTURES] caps_end;
+            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+            int result = re_bindings::re_exec(
+                rx.extra.regexp.regexp_data, input, input_len, 0,
+                &out_start, &out_end, &out_num_captures,
+                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            );
+
+            if (result != re_bindings::RE_MATCH) {
+                ctx.result.set_string(s_hstr);
+                return;
+            }
+
+            HString* replace_str;
+            if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+                int num_caps = out_num_captures;
+                if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+                TVal[36] fn_args;
+                int arg_count = 0;
+                usz m_len = (usz)(out_end - out_start);
+                fn_args[arg_count].set_string(
+                    m_len == 0 ? builtin_intern_string(ctx.heap, "")
+                               : builtin_intern_string(ctx.heap, input[out_start : m_len]));
+                arg_count++;
+                for (int i = 0; i < num_caps; i++) {
+                    if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+                        usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+                        fn_args[arg_count].set_string(
+                            cap_len == 0 ? builtin_intern_string(ctx.heap, "")
+                                         : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
+                    } else {
+                        fn_args[arg_count].set_undefined();
+                    }
+                    arg_count++;
+                }
+                TVal offset_tv; offset_tv.set_fastint((long)out_start);
+                fn_args[arg_count++] = offset_tv;
+                fn_args[arg_count++].set_string(s_hstr);
+                TVal this_val; this_val.set_undefined();
+                TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
+                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                replace_str = builtin_to_string(ctx.heap, &res);
+                if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+            } else {
+                HString* raw_replace = ctx.argc > 1
+                    ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                    : builtin_intern_string(ctx.heap, "undefined");
+                if (raw_replace == null) { ctx.result.set_string(s_hstr); return; }
+                replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
+                    input, input_len, out_start, out_end,
+                    &caps_start, &caps_end, out_num_captures);
+                if (replace_str == null) replace_str = raw_replace;
+            }
+
+            char[4096] buf;
+            usz bOff = 0;
+            char* rData = replace_str.get_cstr();
+            uint rLen = replace_str.blen;
+            for (usz i = 0; i < (usz)out_start && bOff < 4096; i++) buf[bOff++] = input[i];
+            for (usz i = 0; i < (usz)rLen && bOff < 4096; i++) buf[bOff++] = rData[i];
+            for (usz i = (usz)out_end; i < (usz)input_len && bOff < 4096; i++) buf[bOff++] = input[i];
+            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
+            return;
+        } else {
+            // ── Global: replace all matches ───────────────────────────────
+            HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+            TVal zero_tv; zero_tv.set_fastint(0);
+            rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+            char[8192] buf;
+            usz bOff = 0;
+            int search_pos = 0;
+
+            while (search_pos <= input_len) {
+                int out_start = 0;
+                int out_end = 0;
+                int out_num_captures = 0;
+                int[re_bindings::RE_MAX_CAPTURES] caps_start;
+                int[re_bindings::RE_MAX_CAPTURES] caps_end;
+                libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+                libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+                int result = re_bindings::re_exec(
+                    rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                    &out_start, &out_end, &out_num_captures,
+                    &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+                );
+                if (result != re_bindings::RE_MATCH) break;
+
+                for (usz i = (usz)search_pos; i < (usz)out_start && bOff < 8192; i++) buf[bOff++] = input[i];
+
+                HString* replace_str;
+                if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+                    int num_caps = out_num_captures;
+                    if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+                    TVal[36] fn_args;
+                    int arg_count = 0;
+                    usz m_len = (usz)(out_end - out_start);
+                    fn_args[arg_count].set_string(
+                        m_len == 0 ? builtin_intern_string(ctx.heap, "")
+                                   : builtin_intern_string(ctx.heap, input[out_start : m_len]));
+                    arg_count++;
+                    for (int i = 0; i < num_caps; i++) {
+                        if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+                            usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+                            fn_args[arg_count].set_string(
+                                cap_len == 0 ? builtin_intern_string(ctx.heap, "")
+                                             : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
+                        } else {
+                            fn_args[arg_count].set_undefined();
+                        }
+                        arg_count++;
+                    }
+                    TVal offset_tv; offset_tv.set_fastint((long)out_start);
+                    fn_args[arg_count++] = offset_tv;
+                    fn_args[arg_count++].set_string(s_hstr);
+                    TVal this_val; this_val.set_undefined();
+                    TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
+                    if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                    replace_str = builtin_to_string(ctx.heap, &res);
+                    if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+                } else {
+                    HString* raw_replace = ctx.argc > 1
+                        ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                        : builtin_intern_string(ctx.heap, "undefined");
+                    if (raw_replace == null) break;
+                    replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
+                        input, input_len, out_start, out_end,
+                        &caps_start, &caps_end, out_num_captures);
+                    if (replace_str == null) replace_str = raw_replace;
+                }
+
+                char* rData = replace_str.get_cstr();
+                uint rLen = replace_str.blen;
+                for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
+
+                if (out_end == search_pos) {
+                    search_pos = out_end + 1;
+                    if (search_pos > input_len) break;
+                } else {
+                    search_pos = out_end;
+                }
+            }
+
+            for (usz i = (usz)search_pos; i < (usz)input_len && bOff < 8192; i++) buf[bOff++] = input[i];
+            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
+            return;
+        }
     }
 
+    // ── String searchValue (existing code) ──────────────────────────────
     HString* search_hstr = builtin_to_string(ctx.heap, search_val);
     if (search_hstr == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    // Get replaceValue
     HString* replace_hstr;
     if (ctx.argc > 1) {
         replace_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
@@ -2592,61 +2939,34 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         return;
     }
 
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
-    // Find first occurrence
     int found_pos = -1;
-    for (uint i = 0; i + search_len <= len; i++) {
+    for (uint i = 0; i + search_len <= (uint)input_len; i++) {
         bool match = true;
         for (uint j = 0; j < search_len; j++) {
-            if (data[i + j] != search_data[j]) {
-                match = false;
-                break;
-            }
+            if (input[i + j] != search_data[j]) { match = false; break; }
         }
-        if (match) {
-            found_pos = (int)i;
-            break;
-        }
+        if (match) { found_pos = (int)i; break; }
     }
 
     if (found_pos < 0) {
-        // Not found: return original string
         ctx.result.set_string(s_hstr);
         return;
     }
 
-    // Build result: prefix + replacement + suffix
     char* replace_data = replace_hstr.get_cstr();
     uint replace_len = replace_hstr.blen;
 
-    uint total = len - search_len + replace_len;
-    if (total > 512) total = 512;
-
-    char[512] buf;
-    usz offset = 0;
-
-    // Copy prefix (before match)
-    for (usz i = 0; i < (usz)found_pos && offset < 512; i++) {
-        buf[offset++] = data[i];
-    }
-
-    // Copy replacement
-    for (usz i = 0; i < (usz)replace_len && offset < 512; i++) {
-        buf[offset++] = replace_data[i];
-    }
-
-    // Copy suffix (after match)
+    char[4096] buf;
+    usz bOff = 0;
+    for (usz i = 0; i < (usz)found_pos && bOff < 4096; i++) buf[bOff++] = input[i];
+    for (usz i = 0; i < (usz)replace_len && bOff < 4096; i++) buf[bOff++] = replace_data[i];
     uint suffix_start = (uint)(found_pos + (int)search_len);
-    for (usz i = (usz)suffix_start; i < (usz)len && offset < 512; i++) {
-        buf[offset++] = data[i];
-    }
+    for (usz i = (usz)suffix_start; i < (usz)input_len && bOff < 4096; i++) buf[bOff++] = input[i];
 
-    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    ctx.result.set_string(result);
+    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
 }
 
 // ============================================================================
@@ -7311,7 +7631,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Array.prototype.sort (ES5 §15.4.4.11) — default compare (no comparefn)
+// Array.prototype.sort (ES5 §15.4.4.11) — with comparefn support
 // ============================================================================
 fn void builtin_array_proto_sort(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
@@ -7321,6 +7641,38 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
     if (len <= 1) {
         ctx.result.set_object(obj);
         return;
+    }
+
+    // Check comparefn argument
+    bool has_comparefn = false;
+    TVal comparefn;
+    comparefn.set_undefined();
+    if (ctx.argc > 0) {
+        TVal* arg0 = &ctx.regs[ctx.base_reg];
+        if (!arg0.is_undefined()) {
+            if (!arg0.is_object() || arg0.get_heapptr() == null ||
+                !((HObject*)arg0.get_heapptr()).is_callable()) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap,
+                        "Array.prototype.sort: comparefn is not a function or undefined");
+                    if (msg_str != null) {
+                        TVal msg_val;
+                        msg_val.set_string(msg_str);
+                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    TVal err_tv;
+                    err_tv.set_object(err);
+                    ctx.throw_value = err_tv;
+                }
+                ctx.should_throw = true;
+                return;
+            }
+            comparefn = *arg0;
+            has_comparefn = true;
+        }
     }
 
     // Compact defined elements to the front
@@ -7333,22 +7685,47 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
         }
     }
 
-    // Bubble-sort defined elements by string comparison
+    // Bubble-sort
     for (uint i = 0; i < def_count; i++) {
         for (uint j = 0; j < def_count - 1 - i; j++) {
             TVal a = array_get_elem(obj, j, ctx.heap);
             TVal b = array_get_elem(obj, j + 1, ctx.heap);
-            HString* a_str = builtin_to_string(ctx.heap, &a);
-            HString* b_str = builtin_to_string(ctx.heap, &b);
             int cmp = 0;
-            if (a_str != null && b_str != null) {
-                cmp = hstring::hstring_compare(a_str, b_str);
-            } else if (a_str == null && b_str == null) {
-                cmp = 0;
-            } else if (a_str == null) {
-                cmp = 1;
+
+            if (has_comparefn && ctx.heap.call_fn != null && ctx.vm != null) {
+                TVal[2] args;
+                args[0] = a;
+                args[1] = b;
+                TVal this_val;
+                this_val.set_undefined();
+                TVal res = ctx.heap.call_fn(ctx.vm, comparefn, &args[0], 2, this_val);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    return;
+                }
+                TVal num;
+                builtin_to_number(&res, &num);
+                if (num.is_number()) {
+                    double d = num.get_number();
+                    if (!math::is_nan(d)) {
+                        cmp = d < 0 ? -1 : (d > 0 ? 1 : 0);
+                    }
+                } else if (num.is_fastint()) {
+                    long v = num.get_fastint();
+                    cmp = v < 0 ? -1 : (v > 0 ? 1 : 0);
+                }
             } else {
-                cmp = -1;
+                HString* a_str = builtin_to_string(ctx.heap, &a);
+                HString* b_str = builtin_to_string(ctx.heap, &b);
+                if (a_str != null && b_str != null) {
+                    cmp = hstring::hstring_compare(a_str, b_str);
+                } else if (a_str == null && b_str == null) {
+                    cmp = 0;
+                } else if (a_str == null) {
+                    cmp = 1;
+                } else {
+                    cmp = -1;
+                }
             }
             if (cmp > 0) {
                 array_set_elem(obj, j, b, ctx.heap);
