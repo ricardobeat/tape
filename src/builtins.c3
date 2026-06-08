@@ -8612,17 +8612,39 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         return;
     }
 
-    // For OBJECT downstreams, use re-dispatch mechanism
+    // For OBJECT downstreams — dispatch directly if BUILTIN_FN, else re-dispatch
     if (downstream.is_object()) {
-        // Replace the function slot with downstream
+        HObject* hobj = (HObject*)downstream.get_heapptr();
+        if (hobj != null && hobj.is_callable() && hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN && hobj.extra.func.builtin_fn_index >= 0) {
+            // Direct dispatch for BUILTIN_FN objects (e.g. Array.prototype.forEach.call(...))
+            for (ushort i = 0; i < remaining; i++) {
+                ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
+            }
+            builtins::BuiltinContext inner_ctx;
+            inner_ctx.vm = ctx.vm;
+            inner_ctx.regs = ctx.regs;
+            inner_ctx.base_reg = ctx.base_reg;
+            inner_ctx.argc = remaining;
+            inner_ctx.result = ctx.result;
+            inner_ctx.heap = ctx.heap;
+            inner_ctx.this_val = new_this;
+            inner_ctx.is_constructor = false;
+            inner_ctx.needs_re_dispatch = false;
+            inner_ctx.re_nargs = 0;
+            inner_ctx.global_env = ctx.global_env;
+            inner_ctx.should_throw = false;
+            inner_ctx.callee_obj = hobj;
+            // Also set the this slot in registers for builtins that read ctx.regs[ctx.base_reg - 1]
+            ctx.regs[ctx.base_reg - 1] = new_this;
+            builtins::dispatch_builtin((uint)hobj.extra.func.builtin_fn_index, &inner_ctx);
+            return;
+        }
+        // Fallback: re-dispatch for compiled functions and bound functions
         ctx.regs[ctx.base_reg - 2] = downstream;
-        // Replace the this slot with new_this
         ctx.regs[ctx.base_reg - 1] = new_this;
-        // Shift remaining args to start at base_reg
         for (ushort i = 0; i < remaining; i++) {
             ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
         }
-        // Signal re-dispatch
         ctx.needs_re_dispatch = true;
         ctx.re_nargs = remaining;
     } else {
@@ -16014,11 +16036,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register String constructor
     if (!register_string_constructor(global_env, heap)) return false;
 
+    // Register Function constructor and prototype (call, apply, bind)
+    // Must be before Array so that builtins inherit .call/.apply/.bind from Function.prototype
+    if (!register_function_constructor(global_env, heap)) return false;
+
     // Register Array constructor
     if (!register_array_constructor(global_env, heap)) return false;
-
-    // Register Function constructor and prototype (call, apply, bind)
-    if (!register_function_constructor(global_env, heap)) return false;
 
     // Register Date constructor and prototype
     if (!register_date_constructor(global_env, heap)) return false;
@@ -17110,6 +17133,56 @@ fn bool register_proto_accessor(HObject* proto, Heap* heap, char[] name, uint ge
 // Array.prototype callback methods — native implementations using heap.call_fn
 // ============================================================================
 
+/// Helper: ToObject for Array.prototype methods (ES5 §9.9).
+/// Wraps primitives (Boolean/Number/String) into wrapper objects.
+/// Returns null-optional for null/undefined (caller should throw TypeError).
+fn HObject*? arr_to_object(TVal val, Heap* heap) {
+    if (val.is_object() && val.get_heapptr() != null) {
+        return (HObject*)val.get_heapptr();
+    }
+    if (val.is_null() || val.is_undefined()) {
+        return null;
+    }
+    // Boolean → Boolean wrapper
+    if (val.is_boolean()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.BOOLEAN);
+        if (try obj = obj_raw) {
+            obj.prototype = heap.bool_proto;
+            obj.extra.prim.primitive_value.set_boolean(val.get_boolean());
+            return obj;
+        }
+        return null;
+    }
+    // Number/fastint → Number wrapper
+    if (val.is_number() || val.is_fastint()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.NUMBER);
+        if (try obj = obj_raw) {
+            obj.prototype = heap.number_proto;
+            obj.extra.prim.primitive_value = val;
+            return obj;
+        }
+        return null;
+    }
+    // String → String wrapper with indexed properties
+    if (val.is_string()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.STRING);
+        if (try obj = obj_raw) {
+            obj.flags.exotic_stringobj = true;
+            obj.prototype = heap.string_proto;
+            HString* prim_str = (HString*)val.get_heapptr();
+            obj.extra.prim.primitive_value.set_string(prim_str);
+            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            TVal len_tv;
+            len_tv.set_fastint((long)prim_str.clen);
+            obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+            populate_string_indexed_props(obj, prim_str, heap);
+            return obj;
+        }
+        return null;
+    }
+    return null;
+}
+
 /// Helper: throw TypeError with a message.
 fn void arr_throw_type_error(Heap* heap, char[] msg) {
     HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
@@ -17185,19 +17258,12 @@ fn TVal arr_call_callback(TVal* vm, TVal callback, TVal thisArg, TVal v, uint k,
 /// Array.prototype.forEach(callbackfn[, thisArg]) — ES5 §15.4.4.18
 fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined();
-        ctx.should_throw = true;
-        return;
-    }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17219,17 +17285,12 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
 /// Array.prototype.map(callbackfn[, thisArg]) — ES5 §15.4.4.19
 fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17266,17 +17327,12 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
 /// Array.prototype.filter(callbackfn[, thisArg]) — ES5 §15.4.4.20
 fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17315,17 +17371,12 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
 /// Array.prototype.every(callbackfn[, thisArg]) — ES5 §15.4.4.17
 fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17351,17 +17402,12 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
 /// Array.prototype.some(callbackfn[, thisArg]) — ES5 §15.4.4.16
 fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17387,17 +17433,12 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
 /// Array.prototype.reduce(callbackfn[, initialValue]) — ES5 §15.4.4.21
 fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
@@ -17441,17 +17482,12 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
 /// Array.prototype.reduceRight(callbackfn[, initialValue]) — ES5 §15.4.4.22
 fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_nullish()) {
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
         arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
-    HObject* o;
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        o = (HObject*)this_val.get_heapptr();
-    } else {
-        arr_throw_type_error(ctx.heap, "Object expected");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
-    }
+    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
         ctx.result.set_undefined(); ctx.should_throw = true; return;
     }
