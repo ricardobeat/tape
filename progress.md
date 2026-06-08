@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 141 (fresh test262 counts — +109 net passes across phases 0-8)
+**Last Updated:** Session 142 (quick.sh Test262Error.prototype.constructor fix — +4 quick.sh passes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 141, 2026-06-08)
+## Summary (after Session 142, 2026-06-08)
 
 | Metric | Value |
 |---|---|
@@ -300,7 +300,7 @@ CATCH. Impact: Phase 0-1 511→533 (+22), Phase 1 35→46 (+11), Phase 2 924→9
 Phase 6 1060→1141 (+81), Phase 7 177→182 (+5), Phase 8 561→607 (+46).
 quick.sh 260→269 (+9). Both nanbox and nonanbox builds pass.
 
-## Per-Phase Status (fresh run, 2026-06-08, after Session 141)
+## Per-Phase Status (fresh run, 2026-06-08, after Session 142)
 
 | Phase | Total | Pass | Fail | Skip | Notes |
 |---|---|---|---|---|---|
