@@ -11,9 +11,11 @@ make_harness() {
   cat "$SCRIPT_DIR/../test262/harness/sta.js"
   cat "$SCRIPT_DIR/../test262/harness/assert.js"
   echo 'var __test262_pass = 0, __test262_fail = 0;'
-  echo 'Test262Error = function(m) { __test262_fail++; print("FAIL: " + (m || "")); };'
+  echo 'var _OrigT262E = Test262Error;'
+  echo 'Test262Error = function(m) { if (this instanceof Test262Error) { this.message = m || ""; return; } __test262_fail++; print("FAIL: " + (m || "")); };'
+  echo 'Test262Error.prototype = Object.create(_OrigT262E.prototype);'
   echo 'Test262Error.prototype.toString = function() { return "Test262Error"; };'
-  echo 'Test262Error.thrower = function(m) { new Test262Error(m); };'
+  echo 'Test262Error.thrower = function(m) { __test262_fail++; print("FAIL: " + (m || "")); };'
   echo 'function $DONOTEVALUATE() {}'
 }
 

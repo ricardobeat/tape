@@ -779,23 +779,38 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
         if (vm != null && vm.heap.call_fn != null && vm.heap.toprimitive_symbol != null) {
             Heap* h = vm.heap;
             HString* toprim_key = h.toprimitive_symbol;
-            TVal? toprim_val = obj.get_prop_proto(toprim_key);
-            if (try toprim_fn = toprim_val) {
-                if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
-                    // Call Symbol.toPrimitive(obj, hint) where hint defaults to "default"
-                    HString* default_str = intern_string(vm, "default");
-                    TVal hint_val;
-                    hint_val.set_string(default_str);
-                    TVal[1] hint_args;
-                    hint_args[0] = hint_val;
-                    TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
-                    if (vm_check_call_fn_error(vm)) return *val;
-                    if (!prim.is_object()) return prim;
-                    // ES6 §7.1.1 step 6.d: result is Object → TypeError
-                    // Signal caller via throw_pending (checked after return)
-                    vm_set_toprimitive_error(vm);
-                    return *val;
+            // Use find_accessor_proto to properly invoke getters (Object.defineProperty)
+            hobject::AccessorResult acc = obj.find_accessor_proto(toprim_key, true);
+            TVal toprim_fn;
+            if (acc.found) {
+                // Getter-defined Symbol.toPrimitive: invoke the getter
+                TVal getter_this;
+                getter_this.set_object(acc.this_obj);
+                toprim_fn = h.call_fn(vm, acc.accessor_fn, null, 0, getter_this);
+                if (vm_check_call_fn_error(vm)) return *val;
+            } else {
+                // Data property: try get_prop_proto as fallback
+                TVal? toprim_val = obj.get_prop_proto(toprim_key);
+                if (try tv = toprim_val) {
+                    toprim_fn = tv;
+                } else {
+                    toprim_fn.set_undefined();
                 }
+            }
+            if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
+                // Call Symbol.toPrimitive(obj, hint) where hint defaults to "default"
+                HString* default_str = intern_string(vm, "default");
+                TVal hint_val;
+                hint_val.set_string(default_str);
+                TVal[1] hint_args;
+                hint_args[0] = hint_val;
+                TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
+                if (vm_check_call_fn_error(vm)) return *val;
+                if (!prim.is_object()) return prim;
+                // ES6 §7.1.1 step 6.d: result is Object → TypeError
+                // Signal caller via throw_pending (checked after return)
+                vm_set_toprimitive_error(vm);
+                return *val;
             }
         }
         // Generic objects: call valueOf(), then toString()
@@ -1585,6 +1600,26 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
             vm.valstack_bottom = vm.valstack;
             vm.current_func = target;
+
+            // Create arguments object if the function references 'arguments'
+            if (target.uses_arguments()) {
+                HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+                if (try args_obj = args_obj_raw) {
+                    // Store arguments in dense array_part (avoids O(argc) string key allocs)
+                    for (uint ai = 0; ai < nargs; ai++) {
+                        args_obj.set_array_idx(ai, vm.valstack[ai]);
+                    }
+                    // No own .length property — handled via exotic_arguments fast path in GETPROP
+                    args_obj.prototype = null;
+                    // Declare 'arguments' in the function's var_env
+                    HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+                    if (args_name != null) {
+                        TVal args_tv;
+                        args_tv.set_object(args_obj);
+                        env::env_declare(act.var_env, args_name, args_tv);
+                    }
+                }
+            }
 
             // Run the function via Vm.run (skip Vm.execute init — we already set up state)
             TVal? result_opt = Vm.run(vm);
