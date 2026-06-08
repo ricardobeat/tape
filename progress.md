@@ -1,16 +1,16 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 144 (Array.prototype ToObject + Function.prototype.call init order fix)
+**Last Updated:** Session 145 (Array.sort comparator + String.replace RegExp + String.split RegExp)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 144, 2026-06-08)
+## Summary (after Session 145, 2026-06-08)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 53,569 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,392 |
-| Currently failing (phases 0-8) | ~10,345 |
+| Currently passing (phases 0-8) | ~12,450 |
+| Currently failing (phases 0-8) | ~10,287 |
 | Pass rate (phases 0-8 of run) | ~52% |
 
 ## Per-Phase Status
@@ -20,10 +20,10 @@
 | 0-1: Core VM | 2,185 | 567 | 321 | 1,297 |
 | 1: Calling Convention | 426 | 47 | 41 | 338 |
 | 2: Basic Operators | 1,969 | 952 | 192 | 825 |
-| 3: Object System | 7,767 | 3,599 | 2,201 | 1,967 |
+| 3: Object System | 7,767 | 3,605 | 2,195 | 1,967 |
 | 4: Error Handling | 402 | 119 | 82 | 201 |
-| 5: Built-in Constructors | 8,616 | 4,223 | 2,868 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,922 | 1,855 | 936 |
+| 5: Built-in Constructors | 8,616 | 4,244 | 2,847 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,953 | 1,824 | 936 |
 | 7: ES5 Features | 1,240 | 183 | 110 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 780 | 504 | 1,463 |
 | 11: Arrow/Templates | 427 | 59 | 44 | 324 |
@@ -88,6 +88,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 145 | Array.sort comparator + String.replace/split RegExp | +58 |
 | 144 | Function.prototype.call init order + Array ToObject | +1,520 |
 | 143 | String.prototype locale methods + localeCompare | +54 |
 | 140 | Symbol.toPrimitive getter + arguments object + harness | +29 |

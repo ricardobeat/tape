@@ -1,30 +1,30 @@
 # Plan 014: test262 Coverage Review
 
 **Date:** 2026-06-08
-**Status:** Current as of Session 144
+**Status:** Current as of Session 145
 
 ## Summary
 
 - **Total test262 tests:** 53,569
 - **ES5-relevant tests:** ~26,353
-- **Currently passing (phases 0-8):** ~12,392
-- **Currently failing (phases 0-8):** ~10,345
+- **Currently passing (phases 0-8):** ~12,450
+- **Currently failing (phases 0-8):** ~10,287
 - **Pass rate (phases 0-8):** ~52%
 - **Target:** 80% pass rate on ES5/ES6 core
 
-## Per-Phase Status (fresh run, 2026-06-08, after Session 144)
+## Per-Phase Status (fresh run, 2026-06-08, after Session 145)
 
 | Phase | Total | Pass | Fail | Skip | Notes |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 567 | 321 | 1,297 | +1 |
+| 0-1: Core VM | 2,185 | 567 | 321 | 1,297 | no change |
 | 1: Calling Convention | 426 | 47 | 41 | 338 | no change |
 | 2: Basic Operators | 1,969 | 952 | 192 | 825 | no change |
-| 3: Object System | 7,767 | 3,599 | 2,201 | 1,967 | +475 (call init order) |
+| 3: Object System | 7,767 | 3,605 | 2,195 | 1,967 | +6 (sort comparator) |
 | 4: Error Handling | 402 | 119 | 82 | 201 | no change |
-| 5: Built-in Constructors | 8,616 | 4,223 | 2,868 | 1,525 | +502 (call init order) |
-| 6: Prototype Methods | 4,713 | 1,922 | 1,855 | 936 | +487 (call init order) |
-| 7: ES5 Features | 1,240 | 183 | 110 | 947 | +1 |
-| 8: ES5 Built-in Objects | 2,747 | 780 | 504 | 1,463 | -6 (noise) |
+| 5: Built-in Constructors | 8,616 | 4,244 | 2,847 | 1,525 | +21 (replace/split RegExp) |
+| 6: Prototype Methods | 4,713 | 1,953 | 1,824 | 936 | +31 (sort/replace/split) |
+| 7: ES5 Features | 1,240 | 183 | 110 | 947 | no change |
+| 8: ES5 Built-in Objects | 2,747 | 780 | 504 | 1,463 | no change |
 | 11: Arrow/Templates | 427 | 59 | 44 | 324 | Working, edge cases |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | All skipped |
 | 14: for-of | 751 | 5 | 27 | 719 | String enum helps |
