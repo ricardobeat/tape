@@ -274,7 +274,7 @@ fn uint HString.char_offset_to_byte_offset(&self, uint char_offset) {
 fn HString*? hstring_alloc(void* heap_ptr, char[] data, uint hash) {
     usz total = HSTRING_HDR_SIZE + (usz)data.len + 1;  // +1 for NUL
 
-    void* raw = ((heap::Heap*)heap_ptr).alloc(total) ?? null;
+    void* raw = ((heap::Heap*)heap_ptr).alloc_no_gc(total) ?? null;
     if (raw == null) {
         return duktape::types::ALLOC_ERROR~;
     }
@@ -346,7 +346,7 @@ fn HString*? hstring_concat(void* heap_ptr, HString* a, HString* b) {
     usz b_len = (usz)b.blen;
     usz total = HSTRING_HDR_SIZE + a_len + b_len + 1;
 
-    void* raw = ((heap::Heap*)heap_ptr).alloc(total) ?? null;
+    void* raw = ((heap::Heap*)heap_ptr).alloc_no_gc(total) ?? null;
     if (raw == null) {
         return duktape::types::ALLOC_ERROR~;
     }

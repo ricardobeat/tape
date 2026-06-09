@@ -654,6 +654,38 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     return new_id;
 }
 
+/// Transition to a new shape for a property that is KNOWN to be new.
+/// Skips the O(N) chain walk — the caller has already confirmed via
+/// find_prop_idx() that the key does not exist in the object.
+fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
+    if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
+        return cur_shape_id;
+    }
+
+    hobject::Shape* cur = self.shapes[cur_shape_id];
+
+    // Check transition table for existing child shape (another object may have
+    // already taken the same transition).
+    uint existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_NONE) {
+        return existing;
+    }
+
+    // Allocate a new shape that extends the current one.
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    if (ns == null) return cur_shape_id;
+
+    uint new_id = self.alloc_shape_slot();
+    if (new_id == SHAPE_NONE) {
+        hobject::shape_free(ns, (void*)self);
+        return cur_shape_id;
+    }
+
+    self.shapes[new_id] = ns;
+    self.insert_transition(cur_shape_id, key, new_id);
+    return new_id;
+}
+
 fn void Heap.bump_shape_gen(&self, uint shape_id) {
     if (shape_id < self.shape_count && self.shapes[shape_id] != null) {
         self.shapes[shape_id].generation++;
@@ -975,6 +1007,21 @@ fn void*? Heap.alloc(&self, usz size) {
     void* ptr = self.alloc_func(self.heap_udata, size);
     if (ptr == null && size > 0) {
         // Emergency GC then retry once
+        self.trigger_gc();
+        ptr = self.alloc_func(self.heap_udata, size);
+        if (ptr == null) {
+            return HEAP_ALLOC_FAULT~;
+        }
+    }
+    return ptr;
+}
+
+/// Allocate without triggering GC.  Use for RC-managed objects (strings)
+/// that are not in the mark-and-sweep heap_allocated list.
+fn void*? Heap.alloc_no_gc(&self, usz size) {
+    void* ptr = self.alloc_func(self.heap_udata, size);
+    if (ptr == null && size > 0) {
+        // OOM — try a GC pass to reclaim M&S objects, then retry once
         self.trigger_gc();
         ptr = self.alloc_func(self.heap_udata, size);
         if (ptr == null) {
@@ -1526,7 +1573,20 @@ fn void Heap.sweep(&self) {
  * future hybrid RC+M&S string collection if needed.
  */
 fn void Heap.sweep_strings(&self) {
-    // No-op: strings are managed by reference counting.
+    // Sweep interned strings that have only the string table reference
+    // (refcount == 1).  These strings are no longer referenced by any
+    // register, property, or stack slot — only the table keeps them alive.
+    // Removing them frees memory while keeping the table consistent.
+    if (self.str_table_size == 0) { return; }
+    for (uint i = 0; i < self.str_table_size; i++) {
+        HString* entry = self.str_table[i];
+        if (entry == null || entry == STR_TABLE_TOMBSTONE) { continue; }
+        if (entry.refcount == 1) {
+            self.str_table[i] = STR_TABLE_TOMBSTONE;
+            if (self.str_table_used > 0) { self.str_table_used--; }
+            self.free_string(entry);
+        }
+    }
 }
 
 /**
@@ -1745,6 +1805,11 @@ fn HString* Heap.str_intern(&self, char[] data) {
     HString*? new_s = hstring::hstring_alloc(self, data, hash);
     if (try s = new_s) {
         self.str_table_insert(s);
+        // The string table holds a reference to each interned string.
+        // This keeps the string alive in the table even after all external
+        // references (registers, properties) are released.  sweep_strings()
+        // reclaims strings that have only the table reference left.
+        ((HeapHeader*)s).incref();
         return s;
     }
     return null;

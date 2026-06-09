@@ -548,20 +548,36 @@ fn void HObject.ensure_prop_hash(&self) {
 
     HashEntry* entries = (HashEntry*)new_hash;
     uint mask = new_mask;
-    // Walk shape chain to get keys for all properties
-    hobject::Shape* sh = self.shape;
-    while (sh != null) {
-        hobject::ShapeProperty* sp = sh.props();
-        for (uint j = 0; j < sh.own_count; j++) {
-            void* k = sp[j].key;
+
+    if (self.prop_hash != null) {
+        // Rehash from existing hash table entries — O(table_size) not O(chain_depth)
+        HashEntry* old_entries = (HashEntry*)self.prop_hash;
+        uint old_mask = self.prop_hash_mask;
+        for (uint i = 0; i <= old_mask; i++) {
+            void* k = old_entries[i].key;
             if (k == null) continue;
             uint h = hash_key(k);
             uint slot = h & mask;
             while (entries[slot].key != null) slot = (slot + 1) & mask;
             entries[slot].key = k;
-            entries[slot].index = sh.offset + j;
+            entries[slot].index = old_entries[i].index;
         }
-        sh = sh.parent_shape;
+    } else {
+        // No existing hash table — walk shape chain (only happens once, at HASH_MIN_PROPS threshold)
+        hobject::Shape* sh = self.shape;
+        while (sh != null) {
+            hobject::ShapeProperty* sp = sh.props();
+            for (uint j = 0; j < sh.own_count; j++) {
+                void* k = sp[j].key;
+                if (k == null) continue;
+                uint h = hash_key(k);
+                uint slot = h & mask;
+                while (entries[slot].key != null) slot = (slot + 1) & mask;
+                entries[slot].key = k;
+                entries[slot].index = sh.offset + j;
+            }
+            sh = sh.parent_shape;
+        }
     }
 
     if (self.prop_hash != null) libc::free(self.prop_hash);
@@ -716,9 +732,11 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     }
 
     // --- Transition shape to include the new property ---
+    // We already called find_prop_idx() above which confirmed the key is new,
+    // so use transition_shape_new() which skips the O(N) chain walk.
     if (self.heap_ptr != null) {
         heap::Heap* h = (heap::Heap*)self.heap_ptr;
-        uint new_shape_id = h.transition_shape(self.shape_id, key);
+        uint new_shape_id = h.transition_shape_new(self.shape_id, key);
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
             self.shape = h.get_shape(new_shape_id);
