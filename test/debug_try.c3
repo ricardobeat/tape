@@ -1,7 +1,6 @@
 module test;
 
 import duktape::lexer;
-import duktape::parser;
 import duktape::compiler;
 import duktape::bytecode;
 import duktape::types;

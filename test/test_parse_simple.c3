@@ -2,7 +2,6 @@ module test_parse_simple;
 
 import duktape::heap;
 import duktape::lexer;
-import duktape::parser;
 import std::io;
 
 fn int main() {
