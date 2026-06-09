@@ -240,6 +240,12 @@ struct CompilerContext {
     // that would be hoisted to the function scope.
     bool has_local_bindings;
 
+    // Closure tracking — set to true when a nested function is defined in
+    // this function's body.  Combined with has_local_bindings to decide
+    // needs_env: if the function has var bindings but no nested functions
+    // that could capture them, the env can be skipped.
+    bool has_closures;
+
     // Direct eval tracking — when true, the CALL path must create a fresh env.
     bool has_direct_eval;
 
@@ -432,14 +438,19 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_generator = self.is_generator;
     func.flags.uses_arguments = self.uses_arguments;
 
-    // `needs_env` is false when the function is a plain non-arrow, non-generator,
-    // non-async function with no var/function declarations, no arguments, no eval,
-    // no rest params and no default params — the CALL fast path can reuse the
-    // parent's env directly, avoiding two allocations per call.
+    // `needs_env` controls whether the CALL fast path allocates a fresh
+    // env record + bindings object per call (2 allocations).  We only need
+    // a fresh env when the function's scope is actually accessed at runtime:
+    //   - var bindings captured by a nested closure
+    //   - arguments object
+    //   - direct eval
+    // Functions with var declarations but no closures, eval, or arguments
+    // can reuse the parent's env directly.
     bool has_params_needing_env = self.has_rest || self.default_count > 0;
-    bool can_skip_env = !self.has_local_bindings
-                     && !self.uses_arguments
-                     && !self.has_direct_eval
+    bool needs_runtime_env = (self.has_local_bindings && self.has_closures)
+                          || self.uses_arguments
+                          || self.has_direct_eval;
+    bool can_skip_env = !needs_runtime_env
                      && !has_params_needing_env
                      && !self.is_arrow
                      && !self.is_generator
@@ -2252,6 +2263,7 @@ fn void? CompilerContext.function_declaration(&self) {
         inner_idx = self.inner_func_count;
         self.inner_funcs[inner_idx] = inner;
         self.inner_func_count++;
+        self.has_closures = true;
     }
 
     // Emit CLOSURE to create the function object
@@ -2494,6 +2506,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                 computed_key_inner_idx = self.inner_func_count;
                 self.inner_funcs[computed_key_inner_idx] = key_func;
                 self.inner_func_count++;
+        self.has_closures = true;
             }
 
             // Still need a method name for compile_inner_function (used as debug name)
@@ -2525,6 +2538,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                             computed_key_inner_idx = self.inner_func_count;
                             self.inner_funcs[computed_key_inner_idx] = accessor_key_func;
                             self.inner_func_count++;
+                            self.has_closures = true;
                         }
                         method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
                     } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)) {
@@ -2583,6 +2597,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             inner_idx = self.inner_func_count;
             self.inner_funcs[inner_idx] = inner;
             self.inner_func_count++;
+        self.has_closures = true;
         }
 
         if (is_constructor) {
@@ -2614,6 +2629,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             ctor_inner_idx = self.inner_func_count;
             self.inner_funcs[ctor_inner_idx] = ctor_func;
             self.inner_func_count++;
+        self.has_closures = true;
         }
     }
 
@@ -2743,6 +2759,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                     self.defaults[self.default_count].default_func_idx = def_idx;
                     self.default_count++;
                     self.inner_func_count++;
+                    self.has_closures = true;
                 }
             }
 
@@ -5077,6 +5094,7 @@ fn ushort? CompilerContext.function_expr(&self) {
         inner_idx = self.inner_func_count;
         self.inner_funcs[inner_idx] = inner;
         self.inner_func_count++;
+        self.has_closures = true;
     }
 
     ushort result = self.alloc_reg();
@@ -5095,6 +5113,7 @@ fn ushort? CompilerContext.function_expr_body(&self) {
         inner_idx = self.inner_func_count;
         self.inner_funcs[inner_idx] = inner;
         self.inner_func_count++;
+        self.has_closures = true;
     }
 
     ushort result = self.alloc_reg();
@@ -5121,6 +5140,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
         inner_idx = self.inner_func_count;
         self.inner_funcs[inner_idx] = inner;
         self.inner_func_count++;
+        self.has_closures = true;
     }
 
     ushort result = self.alloc_reg();

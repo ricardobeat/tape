@@ -2762,11 +2762,16 @@ fn TVal? Vm.run(Vm* vm) {
                     if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
                         HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
                         if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
-                            // Fast path: when dest is not a heap pointer (common for
-                            // fastint/number results), skip decref and do a raw copy.
+                            // Ultra-fast path: when the IC value is not a heap
+                            // pointer (common for fastint/number results), skip
+                            // decref/incref/track_heap_store entirely.
                             TVal ic_val = ic.prop_value_ptr.data.value;
-                            vm.heap.tval_copy_ref(ra, &ic_val);
-                            track_heap_store(act, ra, (uint)insn.a);
+                            if (!ic_val.is_heap_allocated()) {
+                                *ra = ic_val;
+                            } else {
+                                vm.heap.tval_copy_ref(ra, &ic_val);
+                                track_heap_store(act, ra, (uint)insn.a);
+                            }
                             break;
                         }
                     }
