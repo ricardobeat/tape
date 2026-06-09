@@ -1380,9 +1380,10 @@ fn void Heap.drain_gray(&self) {
             case ObjClass.ARRAY_ITERATOR:
             case ObjClass.MAP_ITERATOR:
             case ObjClass.SET_ITERATOR:
-                // Mark the iterated object (target can be collected otherwise)
-                if (obj.iterator_target != null) {
-                    self.mark_hobject(obj.iterator_target);
+                // Mark the iterated object (extra.iter.target, active only for
+                // these three iterator classes — not STRING_ITERATOR).
+                if (obj.extra.iter.target != null) {
+                    self.mark_hobject(obj.extra.iter.target);
                 }
                 break;
             case ObjClass.STRING_ITERATOR:

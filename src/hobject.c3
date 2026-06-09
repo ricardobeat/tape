@@ -346,6 +346,19 @@ struct HObjectGenerator {
     EnvRecord*        lex_env;
 }
 
+/// Array/Map/Set iterator state.
+/// Active when flags.obj_class is ARRAY_ITERATOR, MAP_ITERATOR, or SET_ITERATOR.
+///
+/// STRING_ITERATOR is a special case: it stores the iterated string in
+/// extra.prim.primitive_value (bytes 0-7) for GC tracing, and the current
+/// position in extra.iter.index (bytes 8-11).  The two fields occupy
+/// non-overlapping byte ranges within the union, so the overlap is safe.
+struct HObjectIterator {
+    HObject*          target;   /// The iterated object (array, Map, or Set).
+    uint              index;    /// Current iteration position.
+    uint              kind;     /// 0=values, 1=keys, 2=entries.
+}
+
 /// Tagged union of subtype-specific fields.
 /// Discriminator is flags.obj_class (in the common header).
 union HObjectExtra {
@@ -353,6 +366,7 @@ union HObjectExtra {
     HObjectPrimitive prim;
     HObjectRegExp    regexp;
     HObjectGenerator gen;
+    HObjectIterator  iter;
 }
 
 /// The core ECMAScript object representation.
@@ -361,9 +375,9 @@ union HObjectExtra {
 /// next, prev) are binary-compatible with HeapHeader, allowing a raw cast
 /// for the GC's linked-list walk.
 ///
-/// Subtype-specific fields (function, primitive wrapper, regexp, generator)
-/// are stored in a union to save memory — only one variant is active at a
-/// time, discriminated by flags.obj_class.
+/// Subtype-specific fields (function, primitive wrapper, regexp, generator,
+/// and iterator state) are stored in a union to save memory — only one
+/// variant is active at a time, discriminated by flags.obj_class.
 ///
 /// Property storage uses QuickJS-style shapes: property names and flags
 /// live in the shared Shape, objects only store values.
@@ -412,12 +426,10 @@ struct HObject {
 
     // --- Subtype-specific fields (overlapping union) -----------------------
     /// Only one variant is active, determined by flags.obj_class.
+    /// Iterator objects (ARRAY_ITERATOR, MAP_ITERATOR, SET_ITERATOR) use the
+    /// extra.iter variant.  STRING_ITERATOR additionally reuses extra.prim for
+    /// GC tracing of the iterated string (non-overlapping byte ranges).
     HObjectExtra  extra;
-
-    // --- Iterator state (for ARRAY_ITERATOR / STRING_ITERATOR objects) -------
-    HObject*      iterator_target;
-    uint          iterator_index;
-    uint          iterator_kind;
 
     // --- Array length shadow cache -----------------------------------------
     /// Cached array length for fast reads. Synced by put_prop and SETALEN.

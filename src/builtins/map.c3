@@ -323,14 +323,14 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    HObject* target = iter.iterator_target;
+    HObject* target = iter.extra.iter.target;
     if (target == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    uint idx = iter.iterator_index * 2;  // Map entries are [k0,v0,k1,v1,...]
-    uint kind = iter.iterator_kind;
+    uint idx = iter.extra.iter.index * 2;  // Map entries are [k0,v0,k1,v1,...]
+    uint kind = iter.extra.iter.kind;
 
     bool done = false;
     TVal value;
@@ -362,7 +362,7 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
                     value.set_object(pair);
                 }
             }
-            iter.iterator_index += 1;
+            iter.extra.iter.index += 1;
         } else {
             done = true;
         }

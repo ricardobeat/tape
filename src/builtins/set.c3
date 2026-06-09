@@ -226,14 +226,14 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    HObject* target = iter.iterator_target;
+    HObject* target = iter.extra.iter.target;
     if (target == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    uint idx = iter.iterator_index;
-    uint kind = iter.iterator_kind;
+    uint idx = iter.extra.iter.index;
+    uint kind = iter.extra.iter.kind;
 
     bool done = false;
     TVal value;
@@ -263,7 +263,7 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
                     value.set_object(pair);
                 }
             }
-            iter.iterator_index += 1;
+            iter.extra.iter.index += 1;
         } else {
             done = true;
         }
