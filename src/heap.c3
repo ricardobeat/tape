@@ -44,7 +44,6 @@ const uint  INITIAL_STR_TABLE_SIZE  = 256;
 const float STR_TABLE_LOAD_FACTOR   = 0.70;
 const long  GC_INITIAL_TRIGGER      = 1024;
 const long  GC_TRIGGER_GROW_FACTOR  = 2;
-const long  GC_MAX_TRIGGER          = 4096;
 /// Sentinel refcount for strings that must never be freed (builtins, symbols).
 const uint  STRING_PINNED_REFCOUNT  = 0x7FFF_FFFF;
 /// Initial capacity for the gray object stack (grows as needed).
@@ -1622,13 +1621,10 @@ fn void Heap.mark_and_sweep(&self) {
     // --- Phase 3b: Sweep unreachable strings ---
     self.sweep_strings();
 
-    // --- Phase 4: Reset trigger counter (capped) ---
+    // --- Phase 4: Reset trigger counter (scales with live heap) ---
     long new_trigger = (long)self.live_obj_count * GC_TRIGGER_GROW_FACTOR;
     if (new_trigger < GC_INITIAL_TRIGGER) {
         new_trigger = GC_INITIAL_TRIGGER;
-    }
-    if (new_trigger > GC_MAX_TRIGGER) {
-        new_trigger = GC_MAX_TRIGGER;
     }
     self.gc_trigger_counter = new_trigger;
     self.gc_running = false;
