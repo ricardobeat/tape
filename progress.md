@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 145 (Array.sort comparator + String.replace RegExp + String.split RegExp)
+**Last Updated:** Session 146 (String reference counting on delta shapes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 145, 2026-06-08)
+## Summary (after Session 146, 2026-06-09)
 
 | Metric | Value |
 |---|---|
@@ -88,6 +88,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 146 | String RC rebased on delta shapes (plans 016/017/018) | — |
 | 145 | Array.sort comparator + String.replace/split RegExp | +58 |
 | 144 | Function.prototype.call init order + Array ToObject | +1,520 |
 | 143 | String.prototype locale methods + localeCompare | +54 |
