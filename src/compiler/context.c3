@@ -32,9 +32,19 @@ const uint MAX_SCOPE_DEPTH = 256;
 const uint MAX_LOOP_DEPTH  = 16;
 const uint MAX_TRY_DEPTH   = 8;
 const uint MAX_LABELS       = 16;
+const uint MAX_CONST_HASH   = 1024;  // Open-addressing hash table for constant dedup
+/// Insertion cap keeping at least 25% of slots empty so probes terminate early.
+const uint MAX_CONST_HASH_FILL = MAX_CONST_HASH - MAX_CONST_HASH / 4;
 
 /// Sentinel for "no patch" in break/continue patch lists.
 const uint NO_PATCH = 0xFFFF_FFFF;
+
+// Hash table entry for constant pool deduplication.
+// Maps constant TVal bits to constant pool index via open-addressing.
+struct ConstHashEntry {
+    ulong hash;   // 0 = empty slot; TVal bits otherwise
+    uint  index;  // index into constants array
+}
 
 // ============================================================================
 // Binary operator precedence levels (for Pratt parser)
@@ -141,6 +151,9 @@ struct CompilerContext {
     // Constant pool
     TVal[MAX_CONSTANTS] constants;
     uint const_count;
+    // Hash table for constant deduplication: maps TVal bits → constant index
+    ConstHashEntry[MAX_CONST_HASH] const_hash;
+    uint const_hash_count;
 
     // Code emission
     Instruction[MAX_CODE] code;
@@ -262,6 +275,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.try_depth = 0;
     self.label_count = 0;
     self.patch_count = 0;
+    self.const_hash_count = 0;
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
 
