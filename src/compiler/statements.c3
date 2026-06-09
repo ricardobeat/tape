@@ -1,0 +1,1196 @@
+module duktape::compiler;
+
+import duktape::types;
+import duktape::lexer;
+import duktape::bytecode;
+import duktape::hstring;
+import duktape::hobject;
+import duktape::heap;
+import libc;
+import std::io;
+
+// ============================================================================
+// Statement parsing
+// ============================================================================
+
+/// Parse and compile a single statement, dispatching on token type.
+fn void? CompilerContext.statement(&self) {
+    TokenType tt = self.peek_type();
+
+    switch (tt) {
+        case TokenType.LBRACE:
+            self.block(false)!;
+        case TokenType.VAR:
+            self.var_declaration()!;
+        case TokenType.LET:
+            self.var_declaration()!;
+        case TokenType.CONST:
+            self.var_declaration()!;
+        case TokenType.IF:
+            self.if_statement()!;
+        case TokenType.WHILE:
+            self.while_statement()!;
+        case TokenType.DO:
+            self.do_while_statement()!;
+        case TokenType.FOR:
+            self.for_statement()!;
+        case TokenType.RETURN:
+            self.return_statement()!;
+        case TokenType.THROW:
+            self.throw_statement()!;
+        case TokenType.TRY:
+            self.try_statement()!;
+        case TokenType.SWITCH:
+            self.switch_statement()!;
+        case TokenType.WITH:
+            self.with_statement()!;
+        case TokenType.BREAK:
+            self.break_statement()!;
+        case TokenType.CONTINUE:
+            self.continue_statement()!;
+        case TokenType.FUNCTION:
+            self.function_declaration()!;
+        case TokenType.CLASS:
+            self.class_declaration()!;
+        case TokenType.SEMICOLON:
+            // Empty statement
+            self.advance()!;
+        case TokenType.DEBUGGER:
+            self.advance()!;
+            self.emit_simple(Opcode.DEBUGGER);
+            self.match(TokenType.SEMICOLON);
+        default:
+            // Check for labels: identifier : statement
+            // We consume the identifier and check if the next token is ':'
+            if (tt == TokenType.IDENTIFIER) {
+                // Consume the identifier token to check what follows
+                Token id_tok = self.advance()!;
+                if (self.peek_type() == TokenType.COLON) {
+                    self.advance()!; // consume ':'
+                    self.labeled_statement(id_tok.str_value)!;
+                    break;
+                }
+                // Not a label — push the identifier back and fall through
+                self.lexer.pushback(id_tok);
+            }
+            self.expression_statement()!;
+    }
+}
+
+/// Check if a name is restricted in strict mode (ES5 §11.6.2.2, §12.10.1).
+/// `eval` and `arguments` cannot be used as identifiers.
+fn bool is_restricted_name(char[] name) @inline {
+    if (name.len == 4 && name[0] == 'e' && name[1] == 'v' && name[2] == 'a' && name[3] == 'l') {
+        return true;
+    }
+    if (name.len == 9 && name[0] == 'a' && name[1] == 'r' && name[2] == 'g' &&
+        name[3] == 'u' && name[4] == 'm' && name[5] == 'e' &&
+        name[6] == 'n' && name[7] == 't' && name[8] == 's') {
+        return true;
+    }
+    return false;
+}
+
+/// Parse directive prologue statements at the start of a function body or program.
+/// Detects "use strict" and enables strict mode if found (ES5 §14.1).
+fn void? CompilerContext.parse_directives(&self) {
+    while (true) {
+        if (!self.check(TokenType.STRING)) {
+            break;
+        }
+
+        Token str_tok = self.advance()!;
+
+        bool has_semicolon = self.check(TokenType.SEMICOLON);
+        bool has_asi = self.lexer.seen_line_term;
+
+        if (has_semicolon || has_asi) {
+            if (has_semicolon) {
+                self.advance()!;
+            }
+
+            if (str_tok.str_value.len == 10) {
+                bool is_use_strict = true;
+                char[] expected = "use strict";
+                for (usz i = 0; i < 10; i++) {
+                    if (str_tok.str_value[i] != expected[i]) {
+                        is_use_strict = false;
+                        break;
+                    }
+                }
+                if (is_use_strict && !self.is_strict) {
+                    self.is_strict = true;
+                    self.lexer.set_strict(true);
+                }
+            }
+        } else {
+            self.lexer.pushback(str_tok);
+            break;
+        }
+    }
+}
+
+/// Pre-scan tokens in the current block to find all `let`/`const` variable
+/// declarations at the top level of the block (brace depth 0, excluding nested
+/// blocks).  Saves and restores the lexer state so normal parsing can proceed
+/// afterwards.
+///
+/// Returns the number of variable names found (0 to MAX_PRESCAN_NAMES).
+/// Each name's position in the source text is stored in `spans` so the
+/// caller can reconstruct the `char[]` slice from `lexer.source`.
+fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capacity) {
+    // --- Save lexer state ---
+    uint saved_pos    = self.lexer.pos;
+    uint saved_line   = self.lexer.line;
+    uint saved_col    = self.lexer.col;
+    Token saved_cur   = self.lexer.current;
+    Token saved_look  = self.lexer.lookahead;
+    bool  saved_haslk = self.lexer.has_lookahead;
+    Token saved_push  = self.lexer.pushed_back;
+    bool  saved_haspb = self.lexer.has_pushed_back;
+    bool  saved_slt   = self.lexer.seen_line_term;
+
+    char* source_base = &self.lexer.source[0];
+
+    uint     count       = 0;
+    uint     brace_depth = 0;
+
+    while (count < capacity) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) {
+            break;
+        }
+        Token tok = tok_opt;
+        TokenType tt = tok.type;
+
+        if (tt == TokenType.EOF_TOKEN) {
+            break;
+        }
+
+        if (tt == TokenType.LBRACE) {
+            brace_depth++;
+            continue;
+        }
+
+        if (tt == TokenType.RBRACE) {
+            if (brace_depth == 0) {
+                break;   // end of the block we are scanning
+            }
+            brace_depth--;
+            continue;
+        }
+
+        // Only collect let/const at the top level of this block (depth 0).
+        if (brace_depth == 0 && (tt == TokenType.LET || tt == TokenType.CONST)) {
+            // Collect one or more identifier names (comma-separated).
+            for (;;) {
+                Token? name_opt = self.lexer.next_token();
+                if (catch _err2 = name_opt) {
+                    break;
+                }
+                Token name_tok = name_opt;
+                if (name_tok.type != TokenType.IDENTIFIER) {
+                    break;
+                }
+                // Store the name's position in the source text.
+                if (count < capacity) {
+                    spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                    spans[count].len = (uint)name_tok.str_value.len;
+                    count++;
+                }
+                // Check for comma (multiple declarations).
+                Token? sep_opt = self.lexer.next_token();
+                if (catch _err3 = sep_opt) {
+                    break;
+                }
+                Token sep = sep_opt;
+                if (sep.type != TokenType.COMMA) {
+                    break;
+                }
+                // continue to the next declarator name
+            }
+        }
+    }
+
+    // --- Restore lexer state ---
+    self.lexer.pos             = saved_pos;
+    self.lexer.line            = saved_line;
+    self.lexer.col             = saved_col;
+    self.lexer.current         = saved_cur;
+    self.lexer.lookahead       = saved_look;
+    self.lexer.has_lookahead   = saved_haslk;
+    self.lexer.pushed_back     = saved_push;
+    self.lexer.has_pushed_back = saved_haspb;
+    self.lexer.seen_line_term  = saved_slt;
+
+    return count;
+}
+
+/// Parse a block: { statement* }
+/// If `check_directives` is true, checks for "use strict" directive prologue at the start.
+fn void? CompilerContext.block(&self, bool check_directives) {
+    self.expect(TokenType.LBRACE)!;
+    uint saved_depth = self.scope_depth;
+    ushort saved_reg = self.next_reg;
+
+    // Pre-scan for let/const declarations at this block level so we can
+    // TDZ-initialize them at block entry (before any code in the block runs).
+    NameSpan[MAX_PRESCAN_NAMES] lex_spans;
+    uint num_lex = self.pre_scan_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
+
+    // Push a new lexical scope for let/const declarations inside this block.
+    // Skip when the block has no let/const — saves an allocation on every
+    // function call (most functions have no block-scoped variables).
+    bool has_lex = num_lex > 0;
+    if (has_lex) {
+        self.emit_simple(Opcode.PUSH_LEX);
+    }
+
+    // TDZ-initialize every let/const declaration found by the pre-scan.
+    // This ensures that accessing the variable before its declaration
+    // throws a ReferenceError (temporal dead zone) instead of finding
+    // an outer `var` binding or returning undefined.
+    for (uint i = 0; i < num_lex; i++) {
+        char[] name = self.lexer.source[lex_spans[i].pos..lex_spans[i].pos + lex_spans[i].len - 1];
+        uint name_idx = self.add_string_constant(name);
+        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+
+        // Mark the outer scope_stack entry as captured so that the compiler
+        // emits GETVAR instead of LDREG for this variable.  Without this,
+        // a register-cached value from an outer scope would bypass the TDZ
+        // sentinel in the new lex_env.
+        for (uint j = 0; j < saved_depth; j++) {
+            if (str_eq(self.scope_stack[j].name, name)) {
+                self.scope_stack[j].is_captured = true;
+                break;
+            }
+        }
+    }
+
+    if (check_directives) {
+        self.parse_directives()!;
+    }
+
+    while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
+        self.statement()!;
+    }
+
+    self.expect(TokenType.RBRACE)!;
+
+    // Pop the lexical scope, removing any let/const bindings from this block
+    if (has_lex) {
+        self.emit_simple(Opcode.POP_LEX);
+    }
+
+    self.pop_scope_to(saved_depth);
+    self.free_regs_to(saved_reg);
+}
+
+/// Emit the environment store for a declared variable (PUTVAR or PUTLEX/PUTLEX_C).
+fn void CompilerContext.emit_var_store(&self, ushort reg, uint name_idx, bool is_lexical, bool is_const) {
+    if (is_lexical) {
+        if (is_const) {
+            self.emit_a_bc(Opcode.PUTLEX_C, (uint)reg, name_idx);
+        } else {
+            self.emit_a_bc(Opcode.PUTLEX, (uint)reg, name_idx);
+        }
+    } else {
+        // DECLVAR declares the binding in the immediate var_env (function-scoped).
+        // PUTVAR (plain assignment) walks the chain to update existing bindings.
+        self.emit_a_bc(Opcode.DECLVAR, (uint)reg, name_idx);
+    }
+}
+
+/// Parse var/let/const declaration.
+fn void? CompilerContext.var_declaration(&self) {
+    Token decl_tok = self.advance()!;
+    bool is_const = (decl_tok.type == TokenType.CONST);
+    bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
+    ScopeKind kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
+
+    // var declarations are hoisted to function scope — need env allocation.
+    if (!is_lexical) {
+        self.has_local_bindings = true;
+    }
+
+    // Parse one or more variable declarators
+    for (;;) {
+        TokenType next = self.peek_type();
+
+        if (next == TokenType.LBRACKET) {
+            self.advance()!; // consume '['
+            self.array_destructure(kind, is_lexical, is_const)!;
+        } else if (next == TokenType.LBRACE) {
+            self.advance()!; // consume '{'
+            self.object_destructure(kind, is_lexical, is_const)!;
+        } else {
+            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(name_tok.str_value)) {
+                return COMPILE_ERROR~;
+            }
+            ushort reg = self.declare_var(name_tok.str_value, kind);
+            ushort saved_reg = self.next_reg;
+
+            // Optional initializer
+            if (self.match(TokenType.ASSIGN)) {
+                ushort val_reg = self.assignment_expr()!;
+                if (val_reg != reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)reg, (uint)val_reg, 0);
+                }
+                self.free_reg(val_reg);
+            } else {
+                // Default initialize to undefined
+                self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
+            }
+
+            // Store in the environment so inner functions can find it
+            // var → var_env (function-scoped), let/const → lex_env (block-scoped)
+            uint name_idx = self.add_string_constant(name_tok.str_value);
+            self.emit_var_store(reg, name_idx, is_lexical, is_const);
+
+            // At global scope, free the var register and any leaked temporaries
+            // from the initializer evaluation.  Global vars use PUTVAR/GETVAR
+            // at runtime — the register is only needed briefly as the PUTVAR source.
+            if (self.is_global) {
+                self.free_regs_to(saved_reg);
+            }
+        }
+
+        if (!self.match(TokenType.COMMA)) {
+            break;
+        }
+    }
+
+    self.match(TokenType.SEMICOLON);
+}
+
+
+
+/// Parse if/else statement.
+fn void? CompilerContext.if_statement(&self) {
+    self.expect(TokenType.IF)!;
+    self.expect(TokenType.LPAREN)!;
+
+    // Compile condition
+    ushort cond_reg = self.expression()!;
+
+    self.expect(TokenType.RPAREN)!;
+
+    // Emit conditional jump (skip then-branch if false)
+    uint false_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cond_reg);
+    self.free_reg(cond_reg);
+
+    // Compile then-branch
+    self.statement()!;
+
+    if (self.match(TokenType.ELSE)) {
+        // Emit jump over else-branch
+        uint end_jump = self.emit_jump(Opcode.JUMP);
+        self.patch_jump(false_jump);
+
+        // Compile else-branch
+        self.statement()!;
+
+        self.patch_jump(end_jump);
+    } else {
+        self.patch_jump(false_jump);
+    }
+}
+
+/// Parse while statement.
+fn void? CompilerContext.while_statement(&self) {
+    self.expect(TokenType.WHILE)!;
+    self.expect(TokenType.LPAREN)!;
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+
+    // Compile condition
+    ushort cond_reg = self.expression()!;
+
+    self.expect(TokenType.RPAREN)!;
+
+    // Jump out if condition is false
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cond_reg);
+    self.free_reg(cond_reg);
+
+    // Compile body
+    self.statement()!;
+
+    // Jump back to loop start
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    self.patch_jump(exit_jump);
+    self.pop_loop();
+}
+
+/// Parse for statement (basic for, for-in, for-of).
+fn void? CompilerContext.for_statement(&self) {
+    self.expect(TokenType.FOR)!;
+    self.expect(TokenType.LPAREN)!;
+
+    uint saved_scope = self.scope_depth;
+    ushort saved_reg = self.next_reg;
+
+    // Check for for-in / for-of
+    TokenType next_tt = self.peek_type();
+
+    // Check for bare for-of: for (x of expr)
+    if (next_tt == TokenType.IDENTIFIER) {
+        Token id_tok = self.advance()!;
+        if (try tok2 = self.lexer.peek()) {
+            if (tok2.type == TokenType.IDENTIFIER && str_eq(tok2.str_value, "of")) {
+                self.advance()!;  // consume "of"
+                ushort iter_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+                uint name_idx = self.add_string_constant(id_tok.str_value);
+                self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
+                return;
+            }
+        }
+        self.pushback(id_tok);
+    }
+
+    // Parse init (may be var/let/const or expression or empty)
+    if (next_tt == TokenType.VAR || next_tt == TokenType.LET || next_tt == TokenType.CONST) {
+        // Check if it's for-in: "var x in ..."
+        // We parse the variable declaration keyword
+        Token decl_tok = self.advance()!;
+        bool is_const = (decl_tok.type == TokenType.CONST);
+        bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
+        ScopeKind decl_kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
+
+        // Check for destructuring: [pattern] or {pattern}
+        TokenType after_decl = self.peek_type();
+        if (after_decl == TokenType.LBRACKET || after_decl == TokenType.LBRACE) {
+            // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
+            if (after_decl == TokenType.LBRACKET) {
+                self.advance()!; // consume '['
+                self.array_destructure(decl_kind, is_lexical, is_const)!;
+            } else {
+                self.advance()!; // consume '{'
+                self.object_destructure(decl_kind, is_lexical, is_const)!;
+            }
+
+            // More declarations? (var [a]=x, b=y)
+            while (self.match(TokenType.COMMA)) {
+                TokenType nt = self.peek_type();
+                if (nt == TokenType.LBRACKET) {
+                    self.advance()!;
+                    self.array_destructure(decl_kind, is_lexical, is_const)!;
+                } else if (nt == TokenType.LBRACE) {
+                    self.advance()!;
+                    self.object_destructure(decl_kind, is_lexical, is_const)!;
+                } else {
+                    Token extra_name = self.expect(TokenType.IDENTIFIER)!;
+                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort extra_val = self.assignment_expr()!;
+                        if (extra_val != extra_reg) {
+                            self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
+                        }
+                        self.free_reg(extra_val);
+                    } else {
+                        self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                    }
+                    uint extra_name_idx = self.add_string_constant(extra_name.str_value);
+                    self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                }
+            }
+
+            self.expect(TokenType.SEMICOLON)!;
+        } else {
+            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+
+            // Check for "in" (for-in) or "of" (for-of)
+            if (self.peek_type() == TokenType.IN) {
+                // for (var x in obj) { ... }
+                self.advance()!;  // consume 'in'
+                ushort iter_var = self.declare_var(name_tok.str_value, is_const ? CONST : LET);
+                ushort obj_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+
+                // Emit INITFOR to set up the iterator
+                ushort iter_state = self.alloc_reg();
+                self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
+
+                uint loop_start = self.code_count;
+                self.push_loop(loop_start, true);
+
+                // Emit NEXTFOR: iter_var = next key, B = has_next
+                ushort has_next = self.alloc_reg();
+                self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
+                // Sync the for-in variable to the environment so GETVAR can find it
+                // (needed at global scope where resolve_var is not used)
+                uint forin_name_idx = self.add_string_constant(name_tok.str_value);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
+
+                // If no more keys, exit
+                uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
+                self.free_reg(has_next);
+
+                // Compile body
+                self.statement()!;
+
+                // Jump back to loop start
+                int back_offset = (int)loop_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+                self.patch_jump(exit_jump);
+                self.pop_loop();
+
+                self.free_reg(iter_state);
+                self.free_reg(obj_reg);
+                self.pop_scope_to(saved_scope);
+                self.free_regs_to(saved_reg);
+                return;
+            }
+            // Check for "of" (for-of) — contextual keyword, not a reserved word
+            if (try tok = self.lexer.peek()) {
+                if (tok.type == TokenType.IDENTIFIER && str_eq(tok.str_value, "of")) {
+                    self.advance()!;  // consume "of"
+                    ushort iter_reg = self.assignment_expr()!;
+                    self.expect(TokenType.RPAREN)!;
+                    uint name_idx = self.add_string_constant(name_tok.str_value);
+                    self.emit_forof_loop(name_tok.str_value, iter_reg, saved_scope, saved_reg, is_lexical, is_const, false)!;
+                    return;
+                }
+            }
+
+            // Standard for loop: we already consumed the decl keyword and identifier
+            // Declare the variable and optionally initialize
+            ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
+            if (self.match(TokenType.ASSIGN)) {
+                ushort init_val = self.assignment_expr()!;
+                if (init_val != var_reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)var_reg, (uint)init_val, 0);
+                }
+                self.free_reg(init_val);
+            } else {
+                self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
+            }
+            // Also store in environment (needed at global scope for GETVAR)
+            uint name_idx = self.add_string_constant(name_tok.str_value);
+            self.emit_var_store(var_reg, name_idx, is_lexical, is_const);
+
+            // More declarations?
+            while (self.match(TokenType.COMMA)) {
+                TokenType nt2 = self.peek_type();
+                if (nt2 == TokenType.LBRACKET) {
+                    self.advance()!;
+                    self.array_destructure(decl_kind, is_lexical, is_const)!;
+                } else if (nt2 == TokenType.LBRACE) {
+                    self.advance()!;
+                    self.object_destructure(decl_kind, is_lexical, is_const)!;
+                } else {
+                    Token extra_name = self.expect(TokenType.IDENTIFIER)!;
+                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort extra_val = self.assignment_expr()!;
+                        if (extra_val != extra_reg) {
+                            self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
+                        }
+                        self.free_reg(extra_val);
+                    } else {
+                        self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                    }
+                    uint extra_name_idx = self.add_string_constant(extra_name.str_value);
+                    self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                }
+            }
+
+            self.expect(TokenType.SEMICOLON)!;
+        }
+    } else if (next_tt != TokenType.SEMICOLON) {
+        // Expression init
+        ushort init_reg = self.expression()!;
+        self.free_reg(init_reg);
+        self.expect(TokenType.SEMICOLON)!;
+    } else {
+        // Empty init
+        self.expect(TokenType.SEMICOLON)!;
+    }
+
+    // Condition
+    uint cond_start = self.code_count;
+    uint exit_jump = NO_PATCH;
+
+    if (!self.check(TokenType.SEMICOLON)) {
+        ushort cond_reg = self.expression()!;
+        exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cond_reg);
+        self.free_reg(cond_reg);
+    }
+    self.expect(TokenType.SEMICOLON)!;
+
+    // Update expression — compile it but jump over it initially
+    uint update_jump = self.emit_jump(Opcode.JUMP);
+    uint update_start = self.code_count;
+
+    if (!self.check(TokenType.RPAREN)) {
+        ushort update_reg = self.expression()!;
+        self.free_reg(update_reg);
+    }
+
+    // Jump back to condition
+    int cond_back = (int)cond_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, cond_back));
+
+    self.expect(TokenType.RPAREN)!;
+
+    self.patch_jump(update_jump);
+
+    // Push loop with continue_target pointing to the update expression
+    self.push_loop(update_start, true);
+
+    // Compile body
+    self.statement()!;
+
+    // Jump to update
+    int update_back = (int)update_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, update_back));
+
+    // Patch exit
+    if (exit_jump != NO_PATCH) {
+        self.patch_jump(exit_jump);
+    }
+
+    self.pop_loop();
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+/// Parse do-while statement.
+fn void? CompilerContext.do_while_statement(&self) {
+    self.expect(TokenType.DO)!;
+
+    uint loop_start = self.code_count;
+    // Continue target is the condition (we'll record the address after the body)
+    self.push_loop(loop_start, true);  // temporary; we'll fix continue_target
+
+    // Compile body
+    self.statement()!;
+
+    // Fix the continue target to point to the condition
+    if (self.loop_depth > 0) {
+        self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+    }
+
+    self.expect(TokenType.WHILE)!;
+    self.expect(TokenType.LPAREN)!;
+
+    ushort cond_reg = self.expression()!;
+
+    self.expect(TokenType.RPAREN)!;
+    self.match(TokenType.SEMICOLON);
+
+    // If condition is true, jump back to loop_start
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cond_reg, back_offset));
+    self.free_reg(cond_reg);
+
+    self.pop_loop();
+}
+
+/// Parse return statement.
+fn void? CompilerContext.return_statement(&self) {
+    self.expect(TokenType.RETURN)!;
+
+    // Check if there's a return value (not a semicolon or end-of-statement)
+    // A line terminator between return and the expression causes ASI (ES5 §12.9)
+    TokenType next = self.peek_type();
+    if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
+        next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
+        self.emit_simple(self.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+    } else {
+        ushort val_reg = self.expression()!;
+        self.emit_abc(self.is_generator ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
+        self.free_reg(val_reg);
+    }
+
+    self.match(TokenType.SEMICOLON);
+}
+
+/// Parse throw statement.
+fn void? CompilerContext.throw_statement(&self) {
+    self.expect(TokenType.THROW)!;
+
+    ushort val_reg = self.expression()!;
+    self.emit_abc(Opcode.THROW, (uint)val_reg, 0, 0);
+    self.free_reg(val_reg);
+
+    self.match(TokenType.SEMICOLON);
+}
+
+/// Parse try/catch/finally statement.
+///
+/// Bytecode layout:
+///   TRY A=flags, BC=catch_offset     — A bit0=catch, bit1=finally
+///   NOP A=0,    BC=finally_offset    — jump slot (0 if no finally)
+///   <try block>
+///   ENDTRY
+///   JUMP -> finally_or_after
+///   [CATCH rX  — at try_addr + catch_offset]
+///   [<catch block>]
+///   [FINALLY   — at try_addr + finally_offset (if has_finally)]
+///   [<finally block>]
+///   [ENDFINALLY]
+fn void? CompilerContext.try_statement(&self) {
+    self.expect(TokenType.TRY)!;
+
+    // Emit TRY instruction (placeholder: A=0, BC=0, jump_slot BC=0)
+    uint try_addr = self.emit_a_bc(Opcode.TRY, 0, 0);
+    // Jump slot — the VM reads this word for the finally_offset (BC field)
+    uint jump_slot_addr = self.emit_a_bc(Opcode.NOP, 0, 0);
+
+    // Push try info
+    if (self.try_depth < MAX_TRY_DEPTH) {
+        self.try_stack[self.try_depth].catch_addr = try_addr;
+        self.try_stack[self.try_depth].finally_addr = NO_PATCH;
+        self.try_depth++;
+    }
+
+    // Compile try block
+    self.block(false)!;
+
+    // Emit ENDTRY to pop the try handler (normal exit)
+    self.emit_simple(Opcode.ENDTRY);
+
+    // Jump (skips catch handler; target patched later)
+    uint jump_over = self.emit_jump(Opcode.JUMP);
+
+    // catch handler starts here
+    uint catch_target = self.code_count;
+
+    // Parse catch clause
+    bool has_catch = false;
+    bool has_finally = false;
+    uint finally_tgt = 0;
+
+    if (self.match(TokenType.CATCH)) {
+        has_catch = true;
+        uint catch_scope = self.scope_depth;
+        ushort catch_saved_reg = self.next_reg;
+
+        if (self.match(TokenType.LPAREN)) {
+            Token catch_param = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(catch_param.str_value)) {
+                return COMPILE_ERROR~;
+            }
+            self.expect(TokenType.RPAREN)!;
+
+            ushort catch_var = self.declare_var(catch_param.str_value, VAR);
+            self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
+            // PUTVAR the exception into the env so that subsequent
+            // GETVAR/TYPEOFIDENT for the catch variable finds it.
+            // Required in ALL scopes (not just global) because the VM
+            // resolves catch variables via environment lookup, not register.
+            {
+                uint name_idx = self.add_string_constant(catch_param.str_value);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
+            }
+        } else {
+            // catch without binding (ES2019)
+            ushort discard = self.alloc_reg();
+            self.emit_abc(Opcode.CATCH, (uint)discard, 0, 0);
+            self.free_reg(discard);
+        }
+
+        // Compile catch block
+        self.block(false)!;
+
+        self.pop_scope_to(catch_scope);
+        self.free_regs_to(catch_saved_reg);
+    }
+
+    // Parse finally clause
+    if (self.match(TokenType.FINALLY)) {
+        has_finally = true;
+        finally_tgt = self.code_count;
+
+        // Patch the jump from the try block to land at FINALLY
+        self.patch_jump(jump_over);
+
+        // Emit FINALLY marker
+        self.emit_simple(Opcode.FINALLY);
+
+        // Compile finally block
+        self.block(false)!;
+
+        // Emit ENDFINALLY
+        self.emit_simple(Opcode.ENDFINALLY);
+    } else {
+        // Patch jump to skip catch handler
+        self.patch_jump(jump_over);
+    }
+
+    // Patch TRY instruction: A=flags, BC=catch_offset
+    uint try_flags = (has_catch ? 1u : 0u) | (has_finally ? 2u : 0u);
+    uint catch_offset = catch_target - try_addr;
+    self.code[try_addr] = bytecode::make_a_bc(Opcode.TRY, try_flags, catch_offset);
+
+    // Patch jump slot: BC=finally_offset (0 if no finally)
+    uint finally_off = has_finally ? (finally_tgt - try_addr) : 0;
+    self.code[jump_slot_addr] = bytecode::make_a_bc(Opcode.NOP, 0, finally_off);
+
+    // Pop try info
+    if (self.try_depth > 0) {
+        self.try_depth--;
+    }
+}
+
+/// Parse a `with` statement (ES5 §12.10).
+///
+/// Bytecode layout:
+///   <expr>                              — push object onto valstack (in a register)
+///   WITH_START A                        — A = register holding the with-object
+///   <statement>
+///   WITH_END                            — pop the with-env from the scope chain
+fn void? CompilerContext.with_statement(&self) {
+    if (self.is_strict) {
+        return COMPILE_ERROR~;
+    }
+    self.expect(TokenType.WITH)!;
+
+    // Parse `(expr)`
+    self.expect(TokenType.LPAREN)!;
+    ushort obj_reg = self.expression()!;
+    self.expect(TokenType.RPAREN)!;
+
+    // Emit WITH_START — pushes a new object env-record wrapping obj_reg
+    self.emit_a_bc(Opcode.WITH_START, (uint)obj_reg, 0);
+
+    // Compile the body
+    self.statement()!;
+
+    // Emit WITH_END — restores the previous env chain
+    self.emit_simple(Opcode.WITH_END);
+
+    // Free the object register
+    self.free_reg(obj_reg);
+}
+
+/// Parse switch statement with correct fall-through (ES5 §12.11).
+///
+/// Each case body ends with a fall-through redirect JUMP patched after all
+/// case clauses are parsed, so that when a matched case body completes (without
+/// break) execution continues to the next case body rather than re-checking
+/// the next case's comparison preamble. The `default` clause is handled with
+/// a preamble JUMP when it is not the last clause, allowing subsequent cases
+/// to be checked before falling through to default on no match.
+fn void? CompilerContext.switch_statement(&self) {
+    self.expect(TokenType.SWITCH)!;
+    self.expect(TokenType.LPAREN)!;
+
+    ushort disc_reg = self.expression()!;
+
+    self.expect(TokenType.RPAREN)!;
+    self.expect(TokenType.LBRACE)!;
+
+    // Push a "loop" for break handling (break in switch exits the switch)
+    // is_loop=false so continue skips this entry.
+    self.push_loop(self.code_count, false);
+
+    // Track all body entries (cases and default) in source order
+    uint[64] body_addrs;
+    uint[64] ft_jump_addrs;
+    uint body_count = 0;
+    bool has_default = false;
+    uint default_body_idx = 0;
+    bool default_not_last = false;
+
+    while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
+        if (self.match(TokenType.CASE)) {
+            // Compile case expression
+            ushort case_reg = self.expression()!;
+            self.expect(TokenType.COLON)!;
+
+            // Compare discriminant with case value
+            ushort cmp_reg = self.alloc_reg();
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)disc_reg, (uint)case_reg);
+            self.free_reg(case_reg);
+
+            // Jump to the case body if they match
+            uint match_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            self.free_reg(cmp_reg);
+
+            // Jump over the body if no match
+            uint skip_jump = self.emit_jump(Opcode.JUMP);
+
+            // Patch the match jump to here (the body)
+            self.patch_jump(match_jump);
+            body_addrs[body_count] = self.code_count;
+
+            // Compile case body statements
+            while (!self.check(TokenType.CASE) && !self.check(TokenType.DEFAULT) &&
+                   !self.check(TokenType.RBRACE) && !self.is_at_end()) {
+                self.statement()!;
+            }
+
+            // Emit fall-through redirect jump (patched later to next body)
+            uint ft_jump = self.emit_jump(Opcode.JUMP);
+            ft_jump_addrs[body_count] = ft_jump;
+            body_count++;
+
+            // Patch skip jump to after the fall-through redirect
+            self.patch_jump(skip_jump);
+
+        } else if (self.match(TokenType.DEFAULT)) {
+            self.expect(TokenType.COLON)!;
+
+            has_default = true;
+            default_body_idx = body_count;
+
+            // Emit preamble JUMP over default body (placeholder).
+            // If more clauses follow, this skips the default body for the
+            // case-checking path. If default is last, it becomes a no-op.
+            uint default_preamble = self.emit_jump(Opcode.JUMP);
+
+            body_addrs[body_count] = self.code_count;
+
+            // Compile default body
+            while (!self.check(TokenType.CASE) && !self.check(TokenType.DEFAULT) &&
+                   !self.check(TokenType.RBRACE) && !self.is_at_end()) {
+                self.statement()!;
+            }
+
+            // Emit fall-through redirect for default
+            uint ft_jump = self.emit_jump(Opcode.JUMP);
+            ft_jump_addrs[body_count] = ft_jump;
+            body_count++;
+
+            // Check if anything follows this default clause
+            TokenType next = self.peek_type();
+            if (next == TokenType.CASE || next == TokenType.DEFAULT) {
+                // More clauses follow: preamble skips over default body
+                self.patch_jump(default_preamble);
+                default_not_last = true;
+            } else {
+                // Default is last: patch preamble to fall through to body
+                // (offset 0 = jump to next instruction = body start)
+                int ft_offset = (int)(body_addrs[default_body_idx]) -
+                                (int)(default_preamble) - 1;
+                self.code[default_preamble] =
+                    bytecode::make_sabc(Opcode.JUMP, ft_offset);
+            }
+        } else {
+            // Unexpected token in switch
+            return COMPILE_ERROR~;
+        }
+    }
+
+    self.expect(TokenType.RBRACE)!;
+
+    // If default is not last, emit a redirect for the 'no match' path at the
+    // end of all case checks. This is reached by the last case's skip_jump.
+    uint redirect_addr = 0;
+    if (has_default && default_not_last) {
+        redirect_addr = self.code_count;
+        uint jump = self.emit_jump(Opcode.JUMP);
+        // break jumps will be patched past this redirect by pop_loop
+    }
+
+    // Patch break jumps to end of switch (after redirect if any)
+    self.pop_loop();
+
+    uint end_addr = self.code_count;
+
+    // Patch the 'no match' redirect to the default body
+    if (redirect_addr > 0) {
+        int offset = (int)(body_addrs[default_body_idx]) -
+                     (int)(redirect_addr) - 1;
+        self.code[redirect_addr] =
+            bytecode::make_sabc(Opcode.JUMP, offset);
+    }
+
+    // Patch all fall-through redirect jumps in source order
+    for (uint i = 0; i < body_count; i++) {
+        uint target;
+        if (i + 1 < body_count) {
+            // Fall through to next body in source order
+            target = body_addrs[i + 1];
+        } else {
+            // Last body: fall through to end of switch
+            target = end_addr;
+        }
+        int offset = (int)(target) - (int)(ft_jump_addrs[i]) - 1;
+        self.code[ft_jump_addrs[i]] =
+            bytecode::make_sabc(Opcode.JUMP, offset);
+    }
+
+    self.free_reg(disc_reg);
+}
+
+/// Parse a labeled statement: `identifier : statement`.
+/// Supports labeled break and continue (ES5 §12.12).
+fn void? CompilerContext.labeled_statement(&self, char[] name) {
+    // Check for duplicate labels
+    for (uint i = 0; i < self.label_count; i++) {
+        if (str_eq(self.labels[i].name, name)) {
+            return COMPILE_ERROR~;
+        }
+    }
+
+    // Register the label
+    uint label_idx = self.label_count;
+    if (label_idx >= MAX_LABELS) return COMPILE_ERROR~;
+    self.labels[label_idx].name = name;
+    self.label_count++;
+
+    // Look ahead to determine if the inner statement is a loop
+    TokenType next = self.peek_type();
+
+    if (next == TokenType.FOR || next == TokenType.WHILE || next == TokenType.DO) {
+        // The label refers to a loop. The loop will be pushed at index
+        // self.loop_depth (the current depth before the loop's push_loop).
+        self.labels[label_idx].loop_index = self.loop_depth;
+        self.labels[label_idx].is_loop = true;
+        self.statement()!;
+    } else {
+        // Non-loop label — push a virtual loop entry so break can target it.
+        self.push_loop(self.code_count, false);
+        self.labels[label_idx].loop_index = self.loop_depth - 1;
+        self.labels[label_idx].is_loop = false;
+        self.statement()!;
+        self.pop_loop(); // patches all breaks targeting this label
+    }
+}
+
+/// Parse break statement.
+/// If an identifier follows `break`, it's a labeled break (ES5 §12.12).
+/// A line terminator between `break` and the identifier means unlabeled break.
+fn void? CompilerContext.break_statement(&self) {
+    self.expect(TokenType.BREAK)!;
+
+    if (self.peek_type() == TokenType.IDENTIFIER && !self.lexer.seen_line_term) {
+        // Labeled break — find the label and add jump to its loop's break chain
+        Token label_tok = self.advance()!;
+        char[] label_name = label_tok.str_value;
+
+        for (uint i = 0; i < self.label_count; i++) {
+            if (str_eq(self.labels[i].name, label_name)) {
+                uint loop_idx = self.labels[i].loop_index;
+                uint jump_addr = self.emit_jump(Opcode.JUMP);
+                self.loop_stack[loop_idx].break_patch_head =
+                    self.add_patch(self.loop_stack[loop_idx].break_patch_head, jump_addr);
+                self.match(TokenType.SEMICOLON);
+                return;
+            }
+        }
+        // Label not found
+        return COMPILE_ERROR~;
+    }
+
+    // Unlabeled break — break out of the innermost loop or switch
+    uint jump_addr = self.emit_jump(Opcode.JUMP);
+    self.add_break_patch(jump_addr);
+
+    self.match(TokenType.SEMICOLON);
+}
+
+/// Parse continue statement.
+/// If an identifier follows `continue`, it's a labeled continue (ES5 §12.12).
+/// A line terminator between `continue` and the identifier means unlabeled continue.
+fn void? CompilerContext.continue_statement(&self) {
+    self.expect(TokenType.CONTINUE)!;
+
+    if (self.peek_type() == TokenType.IDENTIFIER && !self.lexer.seen_line_term) {
+        // Labeled continue — find the label and jump to its loop's continue target
+        Token label_tok = self.advance()!;
+        char[] label_name = label_tok.str_value;
+
+        for (uint i = 0; i < self.label_count; i++) {
+            if (str_eq(self.labels[i].name, label_name)) {
+                if (!self.labels[i].is_loop) {
+                    // continue on a non-loop label is a syntax error
+                    return COMPILE_ERROR~;
+                }
+                uint loop_idx = self.labels[i].loop_index;
+                uint target = self.loop_stack[loop_idx].continue_target;
+                int offset = (int)target - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, offset));
+                self.match(TokenType.SEMICOLON);
+                return;
+            }
+        }
+        // Label not found
+        return COMPILE_ERROR~;
+    }
+
+    // Unlabeled continue — jump to continue target of the innermost *real* loop
+    // (skip switch pseudo-loops that only handle break)
+    int loop_idx = (int)self.loop_depth - 1;
+    while (loop_idx >= 0 && !self.loop_stack[loop_idx].is_loop) {
+        loop_idx--;
+    }
+    if (loop_idx >= 0) {
+        // Emit placeholder jump and add to continue_patch_head for deferred patching
+        uint jump_addr = self.emit_jump(Opcode.JUMP);
+        self.loop_stack[loop_idx].continue_patch_head =
+            self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
+    } else {
+        return COMPILE_ERROR~;
+    }
+
+    self.match(TokenType.SEMICOLON);
+}
+
+/// Parse expression statement.
+fn void? CompilerContext.expression_statement(&self) {
+    ushort reg = self.expression()!;
+    if (self.eval_mode) {
+        // Preserve the expression result for eval's implicit return value
+        self.emit_abc(Opcode.LDREG, (uint)self.eval_acc_reg, (uint)reg, 0);
+    }
+    self.free_reg(reg);
+    self.match(TokenType.SEMICOLON);
+}
+
+/// Parse a function declaration (hoisted).
+fn void? CompilerContext.function_declaration(&self) {
+    self.expect(TokenType.FUNCTION)!;
+
+    // Function declarations are hoisted to function scope — need env.
+    self.has_local_bindings = true;
+
+    // Save and reset generator state: nested function declarations
+    // inside a generator do not inherit the generator flag.
+    bool saved_is_generator = self.is_generator;
+    self.is_generator = false;
+
+    // Check for generator star: function* name() {}
+    if (self.match(TokenType.STAR)) {
+        self.is_generator = true;
+    }
+
+    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+    ushort func_reg = self.declare_var(name_tok.str_value, VAR);
+
+    // Compile the function into a nested CompiledFunction
+    CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+
+    // Restore generator flag
+    self.is_generator = saved_is_generator;
+
+    // Add to inner functions table
+    uint inner_idx = 0;
+    if (self.inner_func_count < MAX_INNER_FUNCS) {
+        inner_idx = self.inner_func_count;
+        self.inner_funcs[inner_idx] = inner;
+        self.inner_func_count++;
+        self.has_closures = true;
+    }
+
+    // Emit CLOSURE to create the function object
+    self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
+
+    // Also store in environment so inner functions can find it via GETVAR
+    uint name_idx = self.add_string_constant(name_tok.str_value);
+    self.emit_a_bc(Opcode.PUTVAR, (uint)func_reg, name_idx);
+
+    // At global scope, free the register — the function object lives in the
+    // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
+    if (self.is_global) {
+        self.free_reg(func_reg);
+    }
+}
