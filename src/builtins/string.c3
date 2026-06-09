@@ -1918,13 +1918,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     heap.string_proto = proto;
 
     // Add .toString() method
-    HString* tostring_key = builtin_intern_string(heap, "toString");
+    HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
-    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    HString* valueof_key = (HString*)heap.strs[heap::BuiltinStr.VALUE_OF];
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);

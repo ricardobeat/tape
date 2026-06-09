@@ -2417,7 +2417,7 @@ fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
     HObject* obj = (HObject*)this_val.get_heapptr();
 
     // Call toString() on the object
-    HString* ts_key = builtin_intern_string(ctx.heap, "toString");
+    HString* ts_key = (HString*)ctx.heap.strs[heap::BuiltinStr.TO_STRING];
     PropValue*? entry = obj.find_prop(ts_key);
     if (try e = entry) {
         TVal fn_val = e.data.value;
@@ -2450,7 +2450,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     heap.object_proto = proto;
 
     // Add .toString() method to Object.prototype
-    HString* tostring_key = builtin_intern_string(heap, "toString");
+    HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
@@ -2468,7 +2468,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     proto.put_prop(propisenum_key, propisenum_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method to Object.prototype (returns 'this')
-    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+    HString* valueof_key = (HString*)heap.strs[heap::BuiltinStr.VALUE_OF];
     TVal valueof_tv;
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);

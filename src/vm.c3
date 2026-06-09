@@ -578,7 +578,7 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
             // Call toString() on the object per ES5 §8.12 ToString
             if (vm != null && vm.heap.call_fn != null && val.get_heapptr() != null) {
                 HObject* obj = (HObject*)val.get_heapptr();
-                HString* to_str_key = intern_string(vm, "toString");
+                HString* to_str_key = (HString*)h.strs[heap::BuiltinStr.TO_STRING];
                 if (to_str_key != null) {
                     if (try toString_fn = obj.get_prop_proto(to_str_key)) {
                         if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
@@ -591,10 +591,10 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
                     }
                 }
             }
-            return intern_string(vm, "[object Object]");
+            return (HString*)h.strs[heap::BuiltinStr.OBJECT_OBJECT];
         }
         case LIGHTFUNC:
-            return intern_string(vm, "[function]");
+            return (HString*)h.strs[heap::BuiltinStr.FUNCTION_STR];
         default:
             return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
     }
@@ -819,10 +819,13 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
         if (vm != null && vm.heap.call_fn != null) {
             Heap* h = vm.heap;
             bool is_date = (cls == hobject::ObjClass.DATE);
-            // For Date: toString first, then valueOf. For others: valueOf first, then toString.
-            char[] first_name = is_date ? "toString" : "valueOf";
-            char[] second_name = is_date ? "valueOf" : "toString";
-            HString* first_key = intern_string(vm, first_name);
+            // Date uses toString first, then valueOf; all other objects use valueOf first, then toString.
+            HString* first_key = is_date
+                ? (HString*)h.strs[heap::BuiltinStr.TO_STRING]
+                : (HString*)h.strs[heap::BuiltinStr.VALUE_OF];
+            HString* second_key = is_date
+                ? (HString*)h.strs[heap::BuiltinStr.VALUE_OF]
+                : (HString*)h.strs[heap::BuiltinStr.TO_STRING];
             if (first_key != null) {
                 TVal? first_val = obj.get_prop_proto(first_key);
                 if (try first_fn = first_val) {
@@ -833,7 +836,6 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                     }
                 }
             }
-            HString* second_key = intern_string(vm, second_name);
             if (second_key != null) {
                 TVal? second_val = obj.get_prop_proto(second_key);
                 if (try second_fn = second_val) {

@@ -216,7 +216,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     heap.err_proto = err_proto;
 
     // Add .toString() method to Error.prototype
-    HString* tostring_key = builtin_intern_string(heap, "toString");
+    HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);

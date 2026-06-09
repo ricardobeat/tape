@@ -620,7 +620,7 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
 
     // String wrapper: ToString → call toString()
     if (cls == ObjClass.STRING) {
-        HString* to_str_key = jctx.heap.str_intern("toString");
+        HString* to_str_key = (HString*)jctx.heap.strs[heap::BuiltinStr.TO_STRING];
         if (to_str_key == null) return val;
         TVal? toString_fn_opt = obj.get_prop_proto(to_str_key);
         if (try toString_fn = toString_fn_opt) {
@@ -646,7 +646,7 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
 
     // Number wrapper: ToNumber → call valueOf() first (per ES §9.3 / §15.12.3.4)
     if (cls == ObjClass.NUMBER) {
-        HString* vo_key = jctx.heap.str_intern("valueOf");
+        HString* vo_key = (HString*)jctx.heap.strs[heap::BuiltinStr.VALUE_OF];
         if (vo_key != null) {
             TVal? valueOf_fn_opt = obj.get_prop_proto(vo_key);
             if (try valueOf_fn = valueOf_fn_opt) {
@@ -1283,7 +1283,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         HObject* eobj = (HObject*)elem.get_heapptr();
                         if (eobj.get_class() == ObjClass.STRING) {
                             // ToString(value): call toString() to respect overrides
-                            HString* ts_key = ctx.heap.str_intern("toString");
+                            HString* ts_key = (HString*)ctx.heap.strs[heap::BuiltinStr.TO_STRING];
                             if (ts_key != null) {
                                 TVal? toString_fn_opt = eobj.get_prop_proto(ts_key);
                                 if (try toString_fn = toString_fn_opt) {
@@ -1308,7 +1308,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                             }
                         } else if (eobj.get_class() == ObjClass.NUMBER) {
                             // ToString(value): call toString() to respect overrides
-                            HString* ts_key = ctx.heap.str_intern("toString");
+                            HString* ts_key = (HString*)ctx.heap.strs[heap::BuiltinStr.TO_STRING];
                             if (ts_key != null) {
                                 TVal? toString_fn_opt = eobj.get_prop_proto(ts_key);
                                 if (try toString_fn = toString_fn_opt) {
@@ -1387,7 +1387,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
             HObject* sobj = (HObject*)space_arg.get_heapptr();
             if (sobj.get_class() == ObjClass.NUMBER) {
                 // ToNumber(space) → call valueOf()
-                HString* vo_key = ctx.heap.str_intern("valueOf");
+                HString* vo_key = (HString*)ctx.heap.strs[heap::BuiltinStr.VALUE_OF];
                 if (vo_key != null) {
                     TVal? vo_opt = sobj.get_prop_proto(vo_key);
                     if (try vo_fn = vo_opt) {
@@ -1409,7 +1409,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                 }
             } else if (sobj.get_class() == ObjClass.STRING) {
                 // ToString(space) → call toString()
-                HString* ts_key = ctx.heap.str_intern("toString");
+                HString* ts_key = (HString*)ctx.heap.strs[heap::BuiltinStr.TO_STRING];
                 if (ts_key != null) {
                     TVal? ts_opt = sobj.get_prop_proto(ts_key);
                     if (try ts_fn = ts_opt) {

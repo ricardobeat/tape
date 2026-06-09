@@ -315,6 +315,10 @@ enum BuiltinStr : uint {
     NAN_STR,     // "NaN"
     POSITIVE_INFINITY, // "Infinity"
     NEGATIVE_INFINITY, // "-Infinity"
+    TO_STRING,   // "toString"
+    VALUE_OF,    // "valueOf"
+    OBJECT_OBJECT, // "[object Object]"
+    FUNCTION_STR,  // "[function]"
 }
 
 // ============================================================================
@@ -448,14 +452,15 @@ fn Heap*? create(
 /// is safe to call multiple times.
 fn void Heap.init_builtin_strs(&self) {
     // Each entry: (ZString literal, byte length)
-    ZString[22] literals = {
+    ZString[26] literals = {
         "undefined", "object", "boolean", "number", "string", "function",
         "true", "false", "null", "message", "prototype", "constructor",
         "length", "value", "done", "arguments", "symbol", "name", "",
-        "NaN", "Infinity", "-Infinity"
+        "NaN", "Infinity", "-Infinity",
+        "toString", "valueOf", "[object Object]", "[function]"
     };
-    uint[22] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9, 6, 4, 0, 3, 8, 9 };
-    for (uint i = 0; i < 22; i++) {
+    uint[26] lengths = { 9, 6, 7, 6, 6, 8, 4, 5, 4, 7, 9, 11, 6, 5, 4, 9, 6, 4, 0, 3, 8, 9, 8, 7, 15, 10 };
+    for (uint i = 0; i < 26; i++) {
         char* ptr = (char*)literals[i];
         char[] data = ptr[:lengths[i]];
         uint h = self.hash_string(data);
@@ -471,7 +476,7 @@ fn void Heap.init_builtin_strs(&self) {
         }
     }
     // Pin: builtin strings must never be freed by refcounting.
-    for (uint i = 0; i < 22; i++) {
+    for (uint i = 0; i < 26; i++) {
         if (self.strs[i] != null) {
             ((HeapHeader*)self.strs[i]).refcount = STRING_PINNED_REFCOUNT;
         }
