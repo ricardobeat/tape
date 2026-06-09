@@ -168,8 +168,17 @@ const KeywordEntry[*] KEYWORDS = {
 
 /// Look up an identifier to see if it is a keyword.
 /// Returns the keyword token type, or NOT_A_KEYWORD fault if not a keyword.
+/// Dispatches on the identifier's first character for faster lookup, then
+/// compares length before full byte comparison within candidates.
 fn TokenType? lookup_keyword(char[] name, bool strict_mode) {
+    if (name.len == 0) {
+        return NOT_A_KEYWORD~;
+    }
+
+    // Filter on first character, then length, before the full byte compare.
     foreach (&kw : KEYWORDS) {
+        if (kw.name[0] != name[0]) continue;
+
         if (kw.name.len == name.len) {
             bool match = true;
             for (usz i = 0; i < name.len; i++) {
