@@ -4,7 +4,13 @@
   "c-sources": [ "libregexp/libregexp.c", "libregexp/libunicode.c", "libregexp/re_wrapper.c" ],
   "c-include-dirs": [ "libregexp" ],
   "targets": {
-    "duktape": {
+    "duktape_c3": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "opt": "O2",
+      "fp-math": "relaxed"
+    },
+    "lib": {
       "type": "static-lib",
       "sources": [ "src" ]
     },
@@ -17,12 +23,6 @@
       "type": "executable",
       "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
       "opt": "O2"
-    },
-    "duktape_c3": {
-      "type": "executable",
-      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
-      "opt": "O2",
-      "fp-math": "relaxed"
     },
     "test_prop": {
       "type": "executable",

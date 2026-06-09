@@ -8,7 +8,7 @@ all: build-lib build-vm build-batch build-bench build-orig-duktape
 
 # Build the static library
 build-lib:
-    c3c build duktape
+    c3c build lib
 
 # Build the single-file test runner
 build-vm:
@@ -32,7 +32,7 @@ build-quickjs:
     cp quickjs/qjs out/
 
 # Build a specific target: `just build <target>`  (e.g. just build test_vm)
-build t="duktape":
+build t="duktape_c3":
     c3c build "{{t}}"
 
 # Build with NaN-boxing disabled (`-D NONANBOX`)
