@@ -549,35 +549,22 @@ fn void HObject.ensure_prop_hash(&self) {
     HashEntry* entries = (HashEntry*)new_hash;
     uint mask = new_mask;
 
-    if (self.prop_hash != null) {
-        // Rehash from existing hash table entries — O(table_size) not O(chain_depth)
-        HashEntry* old_entries = (HashEntry*)self.prop_hash;
-        uint old_mask = self.prop_hash_mask;
-        for (uint i = 0; i <= old_mask; i++) {
-            void* k = old_entries[i].key;
+    // Rebuild from the shape chain — the shape is the authoritative source
+    // (during put_prop growth the new key is already in the shape, but not
+    // yet in the old hash table).
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        hobject::ShapeProperty* sp = sh.props();
+        for (uint j = 0; j < sh.own_count; j++) {
+            void* k = sp[j].key;
             if (k == null) continue;
             uint h = hash_key(k);
             uint slot = h & mask;
             while (entries[slot].key != null) slot = (slot + 1) & mask;
             entries[slot].key = k;
-            entries[slot].index = old_entries[i].index;
+            entries[slot].index = sh.offset + j;
         }
-    } else {
-        // No existing hash table — walk shape chain (only happens once, at HASH_MIN_PROPS threshold)
-        hobject::Shape* sh = self.shape;
-        while (sh != null) {
-            hobject::ShapeProperty* sp = sh.props();
-            for (uint j = 0; j < sh.own_count; j++) {
-                void* k = sp[j].key;
-                if (k == null) continue;
-                uint h = hash_key(k);
-                uint slot = h & mask;
-                while (entries[slot].key != null) slot = (slot + 1) & mask;
-                entries[slot].key = k;
-                entries[slot].index = sh.offset + j;
-            }
-            sh = sh.parent_shape;
-        }
+        sh = sh.parent_shape;
     }
 
     if (self.prop_hash != null) libc::free(self.prop_hash);
@@ -772,6 +759,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             if (entries[slot].key == null) {
                 entries[slot].key = key;
                 entries[slot].index = new_idx;
+                self.hash_prop_count = self.prop_count;
             }
             // else: table is full (shouldn't happen with 70% load factor)
         }
@@ -844,6 +832,16 @@ fn bool HObject.delete_prop(&self, void* key) {
         }
     } else {
         self.shape = null;
+    }
+
+    // Indexes after the deleted slot shifted down by one, so rebuild the
+    // hash table from the new shape.
+    if (self.prop_hash != null) {
+        libc::free(self.prop_hash);
+        self.prop_hash = null;
+        self.prop_hash_mask = 0;
+        self.hash_prop_count = 0;
+        self.ensure_prop_hash();
     }
 
     return true;
