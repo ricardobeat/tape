@@ -1,45 +1,47 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 146 (String reference counting on delta shapes)
+**Last Updated:** Session 148 (Env creation skip + IC optimization + string table fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 146, 2026-06-09)
+## Summary (after Session 148, 2026-06-11)
 
 | Metric | Value |
 |---|---|
-| Total test262 tests | 53,569 |
+| Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,450 |
-| Currently failing (phases 0-8) | ~10,287 |
-| Pass rate (phases 0-8 of run) | ~52% |
+| Currently passing (phases 0-8) | ~10,978 |
+| Currently failing (phases 0-8) | ~9,586 |
+| Pass rate (phases 0-8 only) | ~53.4% |
+| Overall pass rate | 52.7% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 567 | 321 | 1,297 |
-| 1: Calling Convention | 426 | 47 | 41 | 338 |
-| 2: Basic Operators | 1,969 | 952 | 192 | 825 |
-| 3: Object System | 7,767 | 3,605 | 2,195 | 1,967 |
-| 4: Error Handling | 402 | 119 | 82 | 201 |
-| 5: Built-in Constructors | 8,616 | 4,244 | 2,847 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,953 | 1,824 | 936 |
-| 7: ES5 Features | 1,240 | 183 | 110 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 780 | 504 | 1,463 |
-| 11: Arrow/Templates | 427 | 59 | 44 | 324 |
+| 0-1: Core VM | 2,185 | 518 | 370 | 1,297 |
+| 1: Calling Convention | 426 | 38 | 50 | 338 |
+| 2: Basic Operators | 1,969 | 884 | 260 | 825 |
+| 3: Object System | 7,766 | 3,189 | 2,610 | 1,967 |
+| 4: Error Handling | 402 | 98 | 103 | 201 |
+| 5: Built-in Constructors | 8,615 | 3,703 | 3,387 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,712 | 2,065 | 936 |
+| 7: ES5 Features | 1,240 | 168 | 125 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 668 | 616 | 1,463 |
+| 11: Arrow/Templates | 427 | 56 | 47 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 5 | 27 | 719 |
-| 15: Classes | 8,520 | 59 | 203 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,588 | 177 | 463 | 948 |
+| 15: Classes | 8,520 | 63 | 199 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 275 | 365 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Benchmark Summary
 
 See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
-array 0.7x, loop 0.3x, object 0.6x, property_lookup 0.4x, string 0.6x, arithmetic 0.4x.
-recursion 0.8× (faster than Duktape), function_call 0.5x.
-Remaining: ic_monomorphic 1.3x, valstack_copy 3.2x.
-QuickJS is 2.5-5.0x faster on most benchmarks (down from 6-10x).
+- **All benchmarks <= Duktape except**: ic_monomorphic (1.1x), valstack_copy (1.3x)
+- **vs QuickJS**: Most benchmarks 0.3-0.8×, ic_monomorphic/valstack_copy 1.8×
+- valstack_copy was 3.7× before env-creation-skip optimization (Session 148)
+- bench_string was 2.5× before string-table-reference fix (Session 148)
+- bench_shape went from 73× to 0.8× via GC-skip for RC strings (Session 147)
 
 ## Resolved Root Causes
 
@@ -88,6 +90,8 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 148 | Env-creation skip (has_closures), IC inline fast path, string-table ref fix | no regression (52.7%) |
+| 147 | Shape benchmark fix (GC skip for RC strings, PUTPROP restructure, alloc_no_gc) | — |
 | 146 | String RC rebased on delta shapes (plans 016/017/018) | — |
 | 145 | Array.sort comparator + String.replace/split RegExp | +58 |
 | 144 | Function.prototype.call init order + Array ToObject | +1,520 |
