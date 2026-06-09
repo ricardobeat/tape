@@ -3046,97 +3046,148 @@ fn TVal? Vm.run(Vm* vm) {
                     // Save the value before ensure_valstack may reallocate
                     TVal put_val = *rc;
 
-                    // Check for setter on prototype chain
-                    hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
-                    if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
-                        // Invoke setter: this=obj, arg=value
-                        HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
-                        if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
-                            CompiledFunction* target = setter_obj.extra.func.comp_func;
+                    // Single find_prop_idx call for both existence check and accessor check
+                    int exist_idx = hobj.find_prop_idx(key);
+                    if (exist_idx >= 0) {
+                        hobject::PropValue* entry = &hobj.prop_values()[exist_idx];
+                        if (entry.flags.is_accessor) {
+                            // Accessor property — invoke setter
+                            TVal setter_fn = entry.setter;
+                            if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
+                                HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
+                                if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
+                                    CompiledFunction* target = setter_obj.extra.func.comp_func;
 
-                            uint callee_reg = (uint)insn.a + 1;
-                            uint frame_start = callee_reg + 2;
-                            TVal* new_bottom = act.bottom + frame_start;
-                            uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
+                                    uint callee_reg = (uint)insn.a + 1;
+                                    uint frame_start = callee_reg + 2;
+                                    TVal* new_bottom = act.bottom + frame_start;
+                                    uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
 
-                            if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
-                                // Recompute new_bottom after realloc (act.bottom may have moved)
-                                new_bottom = act.bottom + frame_start;
-                                TVal* caller_regs = act.bottom;
+                                    if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
+                                        new_bottom = act.bottom + frame_start;
+                                        TVal* caller_regs = act.bottom;
 
-                                vm.heap.tval_copy_ref(&caller_regs[callee_reg], &acc.accessor_fn);
-                                TVal obj_tv;
-                                obj_tv.set_object(acc.this_obj);
-                                vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
-                                vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
+                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg], &setter_fn);
+                                        TVal obj_tv;
+                                        obj_tv.set_object(hobj);
+                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
+                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
 
-                                Activation* new_act = &vm.activations[vm.activation_count];
-                                vm.activation_count++;
-                                new_act.max_heap_reg = 0;
-                                new_act.caller_valstack_top = vm.valstack_top;
+                                        Activation* new_act = &vm.activations[vm.activation_count];
+                                        vm.activation_count++;
+                                        new_act.max_heap_reg = 0;
+                                        new_act.caller_valstack_top = vm.valstack_top;
 
-                                EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
-                                if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
-                                new_act.parent = act;
-                                new_act.func = target;
-                                new_act.var_env = setter_var_env;
-                                new_act.lex_env = setter_var_env;
-                                new_act.cat = null;
-                                new_act.curr_pc = target.code;
-                                new_act.bottom = new_bottom;
-                                new_act.retval = act.bottom + (uint)insn.a;
-                                new_act.flags = ACT_FLAG_STRICT;
-                                vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
+                                        EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
+                                        if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
+                                        new_act.parent = act;
+                                        new_act.func = target;
+                                        new_act.var_env = setter_var_env;
+                                        new_act.lex_env = setter_var_env;
+                                        new_act.cat = null;
+                                        new_act.curr_pc = target.code;
+                                        new_act.bottom = new_bottom;
+                                        new_act.retval = act.bottom + (uint)insn.a;
+                                        new_act.flags = ACT_FLAG_STRICT;
+                                        vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
-                                TVal* new_regs = new_act.bottom;
-                                libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
-                                // Copy arg (the value being set)
-                                vm.heap.tval_copy_ref(&new_regs[0], &put_val);
+                                        TVal* new_regs = new_act.bottom;
+                                        libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
+                                        vm.heap.tval_copy_ref(&new_regs[0], &put_val);
 
-                                vm.valstack_top = new_regs + target.num_regs;
-                                vm.valstack_bottom = new_act.bottom;
+                                        vm.valstack_top = new_regs + target.num_regs;
+                                        vm.valstack_bottom = new_act.bottom;
 
-                                // Save caller's PC for resumption after setter returns
-                                act.curr_pc = curr_pc;
+                                        act.curr_pc = curr_pc;
 
-                                needs_restart = true;
-                                break;
-                            }
-                        }
-                    } else {
-                        // Check if property exists and is writable
-                        int exist_idx = hobj.find_prop_idx(key);
-                        if (exist_idx >= 0) {
-                            hobject::PropValue* entry = &hobj.prop_values()[exist_idx];
-                            if (!entry.flags.is_accessor && !entry.flags.writable) {
-                                // Non-writable data property — TypeError in strict mode
-                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                                if (try err = err_raw) {
-                                    err.prototype = vm.heap.type_err_proto;
-                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    HString* msg_val = intern_string(vm, "Cannot assign to read only property");
-                                    TVal msg_tv;
-                                    msg_tv.set_string(msg_val);
-                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                    TVal err_val;
-                                    err_val.set_object(err);
-                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                        return VM_ERROR~;
+                                        needs_restart = true;
+                                        break;
                                     }
-                                } else {
+                                }
+                            }
+                        } else if (!entry.flags.writable) {
+                            // Non-writable data property — TypeError in strict mode
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Cannot assign to read only property");
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val;
+                                err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                     return VM_ERROR~;
                                 }
-                                break;
+                            } else {
+                                return VM_ERROR~;
                             }
+                            break;
+                        } else {
                             // Update value, preserve existing flags
                             vm.heap.tval_copy_ref(&entry.data.value, &put_val);
+                        }
+                    } else {
+                        // Property doesn't exist: check prototype for accessors
+                        hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
+                        if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
+                            // Invoke setter from prototype
+                            HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
+                            if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
+                                CompiledFunction* target = setter_obj.extra.func.comp_func;
+
+                                uint callee_reg = (uint)insn.a + 1;
+                                uint frame_start = callee_reg + 2;
+                                TVal* new_bottom = act.bottom + frame_start;
+                                uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
+
+                                if (ensure_valstack(vm, needed) && vm.activation_count < MAX_CALLS) {
+                                    new_bottom = act.bottom + frame_start;
+                                    TVal* caller_regs = act.bottom;
+
+                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg], &acc.accessor_fn);
+                                    TVal obj_tv;
+                                    obj_tv.set_object(acc.this_obj);
+                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
+                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
+
+                                    Activation* new_act = &vm.activations[vm.activation_count];
+                                    vm.activation_count++;
+                                    new_act.max_heap_reg = 0;
+                                    new_act.caller_valstack_top = vm.valstack_top;
+
+                                    EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
+                                    if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
+                                    new_act.parent = act;
+                                    new_act.func = target;
+                                    new_act.var_env = setter_var_env;
+                                    new_act.lex_env = setter_var_env;
+                                    new_act.cat = null;
+                                    new_act.curr_pc = target.code;
+                                    new_act.bottom = new_bottom;
+                                    new_act.retval = act.bottom + (uint)insn.a;
+                                    new_act.flags = ACT_FLAG_STRICT;
+                                    vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
+
+                                    TVal* new_regs = new_act.bottom;
+                                    libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
+                                    vm.heap.tval_copy_ref(&new_regs[0], &put_val);
+
+                                    vm.valstack_top = new_regs + target.num_regs;
+                                    vm.valstack_bottom = new_act.bottom;
+
+                                    act.curr_pc = curr_pc;
+
+                                    needs_restart = true;
+                                    break;
+                                }
+                            }
                         } else {
-                            // Property doesn't exist: check extensibility
+                            // No accessor: insert new property
                             if (hobj.flags.extensible) {
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
                             }
-                            // If not extensible, silently ignore in non-strict, but we're strict-only
-                            // so we could throw. For now, silently ignore.
                         }
                     }
                 }

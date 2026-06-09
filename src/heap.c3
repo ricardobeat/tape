@@ -654,6 +654,38 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     return new_id;
 }
 
+/// Transition to a new shape for a property that is KNOWN to be new.
+/// Skips the O(N) chain walk — the caller has already confirmed via
+/// find_prop_idx() that the key does not exist in the object.
+fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
+    if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
+        return cur_shape_id;
+    }
+
+    hobject::Shape* cur = self.shapes[cur_shape_id];
+
+    // Check transition table for existing child shape (another object may have
+    // already taken the same transition).
+    uint existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_NONE) {
+        return existing;
+    }
+
+    // Allocate a new shape that extends the current one.
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    if (ns == null) return cur_shape_id;
+
+    uint new_id = self.alloc_shape_slot();
+    if (new_id == SHAPE_NONE) {
+        hobject::shape_free(ns, (void*)self);
+        return cur_shape_id;
+    }
+
+    self.shapes[new_id] = ns;
+    self.insert_transition(cur_shape_id, key, new_id);
+    return new_id;
+}
+
 fn void Heap.bump_shape_gen(&self, uint shape_id) {
     if (shape_id < self.shape_count && self.shapes[shape_id] != null) {
         self.shapes[shape_id].generation++;

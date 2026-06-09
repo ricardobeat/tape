@@ -1,57 +1,66 @@
 ============================================================
   Duktape C3 Port — Benchmark Comparison
-  Mon Jun  8 15:29:33 CEST 2026
-  Iterations per benchmark: 5
+  Tue Jun  9 11:26:16 CEST 2026
+  Iterations per benchmark: 3
   QuickJS: available
 ============================================================
 
 ------------------------------------------------------------
   1. C3 Port (compile + execute)
 ------------------------------------------------------------
-  bench_arithmetic ... 208ms
-  bench_array ... 26ms
-  bench_function_call ... 50ms
-  bench_ic_monomorphic ... 309ms
-  bench_ic_proto ... 263ms
-  bench_loop ... 39ms
-  bench_object ... 87ms
-  bench_property_lookup ... 58ms
-  bench_recursion_deep ... 1735ms
-  bench_recursion ... 458ms
-  bench_string ... 14ms
-  bench_valstack_copy ... 14ms
+  bench_arithmetic ... 124ms
+  bench_array ... 27ms
+  bench_function_call ... 53ms
+  bench_ic_monomorphic ... 287ms
+  bench_ic_proto ... 255ms
+  bench_loop ... 42ms
+  bench_memory_heavy ... 603ms
+  bench_object ... 93ms
+  bench_property_lookup ... 63ms
+  bench_recursion_deep ... 1360ms
+  bench_recursion ... 329ms
+  bench_shape_no_call ... 589ms
+  bench_shape_stress ... 631ms
+  bench_string ... 13ms
+  bench_valstack_copy ... 55ms
 
 ------------------------------------------------------------
   2. Original Duktape v2.7.0 (compile + execute)
 ------------------------------------------------------------
-  bench_arithmetic ... 498ms
-  bench_array ... 65ms
-  bench_function_call ... 243ms
-  bench_ic_monomorphic ... 549ms
-  bench_ic_proto ... 593ms
-  bench_loop ... 207ms
-  bench_object ... 437ms
-  bench_property_lookup ... 409ms
-  bench_recursion_deep ... 3789ms
-  bench_recursion ... 1187ms
-  bench_string ... 38ms
-  bench_valstack_copy ... 24ms
+  bench_arithmetic ... 336ms
+  bench_array ... 40ms
+  bench_function_call ... 132ms
+  bench_ic_monomorphic ... 285ms
+  bench_ic_proto ... 449ms
+  bench_loop ... 140ms
+  bench_memory_heavy ... 171ms
+  bench_object ... 170ms
+  bench_property_lookup ... 182ms
+  bench_recursion_deep ... 1942ms
+  bench_recursion ... 465ms
+  bench_shape_no_call ... 8ms
+  bench_shape_stress ... 8ms
+  bench_string ... 17ms
+  bench_valstack_copy ... 12ms
 
 ------------------------------------------------------------
   3. QuickJS (compile + execute)
 ------------------------------------------------------------
-  bench_arithmetic ... 55ms
-  bench_array ... 20ms
-  bench_function_call ... 43ms
-  bench_ic_monomorphic ... 216ms
-  bench_ic_proto ... 361ms
-  bench_loop ... 45ms
-  bench_object ... 119ms
-  bench_property_lookup ... 72ms
-  bench_recursion_deep ... 1798ms
-  bench_recursion ... 498ms
-  bench_string ... 29ms
-  bench_valstack_copy ... 33ms
+  bench_arithmetic ... 28ms
+  bench_array ... 8ms
+  bench_function_call ... 18ms
+  bench_ic_monomorphic ... 88ms
+  bench_ic_proto ... 106ms
+  bench_loop ... 15ms
+  bench_memory_heavy ... 48ms
+  bench_object ... 25ms
+  bench_property_lookup ... 19ms
+  bench_recursion_deep ... 492ms
+  bench_recursion ... 120ms
+  bench_shape_no_call ... 4ms
+  bench_shape_stress ... 4ms
+  bench_string ... 5ms
+  bench_valstack_copy ... 9ms
 
 ============================================================
   Results Summary
@@ -59,18 +68,21 @@
 
   Benchmark                            C3(ms)  Duktape(ms)  QuickJS(ms)    Ratio
   --------------------------------------------------------------------------
-  bench_arithmetic                  208.0ms    498.0ms     55.0ms      0.4x
-  bench_array                        26.0ms     65.0ms     20.0ms      0.4x
-  bench_function_call                50.0ms    243.0ms     43.0ms      0.2x
-  bench_ic_monomorphic              309.0ms    549.0ms    216.0ms      0.6x
-  bench_ic_proto                    263.0ms    593.0ms    361.0ms      0.4x
-  bench_loop                         39.0ms    207.0ms     45.0ms      0.2x
-  bench_object                       87.0ms    437.0ms    119.0ms      0.2x
-  bench_property_lookup              58.0ms    409.0ms     72.0ms      0.1x
-  bench_recursion_deep             1735.0ms   3789.0ms   1798.0ms      0.5x
-  bench_recursion                   458.0ms   1187.0ms    498.0ms      0.4x
-  bench_string                       14.0ms     38.0ms     29.0ms      0.4x
-  bench_valstack_copy                14.0ms     24.0ms     33.0ms      0.6x
+  bench_arithmetic                  124.0ms    336.0ms     28.0ms      0.4x
+  bench_array                        27.0ms     40.0ms      8.0ms      0.7x
+  bench_function_call                53.0ms    132.0ms     18.0ms      0.4x
+  bench_ic_monomorphic              287.0ms    285.0ms     88.0ms      1.0x
+  bench_ic_proto                    255.0ms    449.0ms    106.0ms      0.6x
+  bench_loop                         42.0ms    140.0ms     15.0ms      0.3x
+  bench_memory_heavy                603.0ms    171.0ms     48.0ms      3.5x
+  bench_object                       93.0ms    170.0ms     25.0ms      0.5x
+  bench_property_lookup              63.0ms    182.0ms     19.0ms      0.3x
+  bench_recursion_deep             1360.0ms   1942.0ms    492.0ms      0.7x
+  bench_recursion                   329.0ms    465.0ms    120.0ms      0.7x
+  bench_shape_no_call               589.0ms      8.0ms      4.0ms     73.6x
+  bench_shape_stress                631.0ms      8.0ms      4.0ms     78.9x
+  bench_string                       13.0ms     17.0ms      5.0ms      0.8x
+  bench_valstack_copy                55.0ms    12.0ms      9.0ms      4.6x
   -------------------------------------------------------------
 
 Ratio (C3/Duktape) > 1.0 means C3 port is slower.
