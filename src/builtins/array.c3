@@ -563,11 +563,15 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     if (obj == null) { ctx.result.set_undefined(); return; }
 
     // Get separator (default ",")
+    HString* sep_str = null;
     char[] sep = ",";
     if (ctx.argc > 0) {
         TVal sep_val = ctx.regs[ctx.base_reg];
-        HString* sep_str = builtin_to_string(ctx.heap, &sep_val);
+        sep_str = builtin_to_string(ctx.heap, &sep_val);
         if (sep_str != null) {
+            // Hold a reference: element toString calls below can trigger GC,
+            // which sweeps strings only referenced by the string table.
+            ((types::HeapHeader*)sep_str).incref();
             sep = sep_str.get_data();
         }
     }
@@ -576,38 +580,101 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
 
     // Empty array returns ""
     if (len == 0) {
+        if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
         HString* result = builtin_intern_string(ctx.heap, "");
         if (result == null) { ctx.result.set_undefined(); return; }
         ctx.result.set_string(result);
         return;
     }
 
-    char[4096] buf;
-    usz offset = 0;
+    // PASS 1: Collect HString* pointers for each element and sum total length.
+    // Use stack allocation for small arrays (up to 64 elements), heap allocation otherwise.
+    HString*[] elem_strs;
+    HString** elem_strs_heap = null;
+    const usz STACK_THRESHOLD = 64;
 
+    HString*[64] elem_strs_stack;
+    if (len <= STACK_THRESHOLD) {
+        elem_strs = elem_strs_stack[:len];
+    } else {
+        elem_strs_heap = (HString**)libc::malloc(HString*::size * len);
+        if (elem_strs_heap == null) {
+            if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
+            ctx.result.set_undefined();
+            return;
+        }
+        elem_strs = elem_strs_heap[:len];
+    }
+
+    // Sum the total byte count: each element string's bytes plus separator bytes between elements.
+    usz total_len = 0;
     for (uint i = 0; i < len; i++) {
-        if (i > 0) {
-            for (usz si = 0; si < sep.len && offset < 4090; si++) {
-                buf[offset++] = sep[si];
+        TVal elem = array_get_elem(obj, i, ctx.heap);
+        HString* elem_str;
+        if (elem.is_undefined() || elem.is_null()) {
+            // ES5 §15.4.4.5: undefined/null elements become empty strings, but separators
+            // are still emitted between each pair of elements.
+            elem_str = (HString*)ctx.heap.strs[heap::BuiltinStr.EMPTY];
+        } else {
+            elem_str = builtin_to_string(ctx.heap, &elem);
+            if (elem_str == null) {
+                elem_str = (HString*)ctx.heap.strs[heap::BuiltinStr.EMPTY];
             }
         }
-        TVal elem = array_get_elem(obj, i, ctx.heap);
-        if (!elem.is_undefined() && !elem.is_null()) {
-            HString* elem_str = builtin_to_string(ctx.heap, &elem);
-            if (elem_str != null) {
-                char* data = elem_str.get_cstr();
-                uint blen = elem_str.blen;
-                uint max_copy = blen;
-                if (offset + max_copy > 4090) max_copy = 4090 - (uint)offset;
-                for (uint j = 0; j < max_copy; j++) {
-                    buf[offset++] = data[j];
-                }
-            }
+        // Hold a reference: a later element's toString can trigger GC, which
+        // sweeps strings that are only referenced by the string table.
+        ((types::HeapHeader*)elem_str).incref();
+        elem_strs[i] = elem_str;
+        total_len += elem_str.blen;
+    }
+    // Add separator bytes between elements (len - 1 separators between len elements).
+    if (len > 1) {
+        total_len += sep.len * (usz)(len - 1);
+    }
+
+    // PASS 2: Allocate a single buffer and copy all pieces using memcpy.
+    char* result_buf = (char*)libc::malloc(total_len);
+    if (result_buf == null) {
+        if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
+        for (uint i = 0; i < len; i++) {
+            ctx.heap.decref((types::HeapHeader*)elem_strs[i]);
+        }
+        if (elem_strs_heap != null) libc::free(elem_strs_heap);
+        ctx.result.set_undefined();
+        return;
+    }
+
+    usz offset = 0;
+    for (uint i = 0; i < len; i++) {
+        // Emit separator before element i (except before the first element).
+        if (i > 0) {
+            libc::memcpy(&result_buf[offset], &sep[0], sep.len);
+            offset += sep.len;
+        }
+        // Emit element string.
+        HString* elem_str = elem_strs[i];
+        char[] elem_data = elem_str.get_data();
+        if (elem_data.len > 0) {
+            libc::memcpy(&result_buf[offset], &elem_data[0], elem_data.len);
+            offset += elem_data.len;
         }
     }
 
-    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    if (result == null) { ctx.result.set_undefined(); return; }
+    // Intern the result, then release the held references and buffers.
+    HString* result = builtin_intern_string(ctx.heap, result_buf[:total_len]);
+    libc::free(result_buf);
+    if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
+    for (uint i = 0; i < len; i++) {
+        ctx.heap.decref((types::HeapHeader*)elem_strs[i]);
+    }
+    if (elem_strs_heap != null) {
+        libc::free(elem_strs_heap);
+    }
+
+    if (result == null) {
+        ctx.result.set_undefined();
+        return;
+    }
     ctx.result.set_string(result);
 }
 
