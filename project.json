@@ -23,6 +23,16 @@
       "sources": [ "src", "benchmarks/duktape_c3.c3" ],
       "opt": "O2",
       "fp-math": "relaxed"
+    },
+    "test_prop": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/test_prop.c3" ],
+      "opt": "O0"
+    },
+    "test_closure_put": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/test_closure_put.c3" ],
+      "opt": "O0"
     }
   }
 }

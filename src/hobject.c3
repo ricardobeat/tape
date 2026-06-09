@@ -400,6 +400,16 @@ struct HObject {
     /// Single allocation that holds prop_values and array_part contiguously.
     void*         prop_alloc;
 
+    // --- Per-object hash table for fast property lookup -------------------
+    /// Hash table entries: { void* key; uint index; } pairs.  Allocated
+    /// separately from prop_alloc when prop_count >= HASH_MIN_PROPS.
+    void*         prop_hash;
+    /// Hash table mask (prop_hash has mask+1 slots).
+    uint          prop_hash_mask;
+    /// Number of properties indexed in the hash table (0 = not built yet).
+    /// When hash_prop_count < prop_count, the hash table is stale.
+    uint          hash_prop_count;
+
     // --- Subtype-specific fields (overlapping union) -----------------------
     /// Only one variant is active, determined by flags.obj_class.
     HObjectExtra  extra;
@@ -470,21 +480,17 @@ fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 /// non-configurable.
 fn void HObject.seal(&self) {
     self.flags.extensible = false;
-    ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
         self.prop_values()[i].flags.configurable = false;
-        if (sp != null) sp[i].flags.configurable = false;
     }
 }
 
 /// Freeze the object: seal + mark all data properties non-writable.
 fn void HObject.freeze(&self) {
     self.seal();
-    ShapeProperty* sp = self.shape != null ? self.shape.props() : null;
     for (uint i = 0; i < self.prop_count; i++) {
         if (!self.prop_values()[i].flags.is_accessor) {
             self.prop_values()[i].flags.writable = false;
-            if (sp != null) sp[i].flags.writable = false;
         }
     }
 }
@@ -513,15 +519,100 @@ fn uint hash_key(void* key) @inline {
 // HObject — property index lookup
 // ============================================================================
 
+/// Each entry in the per-object hash table for fast property lookup.
+struct HashEntry {
+    void* key;
+    uint  index;
+}
+
+/// Choose a hash mask for a given property count.
+fn uint prop_hash_mask_for(uint prop_count) @inline {
+    uint slots = 2;
+    while (prop_count * 10 > slots * 7) {
+        slots *= 2;
+    }
+    return slots - 1;
+}
+
+/// Allocate or grow the per-object hash table for property lookup.
+fn void HObject.ensure_prop_hash(&self) {
+    if (self.prop_count < HASH_MIN_PROPS) return;
+    uint new_mask = prop_hash_mask_for(self.prop_count);
+    // Skip if hash table is up-to-date and the right size
+    if (self.prop_hash != null && self.hash_prop_count == self.prop_count && self.prop_hash_mask == new_mask) return;
+
+    usz new_bytes = (usz)(new_mask + 1) * 16;
+    void* new_hash = libc::malloc(new_bytes);
+    if (new_hash == null) return;
+    libc::memset(new_hash, 0, new_bytes);
+
+    HashEntry* entries = (HashEntry*)new_hash;
+    uint mask = new_mask;
+    // Walk shape chain to get keys for all properties
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        hobject::ShapeProperty* sp = sh.props();
+        for (uint j = 0; j < sh.own_count; j++) {
+            void* k = sp[j].key;
+            if (k == null) continue;
+            uint h = hash_key(k);
+            uint slot = h & mask;
+            while (entries[slot].key != null) slot = (slot + 1) & mask;
+            entries[slot].key = k;
+            entries[slot].index = sh.offset + j;
+        }
+        sh = sh.parent_shape;
+    }
+
+    if (self.prop_hash != null) libc::free(self.prop_hash);
+    self.prop_hash = new_hash;
+    self.prop_hash_mask = new_mask;
+    self.hash_prop_count = self.prop_count;
+}
+
+/// Get the property key at a given index by walking the shape chain.
+/// Returns null if the index is out of range.
+fn void* HObject.prop_key_at(&self, uint idx) @inline {
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
+            return sh.props()[idx - sh.offset].key;
+        }
+        sh = sh.parent_shape;
+    }
+    return null;
+}
+
 /// Find the index of the property with the given interned key.
-///
-/// Delegates to the shared Shape's hash table for O(1) lookup.
-/// Returns the index (≥ 0) on success, or -1 if the key is not found.
+/// Uses the per-object hash table if present, otherwise walks the shape chain.
 fn int HObject.find_prop_idx(&self, void* key) {
-    if (key == null || self.shape == null) {
+    if (key == null || self.shape == null || self.prop_count == 0) return -1;
+
+    // Try hash table first
+    if (self.prop_hash != null) {
+        HashEntry* entries = (HashEntry*)self.prop_hash;
+        uint mask = self.prop_hash_mask;
+        uint h = hash_key(key);
+        uint slot = h & mask;
+        for (uint probes = 0; probes <= mask; probes++) {
+            HashEntry* e = &entries[slot];
+            if (e.key == null) return -1;
+            if (e.key == key) return (int)e.index;
+            slot = (slot + 1) & mask;
+        }
         return -1;
     }
-    return self.shape.find_prop_idx(key);
+
+    // Walk shape chain for small objects
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        hobject::ShapeProperty* sp = sh.props();
+        for (uint i = 0; i < sh.own_count; i++) {
+            if (sp[i].key == key) return (int)(sh.offset + i);
+        }
+        sh = sh.parent_shape;
+    }
+    return -1;
 }
 
 /// Find the PropValue for the given interned key.
@@ -618,6 +709,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         }
     }
 
+    // Rebuild the per-object hash table for the new prop_count
+    self.ensure_prop_hash();
+
     return true;
 }
 
@@ -644,30 +738,27 @@ fn bool HObject.delete_prop(&self, void* key) {
 
     // Build a new private shape from the surviving properties.
     // We do NOT insert it into the transition table — it's object-specific.
-    Shape* ns = shape_create(new_count, 0xFFFF_FFFF);
+    // Create a flat shape (own_count = all surviving props, offset = 0).
+    Shape* ns = shape_create(new_count, 0, 0xFFFF_FFFF, null);
     if (ns != null) {
-        // Copy surviving property names from old shape.
+        // Collect surviving property names by walking the old shape chain
         if (self.shape != null) {
-            ShapeProperty* old_sp = self.shape.props();
             ShapeProperty* new_sp = ns.props();
             uint ni = 0;
-            for (uint i = 0; i < self.shape.prop_count; i++) {
-                if (i != ui) {
-                    new_sp[ni].key   = old_sp[i].key;
-                    new_sp[ni].flags = old_sp[i].flags;
-                    ni++;
+            // Walk the old shape chain to get all properties
+            Shape* walk = self.shape;
+            while (walk != null) {
+                ShapeProperty* old_sp = walk.props();
+                for (uint j = 0; j < walk.own_count; j++) {
+                    uint old_idx = walk.offset + j;
+                    if (old_idx != ui) {
+                        new_sp[ni].key   = old_sp[j].key;
+                        new_sp[ni].flags = self.prop_values()[old_idx].flags;
+                        ni++;
+                    }
                 }
+                walk = walk.parent_shape;
             }
-        }
-        // Rebuild hash table.
-        uint* ht = ns.hash_table();
-        uint mask = ns.hash_mask;
-        ShapeProperty* sp = ns.props();
-        for (uint i = 0; i < new_count; i++) {
-            uint h = hash_key(sp[i].key);
-            uint slot = h & mask;
-            while (ht[slot] != 0) slot = (slot + 1) & mask;
-            ht[slot] = i + 1;
         }
 
         // Register with heap and attach to this object.
@@ -903,6 +994,11 @@ fn void hobject_free(HObject* obj) {
         obj.extra.regexp.regexp_data = null;
     }
 
+    // Free the per-object property hash table.
+    if (obj.prop_hash != null) {
+        libc::free(obj.prop_hash);
+    }
+
     // Free the unified property allocation block (prop_values + array_part).
     // Shape is shared and managed by the heap — do NOT free it here.
     if (obj.prop_alloc != null) {
@@ -1031,138 +1127,67 @@ struct Shape {
     uint      generation;
     /// Parent shape index (0xFFFF_FFFF for root).
     uint      parent;
-    /// Number of properties in this shape.
-    uint      prop_count;
-    /// Hash table mask (hash_table has hash_mask+1 slots, all uint32).
-    /// 0 means 1 slot (hash_mask=0 → 2 slots).  Stored as mask for fast &.
-    uint      hash_mask;
+    /// Number of properties THIS shape contributes (not cumulative).
+    uint      own_count;
+    /// Offset into the object's prop_values where this shape's props start.
+    uint      offset;
+    /// Parent shape pointer for chain walking (null for root).
+    Shape*    parent_shape;
 }
 
 // ============================================================================
 // Shape — memory layout helpers
 // ============================================================================
 
-/// Compute the byte offset of the hash table from the shape base.
-/// Hash table is always the first thing in the allocation.
-fn usz shape_hash_offset() @inline {
-    return 0;
-}
-
-/// Compute the byte offset of the Shape header from the shape base.
-fn usz shape_header_offset(Shape* sh) @inline {
-    return ((usz)sh.hash_mask + 1) * uint::size;
-}
-
-/// Get pointer to the hash table (uint32 array) for this shape.
-fn uint* Shape.hash_table(&self) {
-    return (uint*)((char*)self - (sz)shape_header_offset(self));
-}
-
 /// Get pointer to the ShapeProperty array (immediately after the header).
 fn ShapeProperty* Shape.props(&self) {
     return (ShapeProperty*)((char*)self + Shape::size);
 }
 
-/// Look up a property key in the shape's hash table.
-/// Returns the property index (≥ 0) on success, or -1 if not found.
-fn int Shape.find_prop_idx(&self, void* key) {
-    if (key == null || self.prop_count == 0) return -1;
-    uint* ht = self.hash_table();
-    uint mask = self.hash_mask;
-    uint h = hash_key(key);
-    uint slot = h & mask;
-    ShapeProperty* sp = self.props();
-    for (uint probes = 0; probes <= mask; probes++) {
-        uint entry = ht[slot];
-        if (entry == 0) return -1;
-        uint idx = entry - 1;
-        if (idx < self.prop_count && sp[idx].key == key) {
-            return (int)idx;
-        }
-        slot = (slot + 1) & mask;
-    }
-    return -1;
+/// Return the total byte size of a shape allocation (no hash table).
+fn usz shape_alloc_size(uint own_count) {
+    return Shape::size + (usz)own_count * ShapeProperty::size;
 }
 
-/// Return the total byte size of a shape allocation.
-fn usz shape_alloc_size(uint prop_count, uint hash_mask) {
-    return ((usz)hash_mask + 1) * uint::size     // hash table
-         + Shape::size                            // header
-         + (usz)prop_count * ShapeProperty::size; // properties
-}
-
-/// Choose a hash mask for a given property count.
-/// Hash table has (mask+1) slots; we want load factor < 70%.
-fn uint shape_hash_mask_for(uint prop_count) {
-    // Minimum 2 slots (mask=0), grow so that prop_count / (mask+1) < 0.7
-    uint slots = 2;
-    while (prop_count * 10 > slots * 7) {
-        slots *= 2;
-    }
-    return slots - 1;
-}
-
-/// Create a new empty shape for the given parent.
-/// Returns a heap-allocated Shape block, or null on failure.
-fn Shape* shape_create(uint prop_count, uint parent) {
-    uint hm = shape_hash_mask_for(prop_count > 0 ? prop_count : 1);
-    usz bytes = shape_alloc_size(prop_count, hm);
+/// Create a new shape with `own_count` own properties.
+/// The shape stores only its OWN properties (delta from parent chain).
+/// `offset` is the index in the object's prop_values where these start.
+/// `parent_id` is the index of the parent shape (SHAPE_NONE for root).
+/// `parent_shape` is the parent shape pointer (null for root).
+fn Shape* shape_create(uint own_count, uint offset, uint parent_id, Shape* parent_shape) {
+    usz bytes = shape_alloc_size(own_count);
     void* raw = libc::malloc(bytes);
     if (raw == null) return null;
     libc::memset(raw, 0, bytes);
 
-    Shape* sh = (Shape*)((char*)raw + (usz)(hm + 1) * uint::size);
-    sh.generation = 0;
-    sh.parent     = parent;
-    sh.prop_count = prop_count;
-    sh.hash_mask  = hm;
-
-    // Fill hash table with 0 (empty sentinel).
-    uint* ht = (uint*)raw;
-    libc::memset(ht, 0, ((usz)hm + 1) * uint::size);
+    Shape* sh = (Shape*)raw;
+    sh.generation   = 0;
+    sh.parent       = parent_id;
+    sh.own_count    = own_count;
+    sh.offset       = offset;
+    sh.parent_shape = parent_shape;
 
     return sh;
 }
 
 /// Create a new shape that extends `parent` by adding one property.
-/// Copies all existing properties from parent and appends the new one.
-/// Returns null on allocation failure.
+/// Only stores the NEW property (delta).  Returns null on allocation failure.
 fn Shape* shape_extend(Shape* parent, uint parent_id, void* new_key) {
-    uint old_count = parent.prop_count;
-    uint new_count = old_count + 1;
-    Shape* ns = shape_create(new_count, parent_id);
+    uint offset = parent.offset + parent.own_count;
+    Shape* ns = shape_create(1, offset, parent_id, parent);
     if (ns == null) return null;
 
-    // Copy old properties
-    ShapeProperty* old_sp = parent.props();
-    ShapeProperty* new_sp = ns.props();
-    for (uint i = 0; i < old_count; i++) {
-        new_sp[i].key   = old_sp[i].key;
-        new_sp[i].flags = old_sp[i].flags;
-    }
-
-    // Add new property at the end
-    new_sp[old_count].key   = new_key;
-    new_sp[old_count].flags = PROP_FLAGS_WEC;
-
-    // Rehash all properties into new hash table
-    uint* ht = ns.hash_table();
-    uint mask = ns.hash_mask;
-    for (uint i = 0; i < new_count; i++) {
-        uint h = hash_key(new_sp[i].key);
-        uint slot = h & mask;
-        while (ht[slot] != 0) slot = (slot + 1) & mask;
-        ht[slot] = i + 1;  // 1-indexed (0 = empty)
-    }
+    // Set the single new property
+    ns.props()[0].key   = new_key;
+    ns.props()[0].flags = PROP_FLAGS_WEC;
 
     return ns;
 }
 
-/// Free a shape allocation.  Computes the base pointer from the Shape pointer.
+/// Free a shape allocation.
 fn void shape_free(Shape* sh) {
     if (sh == null) return;
-    void* base = (char*)sh - (sz)shape_header_offset(sh);
-    libc::free(base);
+    libc::free(sh);
 }
 
 // ============================================================================

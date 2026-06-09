@@ -115,6 +115,34 @@ bench-sizes-rebuild:
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_sizes_bench.sh
 
+# Measure peak RSS memory usage across engines
+bench-memory:
+	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
+	bash scripts/run_memory_bench.sh
+
+# Compare memory usage: main branch vs ref-counting branch
+bench-memory-compare:
+	@echo "=== Building main branch ==="
+	c3c build duktape_c3
+	@cp out/duktape_c3 out/duktape_c3_main
+	@echo ""
+	@echo "=== MAIN BRANCH ==="
+	@bash scripts/run_memory_bench.sh
+	@echo ""
+	@echo "=== Building ref-counting branch ==="
+	@test -d .worktrees/ref-counting || { echo "ERROR: ref-counting worktree not found"; exit 1; }
+	@cd .worktrees/ref-counting && c3c build duktape_c3
+	@cp .worktrees/ref-counting/out/duktape_c3 out/duktape_c3
+	@echo ""
+	@echo "=== REF-COUNTING BRANCH ==="
+	@bash scripts/run_memory_bench.sh
+	@echo ""
+	@echo "=== Restoring main binary ==="
+	@cp out/duktape_c3_main out/duktape_c3
+	@rm out/duktape_c3_main
+
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 # List available commands

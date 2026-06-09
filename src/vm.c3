@@ -902,8 +902,8 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
         // Own named properties
         for (uint i = 0; i < cur.prop_count; i++) {
-            if (cur.prop_values()[i].flags.enumerable && cur.shape.props()[i].key != null) {
-                HString* k = (HString*)cur.shape.props()[i].key;
+            if (cur.prop_values()[i].flags.enumerable && cur.prop_key_at(i) != null) {
+                HString* k = (HString*)cur.prop_key_at(i);
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
                     libc::free(seen);
@@ -3595,6 +3595,7 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
                 if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.extra.func.callable_kind == hobject::CallableKind.COMPILED_FN) {
                     CompiledFunction* target_fast = hobj_fast.extra.func.comp_func;
+                    if (target_fast == null) { regs_base[result_reg].set_undefined(); break; }
                     if (!target_fast.is_generator()) {
 
                     // New callee frame starts right after func and this in the caller frame
@@ -3631,6 +3632,10 @@ fn TVal? Vm.run(Vm* vm) {
                         if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.extra.func.var_env)) { fast_var_env = fv_f; }
                     } else {
                         fast_var_env = hobj_fast.extra.func.var_env;
+                    }
+                    if (fast_var_env == null) {
+                        regs_base[result_reg].set_undefined();
+                        break;
                     }
                     new_act.parent = act;
                     new_act.func = target_fast;

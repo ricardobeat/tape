@@ -581,7 +581,7 @@ fn void Heap.init_shapes(&self) {
     self.shapes = (hobject::Shape**)libc::malloc(bytes);
     libc::memset(self.shapes, 0, bytes);
     // Allocate root shape: 0 properties, minimum hash (mask=0 → 2 slots)
-    self.shapes[0] = hobject::shape_create(0, SHAPE_NONE);
+    self.shapes[0] = hobject::shape_create(0, 0, SHAPE_NONE, null);
     // Init transition dedup table
     self.init_transition_table();
 }
@@ -626,9 +626,17 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
 
     hobject::Shape* cur = self.shapes[cur_shape_id];
 
-    // If the key already exists in the shape, no transition needed.
-    if (cur.find_prop_idx(key) >= 0) {
-        return cur_shape_id;
+    // If the key already exists in the shape chain, no transition needed.
+    // Walk the chain from cur up to root.
+    {
+        hobject::Shape* walk = cur;
+        while (walk != null) {
+            hobject::ShapeProperty* sp = walk.props();
+            for (uint i = 0; i < walk.own_count; i++) {
+                if (sp[i].key == key) return cur_shape_id;
+            }
+            walk = walk.parent_shape;
+        }
     }
 
     // Check transition table for existing child shape.
@@ -936,7 +944,7 @@ fn void Heap.reset(&self) {
     }
     self.shape_count = 1;
     self.shape_gen   = 0;
-    self.shapes[0]   = hobject::shape_create(0, SHAPE_NONE);
+    self.shapes[0]   = hobject::shape_create(0, 0, SHAPE_NONE, null);
     self.init_transition_table();
 
     // Reintern builtin strings into the now-empty string table
@@ -1304,7 +1312,7 @@ fn void Heap.drain_gray(&self) {
         // --- Named properties ---
         PropValue* pv = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
-            HString* key = (HString*)obj.shape.props()[i].key;
+            HString* key = (HString*)obj.prop_key_at(i);
             if (key != null) {
                 ((HeapHeader*)key).set_reachable();
             }

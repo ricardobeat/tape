@@ -4529,7 +4529,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // First pass: count enumerable own properties (both named and dense array indices)
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) {
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
             count++;
         }
     }
@@ -4550,8 +4550,8 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // Fill array with keys: named properties first, then dense indices
     uint idx = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) {
-            HString* key = (HString*)obj.shape.props()[i].key;
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -4641,7 +4641,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // First pass: count all own properties (named, both enumerable and non-enumerable)
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null) {
+        if (obj.prop_key_at(i) != null) {
             count++;
         }
     }
@@ -4662,8 +4662,8 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // Fill array with property names: named properties first, then dense indices
     uint idx = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null) {
-            HString* key = (HString*)obj.shape.props()[i].key;
+        if (obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -5596,8 +5596,8 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     HString*[256] keys_arr;
     uint keys_count = 0;
     for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-        if (props.shape.props()[i].key != null) {
-            keys_arr[keys_count] = (HString*)props.shape.props()[i].key;
+        if (props.prop_key_at(i) != null) {
+            keys_arr[keys_count] = (HString*)props.prop_key_at(i);
             keys_count++;
         }
     }
@@ -5833,8 +5833,8 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                 HString*[256] keys_arr;
                 uint keys_count = 0;
                 for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-                    if (props.shape.props()[i].key != null) {
-                        keys_arr[keys_count] = (HString*)props.shape.props()[i].key;
+                    if (props.prop_key_at(i) != null) {
+                        keys_arr[keys_count] = (HString*)props.prop_key_at(i);
                         keys_count++;
                     }
                 }
@@ -5981,7 +5981,7 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
 
     // Check if any own property is configurable
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null && obj.prop_values()[i].flags.configurable) {
+        if (obj.prop_key_at(i) != null && obj.prop_values()[i].flags.configurable) {
             ctx.result.set_boolean(false);
             return;
         }
@@ -6025,7 +6025,7 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
 
     // Check if any own property is configurable or data property writable
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.shape.props()[i].key != null) {
+        if (obj.prop_key_at(i) != null) {
             if (obj.prop_values()[i].flags.configurable) {
                 ctx.result.set_boolean(false);
                 return;
@@ -6083,7 +6083,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) count++;
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
@@ -6096,8 +6096,8 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties → [key, value] pairs
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) {
-            HString* key = (HString*)obj.shape.props()[i].key;
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
             // Create pair array [key, value]
             HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
@@ -6181,7 +6181,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) count++;
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
@@ -6194,7 +6194,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.shape.props()[i].key != null) {
+        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
             array_set_elem(arr, idx, obj.prop_values()[i].data.value, ctx.heap);
             idx++;
         }
@@ -6257,8 +6257,8 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         HObject* src_obj = (HObject*)source.get_heapptr();
         // Copy enumerable own named properties
         for (uint i = 0; i < src_obj.prop_count; i++) {
-            if (src_obj.prop_values()[i].flags.enumerable && src_obj.shape.props()[i].key != null) {
-                downstream.put_prop(src_obj.shape.props()[i].key, src_obj.prop_values()[i].data.value, hobject::PROP_FLAGS_WEC);
+            if (src_obj.prop_values()[i].flags.enumerable && src_obj.prop_key_at(i) != null) {
+                downstream.put_prop(src_obj.prop_key_at(i), src_obj.prop_values()[i].data.value, hobject::PROP_FLAGS_WEC);
             }
         }
         // Copy enumerable own dense array indices
@@ -9872,7 +9872,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
         } else if (obj.get_class() == ObjClass.OBJECT) {
             // Walk own properties
             for (uint i = 0; i < obj.prop_count; i++) {
-                HString* key_str = obj.shape.props()[i].key;
+                HString* key_str = obj.prop_key_at(i);
                 if (key_str != null) {
                     TVal new_val = json_walk(heap, reviver, val, key_str);
                     if (new_val.is_undefined()) {
@@ -10247,7 +10247,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     if (!has_replacer) {
         // Check if object has own properties (including accessor properties with getters)
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.shape.props()[i].key != null) {
+            if (obj.prop_key_at(i) != null) {
                 has_props = true;
                 break;
             }
@@ -10332,8 +10332,8 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         ushort[64] snap_indices;
         uint snap_count = 0;
         for (uint i = 0; i < obj.prop_count && snap_count < 64; i++) {
-            if (obj.shape.props()[i].key != null) {
-                snap_keys[snap_count] = (HString*)obj.shape.props()[i].key;
+            if (obj.prop_key_at(i) != null) {
+                snap_keys[snap_count] = (HString*)obj.prop_key_at(i);
                 snap_indices[snap_count] = (ushort)i;
                 snap_count++;
             }
@@ -10344,7 +10344,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             uint pi = snap_indices[si];
             TVal val;
             // Check if property still exists and read its value
-            if (pi < obj.prop_count && obj.shape.props()[pi].key == key_hstr) {
+            if (pi < obj.prop_count && obj.prop_key_at(pi) == key_hstr) {
                 if (obj.prop_values()[pi].flags.is_accessor) {
                     // Invoke the getter to get the property value
                     TVal getter_fn = obj.prop_values()[pi].data.getter;
@@ -16239,7 +16239,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
 
         uint count = 0;
         for (uint i = 0; i < globals.prop_count; i++) {
-            void* key = globals.shape.props()[i].key;
+            void* key = globals.prop_key_at(i);
             if (key == null) continue;
             if (count >= heap.checkpoint_cap) {
                 uint new_cap = heap.checkpoint_cap * 2;
@@ -16262,7 +16262,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
         // Delete globals not in checkpoint
         for (uint i = globals.prop_count; i > 0; i--) {
             uint idx = i - 1;
-            void* key = globals.shape.props()[idx].key;
+            void* key = globals.prop_key_at(idx);
             if (key == null) continue;
             bool found = false;
             for (uint j = 0; j < heap.checkpoint_count; j++) {
