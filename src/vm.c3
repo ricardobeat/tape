@@ -519,7 +519,7 @@ fn int int_to_buf(long val, char* buf, usz cap) {
     return (int)len;
 }
 
-/// Convert a double to an interned HString* using snprintf.
+/// Convert a double to an interned HString* using shortest round-trip formatting.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
     // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
     if (math::is_nan(val)) {
@@ -530,8 +530,30 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
             ? vm.heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
             : vm.heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY]);
     }
+
     char[64] buf;
-    int len = libc::snprintf(&buf, 64, "%.17g", val);
+    ulong val_bits = bitcast(val, ulong);
+
+    // Try %.15g first — shortest common case
+    int len = libc::snprintf(&buf, 64, "%.15g", val);
+    if (len >= 0 && len < 64) {
+        double parsed = libc::strtod(&buf, null);
+        if (bitcast(parsed, ulong) == val_bits) {
+            return vm.heap.str_intern(buf[:len]);
+        }
+    }
+
+    // Fall back to %.16g
+    len = libc::snprintf(&buf, 64, "%.16g", val);
+    if (len >= 0 && len < 64) {
+        double parsed = libc::strtod(&buf, null);
+        if (bitcast(parsed, ulong) == val_bits) {
+            return vm.heap.str_intern(buf[:len]);
+        }
+    }
+
+    // Final fallback to %.17g (always round-trips, no check needed)
+    len = libc::snprintf(&buf, 64, "%.17g", val);
     if (len < 0 || len >= 64) {
         return null;
     }
