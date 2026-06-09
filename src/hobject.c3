@@ -709,8 +709,39 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         }
     }
 
-    // Rebuild the per-object hash table for the new prop_count
-    self.ensure_prop_hash();
+    // Update the per-object hash table for the new property.
+    // Direct insert avoids the malloc/free of a full rebuild on every put_prop.
+    if (self.prop_count >= HASH_MIN_PROPS) {
+        uint needed_mask = prop_hash_mask_for(self.prop_count);
+        if (self.prop_hash == null) {
+            // No hash table yet — build one from scratch
+            self.ensure_prop_hash();
+        } else if (self.prop_hash_mask != needed_mask) {
+            // Hash table needs to grow — full rebuild
+            self.ensure_prop_hash();
+        } else {
+            // Table is the right size — insert the new entry directly
+            HashEntry* entries = (HashEntry*)self.prop_hash;
+            uint mask = self.prop_hash_mask;
+            uint h = hash_key(key);
+            uint slot = h & mask;
+            uint probes = 0;
+            while (entries[slot].key != null && probes <= mask) {
+                if (entries[slot].key == key) {
+                    // Key already in table (shouldn't happen for new props, but be safe)
+                    entries[slot].index = new_idx;
+                    return true;
+                }
+                slot = (slot + 1) & mask;
+                probes++;
+            }
+            if (entries[slot].key == null) {
+                entries[slot].key = key;
+                entries[slot].index = new_idx;
+            }
+            // else: table is full (shouldn't happen with 70% load factor)
+        }
+    }
 
     return true;
 }

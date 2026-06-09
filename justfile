@@ -122,26 +122,13 @@ bench-memory:
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_memory_bench.sh
 
-# Compare memory usage: main branch vs ref-counting branch
+# Compare memory usage: current build only
 bench-memory-compare:
-	@echo "=== Building main branch ==="
+	@echo "=== Building ==="
 	c3c build duktape_c3
-	@cp out/duktape_c3 out/duktape_c3_main
 	@echo ""
-	@echo "=== MAIN BRANCH ==="
+	@echo "=== CURRENT BUILD ==="
 	@bash scripts/run_memory_bench.sh
-	@echo ""
-	@echo "=== Building ref-counting branch ==="
-	@test -d .worktrees/ref-counting || { echo "ERROR: ref-counting worktree not found"; exit 1; }
-	@cd .worktrees/ref-counting && c3c build duktape_c3
-	@cp .worktrees/ref-counting/out/duktape_c3 out/duktape_c3
-	@echo ""
-	@echo "=== REF-COUNTING BRANCH ==="
-	@bash scripts/run_memory_bench.sh
-	@echo ""
-	@echo "=== Restoring main binary ==="
-	@cp out/duktape_c3_main out/duktape_c3
-	@rm out/duktape_c3_main
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
