@@ -2147,7 +2147,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (var_ic_base != null) {
                 uint pc_off = (uint)(curr_pc - 1 - code_base);
                 hobject::VarICEntry* vic = var_ic_base + pc_off;
-                if (vic.env != null && vic.key == key) {
+                if (vic.env != null && vic.key == key && vic.search_head == (void*)act.lex_env) {
                     HObject* b = (HObject*)vic.bindings;
                     if (b.shape_id == vic.shape_id
                         && vm.heap.shapes[b.shape_id].generation == vic.generation) {
@@ -2316,6 +2316,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                 vic.key = key;
                 if (key != null) { ((types::HeapHeader*)key).incref(); }
+                vic.search_head = (void*)act.lex_env;
             }
             break;
         }
@@ -5366,7 +5367,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (var_ic_base != null) {
                         uint pc_off = (uint)(curr_pc - 1 - code_base);
                         hobject::VarICEntry* vic = var_ic_base + pc_off;
-                        if (vic.env != null && vic.key == key) {
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)act.lex_env) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
@@ -5452,6 +5453,7 @@ fn TVal? Vm.run(Vm* vm) {
                             if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                             vic.key = key;
                             if (key != null) { ((types::HeapHeader*)key).incref(); }
+                            vic.search_head = (void*)act.lex_env;
                         }
                     } else {
                         // ReferenceError: variable not declared
@@ -5501,7 +5503,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (var_ic_base != null) {
                         uint pc_off = (uint)(curr_pc - 1 - code_base);
                         hobject::VarICEntry* vic = var_ic_base + pc_off;
-                        if (vic.env != null && vic.key == key) {
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)act.lex_env) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
@@ -5590,6 +5592,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                         vic.key = key;
                         if (key != null) { ((types::HeapHeader*)key).incref(); }
+                        vic.search_head = (void*)act.lex_env;
                     }
                 } else {
                     ra.set_undefined();

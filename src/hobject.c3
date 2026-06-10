@@ -1356,6 +1356,9 @@ struct VarICEntry {
     ushort  prop_idx;
     /// The interned key (HString*) this entry was populated for.
     void*   key;
+    /// act.lex_env at population time; a hit requires the same chain head
+    /// so entries never serve a different activation's environment.
+    void*   search_head;
 }
 
 /// Single-pass prototype chain search: finds either an accessor or data property.
