@@ -895,10 +895,29 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     HObject* cur = obj;
     uint depth = 0;
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
-        // Own named properties
+        // STRING exotic: enumerate integer indices [0, clen) from the primitive value
+        // before the named property list so index order matches the spec.
+        if (cur.flags.exotic_stringobj && cur.extra.prim.primitive_value.is_string()) {
+            HString* prim = (HString*)cur.extra.prim.primitive_value.get_heapptr();
+            if (prim != null) {
+                for (uint i = 0; i < prim.clen; i++) {
+                    HString* k = vm.heap.int_to_hstring((long)i);
+                    if (k == null) continue;
+                    if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                        libc::free(keys);
+                        libc::free(seen);
+                        return null;
+                    }
+                }
+            }
+        }
+
+        // Own named properties (non-index own props, e.g. explicitly assigned slots)
         for (uint i = 0; i < cur.prop_count; i++) {
             if (cur.prop_values()[i].flags.enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
+                // Skip "length" on string exotic objects (non-enumerable by spec)
+                if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
                     libc::free(seen);
@@ -2706,6 +2725,17 @@ fn TVal? Vm.run(Vm* vm) {
 
             void* key = get_prop_key(vm, rb);
             if (key != null) {
+                // STRING exotic: integer index keys in [0, clen) are own properties served lazily.
+                if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
+                    HString* key_hstr = (HString*)key;
+                    if (key_hstr != null && key_hstr.is_arridx()) {
+                        HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+                        if (prim_str != null && key_hstr.arridx < prim_str.clen) {
+                            ra.set_boolean(true);
+                            break;
+                        }
+                    }
+                }
                 ra.set_boolean(obj.has_prop_proto(key));
             } else {
                 ra.set_boolean(false);
@@ -2796,10 +2826,24 @@ fn TVal? Vm.run(Vm* vm) {
                         ra.set_fastint((long)hobj.array_used);
                         break;
                     }
-                    // STRING exotic: numeric index returns character from primitive value
-                    if (hobj.get_class() == hobject::ObjClass.STRING && (rc.is_fastint() || rc.is_number())) {
-                        long sidx = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
-                        if (sidx >= 0 && hobj.extra.prim.primitive_value.is_string()) {
+                    // STRING exotic: indexed access reads characters lazily from the primitive value.
+                    // Handles both fastint/number keys (e.g. s[0]) and array-index string keys
+                    // (e.g. s["0"]), avoiding the need to materialise per-character own properties.
+                    if (hobj.flags.exotic_stringobj && hobj.extra.prim.primitive_value.is_string()) {
+                        long sidx = -1;
+                        if (rc.is_fastint()) {
+                            sidx = rc.get_fastint();
+                        } else if (rc.is_number()) {
+                            double d = rc.get_number();
+                            if (d >= 0 && d == (double)(long)d) sidx = (long)d;
+                        } else if (rc.is_string()) {
+                            // String key that is a canonical array index (cached on HString)
+                            HString* key_hstr = (HString*)rc.get_heapptr();
+                            if (key_hstr != null && key_hstr.is_arridx()) {
+                                sidx = (long)key_hstr.arridx;
+                            }
+                        }
+                        if (sidx >= 0) {
                             HString* prim_str = (HString*)hobj.extra.prim.primitive_value.get_heapptr();
                             if (sidx < (long)prim_str.clen) {
                                 uint cp = prim_str.char_at((uint)sidx);
@@ -2813,6 +2857,8 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                                 break;
                             }
+                            // Out-of-range index on a string exotic: fall through to own-property
+                            // lookup so that explicitly assigned out-of-range slots are still found.
                         }
                     }
                     hobject::PropLookupResult res = hobj.get_prop_or_accessor_proto(key, true);
@@ -5839,12 +5885,12 @@ fn TVal? Vm.run(Vm* vm) {
                 obj.prototype = vm.heap.string_proto;
                 HString* prim_str = (HString*)ra.get_heapptr();
                 obj.extra.prim.primitive_value.set_string(prim_str);
-                // Set .length and indexed character properties (ES5 §15.5.5.1)
+                // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable.
+                // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_tv;
                 len_tv.set_fastint((long)prim_str.clen);
                 obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-                builtins::populate_string_indexed_props(obj, prim_str, vm.heap);
             } else if (ra.is_number() || ra.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { rb.set_null(); break; }
@@ -6135,12 +6181,12 @@ fn TVal? Vm.run(Vm* vm) {
                 obj.prototype = vm.heap.string_proto;
                 HString* prim_str = (HString*)obj_val.get_heapptr();
                 obj.extra.prim.primitive_value.set_string(prim_str);
-                // Set .length and indexed character properties (ES5 §15.5.5.1)
+                // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable.
+                // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_tv;
                 len_tv.set_fastint((long)prim_str.clen);
                 obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-                builtins::populate_string_indexed_props(obj, prim_str, vm.heap);
             } else if (obj_val.is_number() || obj_val.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
                 if (catch _err = wrapped) { break; }

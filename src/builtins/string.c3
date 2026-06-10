@@ -56,8 +56,8 @@ fn void builtin_string(BuiltinContext* ctx) {
         TVal len_tv;
         len_tv.set_fastint((long)s.clen);
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-        // Set indexed character properties (ES5 §15.5.5.1)
-        populate_string_indexed_props(obj, s, ctx.heap);
+        // Indexed character properties are served lazily via the exotic_stringobj flag;
+        // no per-character own properties are materialised at construction time.
         ctx.result.set_object(obj);
     } else {
         ctx.result.set_string(s);

@@ -60,8 +60,8 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         TVal len_tv;
         len_tv.set_fastint((long)prim_str.clen);
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-        // Set indexed character properties (ES5 §15.5.5.1)
-        populate_string_indexed_props(obj, prim_str, ctx.heap);
+        // Indexed character properties are served lazily via the exotic_stringobj flag;
+        // no per-character own properties are materialised at construction time.
         ctx.result.set_object(obj);
         return true;
     }
@@ -168,8 +168,8 @@ fn void builtin_object(BuiltinContext* ctx) {
         TVal len_tv;
         len_tv.set_fastint((long)prim_str.clen);
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-        // Set indexed character properties (ES5 §15.5.5.1)
-        populate_string_indexed_props(obj, prim_str, ctx.heap);
+        // Indexed character properties are served lazily via the exotic_stringobj flag;
+        // no per-character own properties are materialised at construction time.
         ctx.result.set_object(obj);
         return;
     }
@@ -209,19 +209,6 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // First pass: count enumerable own properties (both named and dense array indices)
-    uint count = 0;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
-            count++;
-        }
-    }
-    // Count dense array indices as enumerable own properties
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            count++;
-        }
-    }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
@@ -230,11 +217,30 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
-    // Fill array with keys: named properties first, then dense indices
     uint idx = 0;
+
+    // STRING exotic: integer indices [0, clen) are enumerable own properties
+    // synthesised lazily from the primitive value — no materialised slots needed.
+    if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
+        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            for (uint i = 0; i < prim.clen; i++) {
+                HString* k = ctx.heap.int_to_hstring((long)i);
+                if (k == null) { ctx.result.set_undefined(); return; }
+                TVal key_tv;
+                key_tv.set_string(k);
+                array_set_elem(arr, idx, key_tv, ctx.heap);
+                idx++;
+            }
+        }
+    }
+
+    // Own named properties (enumerable, excluding length on string exotic)
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
+            // Skip the non-enumerable .length stored explicitly on string exotics
+            if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -315,19 +321,6 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // First pass: count all own properties (named, both enumerable and non-enumerable)
-    uint count = 0;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_key_at(i) != null) {
-            count++;
-        }
-    }
-    // Count dense array indices as own properties
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            count++;
-        }
-    }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
@@ -336,8 +329,25 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
-    // Fill array with property names: named properties first, then dense indices
     uint idx = 0;
+
+    // STRING exotic: integer indices [0, clen) are own properties (enumerable by spec).
+    // Synthesise them before the named property list so they precede "length".
+    if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
+        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            for (uint i = 0; i < prim.clen; i++) {
+                HString* k = ctx.heap.int_to_hstring((long)i);
+                if (k == null) { ctx.result.set_undefined(); return; }
+                TVal key_tv;
+                key_tv.set_string(k);
+                array_set_elem(arr, idx, key_tv, ctx.heap);
+                idx++;
+            }
+        }
+    }
+
+    // Fill array with named own property names (all, enumerable and non-enumerable)
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
@@ -2312,9 +2322,15 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(true);
-    } else {
-        ctx.result.set_boolean(false);
+        return;
     }
+    // STRING exotic: integer indices [0, clen) are own properties served lazily.
+    if (obj.flags.exotic_stringobj && key.is_arridx() && obj.extra.prim.primitive_value.is_string()) {
+        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
+        return;
+    }
+    ctx.result.set_boolean(false);
 }
 
 /// Object.prototype.propertyIsEnumerable — ES5 §15.2.4.7
@@ -2344,9 +2360,16 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(e.flags.enumerable);
-    } else {
-        ctx.result.set_boolean(false);
+        return;
     }
+    // STRING exotic: integer indices [0, clen) are enumerable own properties served lazily.
+    if (obj.flags.exotic_stringobj && key.is_arridx() && obj.extra.prim.primitive_value.is_string()) {
+        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        // Indices in [0, clen) are enumerable per ES5 §15.5.5.1
+        ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
+        return;
+    }
+    ctx.result.set_boolean(false);
 }
 
 /// Object.prototype.data.valueOf — returns 'this'

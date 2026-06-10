@@ -1867,7 +1867,8 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
             TVal len_tv;
             len_tv.set_fastint((long)prim_str.clen);
             obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-            populate_string_indexed_props(obj, prim_str, heap);
+            // Indexed character properties are served lazily via the exotic_stringobj flag;
+            // no per-character own properties are materialised at construction time.
             return obj;
         }
         return null;
