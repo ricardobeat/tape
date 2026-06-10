@@ -339,9 +339,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
         inner_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
 
-        // Assign result to parameter register and sync to environment
+        // Assign result to parameter register and sync to environment.
+        // GETVAR reloads from env to pr because PUTVAR clears its source register.
         inner_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
         inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
 
         inner_ctx.free_regs_to(call_base);
 

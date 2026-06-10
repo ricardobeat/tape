@@ -1184,9 +1184,9 @@ fn void? CompilerContext.function_declaration(&self) {
     // Emit CLOSURE to create the function object
     self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
 
-    // Also store in environment so inner functions can find it via GETVAR
+    // Declare the binding in the immediate var_env so inner functions can find it via GETVAR
     uint name_idx = self.add_string_constant(name_tok.str_value);
-    self.emit_a_bc(Opcode.PUTVAR, (uint)func_reg, name_idx);
+    self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
 
     // At global scope, free the register — the function object lives in the
     // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
