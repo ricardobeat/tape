@@ -490,34 +490,7 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
     }
 }
 
-/// Fast integer-to-buffer conversion — writes decimal digits into buf.
-/// Returns the number of bytes written (excluding NUL), or 0 on overflow.
-fn int int_to_buf(long val, char* buf, usz cap) {
-    if (cap < 2) return 0;
-    usz pos = cap;
-    bool neg = false;
-    if (val < 0) {
-        neg = true;
-        val = -val;
-    }
-    ulong uval = (ulong)val;
-    do {
-        if (pos == 0) return 0;
-        pos--;
-        buf[pos] = (char)('0' + (uval % 10));
-        uval /= 10;
-    } while (uval != 0);
-    if (neg) {
-        if (pos == 0) return 0;
-        pos--;
-        buf[pos] = '-';
-    }
-    usz len = cap - pos;
-    if (pos > 0) {
-        libc::memmove(buf, buf + pos, len);
-    }
-    return (int)len;
-}
+// int_to_buf is defined in duktape::hstring and available via the module import.
 
 /// Convert a double to an interned HString* using shortest round-trip formatting.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
@@ -560,14 +533,12 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
     return vm.heap.str_intern(buf[:len]);
 }
 
-/// Convert a FASTINT to an interned HString* using fast int-to-string.
+/// Convert a FASTINT to an interned HString* using the small-integer cache
+/// for values 0–255, or fast int-to-string conversion for larger values.
 fn HString*? vm_fastint_to_string(Vm* vm, long val) {
-    char[types::FORMAT_BUF] buf;
-    int len = int_to_buf(val, &buf, types::FORMAT_BUF);
-    if (len <= 0 || len >= (int)types::FORMAT_BUF) {
-        return null;
-    }
-    return vm.heap.str_intern(buf[:len]);
+    HString* s = vm.heap.int_to_hstring(val);
+    if (s == null) return null;
+    return s;
 }
 
 /// Convert a TVal to an interned HString*.
@@ -939,17 +910,12 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         // Own dense array part indices
         for (uint i = 0; i < cur.array_size; i++) {
             if (!cur.array_part()[i].is_undefined()) {
-                char[16] buf;
-                int len = libc::snprintf(&buf, 16, "%u", i);
-                if (len > 0 && len < 16) {
-                    char[] s = buf[:(uint)len];
-                    HString* k = intern_string(vm, s);
-                    if (k == null) continue;
-                    if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                        libc::free(keys);
-                        libc::free(seen);
-                        return null;
-                    }
+                HString* k = vm.heap.int_to_hstring((long)i);
+                if (k == null) continue;
+                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    libc::free(keys);
+                    libc::free(seen);
+                    return null;
                 }
             }
         }
@@ -1924,7 +1890,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
                 if (str != null) {
                     char[32] int_buf;
-                    int int_len = int_to_buf(int_val, &int_buf, 32);
+                    int int_len = hstring::int_to_buf(int_val, &int_buf, 32);
                     if (int_len > 0) {
                         uint s_len = str.blen;
                         uint total = s_len + (uint)int_len;
@@ -3565,10 +3531,8 @@ fn TVal? Vm.run(Vm* vm) {
 
                 TVal? value_opt = result_obj.get_prop_proto(value_key);
                 if (try vv = value_opt) {
-                    char[16] ibuf;
-                    int ilen = libc::snprintf(&ibuf, 16, "%ld", idx + (long)k);
-                    if (ilen > 0 && ilen < 16) {
-                        HString* pk = intern_string(vm, ibuf[:ilen]);
+                    HString* pk = vm.heap.int_to_hstring(idx + (long)k);
+                    if (pk != null) {
                         target.put_prop(pk, vv, hobject::PROP_FLAGS_WEC);
                     }
                     k++;
@@ -3792,15 +3756,49 @@ fn TVal? Vm.run(Vm* vm) {
                     // Values are already in place — set missing parameter registers
                     // to undefined so default parameter checks (param !== undefined) work.
                     uint formals = (uint)target_fast.num_formals;
-                    uint undef_limit = formals < new_nregs ? formals : new_nregs;
-                    if (nargs < undef_limit) {
-                        for (uint i = nargs; i < undef_limit; i++) {
-                            new_regs[i].set_undefined();
+                    if (target_fast.has_rest()) {
+                        // Build rest array from overflow args (indices formals..nargs-1)
+                        uint rest_idx = formals;
+                        uint overflow = (nargs > formals) ? (nargs - formals) : 0;
+                        HObject*? rest_arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
+                        if (try rest_arr = rest_arr_raw) {
+                            rest_arr.prototype = vm.heap.array_proto;
+                            for (uint ri = 0; ri < overflow; ri++) {
+                                HString* rkey = vm.heap.int_to_hstring((long)ri);
+                                if (rkey != null) {
+                                    rest_arr.put_prop(rkey, new_regs[rest_idx + ri], hobject::PROP_FLAGS_WEC);
+                                }
+                            }
+                            HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                            TVal len_val;
+                            len_val.set_fastint((long)overflow);
+                            rest_arr.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
+                            new_regs[rest_idx].set_object(rest_arr);
+                        } else {
+                            new_regs[rest_idx].set_undefined();
                         }
-                    }
-                    // Zero remaining registers (temps)
-                    if (undef_limit < new_nregs) {
-                        libc::memset(&new_regs[undef_limit], 0, (usz)(new_nregs - undef_limit) * TVal::size);
+                        // Set missing formals (after rest) to undefined
+                        if (nargs < formals) {
+                            for (uint i = nargs; i < formals; i++) {
+                                new_regs[i].set_undefined();
+                            }
+                        }
+                        // Zero remaining registers (temps after rest)
+                        uint zero_start = rest_idx + 1;
+                        if (zero_start < new_nregs) {
+                            libc::memset(&new_regs[zero_start], 0, (usz)(new_nregs - zero_start) * TVal::size);
+                        }
+                    } else {
+                        uint undef_limit = formals < new_nregs ? formals : new_nregs;
+                        if (nargs < undef_limit) {
+                            for (uint i = nargs; i < undef_limit; i++) {
+                                new_regs[i].set_undefined();
+                            }
+                        }
+                        // Zero remaining registers (temps)
+                        if (undef_limit < new_nregs) {
+                            libc::memset(&new_regs[undef_limit], 0, (usz)(new_nregs - undef_limit) * TVal::size);
+                        }
                     }
 
                     vm.valstack_top = new_regs + new_nregs;
@@ -4185,13 +4183,9 @@ fn TVal? Vm.run(Vm* vm) {
                     if (try a = arr_raw) {
                         a.prototype = vm.heap.array_proto;
                         for (uint i = 0; i < overflow; i++) {
-                            char[16] ibuf;
-                            int ilen = libc::snprintf(&ibuf, 16, "%u", i);
-                            if (ilen > 0 && ilen < 16) {
-                                HString* key = intern_string(vm, ibuf[:ilen]);
-                                if (key != null) {
-                                    a.put_prop(key, old_args[(uint)target.num_formals + i], hobject::PROP_FLAGS_WEC);
-                                }
+                            HString* key = vm.heap.int_to_hstring((long)i);
+                            if (key != null) {
+                                a.put_prop(key, old_args[(uint)target.num_formals + i], hobject::PROP_FLAGS_WEC);
                             }
                         }
                         HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
@@ -4295,14 +4289,10 @@ fn TVal? Vm.run(Vm* vm) {
                     a.prototype = vm.heap.array_proto;
                     // Copy overflow args into the array
                     for (uint i = 0; i < overflow; i++) {
-                        char[16] ibuf;
-                        int ilen = libc::snprintf(&ibuf, 16, "%u", i);
-                        if (ilen > 0 && ilen < 16) {
-                            HString* key = intern_string(vm, ibuf[:ilen]);
-                            if (key != null) {
-                                TVal elem = old_args[copy_count + i];
-                                a.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
-                            }
+                        HString* key = vm.heap.int_to_hstring((long)i);
+                        if (key != null) {
+                            TVal elem = old_args[copy_count + i];
+                            a.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
                         }
                     }
                     // Set .length
@@ -4536,20 +4526,17 @@ fn TVal? Vm.run(Vm* vm) {
                     rest_obj.prototype = vm.heap.array_proto;
                     // Copy overflow args into the array
                     for (uint j = 0; j < overflow; j++) {
-                        char[16] ibuf;
-                        int ilen = libc::snprintf(&ibuf, 16, "%u", j);
-                        if (ilen > 0 && ilen < 16) {
-                            HString* key = intern_string(vm, ibuf[:ilen]);
-                            if (key != null) {
-                                TVal elem = old_args[copy_count + j];
-                                rest_obj.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
-                            }
+                        HString* key = vm.heap.int_to_hstring((long)j);
+                        if (key != null) {
+                            TVal elem = old_args[copy_count + j];
+                            rest_obj.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
                         }
                     }
                     // Set .length
                     HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     TVal len_val;
-                    len_val.set_fastint(0);
+                    len_val.set_fastint((long)overflow);
+                    rest_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
                     new_regs[rest_idx].set_object(rest_obj);
                 } else {
                     new_regs[rest_idx].set_undefined();
@@ -4874,14 +4861,10 @@ fn TVal? Vm.run(Vm* vm) {
                 if (try a2 = arr2_raw) {
                     a2.prototype = vm.heap.array_proto;
                     for (uint i = 0; i < overflow; i++) {
-                        char[16] ibuf2;
-                        int ilen2 = libc::snprintf(&ibuf2, 16, "%u", i);
-                        if (ilen2 > 0 && ilen2 < 16) {
-                            HString* key2 = intern_string(vm, ibuf2[:ilen2]);
-                            if (key2 != null) {
-                                TVal elem2 = old_args2[copy_count + i];
-                                a2.put_prop(key2, elem2, hobject::PROP_FLAGS_WEC);
-                            }
+                        HString* key2 = vm.heap.int_to_hstring((long)i);
+                        if (key2 != null) {
+                            TVal elem2 = old_args2[copy_count + i];
+                            a2.put_prop(key2, elem2, hobject::PROP_FLAGS_WEC);
                         }
                     }
                     HString* len_str2 = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];

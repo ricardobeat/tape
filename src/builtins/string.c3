@@ -18,10 +18,7 @@ import duktape::re_bindings;
 /// Each character position becomes a non-writable, enumerable, non-configurable own property.
 fn void populate_string_indexed_props(HObject* obj, HString* s, Heap* heap) {
     for (uint i = 0; i < s.clen; i++) {
-        char[16] key_buf;
-        int key_len = libc::snprintf(&key_buf, 16, "%u", i);
-        if (key_len <= 0 || key_len >= 16) continue;
-        HString* key = heap.str_intern(key_buf[:(uint)key_len]);
+        HString* key = heap.int_to_hstring((long)i);
         if (key == null) continue;
         uint cp = s.char_at(i);
         char[4] cbuf;
@@ -740,9 +737,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             }
             TVal elem;
             elem.set_string(substr);
-            char[16] idx_buf;
-            int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
-            arr.put_prop(builtin_intern_string(ctx.heap, idx_buf[:idx_len]), elem, hobject::PROP_FLAGS_WEC);
+            arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
             arr_idx++;
 
             // Capture groups
@@ -764,9 +759,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
                 } else {
                     cap_elem.set_undefined();
                 }
-                char[16] ci_buf;
-                int ci_len = libc::snprintf(&ci_buf, 16, "%u", arr_idx);
-                arr.put_prop(builtin_intern_string(ctx.heap, ci_buf[:ci_len]), cap_elem, hobject::PROP_FLAGS_WEC);
+                arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), cap_elem, hobject::PROP_FLAGS_WEC);
                 arr_idx++;
             }
 
@@ -793,9 +786,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             }
             TVal elem;
             elem.set_string(substr);
-            char[16] idx_buf;
-            int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
-            arr.put_prop(builtin_intern_string(ctx.heap, idx_buf[:idx_len]), elem, hobject::PROP_FLAGS_WEC);
+            arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
             arr_idx++;
         }
 
@@ -838,10 +829,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             HString* ch_str = builtin_intern_string(ctx.heap, buf[:1]);
             TVal elem;
             elem.set_string(ch_str);
-            char[16] idx_buf;
-            int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-            HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
-            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+            arr.put_prop(ctx.heap.int_to_hstring((long)i), elem, hobject::PROP_FLAGS_WEC);
         }
         ctx.result.set_object(arr);
         return;
@@ -880,10 +868,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
 
         TVal elem;
         elem.set_string(substr);
-        char[16] idx_buf;
-        int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
-        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
-        arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
         arr_idx++;
 
         search_pos = (uint)(found_pos + (int)sep_len);
@@ -903,10 +888,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         }
         TVal elem;
         elem.set_string(substr);
-        char[16] idx_buf;
-        int idx_len = libc::snprintf(&idx_buf, 16, "%d", arr_idx);
-        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
-        arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
         arr_idx++;
     }
 
@@ -1778,10 +1760,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                 }
                 TVal elem;
                 elem.set_string(match_str);
-                char[16] idx_buf;
-                int idx_len = libc::snprintf(&idx_buf, 16, "%u", arr_idx);
-                HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
-                arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+                arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
                 arr_idx++;
 
                 // Advance: if empty match, move by one; else go to end of match

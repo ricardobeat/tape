@@ -27,10 +27,8 @@ fn void builtin_array_of(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         TVal elem = ctx.regs[ctx.base_reg + (uint)i];
-        char[16] buf;
-        int slen = libc::snprintf(&buf, 16, "%d", i);
-        if (slen > 0 && slen < 16) {
-            HString* idx_key = builtin_intern_string(ctx.heap, buf[:slen]);
+        HString* idx_key = ctx.heap.int_to_hstring((long)i);
+        if (idx_key != null) {
             arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
         }
     }
@@ -346,10 +344,8 @@ fn void builtin_array(BuiltinContext* ctx) {
     // Set each element
     for (ushort i = 0; i < ctx.argc; i++) {
         TVal elem = ctx.regs[ctx.base_reg + (uint)i];
-        char[16] buf;
-        int len = libc::snprintf(&buf, 16, "%d", i);
-        if (len > 0 && len < 16) {
-            HString* idx_key = builtin_intern_string(ctx.heap, buf[:len]);
+        HString* idx_key = ctx.heap.int_to_hstring((long)i);
+        if (idx_key != null) {
             arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
         }
     }
@@ -467,10 +463,7 @@ fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
     }
     // Fall back to named property lookup (elements may be stored as named
     // properties via PUTPROP or Object.defineProperty).
-    char[16] buf;
-    int len = libc::snprintf(&buf, 16, "%d", idx);
-    if (len <= 0 || len >= 16) { TVal undef; undef.set_undefined(); return undef; }
-    HString* key = builtin_intern_string(heap, buf[:len]);
+    HString* key = heap.int_to_hstring((long)idx);
     if (key == null) { TVal undef; undef.set_undefined(); return undef; }
     TVal? result = obj.get_prop(key);
     if (try v = result) {
@@ -1683,10 +1676,8 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             }
 
             // arr[k] = final_value
-            char[16] buf;
-            int slen = libc::snprintf(&buf, 16, "%u", k);
-            if (slen > 0 && slen < 16) {
-                HString* pk = builtin_intern_string(heap, buf[:slen]);
+            HString* pk = heap.int_to_hstring((long)k);
+            if (pk != null) {
                 arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
             }
             k++;
@@ -1765,8 +1756,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
     arr.prototype = heap.array_proto;
 
     for (uint k = 0; k < len; k++) {
-        char[16] buf;
-        int slen = libc::snprintf(&buf, 16, "%u", k);
+        HString* pk = heap.int_to_hstring((long)k);
         TVal k_value;
         k_value.set_undefined();
 
@@ -1781,8 +1771,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
                 HString* ch_str = builtin_intern_string(heap, char_buf[:1]);
                 if (ch_str != null) k_value.set_string(ch_str);
             }
-        } else if (slen > 0 && slen < 16) {
-            HString* pk = builtin_intern_string(heap, buf[:slen]);
+        } else if (pk != null) {
             TVal? elem_opt = array_like.get_prop_proto(pk);
             if (try elem = elem_opt) {
                 k_value = elem;
@@ -1800,8 +1789,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             }
         }
 
-        if (slen > 0 && slen < 16) {
-            HString* pk = builtin_intern_string(heap, buf[:slen]);
+        if (pk != null) {
             arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
         }
     }
@@ -1909,10 +1897,7 @@ fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
         if (try v = obj.get_array_idx(key)) { return true; }
         return false;
     }
-    char[16] buf;
-    int slen = libc::snprintf(&buf, 16, "%u", key);
-    if (slen <= 0 || slen >= 16) return false;
-    HString* pk = builtin_intern_string(heap, buf[:slen]);
+    HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
     TVal? found = obj.get_prop_proto(pk);
     return @ok(found);
@@ -1928,10 +1913,7 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
         }
         return false;
     }
-    char[16] buf;
-    int slen = libc::snprintf(&buf, 16, "%u", key);
-    if (slen <= 0 || slen >= 16) return false;
-    HString* pk = builtin_intern_string(heap, buf[:slen]);
+    HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
     if (try v = obj.get_prop_proto(pk)) {
         *out = v;
@@ -2012,10 +1994,8 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
                 TVal mapped = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
-                char[16] abuf;
-                int aslen = libc::snprintf(&abuf, 16, "%u", aj);
-                if (aslen > 0 && aslen < 16) {
-                    HString* akey = builtin_intern_string(ctx.heap, abuf[:aslen]);
+                HString* akey = ctx.heap.int_to_hstring((long)aj);
+                if (akey != null) {
                     arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
                 }
                 aj++;
@@ -2055,10 +2035,8 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
             if (arr_get_elem(o, k, ctx.heap, &v)) {
                 TVal sel = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
                 if (builtin_to_boolean(&sel)) {
-                    char[16] abuf;
-                    int aslen = libc::snprintf(&abuf, 16, "%u", aj);
-                    if (aslen > 0 && aslen < 16) {
-                        HString* akey = builtin_intern_string(ctx.heap, abuf[:aslen]);
+                    HString* akey = ctx.heap.int_to_hstring((long)aj);
+                    if (akey != null) {
                         arr.put_prop(akey, v, hobject::PROP_FLAGS_WEC);
                     }
                     aj++;

@@ -283,6 +283,11 @@ struct Heap {
     TransitionEntry*    trans_table;
     uint                trans_mask;   // table has mask+1 entries
     uint                trans_count;
+
+    // Small-integer string cache: pinned HString* for integer keys 0–255.
+    // Populated lazily on first use; entries are pinned (STRING_PINNED_REFCOUNT)
+    // so they are never freed by RC or GC sweep.
+    HString*[256] small_int_strs;
 }
 
 // ============================================================================
@@ -483,6 +488,34 @@ fn void Heap.init_builtin_strs(&self) {
     }
     // Cache the "length" pointer for HObject.put_prop array_length sync.
     hobject::builtin_length_key = self.strs[BuiltinStr.LENGTH];
+}
+
+/// Convert an integer to an interned HString*, using the small-integer cache
+/// for values 0–255 and formatting + interning for all other values.
+///
+/// Values 0–255 are cached on first use with STRING_PINNED_REFCOUNT so they
+/// are never reclaimed by RC or GC sweep, matching the treatment of builtin
+/// strings in init_builtin_strs().
+fn HString* Heap.int_to_hstring(&self, long val) {
+    if (val >= 0 && val <= 255) {
+        usz idx = (usz)val;
+        if (self.small_int_strs[idx] != null) {
+            return self.small_int_strs[idx];
+        }
+        char[4] buf;
+        int len = hstring::int_to_buf(val, &buf, 4);
+        if (len <= 0) return null;
+        HString* s = self.str_intern(buf[:len]);
+        if (s == null) return null;
+        // Pin so RC/sweep never frees this cached entry.
+        ((HeapHeader*)s).refcount = STRING_PINNED_REFCOUNT;
+        self.small_int_strs[idx] = s;
+        return s;
+    }
+    char[24] buf;
+    int len = hstring::int_to_buf(val, &buf, 24);
+    if (len <= 0) return null;
+    return self.str_intern(buf[:len]);
 }
 
 // ============================================================================
@@ -942,6 +975,12 @@ fn void Heap.reset(&self) {
     // Clear builtin string cache
     for (usz i = 0; i < STRS_CACHE_SIZE; i++) {
         self.strs[i] = null;
+    }
+
+    // Clear small-integer string cache — entries will be re-populated lazily
+    // after the string table is rebuilt in init_builtin_strs().
+    for (usz i = 0; i < 256; i++) {
+        self.small_int_strs[i] = null;
     }
 
     // Clear longjmp state

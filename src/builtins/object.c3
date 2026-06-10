@@ -242,15 +242,9 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         }
     }
     // Dense array indices (as strings)
-    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) {
-            int len = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
-            if (len < 0) {
-                ctx.result.set_undefined();
-                return;
-            }
-            HString* key = ctx.heap.str_intern(buf[..len]);
+            HString* key = ctx.heap.int_to_hstring((long)i);
             if (key == null) {
                 ctx.result.set_undefined();
                 return;
@@ -354,15 +348,9 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
     // Dense array indices (as strings)
-    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) {
-            int len = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
-            if (len < 0) {
-                ctx.result.set_undefined();
-                return;
-            }
-            HString* key = ctx.heap.str_intern(buf[..len]);
+            HString* key = ctx.heap.int_to_hstring((long)i);
             if (key == null) {
                 ctx.result.set_undefined();
                 return;
@@ -538,9 +526,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         if (key_val.is_string()) {
             key = key_val.get_heapptr();
         } else if (key_val.is_fastint()) {
-            int len = libc::snprintf(&key_buf, 64, "%ld", key_val.get_fastint());
-            if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
-            key = ctx.heap.str_intern(key_buf[:len]);
+            key = ctx.heap.int_to_hstring(key_val.get_fastint());
             if (key == null) { ctx.result.set_undefined(); return; }
         } else if (key_val.is_number()) {
             int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
@@ -1798,12 +1784,9 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         }
     }
     // Dense array indices → [key, value] pairs
-    char[types::FORMAT_BUF] buf;
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) {
-            int slen = libc::snprintf(&buf, types::FORMAT_BUF, "%u", i);
-            if (slen < 0) continue;
-            HString* key_s = ctx.heap.str_intern(buf[..slen]);
+            HString* key_s = ctx.heap.int_to_hstring((long)i);
             if (key_s == null) continue;
             HObject*? pair_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (catch err6 = pair_raw2) continue;

@@ -613,3 +613,33 @@ fn bool bytes_eq(char[] a, char[] b) @inline {
     if (a.len == 0) { return true; }
     return libc::memcmp(a.ptr, b.ptr, a.len) == 0;
 }
+
+/// Fast integer-to-buffer conversion — writes decimal digits into buf.
+/// Returns the number of bytes written (excluding NUL), or 0 on overflow.
+/// buf must have capacity >= 2 bytes; 21 bytes suffices for any int64.
+fn int int_to_buf(long val, char* buf, usz cap) {
+    if (cap < 2) return 0;
+    usz pos = cap;
+    bool neg = false;
+    if (val < 0) {
+        neg = true;
+        val = -val;
+    }
+    ulong uval = (ulong)val;
+    do {
+        if (pos == 0) return 0;
+        pos--;
+        buf[pos] = (char)('0' + (uval % 10));
+        uval /= 10;
+    } while (uval != 0);
+    if (neg) {
+        if (pos == 0) return 0;
+        pos--;
+        buf[pos] = '-';
+    }
+    usz len = cap - pos;
+    if (pos > 0) {
+        libc::memmove(buf, buf + pos, len);
+    }
+    return (int)len;
+}

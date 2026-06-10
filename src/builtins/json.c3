@@ -213,10 +213,10 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
             }
             json_skip_ws(jctx);
 
-            char[16] idx_buf;
-            int idx_len = libc::snprintf(&idx_buf, 16, "%d", idx);
-            HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
-            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+            HString* idx_key = jctx.heap.int_to_hstring((long)idx);
+            if (idx_key != null) {
+                arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+            }
             idx++;
 
             if (jctx.pos >= jctx.len) {
@@ -387,9 +387,8 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
                 if (l.is_fastint()) len = (uint)l.get_fastint();
             }
             for (uint i = 0; i < len; i++) {
-                char[16] idx_buf;
-                int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-                HString* idx_key = builtin_intern_string(heap, idx_buf[:idx_len]);
+                HString* idx_key = heap.int_to_hstring((long)i);
+                if (idx_key == null) continue;
                 TVal new_elem = json_walk(heap, reviver, val, idx_key);
                 if (new_elem.is_undefined()) {
                     obj.delete_prop(idx_key);
@@ -1005,9 +1004,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         }
 
         // Build the index key for this element
-        char[16] idx_buf;
-        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-        HString* idx_key = builtin_intern_string(jctx.heap, idx_buf[:idx_len]);
+        HString* idx_key = jctx.heap.int_to_hstring((long)i);
 
         if (!found) {
             TVal? elem_prop = arr.get_prop_proto(idx_key);
@@ -1129,9 +1126,9 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
             return 0;
         }
         case FASTINT: {
-            char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%ld", val.get_fastint());
-            if (len < 0 || len >= 64) return -1;
+            char[24] buf;
+            int len = hstring::int_to_buf(val.get_fastint(), &buf, 24);
+            if (len <= 0) return -1;
             if (jctx.offset + (usz)len > jctx.buf_size) return -1;
             for (int i = 0; i < len; i++) {
                 jctx.buf[jctx.offset++] = buf[i];
@@ -1250,9 +1247,8 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         }
                     }
                     if (!found) {
-                        char[16] idx_buf;
-                        int idx_len = libc::snprintf(&idx_buf, 16, "%d", i);
-                        HString* idx_key = builtin_intern_string(ctx.heap, idx_buf[:idx_len]);
+                        HString* idx_key = ctx.heap.int_to_hstring((long)i);
+                        if (idx_key == null) continue;
                         TVal? elem_opt = robj.get_prop_proto(idx_key);
                         if (try e = elem_opt) {
                             elem = e;
@@ -1272,9 +1268,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                     if (elem.is_string()) {
                         str_key = (HString*)elem.get_heapptr();
                     } else if (elem.is_fastint()) {
-                        char[32] num_buf;
-                        int num_len = libc::snprintf(&num_buf, 32, "%ld", elem.get_fastint());
-                        str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                        str_key = ctx.heap.int_to_hstring(elem.get_fastint());
                     } else if (elem.is_number()) {
                         char[64] num_buf;
                         int num_len = libc::snprintf(&num_buf, 64, "%.17g", elem.get_number());
@@ -1336,9 +1330,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                             if (str_key == null) {
                                 TVal pv = eobj.extra.prim.primitive_value;
                                 if (pv.is_fastint()) {
-                                    char[32] num_buf;
-                                    int num_len = libc::snprintf(&num_buf, 32, "%ld", pv.get_fastint());
-                                    str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
+                                    str_key = ctx.heap.int_to_hstring(pv.get_fastint());
                                 } else if (pv.is_number()) {
                                     char[64] num_buf;
                                     int num_len = libc::snprintf(&num_buf, 64, "%.17g", pv.get_number());

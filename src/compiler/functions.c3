@@ -125,9 +125,12 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
 
         self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
 
-        // Assign result to parameter register and sync to environment
+        // Copy result directly to the parameter register.
+        // Also update the environment so closures can access the value.
+        // GETVAR reloads from env to pr in case PUTVAR cleared it.
         self.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
         self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        self.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
 
         self.free_regs_to(call_base);
 
