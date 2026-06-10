@@ -1174,7 +1174,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     if (func_obj == null || !func_obj.is_callable()) return false;
 
     // Fast path: builtin function getter — call directly, no JS frame needed
-    if (func_obj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN &&
+    if (func_obj.callable_kind() == hobject::CallableKind.BUILTIN_FN &&
         func_obj.extra.func.builtin_fn_index >= 0) {
         uint fn_idx = (uint)func_obj.extra.func.builtin_fn_index;
         TVal[1] temp_regs;
@@ -1512,7 +1512,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 2: HObject with builtin_fn_index — dispatch via BuiltinContext
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+        if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
             uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
 
             uint total = 1 + nargs;
@@ -3726,7 +3726,7 @@ fn TVal? Vm.run(Vm* vm) {
             // === Fast path: direct compiled HObject call (most common) ===
             if (func_val.is_object()) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
-                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.extra.func.callable_kind == hobject::CallableKind.COMPILED_FN) {
+                if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.callable_kind() == hobject::CallableKind.COMPILED_FN) {
                     CompiledFunction* target_fast = hobj_fast.extra.func.comp_func;
                     if (target_fast == null) { regs_base[result_reg].set_undefined(); break; }
                     if (!target_fast.is_generator()) {
@@ -3988,7 +3988,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle bound function objects — dispatch to builtin_bound_call
-            if (hobj.extra.func.callable_kind == hobject::CallableKind.BOUND_FN) {
+            if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -4025,7 +4025,7 @@ fn TVal? Vm.run(Vm* vm) {
                 } else {
                     break;
                 }
-            } else if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -4496,7 +4496,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle builtin super constructors
-            if (super_hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            if (super_hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if (super_hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)super_hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -4715,7 +4715,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // Handle bound function objects — dispatch to builtin_bound_call
-            if (hobj.extra.func.callable_kind == hobject::CallableKind.BOUND_FN) {
+            if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -4752,7 +4752,7 @@ fn TVal? Vm.run(Vm* vm) {
                 } else {
                     break;
                 }
-            } else if (hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN) {
+            } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if (hobj.extra.func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -5769,7 +5769,6 @@ fn TVal? Vm.run(Vm* vm) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
                     func_obj.flags.constructable = template.is_constructable();
-                    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
                     func_obj.extra.func.comp_func = template;
                     func_obj.extra.func.var_env = act.var_env;
                     func_obj.extra.func.lex_env = act.lex_env;

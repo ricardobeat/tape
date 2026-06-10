@@ -478,7 +478,6 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
     num.extra.func.builtin_fn_index = (int)BUILTIN_NUMBER;
-    num.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Number.prototype to point to the actual Number object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

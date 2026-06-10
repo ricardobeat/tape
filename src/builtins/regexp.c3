@@ -603,7 +603,6 @@ fn bool register_proto_accessor(HObject* proto, Heap* heap, char[] name, uint ge
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.extra.func.builtin_fn_index = (int)getter_index;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
 
@@ -682,7 +681,6 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = regexp_raw) return false;
     HObject* regexp_obj = regexp_raw;
     regexp_obj.extra.func.builtin_fn_index = (int)BUILTIN_REGEXP;
-    regexp_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on RegExp.prototype to the actual constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

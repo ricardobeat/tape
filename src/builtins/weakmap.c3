@@ -206,7 +206,6 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.extra.func.builtin_fn_index = (int)BUILTIN_WEAKMAP;
-    ctor.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

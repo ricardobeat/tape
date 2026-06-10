@@ -87,7 +87,6 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
     func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
     func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;
@@ -165,7 +164,6 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
     func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
     func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;
@@ -280,7 +278,6 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
     func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
     func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;

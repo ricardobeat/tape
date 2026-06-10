@@ -1130,7 +1130,6 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = date_raw) return false;
     HObject* date_obj = date_raw;
     date_obj.extra.func.builtin_fn_index = (int)BUILTIN_DATE;
-    date_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set Date.prototype on the constructor
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];

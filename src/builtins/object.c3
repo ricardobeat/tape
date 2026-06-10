@@ -2504,7 +2504,6 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = obj_raw) return false;
     HObject* obj = obj_raw;
     obj.extra.func.builtin_fn_index = (int)BUILTIN_OBJECT;
-    obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Object.prototype to point to the actual Object constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

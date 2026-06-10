@@ -123,7 +123,6 @@ fn void builtin_function(BuiltinContext* ctx) {
     HObject* func_obj = func_obj_raw;
     func_obj.extra.func.comp_func = func;
     func_obj.extra.func.builtin_fn_index = -1;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
 
     // Use the global environment (per ES5 §15.3.2.1 step 5)
     func_obj.extra.func.var_env = ctx.global_env;
@@ -236,7 +235,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     // For OBJECT downstreams — dispatch directly if BUILTIN_FN, else re-dispatch
     if (downstream.is_object()) {
         HObject* hobj = (HObject*)downstream.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.extra.func.callable_kind == hobject::CallableKind.BUILTIN_FN && hobj.extra.func.builtin_fn_index >= 0) {
+        if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN && hobj.extra.func.builtin_fn_index >= 0) {
             // Direct dispatch for BUILTIN_FN objects (e.g. Array.prototype.forEach.call(...))
             for (ushort i = 0; i < remaining; i++) {
                 ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
@@ -524,7 +523,6 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.flags.is_bound = true;
     bound_obj.prototype = ctx.heap.function_proto;
     bound_obj.extra.func.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
-    bound_obj.extra.func.callable_kind = hobject::CallableKind.BOUND_FN;
 
     // Also maintain constructable flag if downstream is constructable
     bool downstream_constructable = false;
@@ -738,7 +736,6 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.extra.func.builtin_fn_index = (int)BUILTIN_FUNCTION;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Create Function.prototype
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);

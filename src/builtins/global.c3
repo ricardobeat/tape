@@ -160,7 +160,6 @@ fn void builtin_eval(BuiltinContext* ctx) {
     func_obj.flags.callable = true;
     func_obj.extra.func.comp_func = func;
     func_obj.extra.func.builtin_fn_index = -1;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
 
     // For eval, use the global environment
     func_obj.extra.func.var_env = ctx.global_env;

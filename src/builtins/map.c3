@@ -472,7 +472,6 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
         if (catch err = fn_raw) return false;
         HObject* fn_obj = fn_raw;
         fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_MAP_PROTO_SYMBOL_ITER;
-        fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
         fn_obj.flags.callable = true;
         fn_obj.prototype = heap.function_proto;
         // Set .name
@@ -514,7 +513,6 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     ctor.extra.func.builtin_fn_index = (int)BUILTIN_MAP;
-    ctor.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
 
     // Set .constructor on Map.prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

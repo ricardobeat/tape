@@ -125,7 +125,8 @@ enum ObjClass : char {
 }
 
 /// Discriminator for a callable object's invocation kind.
-/// Stored in HObject.callable_kind.  Meaningful only when
+/// Inferred by HObject.callable_kind() from flags.is_bound,
+/// builtin_fn_index, and comp_func.  Meaningful only when
 /// flags.callable is true.
 enum CallableKind : ushort {
     COMPILED_FN,        /// JS function — dispatch via comp_func
@@ -322,7 +323,6 @@ struct HObjectFunction {
     EnvRecord*        var_env;
     EnvRecord*        lex_env;
     int               builtin_fn_index;
-    CallableKind      callable_kind;
 }
 
 /// Primitive wrapper (Boolean, Number, String objects).
@@ -414,14 +414,9 @@ struct HObject {
     void*         prop_alloc;
 
     // --- Per-object hash table for fast property lookup -------------------
-    /// Hash table entries: { void* key; uint index; } pairs.  Allocated
-    /// separately from prop_alloc when prop_count >= HASH_MIN_PROPS.
-    void*         prop_hash;
-    /// Hash table mask (prop_hash has mask+1 slots).
-    uint          prop_hash_mask;
-    /// Number of properties indexed in the hash table (0 = not built yet).
-    /// When hash_prop_count < prop_count, the hash table is stale.
-    uint          hash_prop_count;
+    /// Pointer to hash table metadata (null when prop_count < HASH_MIN_PROPS).
+    /// Saves 8 bytes per object vs. inline fields for objects without hash tables.
+    PropHashInfo* prop_hash;
 
     // --- Subtype-specific fields (overlapping union) -----------------------
     /// Only one variant is active, determined by flags.obj_class.
@@ -487,6 +482,14 @@ fn bool HObject.is_constructable(&self) @inline { return self.flags.constructabl
 /// Returns true when the object is a bound function.
 fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 
+/// Infer the callable kind from existing fields — no stored field needed.
+fn CallableKind HObject.callable_kind(&self) @inline {
+    if (self.flags.is_bound) return CallableKind.BOUND_FN;
+    if (self.extra.func.builtin_fn_index >= 0) return CallableKind.BUILTIN_FN;
+    if (self.extra.func.comp_func != null) return CallableKind.COMPILED_FN;
+    return CallableKind.OTHER;
+}
+
 /// Seal the object: clear extensible, mark all own properties as
 /// non-configurable.
 fn void HObject.seal(&self) {
@@ -541,6 +544,15 @@ struct HashEntry {
     uint  index;
 }
 
+/// Per-object hash table metadata.  Allocated on the heap when
+/// prop_count >= HASH_MIN_PROPS.  Stored as a single pointer in HObject
+/// to save 8 bytes per object that never builds a hash table.
+struct PropHashInfo {
+    void* table;    /// Hash table entries buffer (HashEntry[])
+    uint  mask;     /// (num_slots - 1)
+    uint  count;    /// Cached prop_count when hash was built
+}
+
 /// Choose a hash mask for a given property count.
 fn uint prop_hash_mask_for(uint prop_count) @inline {
     uint slots = 2;
@@ -555,14 +567,14 @@ fn void HObject.ensure_prop_hash(&self) {
     if (self.prop_count < HASH_MIN_PROPS) return;
     uint new_mask = prop_hash_mask_for(self.prop_count);
     // Skip if hash table is up-to-date and the right size
-    if (self.prop_hash != null && self.hash_prop_count == self.prop_count && self.prop_hash_mask == new_mask) return;
+    if (self.prop_hash != null && self.prop_hash.count == self.prop_count && self.prop_hash.mask == new_mask) return;
 
     usz new_bytes = (usz)(new_mask + 1) * 16;
-    void* new_hash = libc::malloc(new_bytes);
-    if (new_hash == null) return;
-    libc::memset(new_hash, 0, new_bytes);
+    void* new_table = libc::malloc(new_bytes);
+    if (new_table == null) return;
+    libc::memset(new_table, 0, new_bytes);
 
-    HashEntry* entries = (HashEntry*)new_hash;
+    HashEntry* entries = (HashEntry*)new_table;
     uint mask = new_mask;
 
     // Rebuild from the shape chain — the shape is the authoritative source
@@ -583,10 +595,19 @@ fn void HObject.ensure_prop_hash(&self) {
         sh = sh.parent_shape;
     }
 
-    if (self.prop_hash != null) libc::free(self.prop_hash);
-    self.prop_hash = new_hash;
-    self.prop_hash_mask = new_mask;
-    self.hash_prop_count = self.prop_count;
+    if (self.prop_hash != null) {
+        libc::free(self.prop_hash.table);
+        self.prop_hash.mask = new_mask;
+        self.prop_hash.count = self.prop_count;
+        self.prop_hash.table = new_table;
+    } else {
+        PropHashInfo* phi = (PropHashInfo*)libc::malloc(PropHashInfo::size);
+        if (phi == null) { libc::free(new_table); return; }
+        phi.table = new_table;
+        phi.mask = new_mask;
+        phi.count = self.prop_count;
+        self.prop_hash = phi;
+    }
 }
 
 /// Get the property key at a given index by walking the shape chain.
@@ -677,8 +698,8 @@ fn int HObject.find_prop_idx(&self, void* key) {
 
     // Try hash table first
     if (self.prop_hash != null) {
-        HashEntry* entries = (HashEntry*)self.prop_hash;
-        uint mask = self.prop_hash_mask;
+        HashEntry* entries = (HashEntry*)self.prop_hash.table;
+        uint mask = self.prop_hash.mask;
         uint h = hash_key(key);
         uint slot = h & mask;
         for (uint probes = 0; probes <= mask; probes++) {
@@ -829,13 +850,13 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         if (self.prop_hash == null) {
             // No hash table yet — build one from scratch
             self.ensure_prop_hash();
-        } else if (self.prop_hash_mask != needed_mask) {
+        } else if (self.prop_hash.mask != needed_mask) {
             // Hash table needs to grow — full rebuild
             self.ensure_prop_hash();
         } else {
             // Table is the right size — insert the new entry directly
-            HashEntry* entries = (HashEntry*)self.prop_hash;
-            uint mask = self.prop_hash_mask;
+            HashEntry* entries = (HashEntry*)self.prop_hash.table;
+            uint mask = self.prop_hash.mask;
             uint h = hash_key(key);
             uint slot = h & mask;
             uint probes = 0;
@@ -851,7 +872,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             if (entries[slot].key == null) {
                 entries[slot].key = key;
                 entries[slot].index = new_idx;
-                self.hash_prop_count = self.prop_count;
+                self.prop_hash.count = self.prop_count;
             }
             // else: table is full (shouldn't happen with 70% load factor)
         }
@@ -929,10 +950,9 @@ fn bool HObject.delete_prop(&self, void* key) {
     // Indexes after the deleted slot shifted down by one, so rebuild the
     // hash table from the new shape.
     if (self.prop_hash != null) {
+        libc::free(self.prop_hash.table);
         libc::free(self.prop_hash);
         self.prop_hash = null;
-        self.prop_hash_mask = 0;
-        self.hash_prop_count = 0;
         self.ensure_prop_hash();
     }
 
@@ -1139,7 +1159,6 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     }
 
     obj.extra.func.builtin_fn_index = -1;
-    obj.extra.func.callable_kind = CallableKind.OTHER;
     obj.shape_id = 0;
     obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
     obj.heap_ptr = heap_ptr;
@@ -1161,6 +1180,7 @@ fn void hobject_free(HObject* obj) {
 
     // Free the per-object property hash table.
     if (obj.prop_hash != null) {
+        libc::free(obj.prop_hash.table);
         libc::free(obj.prop_hash);
     }
 

@@ -41,7 +41,6 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
             fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
-            fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -78,7 +77,6 @@ fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
             fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
-            fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -109,7 +107,6 @@ fn void create_map_iterator(BuiltinContext* ctx, uint kind) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
             fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_MAP_ITERATOR_NEXT;
-            fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -140,7 +137,6 @@ fn void create_set_iterator(BuiltinContext* ctx, uint kind) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
             fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_SET_ITERATOR_NEXT;
-            fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -202,7 +198,6 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
             fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_STRING_ITERATOR_NEXT;
-            fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -431,7 +426,6 @@ fn bool register_iterator_prototype(Heap* heap) {
         if (catch err = fn_raw) return false;
         HObject* fn_obj = fn_raw;
         fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ITERATOR_PROTO_SYMBOL_ITER;
-        fn_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
         fn_obj.flags.callable = true;
         fn_obj.prototype = heap.function_proto;
         // Set .name

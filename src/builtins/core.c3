@@ -1058,7 +1058,6 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.extra.func.builtin_fn_index = (int)fn_index;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)
@@ -1104,7 +1103,6 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     HObject* func_obj = func_obj_raw;
     func_obj.extra.func.comp_func = func;
     func_obj.extra.func.builtin_fn_index = -1;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.COMPILED_FN;
     func_obj.extra.func.var_env = global_env;
     func_obj.extra.func.lex_env = global_env;
     func_obj.prototype = heap.function_proto;
@@ -1159,7 +1157,6 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
     func_obj.extra.func.builtin_fn_index = (int)fn_index;
-    func_obj.extra.func.callable_kind = hobject::CallableKind.BUILTIN_FN;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)
