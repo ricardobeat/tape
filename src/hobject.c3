@@ -293,7 +293,6 @@ struct PropValue {
     /// For accessor properties, the setter lives here.
     /// For data properties, this is unused.
     TVal      setter;
-    PropFlags flags;
 }
 
 // ============================================================================
@@ -492,8 +491,11 @@ fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 /// non-configurable.
 fn void HObject.seal(&self) {
     self.flags.extensible = false;
+    self.make_shape_private();
     for (uint i = 0; i < self.prop_count; i++) {
-        self.prop_values()[i].flags.configurable = false;
+        PropFlags f = self.get_prop_flags(i);
+        f.configurable = false;
+        self.set_prop_flags(i, f);
     }
 }
 
@@ -501,8 +503,10 @@ fn void HObject.seal(&self) {
 fn void HObject.freeze(&self) {
     self.seal();
     for (uint i = 0; i < self.prop_count; i++) {
-        if (!self.prop_values()[i].flags.is_accessor) {
-            self.prop_values()[i].flags.writable = false;
+        PropFlags f = self.get_prop_flags(i);
+        if (!f.is_accessor) {
+            f.writable = false;
+            self.set_prop_flags(i, f);
         }
     }
 }
@@ -598,6 +602,74 @@ fn void* HObject.prop_key_at(&self, uint idx) @inline {
     return null;
 }
 
+/// Get property flags at a given index by walking the shape chain.
+/// Flags are authoritative in the ShapeProperty (kept in sync on writes).
+fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
+            return sh.props()[idx - sh.offset].flags;
+        }
+        sh = sh.parent_shape;
+    }
+    return {};
+}
+
+/// Make the current shape private to this object by flattening the shape chain
+/// into a single standalone shape.  Does NOT register in the transition table,
+/// so no other object will find this shape.
+fn void HObject.make_shape_private(&self) {
+    if (self.heap_ptr == null || self.shape == null) return;
+    hobject::Shape* ns = shape_create(self.prop_count, 0, 0xFFFF_FFFF, null);
+    if (ns == null) return;
+
+    hobject::ShapeProperty* new_sp = ns.props();
+    hobject::Shape* walk = self.shape;
+    while (walk != null) {
+        hobject::ShapeProperty* old_sp = walk.props();
+        for (uint j = 0; j < walk.own_count; j++) {
+            uint global_idx = walk.offset + j;
+            new_sp[global_idx].key   = old_sp[j].key;
+            new_sp[global_idx].flags = old_sp[j].flags;
+        }
+        walk = walk.parent_shape;
+    }
+
+    heap::Heap* h = (heap::Heap*)self.heap_ptr;
+    uint new_id = h.alloc_shape_slot();
+    if (new_id != heap::SHAPE_NONE) {
+        h.shapes[new_id] = ns;
+        self.shape_id = new_id;
+        self.shape = ns;
+    } else {
+        shape_free(ns, self.heap_ptr);
+    }
+}
+
+/// Set flags for an existing property.  Makes the shape private first so that
+/// changes don't leak to objects sharing the same shape.
+/// Skips the expensive private-shape creation when flags already match.
+fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
+    // Fast path: flags already correct — no shape mutation needed.
+    hobject::Shape* sh = self.shape;
+    while (sh != null) {
+        if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
+            if (sh.props()[idx - sh.offset].flags == new_flags) return;
+            break;
+        }
+        sh = sh.parent_shape;
+    }
+    self.make_shape_private();
+    sh = self.shape;
+    while (sh != null) {
+        if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
+            sh.props()[idx - sh.offset].flags = new_flags;
+            return;
+        }
+        sh = sh.parent_shape;
+    }
+}
+
 /// Find the index of the property with the given interned key.
 /// Uses the per-object hash table if present, otherwise walks the shape chain.
 fn int HObject.find_prop_idx(&self, void* key) {
@@ -663,7 +735,7 @@ fn bool HObject.has_prop(&self, void* key) {
 fn bool HObject.is_prop_writable(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) return true;
-    return self.prop_values()[idx].flags.writable;
+    return self.get_prop_flags((uint)idx).writable;
 }
 
 /// Set (create or update) a named property.
@@ -688,7 +760,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
                 ((types::HeapHeader*)ptr).incref();
             }
         }
-        pv.flags = pflags;
+        self.set_prop_flags((uint)idx, pflags);
         // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
         if (self.flags.exotic_array && key == builtin_length_key) {
             if (val.is_fastint()) {
@@ -712,7 +784,6 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     uint new_idx = self.prop_count;
     libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
     self.prop_values()[new_idx].data.value = val;
-    self.prop_values()[new_idx].flags = pflags;
     if (self.heap_ptr != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
@@ -739,6 +810,15 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
             self.shape = h.get_shape(new_shape_id);
+        }
+        // If the caller wants non-default flags, update the shape.
+        // set_prop_flags handles making the shape private if shared.
+        if (self.prop_count > 0) {
+            PropFlags shape_f = self.get_prop_flags(new_idx);
+            if (shape_f.writable != pflags.writable || shape_f.enumerable != pflags.enumerable ||
+                shape_f.configurable != pflags.configurable || shape_f.is_accessor != pflags.is_accessor) {
+                self.set_prop_flags(new_idx, pflags);
+            }
         }
     }
 
@@ -818,7 +898,7 @@ fn bool HObject.delete_prop(&self, void* key) {
                     uint old_idx = walk.offset + j;
                     if (old_idx != ui) {
                         new_sp[ni].key   = old_sp[j].key;
-                        new_sp[ni].flags = self.prop_values()[old_idx].flags;
+                        new_sp[ni].flags = old_sp[j].flags;
                         ni++;
                     }
                 }
@@ -1124,7 +1204,7 @@ fn void hobject_free(HObject* obj) {
 fn uint HObject.enumerable_count(&self) {
     uint count = 0;
     for (uint i = 0; i < self.prop_count; i++) {
-        if (self.prop_values()[i].flags.enumerable) {
+        if (self.get_prop_flags(i).enumerable) {
             count++;
         }
     }
@@ -1178,7 +1258,7 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            if (cur.prop_values()[idx].flags.is_accessor) {
+            if (cur.get_prop_flags((uint)idx).is_accessor) {
                 TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
                 if (accessor_fn.is_object() && accessor_fn.get_heapptr() != null) {
                     return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
@@ -1279,14 +1359,14 @@ fn Shape* shape_create(uint own_count, uint offset, uint parent_id, Shape* paren
 
 /// Create a new shape that extends `parent` by adding one property.
 /// Only stores the NEW property (delta).  Returns null on allocation failure.
-fn Shape* shape_extend(Shape* parent, uint parent_id, void* new_key) {
+fn Shape* shape_extend(Shape* parent, uint parent_id, void* new_key, PropFlags flags) {
     uint offset = parent.offset + parent.own_count;
     Shape* ns = shape_create(1, offset, parent_id, parent);
     if (ns == null) return null;
 
     // Set the single new property
     ns.props()[0].key   = new_key;
-    ns.props()[0].flags = PROP_FLAGS_WEC;
+    ns.props()[0].flags = flags;
 
     // Incref the key: this new shape holds a ref to the key.
     if (new_key != null) {
@@ -1326,6 +1406,8 @@ struct ICEntry {
     uint   shape_id;
     /// Property index within the owner's prop_values[].
     uint   prop_idx;
+    /// Cached property flags (avoid shape walk on IC hit).
+    PropFlags prop_flags;
     /// Prototype pointer where the property was found (null = own property).
     void*  proto;
     /// The interned key (HString*) this entry was populated for.
@@ -1371,7 +1453,7 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            if (cur.prop_values()[idx].flags.is_accessor) {
+            if (cur.get_prop_flags((uint)idx).is_accessor) {
                 TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
                 return {
                     .kind = PropLookupKind.PROP_ACCESSOR,
@@ -1433,7 +1515,7 @@ fn bool HObject.es_delete_prop(&self, void* key) {
     if (idx < 0) {
         return true;  // Not found → [[Delete]] returns true.
     }
-    if (!self.prop_values()[idx].flags.configurable) {
+    if (!self.get_prop_flags((uint)idx).configurable) {
         return false;  // Non-configurable → [[Delete]] returns false.
     }
     return self.delete_prop(key);

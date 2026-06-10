@@ -677,7 +677,7 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     }
 
     // Allocate a new shape that extends the current one.
-    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key, hobject::PROP_FLAGS_WEC);
     if (ns == null) return cur_shape_id;
 
     uint new_id = self.alloc_shape_slot();
@@ -709,7 +709,7 @@ fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
     }
 
     // Allocate a new shape that extends the current one.
-    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key);
+    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key, hobject::PROP_FLAGS_WEC);
     if (ns == null) return cur_shape_id;
 
     uint new_id = self.alloc_shape_slot();

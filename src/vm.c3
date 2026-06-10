@@ -914,7 +914,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 
         // Own named properties (non-index own props, e.g. explicitly assigned slots)
         for (uint i = 0; i < cur.prop_count; i++) {
-            if (cur.prop_values()[i].flags.enumerable && cur.prop_key_at(i) != null) {
+            if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
                 // Skip "length" on string exotic objects (non-enumerable by spec)
                 if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
@@ -2172,7 +2172,7 @@ fn TVal? Vm.run(Vm* vm) {
                         && vm.heap.shapes[b.shape_id].generation == vic.generation) {
                         TVal old_val = b.prop_values()[vic.prop_idx].data.value;
                         if (!env::is_tdz_sentinel(&old_val)
-                            && b.prop_values()[vic.prop_idx].flags.writable) {
+                            && b.get_prop_flags(vic.prop_idx).writable) {
                             if (old_val.is_fastint()) {
                                 long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
                                 if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
@@ -2228,7 +2228,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     }
-                    if (!cur.bindings.prop_values()[idx].flags.writable) {
+                    if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                         HString* name_hstr = (HString*)key;
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                         if (try err = err_raw) {
@@ -2883,6 +2883,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 ic.shape_id = hobj.shape_id;
                                 ic.proto = res.owner == hobj ? null : (void*)res.owner;
                                 ic.prop_idx = (uint)owner_idx;
+                                ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
                                 if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
                                 ic.key = key;
                                 if (key != null) { ((types::HeapHeader*)key).incref(); }
@@ -3098,8 +3099,8 @@ fn TVal? Vm.run(Vm* vm) {
                     void* wkey = rb.get_heapptr();
                     if (wkey != null && ic.key == wkey && ic.shape_id == hobj.shape_id && ic.proto == null) {
                         if (ic.cached_prop_alloc == hobj.prop_alloc
-                            && !ic.prop_value_ptr.flags.is_accessor
-                            && ic.prop_value_ptr.flags.writable) {
+                            && !ic.prop_flags.is_accessor
+                            && ic.prop_flags.writable) {
                             vm.heap.tval_copy_ref(&ic.prop_value_ptr.data.value, rc);
                             break;
                         }
@@ -3136,7 +3137,8 @@ fn TVal? Vm.run(Vm* vm) {
                     int exist_idx = hobj.find_prop_idx(key);
                     if (exist_idx >= 0) {
                         hobject::PropValue* entry = &hobj.prop_values()[exist_idx];
-                        if (entry.flags.is_accessor) {
+                        hobject::PropFlags exist_flags = hobj.get_prop_flags((uint)exist_idx);
+                        if (exist_flags.is_accessor) {
                             // Accessor property — invoke setter
                             TVal setter_fn = entry.setter;
                             if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
@@ -3191,7 +3193,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     }
                                 }
                             }
-                        } else if (!entry.flags.writable) {
+                        } else if (!exist_flags.writable) {
                             // Non-writable data property — TypeError in strict mode
                             HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
@@ -6072,7 +6074,7 @@ fn TVal? Vm.run(Vm* vm) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     hobject::PropValue* initget_props = hobj.prop_values();
-                    if (idx >= 0 && initget_props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's getter
                         vm.heap.tval_copy_ref(&initget_props[idx].data.getter, &getter_val);
                     } else {
@@ -6104,7 +6106,7 @@ fn TVal? Vm.run(Vm* vm) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     hobject::PropValue* initset_props = hobj.prop_values();
-                    if (idx >= 0 && initset_props[idx].flags.is_accessor) {
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's setter
                         vm.heap.tval_copy_ref(&initset_props[idx].setter, &setter_val);
                     } else {

@@ -237,7 +237,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
 
     // Own named properties (enumerable, excluding length on string exotic)
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             // Skip the non-enumerable .length stored explicitly on string exotics
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
@@ -725,6 +725,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     }
 
     hobject::PropValue* entry = &obj.prop_values()[idx];
+    hobject::PropFlags entry_flags = obj.get_prop_flags((uint)idx);
 
     // Build the descriptor object
     HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -735,7 +736,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     HObject* desc = desc_raw;
     desc.prototype = ctx.heap.object_proto;
 
-    if (entry.flags.is_accessor) {
+    if (entry_flags.is_accessor) {
         // Accessor descriptor: { get, set, enumerable, configurable }
         HString* get_key = builtin_intern_string(ctx.heap, "get");
         desc.put_prop(get_key, entry.data.getter, hobject::PROP_FLAGS_WEC);
@@ -745,12 +746,12 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
         HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
         TVal e_tv;
-        e_tv.set_boolean(entry.flags.enumerable);
+        e_tv.set_boolean(entry_flags.enumerable);
         desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
 
         HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
         TVal c_tv;
-        c_tv.set_boolean(entry.flags.configurable);
+        c_tv.set_boolean(entry_flags.configurable);
         desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
     } else {
         // Data descriptor: { value, writable, enumerable, configurable }
@@ -759,17 +760,17 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
         HString* writable_key = builtin_intern_string(ctx.heap, "writable");
         TVal w_tv;
-        w_tv.set_boolean(entry.flags.writable);
+        w_tv.set_boolean(entry_flags.writable);
         desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
 
         HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
         TVal e_tv;
-        e_tv.set_boolean(entry.flags.enumerable);
+        e_tv.set_boolean(entry_flags.enumerable);
         desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
 
         HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
         TVal c_tv;
-        c_tv.set_boolean(entry.flags.configurable);
+        c_tv.set_boolean(entry_flags.configurable);
         desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
     }
 
@@ -1070,7 +1071,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     } else {
         // Property exists — validate changes per ES5 §8.12.9
         hobject::PropValue* current = &obj.prop_values()[existing_idx];
-        hobject::PropFlags cur_flags = current.flags;
+        hobject::PropFlags cur_flags = obj.get_prop_flags((uint)existing_idx);
         TVal cur_value = current.data.value;
 
         // Check if descriptor is empty (generic, no fields)
@@ -1153,9 +1154,10 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (has_set_in_desc) current.setter = desc_vals[1];
 
             // Update flags — only overwrite fields present in descriptor
-            current.flags.is_accessor = true;
-            if (has_enum_in_desc) current.flags.enumerable   = desc_flags.enumerable;
-            if (has_conf_in_desc) current.flags.configurable = desc_flags.configurable;
+            cur_flags.is_accessor = true;
+            if (has_enum_in_desc) cur_flags.enumerable   = desc_flags.enumerable;
+            if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
+            obj.set_prop_flags((uint)existing_idx, cur_flags);
         } else {
             // Update data property
             bool has_val_in_desc = false;
@@ -1218,11 +1220,12 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 current.data.value = desc_vals[0];
             }
 
-            if (has_wrt_in_desc)  current.flags.writable     = desc_flags.writable;
-            if (has_enum_in_desc) current.flags.enumerable   = desc_flags.enumerable;
-            if (has_conf_in_desc) current.flags.configurable = desc_flags.configurable;
+            if (has_wrt_in_desc)  cur_flags.writable     = desc_flags.writable;
+            if (has_enum_in_desc) cur_flags.enumerable   = desc_flags.enumerable;
+            if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
             // Clear is_accessor when converting accessor→data (ES5 §8.12.9 step 9)
-            current.flags.is_accessor = false;
+            cur_flags.is_accessor = false;
+            obj.set_prop_flags((uint)existing_idx, cur_flags);
         }
     }
 
@@ -1350,7 +1353,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             } else {
                 // Property exists — validate changes
                 hobject::PropValue* current = &obj.prop_values()[existing_idx];
-                hobject::PropFlags cur_flags = current.flags;
+                hobject::PropFlags cur_flags = obj.get_prop_flags((uint)existing_idx);
                 if (!cur_flags.configurable) {
                     if (desc_flags.configurable != cur_flags.configurable ||
                         desc_flags.enumerable != cur_flags.enumerable) {
@@ -1373,9 +1376,10 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 if (is_accessor) {
                     if (has_get_in_desc_helper(ctx.heap, desc_obj)) current.data.getter = desc_vals[0];
                     if (has_set_in_desc_helper(ctx.heap, desc_obj)) current.setter = desc_vals[1];
-                    current.flags.is_accessor = true;
-                    if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) current.flags.enumerable = desc_flags.enumerable;
-                    if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) current.flags.configurable = desc_flags.configurable;
+                    cur_flags.is_accessor = true;
+                    if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.enumerable = desc_flags.enumerable;
+                    if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.configurable = desc_flags.configurable;
+                    obj.set_prop_flags((uint)existing_idx, cur_flags);
                 } else {
                     // Basic data property update
                     if (has_value_in_desc_helper(ctx.heap, desc_obj)) {
@@ -1396,9 +1400,10 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                         }
                         current.data.value = desc_vals[0];
                     }
-                    if (has_writable_in_desc_helper(ctx.heap, desc_obj)) current.flags.writable = desc_flags.writable;
-                    if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) current.flags.enumerable = desc_flags.enumerable;
-                    if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) current.flags.configurable = desc_flags.configurable;
+                    if (has_writable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.writable = desc_flags.writable;
+                    if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.enumerable = desc_flags.enumerable;
+                    if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.configurable = desc_flags.configurable;
+                    obj.set_prop_flags((uint)existing_idx, cur_flags);
                 }
             }
         }
@@ -1660,7 +1665,7 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
 
     // Check if any own property is configurable
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_key_at(i) != null && obj.prop_values()[i].flags.configurable) {
+        if (obj.prop_key_at(i) != null && obj.get_prop_flags(i).configurable) {
             ctx.result.set_boolean(false);
             return;
         }
@@ -1705,11 +1710,12 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
     // Check if any own property is configurable or data property writable
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
-            if (obj.prop_values()[i].flags.configurable) {
+            hobject::PropFlags f = obj.get_prop_flags(i);
+            if (f.configurable) {
                 ctx.result.set_boolean(false);
                 return;
             }
-            if (!obj.prop_values()[i].flags.is_accessor && obj.prop_values()[i].flags.writable) {
+            if (!f.is_accessor && f.writable) {
                 ctx.result.set_boolean(false);
                 return;
             }
@@ -1762,7 +1768,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) count++;
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
@@ -1775,7 +1781,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties → [key, value] pairs
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             // Create pair array [key, value]
             HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -1857,7 +1863,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) count++;
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
@@ -1870,7 +1876,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.prop_values()[i].flags.enumerable && obj.prop_key_at(i) != null) {
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             array_set_elem(arr, idx, obj.prop_values()[i].data.value, ctx.heap);
             idx++;
         }
@@ -1933,7 +1939,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         HObject* src_obj = (HObject*)source.get_heapptr();
         // Copy enumerable own named properties
         for (uint i = 0; i < src_obj.prop_count; i++) {
-            if (src_obj.prop_values()[i].flags.enumerable && src_obj.prop_key_at(i) != null) {
+            if (src_obj.get_prop_flags(i).enumerable && src_obj.prop_key_at(i) != null) {
                 downstream.put_prop(src_obj.prop_key_at(i), src_obj.prop_values()[i].data.value, hobject::PROP_FLAGS_WEC);
             }
         }
@@ -2359,7 +2365,8 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     // Find own property descriptor
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
-        ctx.result.set_boolean(e.flags.enumerable);
+        uint prop_idx = (uint)((char*)e - (char*)obj.prop_values()) / hobject::PropValue::size;
+        ctx.result.set_boolean(obj.get_prop_flags(prop_idx).enumerable);
         return;
     }
     // STRING exotic: integer indices [0, clen) are enumerable own properties served lazily.

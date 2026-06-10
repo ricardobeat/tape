@@ -343,7 +343,7 @@ fn bool env_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            if (!cur.bindings.prop_values()[idx].flags.writable) {
+            if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                 return false;
             }
             hobject::PropValue* pv = &cur.bindings.prop_values()[idx];
@@ -400,7 +400,7 @@ fn bool env_put_at_depth(EnvRecord* env, uint depth, void* key, TVal val) {
     if (cur == null) return false;
     int idx = cur.bindings.find_prop_idx(key);
     if (idx >= 0) {
-        if (!cur.bindings.prop_values()[idx].flags.writable) return false;
+        if (!cur.bindings.get_prop_flags((uint)idx).writable) return false;
         hobject::PropValue* pv = &cur.bindings.prop_values()[idx];
         if (cur.bindings.heap_ptr != null) {
             heap::Heap* h = (heap::Heap*)cur.bindings.heap_ptr;
@@ -425,7 +425,7 @@ fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.bindings.prop_values()[idx].flags.writable;
+            return cur.bindings.get_prop_flags((uint)idx).writable;
         }
         cur = cur.parent;
     }
@@ -446,7 +446,7 @@ fn int env_check_const(EnvRecord* lex_env, void* key) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            if (!cur.bindings.prop_values()[idx].flags.writable) {
+            if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                 return -1;
             }
             return 0;
@@ -461,7 +461,7 @@ fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
-            if (!cur.bindings.prop_values()[idx].flags.writable) {
+            if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                 return -1;
             }
             hobject::PropValue* pv = &cur.bindings.prop_values()[idx];

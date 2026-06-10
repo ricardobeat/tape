@@ -872,7 +872,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             TVal val;
             // Check if property still exists and read its value
             if (pi < obj.prop_count && obj.prop_key_at(pi) == key_hstr) {
-                if (obj.prop_values()[pi].flags.is_accessor) {
+                if (obj.get_prop_flags(pi).is_accessor) {
                     // Invoke the getter to get the property value
                     TVal getter_fn = obj.prop_values()[pi].data.getter;
                     if (getter_fn.is_undefined() || getter_fn.is_null()) {
