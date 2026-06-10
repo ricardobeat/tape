@@ -3078,7 +3078,10 @@ fn TVal? Vm.run(Vm* vm) {
                 // Fast path: dense array indexed store (a[i] = v where i is a valid array index)
                 // ES5 §15.4: array index P satisfies ToString(ToUint32(P))===P && ToUint32(P)≠2^32−1
                 // Cap at 2^24 to avoid insane allocations for sparse arrays with huge indices.
+                // Guard with array_part() != null — after seal/freeze the array part is
+                // abandoned and elements live as named properties with proper flags.
                 if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS)
+                    && hobj.array_part() != null
                     && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {

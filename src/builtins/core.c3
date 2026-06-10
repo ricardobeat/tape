@@ -1291,7 +1291,7 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
 
 /// Set .name and .length on a built-in constructor HObject.
 /// .name: non-writable, non-enumerable, configurable (ES6 §19)
-/// .length: writable, non-enumerable, configurable (ES5 §15)
+/// .length: non-writable, non-enumerable, configurable (ES5 §15.3.5.1)
 fn void set_func_ctor_name_length(HObject* func_obj, Heap* heap, char[] name, int length) {
     HString* name_key = builtin_intern_string(heap, "name");
     HString* name_hstr = builtin_intern_string(heap, name);
@@ -1300,7 +1300,7 @@ fn void set_func_ctor_name_length(HObject* func_obj, Heap* heap, char[] name, in
 
     HString* length_key = builtin_intern_string(heap, "length");
     TVal length_tv; length_tv.set_fastint((long)length);
-    func_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+    func_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 }
 
 /// Set .name on a built-in constructor HObject (when .length is already set).

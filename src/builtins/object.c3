@@ -1150,6 +1150,46 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (enum_k != null) has_enum_in_desc = desc_obj.find_prop_idx(enum_k) >= 0;
             if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
 
+            // ES5 §8.12.9 step 11: non-configurable accessor — reject if get/set changes
+            if (!cur_flags.configurable) {
+                if (has_get_in_desc && !same_value(current.data.getter, desc_vals[0])) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err8a = err_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_key6a = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str6a = builtin_intern_string(ctx.heap, "Cannot change getter of non-configurable accessor property");
+                    if (msg_key6a == null || msg_str6a == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_str6a);
+                    err.put_prop(msg_key6a, msg_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+                if (has_set_in_desc && !same_value(current.setter, desc_vals[1])) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err8b = err_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_key6b = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str6b = builtin_intern_string(ctx.heap, "Cannot change setter of non-configurable accessor property");
+                    if (msg_key6b == null || msg_str6b == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_str6b);
+                    err.put_prop(msg_key6b, msg_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+            }
+
             if (has_get_in_desc) current.data.getter = desc_vals[0];
             if (has_set_in_desc) current.setter = desc_vals[1];
 
@@ -1663,6 +1703,13 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
     }
     HObject* obj = (HObject*)arg.get_heapptr();
 
+    // Dense array elements are always writable and configurable (no per-element
+    // flags in the flat array part).  If any exist, the object can't be sealed.
+    if (obj.array_used > 0) {
+        ctx.result.set_boolean(false);
+        return;
+    }
+
     // Check if any own property is configurable
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null && obj.get_prop_flags(i).configurable) {
@@ -1706,6 +1753,13 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+
+    // Dense array elements are always writable and configurable (no per-element
+    // flags in the flat array part).  If any exist, the object can't be frozen.
+    if (obj.array_used > 0) {
+        ctx.result.set_boolean(false);
+        return;
+    }
 
     // Check if any own property is configurable or data property writable
     for (uint i = 0; i < obj.prop_count; i++) {
@@ -1937,16 +1991,54 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         if (source.is_null() || source.is_undefined()) continue;
         if (!source.is_object()) continue;
         HObject* src_obj = (HObject*)source.get_heapptr();
-        // Copy enumerable own named properties
+        // Copy enumerable own named properties via [[Set]] per ES2015 §19.1.2.2
         for (uint i = 0; i < src_obj.prop_count; i++) {
             if (src_obj.get_prop_flags(i).enumerable && src_obj.prop_key_at(i) != null) {
-                downstream.put_prop(src_obj.prop_key_at(i), src_obj.prop_values()[i].data.value, hobject::PROP_FLAGS_WEC);
+                void* key = src_obj.prop_key_at(i);
+                TVal val = src_obj.prop_values()[i].data.value;
+                // [[Set]]: check own property first
+                int down_idx = downstream.find_prop_idx(key);
+                if (down_idx >= 0) {
+                    hobject::PropFlags f = downstream.get_prop_flags((uint)down_idx);
+                    if (!f.is_accessor && f.writable) {
+                        downstream.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+                    }
+                    // Accessor or non-writable: silently skip (non-strict [[Set]] behavior)
+                } else {
+                    // Not own property — check prototype chain for accessor
+                    hobject::AccessorResult acc = downstream.find_accessor_proto(key, false);
+                    if (!acc.found && downstream.flags.extensible) {
+                        downstream.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+                    }
+                    // Accessor on prototype or non-extensible: silently skip
+                }
             }
         }
-        // Copy enumerable own dense array indices
-        for (uint i = 0; i < src_obj.array_size; i++) {
-            if (!src_obj.array_part()[i].is_undefined()) {
-                array_set_elem(downstream, i, src_obj.array_part()[i], ctx.heap);
+        // Copy enumerable own dense array indices via [[Set]]
+        if (src_obj.array_part() != null) {
+            char[12] digit_buf;
+            for (uint i = 0; i < src_obj.array_size; i++) {
+                if (!src_obj.array_part()[i].is_undefined()) {
+                    int dlen = libc::snprintf(&digit_buf[0], 12, "%u", i);
+                    if (dlen > 0) {
+                        HString* key = builtin_intern_string(ctx.heap, digit_buf[:(uint)dlen]);
+                        if (key != null) {
+                            TVal val = src_obj.array_part()[i];
+                            int down_idx = downstream.find_prop_idx((void*)key);
+                            if (down_idx >= 0) {
+                                hobject::PropFlags f = downstream.get_prop_flags((uint)down_idx);
+                                if (!f.is_accessor && f.writable) {
+                                    downstream.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC);
+                                }
+                            } else {
+                                hobject::AccessorResult acc = downstream.find_accessor_proto((void*)key, false);
+                                if (!acc.found && downstream.flags.extensible) {
+                                    downstream.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

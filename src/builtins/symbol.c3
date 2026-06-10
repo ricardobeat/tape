@@ -460,7 +460,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
     // Register Symbol.for as a property of the Symbol function
     HString* for_key = builtin_intern_string(heap, "for");

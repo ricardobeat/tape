@@ -535,7 +535,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(0);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
     // Map.prototype's [[Prototype]] is set later (to Object.prototype)
 
