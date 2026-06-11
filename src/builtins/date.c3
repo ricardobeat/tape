@@ -348,6 +348,88 @@ fn void builtin_date_proto_toLocaleTimeString(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
+/// Date.prototype.toDateString() — ES5 §15.9.5.3
+/// Returns the date portion: "Mon Jan 01 2024"
+fn void builtin_date_proto_toDateString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    if (math::is_nan(time_val)) {
+        HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
+        ctx.result.set_string(inv);
+        return;
+    }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
+    char* wday_name;
+    switch (wday) {
+        case 0: wday_name = "Sun"; break;
+        case 1: wday_name = "Mon"; break;
+        case 2: wday_name = "Tue"; break;
+        case 3: wday_name = "Wed"; break;
+        case 4: wday_name = "Thu"; break;
+        case 5: wday_name = "Fri"; break;
+        case 6: wday_name = "Sat"; break;
+        default: wday_name = "???"; break;
+    }
+    char* mon_name;
+    switch (month) {
+        case 0: mon_name = "Jan"; break;
+        case 1: mon_name = "Feb"; break;
+        case 2: mon_name = "Mar"; break;
+        case 3: mon_name = "Apr"; break;
+        case 4: mon_name = "May"; break;
+        case 5: mon_name = "Jun"; break;
+        case 6: mon_name = "Jul"; break;
+        case 7: mon_name = "Aug"; break;
+        case 8: mon_name = "Sep"; break;
+        case 9: mon_name = "Oct"; break;
+        case 10: mon_name = "Nov"; break;
+        case 11: mon_name = "Dec"; break;
+        default: mon_name = "???"; break;
+    }
+    char[types::FORMAT_BUF] buf;
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%s %s %02d %04d",
+        wday_name, mon_name, (int)day, (int)year);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.set_string(result);
+}
+
+/// Date.prototype.toTimeString() — ES5 §15.9.5.4
+/// Returns the time portion: "12:00:00 GMT+0000"
+fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double time_val = date_get_time_value(&this_val);
+    if (math::is_nan(time_val)) {
+        HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
+        ctx.result.set_string(inv);
+        return;
+    }
+    long t_sec = (long)(time_val / 1000.0);
+    Tm tm_result;
+    libc::localtime_r(&t_sec, &tm_result);
+    Tm* tm = &tm_result;
+
+    // Compute timezone offset
+    long local_as_epoch = (long)libc::mktime(tm);
+    if (local_as_epoch == -1) local_as_epoch = t_sec;
+    long tz_seconds = local_as_epoch - t_sec;
+    char tz_sign = '+';
+    int offs_hours = (int)(tz_seconds / 3600);
+    int offs_mins = (int)((tz_seconds / 60) % 60);
+    if (tz_seconds < 0) {
+        tz_sign = '-';
+        offs_hours = -offs_hours;
+        offs_mins = -offs_mins;
+    }
+
+    char[types::FORMAT_BUF] buf;
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%02d:%02d:%02d GMT%c%02d%02d",
+        tm.tm_hour, tm.tm_min, tm.tm_sec,
+        tz_sign, offs_hours, offs_mins);
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    ctx.result.set_string(result);
+}
+
 /// Date.prototype.toJSON(key) — ES5 §15.9.5.44
 fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -1124,6 +1206,12 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add Date.prototype.toLocaleTimeString() — ES5 §15.9.5.7
     if (!register_string_proto_method(proto, heap, "toLocaleTimeString", BUILTIN_DATE_PROTO_TOLOCALETIMESTRING)) return false;
+
+    // Add Date.prototype.toDateString() — ES5 §15.9.5.3
+    if (!register_string_proto_method(proto, heap, "toDateString", BUILTIN_DATE_PROTO_TODATESTRING)) return false;
+
+    // Add Date.prototype.toTimeString() — ES5 §15.9.5.4
+    if (!register_string_proto_method(proto, heap, "toTimeString", BUILTIN_DATE_PROTO_TOTIMESTRING)) return false;
 
     // Register Date as a global constructor (proper function object for static methods)
     HObject*? date_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);

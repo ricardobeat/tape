@@ -194,7 +194,7 @@ const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 297;
 const uint BUILTIN_STRING_PROTO_TOLOCALELOWERCASE = 298;
 const uint BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE = 299;
 const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
-const uint BUILTIN_COUNT                         = 301;
+const uint BUILTIN_COUNT                         = 306;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -359,6 +359,11 @@ const uint BUILTIN_DATE_PROTO_SETUTCFULLYEAR = 257;
 const uint BUILTIN_DATE_PROTO_TOISOSTRING    = 258;
 const uint BUILTIN_DATE_PROTO_TOUTCSTRING    = 259;
 const uint BUILTIN_DATE_PROTO_TOGMTSTRING    = 260;
+const uint BUILTIN_DATE_PROTO_TODATESTRING   = 301;
+const uint BUILTIN_DATE_PROTO_TOTIMESTRING   = 302;
+const uint BUILTIN_STRING_PROTO_REPLACEALL    = 303;
+const uint BUILTIN_STRING_PROTO_MATCHALL      = 304;
+const uint BUILTIN_STRING_PROTO_NORMALIZE     = 305;
 
 // ============================================================================
 // BuiltinContext — passed to every builtin handler
@@ -1022,6 +1027,11 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 261: return { "toLocaleString", 0 };
         case 262: return { "toLocaleDateString", 0 };
         case 263: return { "toLocaleTimeString", 0 };
+        case 301: return { "toDateString", 0 };
+        case 302: return { "toTimeString", 0 };
+        case 303: return { "replaceAll", 2 };
+        case 304: return { "matchAll", 1 };
+        case 305: return { "normalize", 0 };
         case 266: return { "allSettled", 1 };
         case 267: return { "any", 1 };
         case 268: return { "AggregateError", 2 };
@@ -1408,6 +1418,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_DATE_PROTO_TOLOCALEDATESTRING] = &builtin_date_proto_toLocaleDateString,
     [BUILTIN_DATE_PROTO_TOLOCALESTRING] = &builtin_date_proto_toLocaleString,
     [BUILTIN_DATE_PROTO_TOLOCALETIMESTRING] = &builtin_date_proto_toLocaleTimeString,
+    [BUILTIN_DATE_PROTO_TODATESTRING] = &builtin_date_proto_toDateString,
+    [BUILTIN_DATE_PROTO_TOTIMESTRING] = &builtin_date_proto_toTimeString,
     [BUILTIN_DATE_PROTO_TOSTRING] = &builtin_date_proto_toString,
     [BUILTIN_DATE_PROTO_TOUTCSTRING] = &builtin_date_proto_toUTCString,
     [BUILTIN_DATE_PROTO_VALUEOF] = &builtin_date_proto_valueOf,
@@ -1572,10 +1584,13 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_STRING_PROTO_INDEXOF] = &builtin_string_proto_indexOf,
     [BUILTIN_STRING_PROTO_LASTINDEXOF] = &builtin_string_proto_lastIndexOf,
     [BUILTIN_STRING_PROTO_MATCH] = &builtin_string_proto_match,
+    [BUILTIN_STRING_PROTO_MATCHALL] = &builtin_string_proto_matchAll,
+    [BUILTIN_STRING_PROTO_NORMALIZE] = &builtin_string_proto_normalize,
     [BUILTIN_STRING_PROTO_PADEND] = &builtin_string_proto_padEnd,
     [BUILTIN_STRING_PROTO_PADSTART] = &builtin_string_proto_padStart,
     [BUILTIN_STRING_PROTO_REPEAT] = &builtin_string_proto_repeat,
     [BUILTIN_STRING_PROTO_REPLACE] = &builtin_string_proto_replace,
+    [BUILTIN_STRING_PROTO_REPLACEALL] = &builtin_string_proto_replaceAll,
     [BUILTIN_STRING_PROTO_SEARCH] = &builtin_string_proto_search,
     [BUILTIN_STRING_PROTO_SLICE] = &builtin_string_proto_slice,
     [BUILTIN_STRING_PROTO_SPLIT] = &builtin_string_proto_split,

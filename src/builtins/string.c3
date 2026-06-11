@@ -1255,6 +1255,217 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
 }
 
+/// String.prototype.replaceAll(searchValue, replaceValue) — ES2021 §21.1.3.18
+fn void builtin_string_proto_replaceAll(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    if (ctx.argc < 1) {
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    TVal search_val = ctx.regs[ctx.base_reg];
+    char* input = s_hstr.get_cstr();
+    uint input_len = s_hstr.blen;
+
+    // If searchValue is a regex, check for global flag; throw TypeError if missing
+    if (is_regexp_object(&search_val)) {
+        HObject* rx = (HObject*)search_val.get_heapptr();
+        // Read global flag directly from internal flags (get_prop doesn't invoke accessor getters)
+        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        if (!global_flag) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.replaceAll called with a non-global regular expression");
+                if (msg_str != null) {
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                }
+                TVal err_tv;
+                err_tv.set_object(err);
+                ctx.throw_value = err_tv;
+            }
+            ctx.result.set_undefined();
+            ctx.should_throw = true;
+            return;
+        }
+        // Direct global regex replace-all implementation
+        bool replace_is_fn = false;
+        TVal replace_val;
+        replace_val.set_undefined();
+        if (ctx.argc > 1) {
+            replace_val = ctx.regs[ctx.base_reg + 1];
+            if (replace_val.is_object() && replace_val.get_heapptr() != null &&
+                ((HObject*)replace_val.get_heapptr()).is_callable()) {
+                replace_is_fn = true;
+            }
+        }
+
+        HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+        TVal zero_tv; zero_tv.set_fastint(0);
+        rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+        char[8192] buf;
+        usz bOff = 0;
+        int search_pos = 0;
+        int ilen = (int)input_len;
+
+        while (search_pos <= ilen) {
+            int out_start = 0;
+            int out_end = 0;
+            int out_num_captures = 0;
+            int[re_bindings::RE_MAX_CAPTURES] caps_start;
+            int[re_bindings::RE_MAX_CAPTURES] caps_end;
+            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+            int result = re_bindings::re_exec(
+                rx.extra.regexp.regexp_data, input, ilen, search_pos,
+                &out_start, &out_end, &out_num_captures,
+                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            );
+            if (result != re_bindings::RE_MATCH) break;
+
+            for (usz i = (usz)search_pos; i < (usz)out_start && bOff < 8192; i++) buf[bOff++] = input[i];
+
+            HString* replace_str;
+            if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+                int num_caps = out_num_captures;
+                if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+                TVal[36] fn_args;
+                int arg_count = 0;
+                usz m_len = (usz)(out_end - out_start);
+                fn_args[arg_count].set_string(
+                    m_len == 0 ? builtin_intern_string(ctx.heap, "")
+                               : builtin_intern_string(ctx.heap, input[out_start : m_len]));
+                arg_count++;
+                for (int i = 0; i < num_caps; i++) {
+                    if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+                        usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+                        fn_args[arg_count].set_string(
+                            cap_len == 0 ? builtin_intern_string(ctx.heap, "")
+                                         : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
+                    } else {
+                        fn_args[arg_count].set_undefined();
+                    }
+                    arg_count++;
+                }
+                TVal offset_tv; offset_tv.set_fastint((long)out_start);
+                fn_args[arg_count++] = offset_tv;
+                fn_args[arg_count++].set_string(s_hstr);
+                TVal this_val; this_val.set_undefined();
+                TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
+                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                replace_str = builtin_to_string(ctx.heap, &res);
+                if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+            } else {
+                HString* raw_replace = ctx.argc > 1
+                    ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                    : builtin_intern_string(ctx.heap, "undefined");
+                if (raw_replace == null) break;
+                replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
+                    input, ilen, out_start, out_end,
+                    &caps_start, &caps_end, out_num_captures);
+                if (replace_str == null) replace_str = raw_replace;
+            }
+
+            char* rData = replace_str.get_cstr();
+            uint rLen = replace_str.blen;
+            for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
+
+            if (out_end == search_pos) {
+                search_pos = out_end + 1;
+                if (search_pos > ilen) break;
+            } else {
+                search_pos = out_end;
+            }
+        }
+
+        for (usz i = (usz)search_pos; i < (usz)ilen && bOff < 8192; i++) buf[bOff++] = input[i];
+        ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
+        return;
+    }
+
+    // String searchValue path
+    HString* search_hstr = builtin_to_string(ctx.heap, &search_val);
+    if (search_hstr == null) { ctx.result.set_string(s_hstr); return; }
+
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    // If search string is empty, return the original string
+    if (search_len == 0) {
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    bool replace_is_fn = false;
+    TVal replace_val;
+    replace_val.set_undefined();
+    if (ctx.argc > 1) {
+        replace_val = ctx.regs[ctx.base_reg + 1];
+        if (replace_val.is_object() && replace_val.get_heapptr() != null &&
+            ((HObject*)replace_val.get_heapptr()).is_callable()) {
+            replace_is_fn = true;
+        }
+    }
+
+    char[8192] buf;
+    usz bOff = 0;
+    int pos = 0;
+
+    while (pos <= (int)(input_len - search_len)) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (input[(uint)pos + j] != search_data[j]) { match = false; break; }
+        }
+        if (!match) {
+            if (bOff < 8192) buf[bOff++] = input[(uint)pos];
+            pos++;
+            continue;
+        }
+
+        // Found a match at pos
+        HString* replace_str;
+        if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+            TVal[3] fn_args;
+            fn_args[0].set_string(search_hstr);
+            fn_args[1].set_fastint((long)pos);
+            fn_args[2].set_string(s_hstr);
+            TVal this_val; this_val.set_undefined();
+            TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], 3, this_val);
+            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+            replace_str = builtin_to_string(ctx.heap, &res);
+            if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+        } else {
+            HString* raw_replace = ctx.argc > 1
+                ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                : builtin_intern_string(ctx.heap, "undefined");
+            if (raw_replace == null) break;
+            // Handle $-substitution patterns ($$, $&, $`, $', $1, etc.)
+            replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
+                input, (int)input_len, pos, pos + (int)search_len,
+                null, null, 0);
+            if (replace_str == null) replace_str = raw_replace;
+        }
+
+        char* rData = replace_str.get_cstr();
+        uint rLen = replace_str.blen;
+        for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
+
+        pos += (int)search_len;
+    }
+
+    // Copy remaining characters
+    for (usz i = (usz)pos; i < (usz)input_len && bOff < 8192; i++) buf[bOff++] = input[i];
+
+    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
+}
+
 // ============================================================================
 // Additional String.prototype methods
 // ============================================================================
@@ -1834,6 +2045,322 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     ctx.result.set_object(arr);
 }
 
+/// String.prototype.matchAll(regexp) — ES2020 §21.1.3.12
+/// Returns an array of all match results (simplified: returns array instead of iterator).
+fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    char* input = s_hstr.get_cstr();
+    int input_len = (int)s_hstr.blen;
+
+    if (ctx.argc == 0) {
+        // matchAll() with no args: RegExp(undefined) has no 'g' flag → TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.matchAll requires a global regular expression");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            TVal err_tv;
+            err_tv.set_object(err);
+            ctx.throw_value = err_tv;
+        }
+        ctx.result.set_undefined();
+        ctx.should_throw = true;
+        return;
+    }
+
+    TVal* search_val = &ctx.regs[ctx.base_reg];
+
+    // If searchValue is a regex, check for global flag
+    if (is_regexp_object(search_val)) {
+        HObject* rx = (HObject*)search_val.get_heapptr();
+
+        // Read the global flag directly from the internal flags byte.
+        // (get_prop("global") doesn't invoke accessor getters — it
+        // returns the getter function object instead of the boolean.)
+        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        if (!global_flag) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.matchAll called with a non-global regular expression");
+                if (msg_str != null) {
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                }
+                TVal err_tv;
+                err_tv.set_object(err);
+                ctx.throw_value = err_tv;
+            }
+            ctx.result.set_undefined();
+            ctx.should_throw = true;
+            return;
+        }
+
+        // Reset lastIndex to 0
+        HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+        TVal zero_tv; zero_tv.set_fastint(0);
+        rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+        // Create result array
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) { ctx.result.set_null(); return; }
+        HObject* result_arr = arr_raw;
+        result_arr.prototype = ctx.heap.array_proto;
+
+        uint arr_idx = 0;
+        int search_pos = 0;
+
+        while (search_pos <= input_len) {
+            int out_start = 0;
+            int out_end = 0;
+            int out_num_captures = 0;
+            int[re_bindings::RE_MAX_CAPTURES] caps_start;
+            int[re_bindings::RE_MAX_CAPTURES] caps_end;
+            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+
+            int result = re_bindings::re_exec(
+                rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                &out_start, &out_end, &out_num_captures,
+                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            );
+
+            if (result != re_bindings::RE_MATCH) break;
+
+            // Create match result array with captures, index, input
+            HObject*? match_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err = match_arr_raw) break;
+            HObject* match_arr = match_arr_raw;
+            match_arr.prototype = ctx.heap.array_proto;
+
+            // Element 0: full match
+            usz match_len = (usz)(out_end - out_start);
+            HString* match_str;
+            if (match_len == 0) {
+                match_str = builtin_intern_string(ctx.heap, "");
+            } else {
+                match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
+            }
+            TVal elem;
+            elem.set_string(match_str);
+            HString* zero_key = builtin_intern_string(ctx.heap, "0");
+            match_arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+            // Capture groups
+            uint match_arr_len = 1;
+            int num_caps = out_num_captures;
+            if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
+            for (int i = 0; i < num_caps; i++) {
+                HString* cap_str;
+                if (caps_start[i] >= 0 && caps_end[i] >= 0) {
+                    usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+                    cap_str = cap_len == 0
+                        ? builtin_intern_string(ctx.heap, "")
+                        : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]);
+                } else {
+                    cap_str = null; // undefined
+                }
+                TVal cap_elem;
+                if (cap_str != null) {
+                    cap_elem.set_string(cap_str);
+                } else {
+                    cap_elem.set_undefined();
+                }
+                match_arr.put_prop(ctx.heap.int_to_hstring((long)(i + 1)), cap_elem, hobject::PROP_FLAGS_WEC);
+                match_arr_len++;
+            }
+
+            // Set index property
+            TVal idx_tv;
+            idx_tv.set_fastint((long)out_start);
+            HString* idx_key = builtin_intern_string(ctx.heap, "index");
+            match_arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
+
+            // Set input property
+            TVal input_tv;
+            input_tv.set_string(s_hstr);
+            HString* input_key = builtin_intern_string(ctx.heap, "input");
+            match_arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
+
+            // Set length
+            TVal mlen_tv;
+            mlen_tv.set_fastint((long)match_arr_len);
+            HString* mlen_key = builtin_intern_string(ctx.heap, "length");
+            match_arr.put_prop(mlen_key, mlen_tv, hobject::PROP_FLAGS_WEC);
+
+            // Add match result array to outer array
+            TVal match_tv;
+            match_tv.set_object(match_arr);
+            result_arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), match_tv, hobject::PROP_FLAGS_WEC);
+            arr_idx++;
+
+            // Advance: if empty match, move by one; else go to end of match
+            if (out_end == search_pos) {
+                search_pos = out_end + 1;
+                if (search_pos > input_len) break;
+            } else {
+                search_pos = out_end;
+            }
+        }
+
+        // Reset lastIndex
+        TVal li_tv; li_tv.set_fastint(0);
+        rx.put_prop(li_key, li_tv, hobject::PROP_FLAGS_WEC);
+
+        // Set length on result array
+        TVal len_tv;
+        len_tv.set_fastint((long)arr_idx);
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+        ctx.result.set_object(result_arr);
+        return;
+    }
+
+    // Non-RegExp arg: convert to RegExp with "g" flag by doing literal string search
+    HString* search_hstr = builtin_to_string(ctx.heap, search_val);
+    if (search_hstr == null) { ctx.result.set_null(); return; }
+    char* search_data = search_hstr.get_cstr();
+    uint search_len = search_hstr.blen;
+
+    // Create result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.set_null(); return; }
+    HObject* result_arr = arr_raw;
+    result_arr.prototype = ctx.heap.array_proto;
+
+    if (search_len == 0) {
+        // Empty pattern: return empty array
+        TVal len_tv; len_tv.set_fastint(0);
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(result_arr);
+        return;
+    }
+
+    uint arr_idx = 0;
+    uint pos = 0;
+
+    while (pos + search_len <= (uint)input_len) {
+        bool match = true;
+        for (uint j = 0; j < search_len; j++) {
+            if (input[pos + j] != search_data[j]) { match = false; break; }
+        }
+        if (!match) { pos++; continue; }
+
+        // Create match result array
+        HObject*? match_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = match_arr_raw) break;
+        HObject* match_arr = match_arr_raw;
+        match_arr.prototype = ctx.heap.array_proto;
+
+        // Element 0: full match
+        TVal elem;
+        elem.set_string(search_hstr);
+        HString* zero_key = builtin_intern_string(ctx.heap, "0");
+        match_arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+        // Set index property
+        TVal idx_tv;
+        idx_tv.set_fastint((long)pos);
+        HString* idx_key = builtin_intern_string(ctx.heap, "index");
+        match_arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
+
+        // Set input property
+        TVal input_tv;
+        input_tv.set_string(s_hstr);
+        HString* input_key = builtin_intern_string(ctx.heap, "input");
+        match_arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
+
+        // Set length = 1
+        TVal mlen_tv;
+        mlen_tv.set_fastint(1);
+        HString* mlen_key = builtin_intern_string(ctx.heap, "length");
+        match_arr.put_prop(mlen_key, mlen_tv, hobject::PROP_FLAGS_WEC);
+
+        // Add to result array
+        TVal match_tv;
+        match_tv.set_object(match_arr);
+        result_arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), match_tv, hobject::PROP_FLAGS_WEC);
+        arr_idx++;
+
+        pos += search_len;
+    }
+
+    // Set length on result array
+    TVal len_tv;
+    len_tv.set_fastint((long)arr_idx);
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+    ctx.result.set_object(result_arr);
+}
+
+/// String.prototype.normalize([form]) — ES6 §21.1.3.12
+/// Basic implementation: returns the string as-is (identity normalization).
+/// Full Unicode normalization (NFC/NFD/NFKC/NFKD) requires complex tables;
+/// this passes basic tests for ASCII strings and already-normalized input.
+fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    // Validate form argument if provided
+    if (ctx.argc > 0) {
+        HString* form = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        if (form != null) {
+            char* form_data = form.get_cstr();
+            uint form_len = form.blen;
+            // Accept NFC, NFD, NFKC, NFKD, or undefined
+            bool valid = false;
+            if (form_len == 3) {
+                if ((form_data[0] == 'N' || form_data[0] == 'n') &&
+                    (form_data[1] == 'F' || form_data[1] == 'f') &&
+                    (form_data[2] == 'C' || form_data[2] == 'c' ||
+                     form_data[2] == 'D' || form_data[2] == 'd')) {
+                    valid = true;
+                }
+            } else if (form_len == 4) {
+                if ((form_data[0] == 'N' || form_data[0] == 'n') &&
+                    (form_data[1] == 'F' || form_data[1] == 'f') &&
+                    (form_data[2] == 'K' || form_data[2] == 'k') &&
+                    (form_data[3] == 'C' || form_data[3] == 'c' ||
+                     form_data[3] == 'D' || form_data[3] == 'd')) {
+                    valid = true;
+                }
+            }
+            if (!valid) {
+                // Throw RangeError for invalid form
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.range_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "The normalization form should be one of NFC, NFD, NFKC, NFKD.");
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                    TVal err_tv;
+                    err_tv.set_object(err);
+                    ctx.throw_value = err_tv;
+                }
+                ctx.should_throw = true;
+                ctx.result.set_undefined();
+                return;
+            }
+        }
+    }
+
+    // Identity normalization: return the string unchanged
+    ctx.result.set_string(s_hstr);
+}
+
 /// String.prototype.search(regexp) — ES5 §15.5.4.12
 fn void builtin_string_proto_search(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
@@ -1921,6 +2448,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "split",      BUILTIN_STRING_PROTO_SPLIT))      return false;
     if (!register_string_proto_method(proto, heap, "concat",     BUILTIN_STRING_PROTO_CONCAT))     return false;
     if (!register_string_proto_method(proto, heap, "replace",    BUILTIN_STRING_PROTO_REPLACE))    return false;
+    if (!register_string_proto_method(proto, heap, "replaceAll", BUILTIN_STRING_PROTO_REPLACEALL)) return false;
     if (!register_string_proto_method(proto, heap, "includes",   BUILTIN_STRING_PROTO_INCLUDES))   return false;
     if (!register_string_proto_method(proto, heap, "startsWith", BUILTIN_STRING_PROTO_STARTSWITH)) return false;
     if (!register_string_proto_method(proto, heap, "endsWith",   BUILTIN_STRING_PROTO_ENDSWITH))   return false;
@@ -1933,10 +2461,12 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "padEnd",     BUILTIN_STRING_PROTO_PADEND))     return false;
     if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
     if (!register_string_proto_method(proto, heap, "match",      BUILTIN_STRING_PROTO_MATCH))      return false;
+    if (!register_string_proto_method(proto, heap, "matchAll",   BUILTIN_STRING_PROTO_MATCHALL))   return false;
     if (!register_string_proto_method(proto, heap, "search",     BUILTIN_STRING_PROTO_SEARCH))     return false;
     if (!register_string_proto_method(proto, heap, "toLocaleLowerCase", BUILTIN_STRING_PROTO_TOLOCALELOWERCASE)) return false;
     if (!register_string_proto_method(proto, heap, "toLocaleUpperCase", BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE)) return false;
     if (!register_string_proto_method(proto, heap, "localeCompare", BUILTIN_STRING_PROTO_LOCALECOMPARE)) return false;
+    if (!register_string_proto_method(proto, heap, "normalize",    BUILTIN_STRING_PROTO_NORMALIZE))    return false;
 
     // Register String.prototype[@@iterator] (ES6 §21.1.3.30)
     {

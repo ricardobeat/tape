@@ -3,3 +3,6 @@ duktape
 out/
 quickjs/
 .antigravitycli
+.worktrees/
+worktrees/
+ctest2
