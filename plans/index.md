@@ -23,3 +23,4 @@
 | [022-property-descriptor-correctness.md](022-property-descriptor-correctness.md) | 📋 PENDING | Property descriptor fixes for 2,000–4,000 new passes |
 | [024-fused-opcodes.md](024-fused-opcodes.md) | ✅ DONE | GETPROPC + compare-and-branch fused opcodes; peephole passes; rotated loops (Session 148–149) |
 | 025-callback-error-propagation | ✅ DONE | vm_call_fn_impl Case 3 fix; arr_call_callback error handling; find/findIndex native builtins; print toString (Session 149) |
+| [023-missing-prototype-methods.md](023-missing-prototype-methods.md) | 🔶 PARTIAL | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize added (Session 150); remaining methods TBD |

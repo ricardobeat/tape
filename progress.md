@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 149 (Fix callback execution in vm_call_fn_impl Case 3; find/findIndex builtins)
+**Last Updated:** Session 150 (Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 149, 2026-06-11)
+## Summary (after Session 150, 2026-06-11)
 
 | Metric | Value |
 |---|---|
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 150 | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize | TBD |
 | 149 | Fix vm_call_fn_impl Case 3 callback execution; find/findIndex native builtins; print toString; callback error propagation | TBD |
 | 148 | Env-creation skip (has_closures), IC inline fast path, string-table ref fix | no regression (52.7%) |
 | 147 | Shape benchmark fix (GC skip for RC strings, PUTPROP restructure, alloc_no_gc) | — |
