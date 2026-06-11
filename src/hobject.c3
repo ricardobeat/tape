@@ -819,6 +819,18 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
                 self.array_length = (uint)val.get_number();
             }
         }
+        // Sync numeric-string keys into the dense array part so that both
+        // storage mechanisms (property table and dense array) stay consistent.
+        // Array builtins like push() use set_array_idx() which only writes
+        // to the dense part, while PUTPROP writes to the property table.
+        // Without this sync, code that reads from one cannot see elements
+        // stored via the other path.
+        if (self.flags.exotic_array) {
+            HString* ks = (HString*)key;
+            if (ks.is_arridx()) {
+                self.set_array_idx(ks.arridx, val);
+            }
+        }
         return true;
     }
 
@@ -848,6 +860,15 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             self.array_length = (uint)val.get_fastint();
         } else if (val.is_number()) {
             self.array_length = (uint)val.get_number();
+        }
+    }
+
+    // Sync numeric-string keys into the dense array part (same rationale as
+    // the update-existing path above).
+    if (self.flags.exotic_array) {
+        HString* ks = (HString*)key;
+        if (ks.is_arridx()) {
+            self.set_array_idx(ks.arridx, val);
         }
     }
 

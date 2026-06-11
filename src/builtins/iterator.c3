@@ -240,26 +240,17 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
 
     uint idx = iter.extra.iter.index;
 
-    // Check if done — compare against target.array_used (fast path for arrays)
+    // Check if done — always use .length (cached array_length for ARRAY exotic)
     bool done = false;
     TVal value;
     value.set_undefined();
 
-    if (target.get_class() == hobject::ObjClass.ARRAY && target.array_part() != null) {
-        if (idx >= target.array_used) {
-            done = true;
-        } else {
-            TVal? elem = target.get_array_idx(idx);
-            if (try v = elem) {
-                value = v;
-            } else {
-                value.set_undefined();
-            }
-        }
+    // Get length: use cached array_length for ARRAY exotic, else .length property
+    long len = 0;
+    if (target.get_class() == hobject::ObjClass.ARRAY) {
+        len = (long)target.array_length;
     } else {
-        // Fallback: use .length property
         TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);
-        long len = 0;
         if (try lv = len_val) {
             if (lv.is_fastint()) {
                 len = lv.get_fastint();
@@ -267,10 +258,17 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
                 len = (long)lv.get_number();
             }
         }
-        if ((long)idx >= len) {
-            done = true;
+    }
+
+    if ((long)idx >= len) {
+        done = true;
+    } else {
+        // Try dense array part first, then fall back to property table
+        TVal? elem = target.get_array_idx(idx);
+        if (try v = elem) {
+            value = v;
         } else {
-            // Get element via stringified index key
+            // Not in dense part — try property table via stringified index
             char[32] idx_buf;
             int idx_len = libc::snprintf(&idx_buf[0], 32, "%u", idx);
             uint idx_hash = heap.hash_string(idx_buf[:idx_len]);
@@ -286,9 +284,8 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
                 TVal? elem_val = target.get_prop_proto(idx_str);
                 if (try ev = elem_val) {
                     value = ev;
-                } else {
-                    value.set_undefined();
                 }
+                // else: element is a hole — value stays undefined
             }
         }
     }
