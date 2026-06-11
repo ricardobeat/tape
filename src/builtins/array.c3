@@ -901,6 +901,8 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
                 TVal res = ctx.heap.call_fn(ctx.vm, comparefn, &args[0], 2, this_val);
                 if (ctx.heap.has_error) {
                     ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
                     return;
                 }
                 TVal num;
