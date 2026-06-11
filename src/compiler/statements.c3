@@ -1105,7 +1105,10 @@ fn void? CompilerContext.return_statement(&self) {
     } else {
         ushort val_reg = self.expression()!;
         self.emit_abc(self.is_generator ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
-        self.free_reg(val_reg);
+        // Note: do NOT free_reg(val_reg) here.  The return value register may
+        // be a live local variable (e.g. `return i` inside a for-loop body).
+        // Calling free_reg would let the allocator reuse it for subsequent
+        // code (the loop increment/condition), clobbering the variable.
     }
 
     self.match(TokenType.SEMICOLON);
@@ -1117,7 +1120,7 @@ fn void? CompilerContext.throw_statement(&self) {
 
     ushort val_reg = self.expression()!;
     self.emit_abc(Opcode.THROW, (uint)val_reg, 0, 0);
-    self.free_reg(val_reg);
+    // Note: do NOT free_reg(val_reg) here, same reason as return_statement.
 
     self.match(TokenType.SEMICOLON);
 }

@@ -829,6 +829,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             HString* ks = (HString*)key;
             if (ks.is_arridx()) {
                 self.set_array_idx(ks.arridx, val);
+                if (ks.arridx >= self.array_length) {
+                    self.array_length = ks.arridx + 1;
+                }
             }
         }
         return true;
@@ -869,6 +872,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         HString* ks = (HString*)key;
         if (ks.is_arridx()) {
             self.set_array_idx(ks.arridx, val);
+            if (ks.arridx >= self.array_length) {
+                self.array_length = ks.arridx + 1;
+            }
         }
     }
 
