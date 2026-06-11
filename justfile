@@ -55,16 +55,40 @@ run file="test/simple.js":
     @test -f out/test_vm && echo "need: c3c build test_vm" ; c3c build test_vm 2>/dev/null || true
     ./out/test_vm {{file}}
 
+# ── Rosetta Code ─────────────────────────────────────────────────────────────
+
+# Run Rosetta Code tests on duktape-c3 (rebuilds first)
+rosetta:
+    c3c build duktape_c3
+    bash test/rosetta/run.sh ./out/duktape_c3
+
+# Run Rosetta Code tests on QuickJS
+rosetta-qjs:
+    bash test/rosetta/run.sh qjs
+
+# Run Rosetta Code tests on original Duktape (builds if needed)
+rosetta-orig:
+    @test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+    bash test/rosetta/run.sh ./out/duktape_orig
+
+# Run Rosetta Code tests on all engines and compare
+rosetta-all:
+    @c3c build duktape_c3 2>/dev/null
+    @test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+    bash test/rosetta/run.sh ./out/duktape_c3
+    bash test/rosetta/run.sh ./out/duktape_orig
+    @command -v qjs >/dev/null 2>&1 && bash test/rosetta/run.sh qjs || echo "qjs not found, skipping"
+
 # ── Test262 ──────────────────────────────────────────────────────────────────
 
 # Run full test262 suite
 test262:
-    @test -f out/batch_test_vm || c3c build batch_test_vm 2>/dev/null || { echo "Build failed — source may have errors"; exit 1; }
+    c3c build batch_test_vm
     python3 scripts/run_test262.py
 
 # Run a specific test262 phase (`just test262-phase 2`)
 test262-phase phase="0":
-    @test -f out/batch_test_vm || c3c build batch_test_vm 2>/dev/null || { echo "Build failed — source may have errors"; exit 1; }
+    c3c build batch_test_vm
     python3 scripts/run_test262.py --phase {{phase}}
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
