@@ -2181,13 +2181,17 @@ fn TVal? Vm.run(Vm* vm) {
                                 long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
                                 if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
                                     b.prop_values()[vic.prop_idx].data.value.set_fastint(v);
+                                    ra.set_fastint(v);
                                 } else {
                                     b.prop_values()[vic.prop_idx].data.value.set_number((double)v);
+                                    ra.set_number((double)v);
                                 }
                             } else {
                                 double d = vm_to_number(vm,&old_val);
                                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
-                                b.prop_values()[vic.prop_idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
+                                double new_d = d + (is_inc ? 1.0 : -1.0);
+                                b.prop_values()[vic.prop_idx].data.value.set_number(new_d);
+                                ra.set_number(new_d);
                             }
                             break;
                         }
@@ -2262,13 +2266,17 @@ fn TVal? Vm.run(Vm* vm) {
                         long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
                         if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
                             cur.bindings.prop_values()[idx].data.value.set_fastint(v);
+                            ra.set_fastint(v);
                         } else {
                             cur.bindings.prop_values()[idx].data.value.set_number((double)v);
+                            ra.set_number((double)v);
                         }
                     } else {
                         double d = vm_to_number(vm,&old_val);
                         if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
-                        cur.bindings.prop_values()[idx].data.value.set_number(d + (is_inc ? 1.0 : -1.0));
+                        double new_d = d + (is_inc ? 1.0 : -1.0);
+                        cur.bindings.prop_values()[idx].data.value.set_number(new_d);
+                        ra.set_number(new_d);
                     }
                     found = true;
                     ic_env = cur;
@@ -2297,6 +2305,7 @@ fn TVal? Vm.run(Vm* vm) {
                             new_val.set_number(d + (is_inc ? 1.0 : -1.0));
                         }
                         env::env_put(act.var_env, key, new_val);
+                        vm.heap.tval_copy_ref(ra, &new_val);
                         found = true;
                     }
                 }

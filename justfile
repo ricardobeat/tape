@@ -58,26 +58,8 @@ run file="test/simple.js":
 # ── Rosetta Code ─────────────────────────────────────────────────────────────
 
 # Run Rosetta Code tests on duktape-c3 (rebuilds first)
-rosetta:
-    c3c build duktape_c3
-    bash test/rosetta/run.sh ./out/duktape_c3
-
-# Run Rosetta Code tests on QuickJS
-rosetta-qjs:
-    bash test/rosetta/run.sh qjs
-
-# Run Rosetta Code tests on original Duktape (builds if needed)
-rosetta-orig:
-    @test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
-    bash test/rosetta/run.sh ./out/duktape_orig
-
-# Run Rosetta Code tests on all engines and compare
-rosetta-all:
-    @c3c build duktape_c3 2>/dev/null
-    @test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
-    bash test/rosetta/run.sh ./out/duktape_c3
-    bash test/rosetta/run.sh ./out/duktape_orig
-    @command -v qjs >/dev/null 2>&1 && bash test/rosetta/run.sh qjs || echo "qjs not found, skipping"
+rosetta engine="duktape_c3": 
+   timeout -p -k 2 2 bash test/rosetta/run.sh ./out/{{engine}}
 
 # ── Test262 ──────────────────────────────────────────────────────────────────
 

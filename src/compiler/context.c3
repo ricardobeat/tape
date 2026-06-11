@@ -315,7 +315,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                     if (name0 == name2 && name0 < self.const_count) {
                         Opcode fused = (op1 == Opcode.INC) ? Opcode.INC_VAR : Opcode.DEC_VAR;
                         self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
-                        self.code[i + 1] = bytecode::make_a_bc(fused, 0, name0);
+                        self.code[i + 1] = bytecode::make_a_bc(fused, reg_a, name0);
                         self.code[i + 2] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
                     }
                 }

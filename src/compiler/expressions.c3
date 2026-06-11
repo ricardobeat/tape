@@ -133,7 +133,8 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                     && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                     // Replace the GETVAR with INC_VAR: 1 instruction instead of 3
                     uint name_idx = self.code[self.code_count - 1].get_bc();
-                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, 0, name_idx);
+                    uint getvar_reg = self.code[self.code_count - 1].a;
+                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, getvar_reg, name_idx);
                 } else {
                     self.emit_abc(Opcode.INC, (uint)left, 0, 0);
                     if (lhs_was_getvar) {
@@ -147,7 +148,8 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 if (lhs_was_getvar && self.code_count > 0
                     && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                     uint name_idx = self.code[self.code_count - 1].get_bc();
-                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, 0, name_idx);
+                    uint getvar_reg = self.code[self.code_count - 1].a;
+                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, getvar_reg, name_idx);
                 } else {
                     self.emit_abc(Opcode.DEC, (uint)left, 0, 0);
                     if (lhs_was_getvar) {
@@ -565,7 +567,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
                 && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                 // Replace GETVAR with INC_VAR: 1 dispatch instead of 3
                 uint name_idx = self.code[self.code_count - 1].get_bc();
-                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, 0, name_idx);
+                uint getvar_reg = self.code[self.code_count - 1].a;
+                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, getvar_reg, name_idx);
             } else {
                 self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
                 if (inc_was_getvar) {
@@ -583,7 +586,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
             if (dec_was_getvar && self.code_count > 0
                 && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                 uint name_idx = self.code[self.code_count - 1].get_bc();
-                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, 0, name_idx);
+                uint getvar_reg = self.code[self.code_count - 1].a;
+                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.DEC_VAR, getvar_reg, name_idx);
             } else {
                 self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
                 if (dec_was_getvar) {
