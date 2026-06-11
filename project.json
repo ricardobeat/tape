@@ -7,7 +7,7 @@
     "duktape_c3": {
       "type": "executable",
       "sources": [ "src", "benchmarks/duktape_c3.c3" ],
-      "opt": "O2",
+      "opt": "Os",
       "fp-math": "relaxed"
     },
     "lib": {
@@ -17,12 +17,12 @@
     "test_vm": {
       "type": "executable",
       "sources": [ "src", "test_vm_runner/test_vm.c3" ],
-      "opt": "O2"
+      "opt": "Os"
     },
     "batch_test_vm": {
       "type": "executable",
       "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
-      "opt": "O2"
+      "opt": "Os"
     },
     "test_prop": {
       "type": "executable",
