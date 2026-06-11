@@ -837,6 +837,9 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
                 if (arg_reg != expected) {
                     self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
                     self.free_reg(arg_reg);
+                    if (self.next_reg <= expected) {
+                        self.next_reg = expected + 1;
+                    }
                 }
                 arg_count++;
             }
@@ -1536,10 +1539,13 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     for (;;) {
                         ushort arg_reg = self.assignment_expr()!;
                         ushort expected = first_arg + arg_count;
-                        if (arg_reg != expected) {
-                            self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
-                            self.free_reg(arg_reg);
-                        }
+                if (arg_reg != expected) {
+                    self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                    self.free_reg(arg_reg);
+                    if (self.next_reg <= expected) {
+                        self.next_reg = expected + 1;
+                    }
+                }
                         arg_count++;
                         if (!self.match(TokenType.COMMA)) {
                             break;
