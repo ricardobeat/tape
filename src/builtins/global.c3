@@ -13,12 +13,48 @@ import duktape::hobject;
 import duktape::heap;
 import duktape::env;
 
+/// Print a single TVal using proper JS ToString coercion.
+/// For objects, looks up and calls the object's toString() method via call_fn
+/// so that Array.prototype.toString (join with commas), Date.prototype.toString,
+/// and user-defined toString() all work correctly.
+fn void print_tval_ctx(BuiltinContext* ctx, TVal* val) {
+    if (val.is_object() && val.get_heapptr() != null && ctx.vm != null && ctx.heap.call_fn != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
+        // Look up toString on the object (searches prototype chain)
+        HString* tostr_key = builtin_intern_string(ctx.heap, "toString");
+        if (tostr_key != null) {
+            if (try method_val = obj.get_prop_proto(tostr_key)) {
+                if (method_val.is_object() || method_val.is_lightfunc()) {
+                    TVal str_result = ctx.heap.call_fn(ctx.vm, method_val, null, 0, *val);
+                    if (str_result.is_string()) {
+                        HString* s = (HString*)str_result.get_heapptr();
+                        if (s != null) {
+                            char[] d = s.get_data();
+                            for (usz j = 0; j < d.len; j++) io::putchar(d[j]);
+                            return;
+                        }
+                    }
+                    // toString returned a non-string primitive — fall through to print_tval
+                    if (!str_result.is_object()) {
+                        print_tval(&str_result);
+                        return;
+                    }
+                }
+            }
+        }
+        // No callable toString found — fall back to generic "[object Object]"
+        io::printf("[object Object]");
+        return;
+    }
+    print_tval(val);
+}
+
 fn void builtin_print(BuiltinContext* ctx) {
     for (ushort i = 0; i < ctx.argc; i++) {
         if (i > 0) {
             io::putchar(' ');
         }
-        print_tval(&ctx.regs[ctx.base_reg + i]);
+        print_tval_ctx(ctx, &ctx.regs[ctx.base_reg + i]);
     }
     io::putchar('\n');
     ctx.result.set_undefined();
@@ -29,7 +65,7 @@ fn void builtin_console_log(BuiltinContext* ctx) {
         if (i > 0) {
             io::putchar(' ');
         }
-        print_tval(&ctx.regs[ctx.base_reg + i]);
+        print_tval_ctx(ctx, &ctx.regs[ctx.base_reg + i]);
     }
     io::putchar('\n');
     ctx.result.set_undefined();

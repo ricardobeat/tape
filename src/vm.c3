@@ -1549,31 +1549,27 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
         HObject* hobj = (HObject*)func.get_heapptr();
         if (hobj != null && hobj.is_callable() && hobj.extra.func.comp_func != null) {
             CompiledFunction* target = hobj.extra.func.comp_func;
+            uint nregs = target.num_regs;
 
-            // Save current VM state
+            // Grow the valstack first (while activation_count is still the
+            // caller's, so ensure_valstack_grow relocates all live pointers).
+            // The callback frame is placed at the current valstack_top, above
+            // all live caller registers — they are never touched.
+            if (!ensure_valstack(vm, nregs)) {
+                return undef;
+            }
+
+            // Save current VM state (after potential realloc)
             uint saved_act_count = vm.activation_count;
             TVal* saved_valstack_bottom = vm.valstack_bottom;
             TVal* saved_valstack_top = vm.valstack_top;
             TVal* saved_valstack = vm.valstack;
-            uint saved_valstack_size = vm.valstack_size;
-            TVal* saved_valstack_end = vm.valstack_end;
             CompiledFunction* saved_current_func = vm.current_func;
 
             Activation[MAX_CALLS] saved_acts;
             libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
 
-            // Save valstack content
-            uint used_slots = 0;
-            if (saved_valstack_top > saved_valstack) {
-                used_slots = (uint)((usz)saved_valstack_top - (usz)saved_valstack) / (uint)TVal::size;
-            }
-            TVal* saved_content = null;
-            if (used_slots > 0) {
-                saved_content = (TVal*)libc::malloc(used_slots * TVal::size);
-                if (saved_content != null) {
-                    libc::memcpy(saved_content, saved_valstack, used_slots * TVal::size);
-                }
-            }
+            TVal* frame = vm.valstack_top;
 
             // Set up activation[0] for the function
             Activation* act = &vm.activations[0];
@@ -1586,28 +1582,26 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.lex_env = cfn_var_env;
             act.cat = null;
             act.curr_pc = target.code;
-            act.bottom = vm.valstack;
+            act.bottom = frame;
             act.retval = null;
             act.flags = ACT_FLAG_STRICT;
-            vm.heap.tval_copy_ref(&act.this_binding, &this_val);
+            act.max_heap_reg = 0;
+            act.caller_valstack_top = frame + nregs;
+            // Raw assign: this_val is kept alive by the caller for the duration
+            // of the call; the previous activation[0].this_binding bits are
+            // restored verbatim below, so refcounts stay balanced.
+            act.this_binding = this_val;
 
-            // Allocate value stack for function
-            uint nregs = target.num_regs;
-            if (!ensure_valstack(vm, nregs)) {
-                if (saved_content != null) libc::free(saved_content);
-                return undef;
-            }
-
-            // Initialize registers and copy args
+            // Initialize registers and copy args (slots are fresh — raw init)
             for (uint i = 0; i < nregs; i++) {
-                vm.valstack[i].set_undefined();
+                frame[i].set_undefined();
             }
             uint copy_n = nargs < nregs ? nargs : nregs;
             for (uint i = 0; i < copy_n; i++) {
-                vm.heap.tval_copy_ref(&vm.valstack[i], &args[i]);
+                vm.heap.tval_copy_ref(&frame[i], &args[i]);
             }
-            vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
-            vm.valstack_bottom = vm.valstack;
+            vm.valstack_top = frame + nregs;
+            vm.valstack_bottom = frame;
             vm.current_func = target;
 
             // Create arguments object if the function references 'arguments'
@@ -1616,7 +1610,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 if (try args_obj = args_obj_raw) {
                     // Store arguments in dense array_part (avoids O(argc) string key allocs)
                     for (uint ai = 0; ai < nargs; ai++) {
-                        args_obj.set_array_idx(ai, vm.valstack[ai]);
+                        args_obj.set_array_idx(ai, frame[ai]);
                     }
                     // No own .length property — handled via exotic_arguments fast path in GETPROP
                     args_obj.prototype = null;
@@ -1639,28 +1633,30 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 result = vm.return_val;
             }
 
-            // Capture potentially-reallocated valstack pointer
-            TVal* cur_valstack = vm.valstack;
-            uint cur_valstack_size = vm.valstack_size;
-            TVal* cur_valstack_end = vm.valstack_end;
+            // If the nested run reallocated the valstack, relocate the saved
+            // absolute pointers by the same delta (the saved snapshot was not
+            // covered by ensure_valstack_grow's relocation pass).
+            long reloc = (char*)vm.valstack - (char*)saved_valstack;
+            if (reloc != 0) {
+                saved_valstack_bottom = (TVal*)((char*)saved_valstack_bottom + reloc);
+                saved_valstack_top = (TVal*)((char*)saved_valstack_top + reloc);
+                for (uint i = 0; i < saved_act_count; i++) {
+                    saved_acts[i].bottom = (TVal*)((char*)saved_acts[i].bottom + reloc);
+                    if (saved_acts[i].retval != null) {
+                        saved_acts[i].retval = (TVal*)((char*)saved_acts[i].retval + reloc);
+                    }
+                    if (saved_acts[i].caller_valstack_top != null) {
+                        saved_acts[i].caller_valstack_top = (TVal*)((char*)saved_acts[i].caller_valstack_top + reloc);
+                    }
+                }
+            }
 
-            // Restore VM state
+            // Restore VM state (caller registers were never touched)
             vm.activation_count = saved_act_count;
             vm.current_func = saved_current_func;
             libc::memcpy(&vm.activations, &saved_acts, saved_act_count * Activation::size);
             vm.valstack_bottom = saved_valstack_bottom;
             vm.valstack_top = saved_valstack_top;
-            vm.valstack = cur_valstack;
-            vm.valstack_size = cur_valstack_size;
-            vm.valstack_end = cur_valstack_end;
-
-            // Restore valstack content
-            if (saved_content != null) {
-                if (used_slots <= cur_valstack_size) {
-                    libc::memcpy(cur_valstack, saved_content, used_slots * TVal::size);
-                }
-                libc::free(saved_content);
-            }
 
             // Drain microtasks after callback execution
             vm.heap.drain_microtasks((void*)vm);
@@ -1712,6 +1708,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     }
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
     vm.valstack_bottom = vm.valstack;
+    // The top-level activation has no caller, but caller_valstack_top must be
+    // set to a valid value so that RET restoring back to this activation
+    // (after a compiled callee returns) doesn't corrupt vm.valstack_top.
+    entry_act.caller_valstack_top = vm.valstack_top;
 
     vm.current_func = func;
 
@@ -4133,9 +4133,10 @@ fn TVal? Vm.run(Vm* vm) {
                         break;
                     }
 
-                    // Clear the 'this' slot before env creation so the GC
-                    // valstack scan doesn't follow a stale object pointer left
-                    // over from a previous call in the sliding-window model.
+                    // Save the 'this' value before clearing the slot, so that GC
+                    // during env creation doesn't follow a stale object pointer
+                    // from a previous call in the sliding-window model.
+                    TVal saved_this = regs_base[callee_reg + 1];
                     regs_base[callee_reg + 1].set_undefined();
 
                     Activation* new_act = &vm.activations[vm.activation_count];
@@ -4161,13 +4162,13 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.curr_pc = target_fast.code;
                     new_act.bottom = new_bottom;
                     new_act.retval = regs_base + result_reg;
-                    new_act.flags = ACT_FLAG_STRICT;
+                    new_act.flags = target_fast.is_strict() ? ACT_FLAG_STRICT : 0;
                     new_act.max_heap_reg = 0;
                     new_act.caller_valstack_top = vm.valstack_top;
                     // Arrow functions use lexical this (inherited from enclosing scope)
                     // Fast path: skip refcounting when this value is not a heap ref
                     {
-                        TVal* this_src = target_fast.is_arrow() ? &act.this_binding : &regs_base[callee_reg + 1];
+                        TVal* this_src = target_fast.is_arrow() ? &act.this_binding : &saved_this;
                         if (!this_src.is_heap_allocated()) {
                             if (new_act.this_binding.is_heap_allocated()) {
                                 vm.heap.decref_tval(&new_act.this_binding);
@@ -5599,6 +5600,14 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
             TVal* callee_result = callee_act.retval;
 
+            // Protect the return value: if its only reference lives in a
+            // callee register, decref_callee_regs below would free it.
+            bool val_pinned = false;
+            if (val.is_heap_allocated() && val.get_heapptr() != null) {
+                ((HeapHeader*)val.get_heapptr()).incref();
+                val_pinned = true;
+            }
+
             // Decref callee registers before popping
             decref_callee_regs(vm, callee_act);
 
@@ -5606,6 +5615,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             if (vm.activation_count == 0) {
                 vm.heap.tval_copy_ref(&vm.return_val, &val);
+                if (val_pinned) vm.heap.decref_tval(&val);
                 return vm.return_val;
             }
             // Write return value to caller's result register
@@ -5624,11 +5634,17 @@ fn TVal? Vm.run(Vm* vm) {
                             vm.heap.decref_tval(callee_result);
                         }
                         *callee_result = val;
+                    } else if (val_pinned) {
+                        // Transfer the pin reference: decref dst, raw write.
+                        vm.heap.decref_tval(callee_result);
+                        *callee_result = val;
+                        val_pinned = false;
                     } else {
                         vm.heap.tval_copy_ref(callee_result, &val);
                     }
                 }
             }
+            if (val_pinned) vm.heap.decref_tval(&val);
             // Restore caller state inline — skip outer loop restart.
             act = &vm.activations[vm.activation_count - 1];
             vm.valstack_bottom = act.bottom;
@@ -6626,7 +6642,6 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         default:
-            io::eprintfn("Unknown opcode: %d", op.ordinal);
             return VM_ERROR~;
         }
     }
