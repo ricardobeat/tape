@@ -1019,6 +1019,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         // Apply toJSON + replacer
         bool omit = false;
         elem = json_check_property(jctx, idx_key, elem, holder, &omit);
+        if (jctx.error) return -1;
 
         if (!first) {
             if (jctx.offset >= jctx.buf_size) return -1;
@@ -1190,8 +1191,9 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
 
 /// JSON.stringify(value [, replacer [, space]]) — ES5 §15.12.3
 fn void builtin_json_stringify(BuiltinContext* ctx) {
-    // Clear any stale error flag
+    // Clear any stale error flag and value
     ctx.heap.has_error = false;
+    ctx.heap.error_value.set_undefined();
     // Get the value
     if (ctx.argc < 1) {
         ctx.result.set_undefined();

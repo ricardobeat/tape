@@ -6454,6 +6454,13 @@ fn TVal? Vm.run(Vm* vm) {
                 // Clear thrown value
                 cat.thrown_val.set_undefined();
 
+                // Clear VM-level error flags — the throw has been caught.
+                // Without this, a phantom vm.has_error from a deep throw
+                // persists and causes phantom errors in subsequent call_fn
+                // invocations (e.g., ToPrimitive valueOf/toString).
+                vm.has_error = false;
+                vm.heap.has_error = false;
+
                 // If no finally handler, pop the catcher now.
                 // If there IS a finally, keep the catcher on the chain so that
                 // re-throws in the catch block are handled by the finally handler.
