@@ -1040,6 +1040,13 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 271: return { "[Symbol.iterator]", 0 };
         case 272: return { "[Symbol.iterator]", 0 };
         case 285: return { "from", 1 };
+        case 291: return { "forEach", 1 };
+        case 292: return { "map", 1 };
+        case 293: return { "filter", 1 };
+        case 294: return { "every", 1 };
+        case 295: return { "some", 1 };
+        case 296: return { "reduce", 1 };
+        case 297: return { "reduceRight", 1 };
         default: return { "", -1 };
     }
 }

@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 150 (Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize, DECLVAR IC)
+**Last Updated:** Session 151 (test262 conformance fixes: error propagation, sloppy-mode writes, metadata, seal/freeze, global this)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 150, 2026-06-11)
+## Summary (after Session 151, 2026-06-11)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~10,978 |
-| Currently failing (phases 0-8) | ~9,586 |
-| Pass rate (phases 0-8 only) | ~53.4% |
-| Overall pass rate | 52.7% |
+| Currently passing (phases 0-8) | ~11,120 |
+| Currently failing (phases 0-8) | ~9,440 |
+| Pass rate (phases 0-8 only) | ~54.1% |
+| Overall pass rate | 53.4% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 518 | 370 | 1,297 |
-| 1: Calling Convention | 426 | 38 | 50 | 338 |
-| 2: Basic Operators | 1,969 | 884 | 260 | 825 |
-| 3: Object System | 7,766 | 3,189 | 2,610 | 1,967 |
-| 4: Error Handling | 402 | 98 | 103 | 201 |
-| 5: Built-in Constructors | 8,615 | 3,703 | 3,387 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,712 | 2,065 | 936 |
-| 7: ES5 Features | 1,240 | 168 | 125 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 668 | 616 | 1,463 |
-| 11: Arrow/Templates | 427 | 56 | 47 | 324 |
+| 0-1: Core VM | 2,185 | 530 | 358 | 1,297 |
+| 1: Calling Convention | 426 | 40 | 48 | 338 |
+| 2: Basic Operators | 1,969 | 880 | 264 | 825 |
+| 3: Object System | 7,766 | 3,120 | 2,679 | 1,967 |
+| 4: Error Handling | 402 | 100 | 101 | 201 |
+| 5: Built-in Constructors | 8,615 | 3,702 | 3,388 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,632 | 2,145 | 936 |
+| 7: ES5 Features | 1,240 | 176 | 117 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 739 | 545 | 1,463 |
+| 11: Arrow/Templates | 427 | 58 | 45 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 5 | 27 | 719 |
-| 15: Classes | 8,520 | 63 | 199 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 275 | 365 | 974 |
+| 14: for-of | 751 | 4 | 28 | 719 |
+| 15: Classes | 8,520 | 64 | 198 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 273 | 367 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Benchmark Summary
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 151 | Fix arr_throw_type_error error propagation; sloppy-mode PUTPROP silent discard; Array.prototype callback .length metadata; Object.seal/freeze non-objects; global `this` binding | +142 |
 | 150 | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize; DECLVAR inline cache | TBD |
 | 149 | Fix vm_call_fn_impl Case 3 callback execution; find/findIndex native builtins; print toString; callback error propagation | TBD |
 | 148 | Env-creation skip (has_closures), IC inline fast path, string-table ref fix | no regression (52.7%) |

@@ -1693,7 +1693,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.flags = func.is_strict() ? ACT_FLAG_STRICT : 0;
 
     TVal this_val;
-    this_val.set_undefined();
+    if (func.is_strict()) {
+        this_val.set_undefined();
+    } else {
+        this_val.set_object(vm.global_env.bindings);
+    }
     vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
 
     // Allocate value stack slots for the function (nregs = total register count)
@@ -3577,22 +3581,23 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                             }
                         } else if (!exist_flags.writable) {
-                            // Non-writable data property — TypeError in strict mode
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "Cannot assign to read only property");
-                                TVal msg_tv;
-                                msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            if (act.flags & ACT_FLAG_STRICT) {
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.type_err_proto;
+                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                    HString* msg_val = intern_string(vm, "Cannot assign to read only property");
+                                    TVal msg_tv;
+                                    msg_tv.set_string(msg_val);
+                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
+                                } else {
                                     return VM_ERROR~;
                                 }
-                            } else {
-                                return VM_ERROR~;
                             }
                             break;
                         } else {

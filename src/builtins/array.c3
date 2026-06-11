@@ -1877,17 +1877,19 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
 }
 
 /// Helper: throw TypeError with a message.
-fn void arr_throw_type_error(Heap* heap, char[] msg) {
-    HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+fn void arr_throw_type_error(BuiltinContext* ctx, char[] msg) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
-        err.prototype = heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(heap, msg);
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
         if (msg_str != null) {
             TVal msg_val;
             msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(heap, "message");
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
     }
 }
 
@@ -1924,11 +1926,11 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
 }
 
 /// Helper: check if callback is callable, throw TypeError if not.
-fn bool arr_check_callback(TVal val, Heap* heap) {
+fn bool arr_check_callback(TVal val, BuiltinContext* ctx) {
     if (val.is_object() && val.get_heapptr() != null && ((HObject*)val.get_heapptr()).is_callable()) {
         return true;
     }
-    arr_throw_type_error(heap, "callback is not a function");
+    arr_throw_type_error(ctx, "callback is not a function");
     return false;
 }
 
@@ -1955,12 +1957,12 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -1983,12 +1985,12 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2024,12 +2026,12 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2069,12 +2071,12 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2103,12 +2105,12 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2137,12 +2139,12 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2169,12 +2171,12 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
@@ -2201,12 +2203,12 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len = array_get_length(o, ctx.heap);
@@ -2220,8 +2222,8 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
         has_acc = false;
         while (k < len && !arr_has_prop(o, k, ctx.heap)) { k++; }
         if (k >= len) {
-            arr_throw_type_error(ctx.heap, "Reduce of empty array with no initial value");
-            ctx.result.set_undefined(); ctx.should_throw = true; return;
+            arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
+            return;
         }
         arr_get_elem(o, k, ctx.heap, &acc);
         has_acc = true;
@@ -2257,18 +2259,18 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject*? o_raw = arr_to_object(this_val, ctx.heap);
     if (catch err = o_raw) {
-        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
     }
     HObject* o = o_raw;
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len = array_get_length(o, ctx.heap);
     if (len == 0 && ctx.argc < 2) {
-        arr_throw_type_error(ctx.heap, "Reduce of empty array with no initial value");
-        ctx.result.set_undefined(); ctx.should_throw = true; return;
+        arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
+        return;
     }
     int k = (len > 0) ? (int)len - 1 : 0;
     TVal acc;
@@ -2280,8 +2282,8 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         has_acc = false;
         while (k >= 0 && !arr_has_prop(o, (uint)k, ctx.heap)) { k--; }
         if (k < 0) {
-            arr_throw_type_error(ctx.heap, "Reduce of empty array with no initial value");
-            ctx.result.set_undefined(); ctx.should_throw = true; return;
+            arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
+            return;
         }
         arr_get_elem(o, (uint)k, ctx.heap, &acc);
         has_acc = true;
