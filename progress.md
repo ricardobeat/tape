@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 148 (Env creation skip + IC optimization + string table fix)
+**Last Updated:** Session 149 (Fix callback execution in vm_call_fn_impl Case 3; find/findIndex builtins)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 148, 2026-06-11)
+## Summary (after Session 149, 2026-06-11)
 
 | Metric | Value |
 |---|---|
@@ -69,6 +69,8 @@ These were major failure categories, now fixed:
 4. **Class features** (~500+ tests) — private fields/methods, static blocks, class expression edge cases.
 5. **Promise microtask scheduling** (~100+ tests) — async resolution order not implemented.
 6. **Nested call_fn error propagation** (~50 tests) — valueOf/toString throws still swallowed in some paths.
+   ~~valueOf/toString throws still swallowed in some paths.~~ Fixed: vm_call_fn_impl Case 3 callback
+   error propagation now works (arr_call_callback checks heap.has_error → ctx.should_throw).
 
 ## Deferred Items
 
@@ -76,7 +78,7 @@ These were major failure categories, now fixed:
 - Private class fields/methods
 - Nested/advanced destructuring patterns
 - Reflect, Proxy
-- Error propagation from nested call_fn
+- Error propagation from nested call_fn — **partially fixed** (array callbacks now propagate; remaining: sort comparator, JSON replacer, etc.)
 - Number wrapper valueOf() returns NaN for non-fastint
 
 ## Test Infrastructure
@@ -90,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 149 | Fix vm_call_fn_impl Case 3 callback execution; find/findIndex native builtins; print toString; callback error propagation | TBD |
 | 148 | Env-creation skip (has_closures), IC inline fast path, string-table ref fix | no regression (52.7%) |
 | 147 | Shape benchmark fix (GC skip for RC strings, PUTPROP restructure, alloc_no_gc) | — |
 | 146 | String RC rebased on delta shapes (plans 016/017/018) | — |
