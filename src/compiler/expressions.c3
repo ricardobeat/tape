@@ -65,48 +65,64 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     switch (tt) {
         case TokenType.ASSIGN:
             is_assign = true;
+            break;
         case TokenType.PLUS_ASSIGN:
             is_compound = true;
             compound_op = Opcode.ADD;
+            break;
         case TokenType.MINUS_ASSIGN:
             is_compound = true;
             compound_op = Opcode.SUB;
+            break;
         case TokenType.STAR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.MUL;
+            break;
         case TokenType.SLASH_ASSIGN:
             is_compound = true;
             compound_op = Opcode.DIV;
+            break;
         case TokenType.PERCENT_ASSIGN:
             is_compound = true;
             compound_op = Opcode.MOD;
+            break;
         case TokenType.STARSTAR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.EXP;
+            break;
         case TokenType.SHL_ASSIGN:
             is_compound = true;
             compound_op = Opcode.SHL;
+            break;
         case TokenType.SHR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.SHR;
+            break;
         case TokenType.USHR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.USHR;
+            break;
         case TokenType.BIT_AND_ASSIGN:
             is_compound = true;
             compound_op = Opcode.BAND;
+            break;
         case TokenType.BIT_OR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.BOR;
+            break;
         case TokenType.BIT_XOR_ASSIGN:
             is_compound = true;
             compound_op = Opcode.BXOR;
+            break;
         case TokenType.LOG_AND_ASSIGN:
             is_logical_and_assign = true;
+            break;
         case TokenType.LOG_OR_ASSIGN:
             is_logical_or_assign = true;
+            break;
         case TokenType.NULLISH_ASSIGN:
             is_nullish_assign = true;
+            break;
         default:
             return left;
     }
@@ -276,9 +292,22 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     }
 
     if (is_compound) {
-        // Compound assignment: left op= right => left = left op right
-        self.emit_abc(compound_op, (uint)left, (uint)left, (uint)right);
+        // Compound assignment: left op= right => left = left op right.
+        // When left is a local variable register, copy to a temp first so
+        // the arithmetic op doesn't use the same register as both source
+        // and destination (which can cause register corruption).
+        ushort result_reg = left;
+        if (!lhs_was_getvar && !lhs_was_member) {
+            ushort tmp = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+            result_reg = tmp;
+        }
+        self.emit_abc(compound_op, (uint)result_reg, (uint)result_reg, (uint)right);
         self.free_reg(right);
+        if (!lhs_was_getvar && !lhs_was_member) {
+            self.emit_abc(Opcode.LDREG, (uint)left, (uint)result_reg, 0);
+            self.free_reg(result_reg);
+        }
         // If LHS was resolved via GETVAR, write back to environment
         if (lhs_was_getvar) {
             self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
