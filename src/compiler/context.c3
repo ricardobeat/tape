@@ -873,7 +873,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Functions with var declarations but no closures, eval, or arguments
     // can reuse the parent's env directly.
     bool has_params_needing_env = self.has_rest || self.default_count > 0;
-    bool needs_runtime_env = (self.has_local_bindings && self.has_closures)
+    bool needs_runtime_env = ((self.has_local_bindings || self.num_args > 0) && self.has_closures)
                           || self.uses_arguments
                           || self.has_direct_eval;
     bool can_skip_env = !needs_runtime_env
