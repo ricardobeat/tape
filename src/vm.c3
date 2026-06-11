@@ -6105,7 +6105,52 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal name_val = constants[bc];
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
+
+                    // --- VarIC fast path: skip find_prop_idx on repeat calls ---
+                    if (var_ic_base != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::VarICEntry* vic = var_ic_base + pc_off;
+                        if (vic.env == (void*)act.var_env && vic.key == key) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b != null && b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                // Direct write — skip find_prop_idx + put_prop overhead
+                                PropValue* pv = &b.prop_values()[vic.prop_idx];
+                                if (b.heap_ptr != null && pv.data.value.is_string()) {
+                                    ((heap::Heap*)b.heap_ptr).decref_tval(&pv.data.value);
+                                }
+                                pv.data.value = *ra;
+                                if (b.heap_ptr != null && ra.is_string()) {
+                                    void* ptr = ra.get_heapptr();
+                                    if (ptr != null) ((types::HeapHeader*)ptr).incref();
+                                }
+                                break;
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path: full env_declare ---
                     env::env_declare(act.var_env, key, *ra);
+
+                    // Populate VarIC for next time
+                    if (var_ic_base != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::VarICEntry* vic = var_ic_base + pc_off;
+                        HObject* b = act.var_env.bindings;
+                        if (b != null) {
+                            int idx = b.find_prop_idx(key);
+                            if (idx >= 0) {
+                                vic.env = (void*)act.var_env;
+                                vic.bindings = (void*)b;
+                                vic.shape_id = b.shape_id;
+                                vic.generation = vm.heap.shapes[b.shape_id].generation;
+                                vic.prop_idx = (ushort)idx;
+                                vic.key = key;
+                                vic.search_head = null;
+                            }
+                        }
+                    }
                 }
             }
             break;
