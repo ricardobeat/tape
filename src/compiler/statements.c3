@@ -402,27 +402,222 @@ fn void? CompilerContext.while_statement(&self) {
     self.expect(TokenType.WHILE)!;
     self.expect(TokenType.LPAREN)!;
 
-    uint loop_start = self.code_count;
-    self.push_loop(loop_start, true);
+    // --- Rotated while-loop layout ---
+    //
+    //   JUMP → cond_label              (zero-iteration check)
+    //   body_label:
+    //     <body>
+    //   cond_label:                    ← continue targets HERE
+    //     <condition>
+    //     IF_TRUE → body_label         (back edge; fused → JMP_LT etc.)
+    //   exit:                          ← break patches here
+    //
+    // The condition appears BEFORE the body in source, so we save the lexer
+    // state here, skip the condition tokens, compile the body, then restore
+    // and compile the condition.  This mirrors the for-loop's rotation.
 
-    // Compile condition
-    ushort cond_reg = self.expression()!;
+    // ----------------------------------------------------------------
+    // Step 0: Save lexer state at start of condition.
+    // ----------------------------------------------------------------
+    uint  _cond_pos; uint  _cond_line; uint  _cond_col;
+    Token _cond_cur; Token _cond_look; bool  _cond_haslk;
+    Token _cond_push; bool _cond_haspb; bool _cond_slt;
+    uint  _cond_pbc;  Token[4] _cond_pbs;
+    _cond_pos   = self.lexer.pos;
+    _cond_line  = self.lexer.line;
+    _cond_col   = self.lexer.col;
+    _cond_cur   = self.lexer.current;
+    _cond_look  = self.lexer.lookahead;
+    _cond_haslk = self.lexer.has_lookahead;
+    _cond_push  = self.lexer.pushed_back;
+    _cond_haspb = self.lexer.has_pushed_back;
+    _cond_slt   = self.lexer.seen_line_term;
+    _cond_pbc   = self.pushback_count;
+    _cond_pbs   = self.pushback_stack;
 
-    self.expect(TokenType.RPAREN)!;
+    // ----------------------------------------------------------------
+    // Step 1: Check for while(true) — constant true, skip rotate overhead.
+    //         Also detect simple `<ident> <relop> <numeric literal>` condition.
+    // ----------------------------------------------------------------
+    bool is_const_true = false;
+    bool has_simple_cond = false;
+    double simple_cond_rhs = 0.0;
+    Opcode simple_cond_op = Opcode.LT;
+    ushort pinned_rhs_reg = 0;
 
-    // Jump out if condition is false
-    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cond_reg);
-    self.free_reg(cond_reg);
+    // Probe up to 4 tokens to detect simple patterns (only when pushback is clean).
+    if (_cond_pbc == 0 && !_cond_haspb && !_cond_haslk) {
+        Token? t1o = self.lexer.next_token();
+        if (try t1 = t1o) {
+            // while(true) — 'true' is lexed as an IDENTIFIER with str_value "true"
+            if (t1.type == TokenType.IDENTIFIER && str_eq(t1.str_value, "true")) {
+                Token? t2o = self.lexer.next_token();
+                if (try t2 = t2o) {
+                    if (t2.type == TokenType.RPAREN) {
+                        is_const_true = true;
+                    } else {
+                        self.pushback(t2);
+                    }
+                }
+            }
+            // while(ident <relop> number)
+            if (!is_const_true && t1.type == TokenType.IDENTIFIER) {
+                Token? t2o = self.lexer.next_token();
+                if (try t2 = t2o) {
+                    Token? t3o = self.lexer.next_token();
+                    if (try t3 = t3o) {
+                        Token? t4o = self.lexer.next_token();
+                        if (try t4 = t4o) {
+                            bool is_relop = (t2.type == TokenType.LT || t2.type == TokenType.LE
+                                          || t2.type == TokenType.GT || t2.type == TokenType.GE);
+                            bool is_num   = (t3.type == TokenType.NUMBER);
+                            bool is_rp    = (t4.type == TokenType.RPAREN);
+                            if (is_relop && is_num && is_rp) {
+                                has_simple_cond = true;
+                                simple_cond_rhs = t3.num_value;
+                                switch (t2.type) {
+                                    case TokenType.LT: simple_cond_op = Opcode.LT;
+                                    case TokenType.LE: simple_cond_op = Opcode.LE;
+                                    case TokenType.GT: simple_cond_op = Opcode.GT;
+                                    default:           simple_cond_op = Opcode.GE;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!is_const_true) {
+                self.pushback(t1);
+            }
+        }
+        // Restore lexer to start of condition.
+        self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+        self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+        self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+        self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+        self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+    }
 
-    // Compile body
+    // ----------------------------------------------------------------
+    // Step 2: Pre-load pinned RHS register (before initial JUMP).
+    // ----------------------------------------------------------------
+    if (has_simple_cond) {
+        pinned_rhs_reg = self.alloc_reg();
+        int int_rhs = (int)simple_cond_rhs;
+        if ((double)int_rhs == simple_cond_rhs
+            && int_rhs >= bytecode::MIN_SBC && int_rhs <= bytecode::MAX_SBC) {
+            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)pinned_rhs_reg, int_rhs));
+        } else {
+            uint rhs_const_idx = self.add_number_constant(simple_cond_rhs);
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)pinned_rhs_reg, rhs_const_idx));
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Step 3: Emit initial JUMP → cond_label and record body_label.
+    // ----------------------------------------------------------------
+    uint cond_jump = 0;
+    if (!is_const_true) {
+        cond_jump = self.emit_jump(Opcode.JUMP);  // forward → cond_label
+    }
+    uint body_label = self.code_count;
+
+    // ----------------------------------------------------------------
+    // Step 4: Skip condition tokens (no code emitted) and consume ')'.
+    // ----------------------------------------------------------------
+    // skip_expr_lex scans until `)` at depth 0, leaving it in pushed_back.
+    self.skip_expr_lex();
+    self.expect(TokenType.RPAREN)!;  // consume ')'
+
+    // ----------------------------------------------------------------
+    // Step 5: Push loop (continue_target = body_label placeholder;
+    //          updated to cond_label in Step 7).
+    // ----------------------------------------------------------------
+    self.push_loop(body_label, true);
     self.statement()!;
 
-    // Jump back to loop start
-    int back_offset = (int)loop_start - (int)self.code_count - 1;
-    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+    // Save post-body lexer state — outer parser resumes here after return.
+    uint  _post_pos; uint  _post_line; uint  _post_col;
+    Token _post_cur; Token _post_look; bool  _post_haslk;
+    Token _post_push; bool _post_haspb; bool _post_slt;
+    uint  _post_pbc;  Token[4] _post_pbs;
+    _post_pos   = self.lexer.pos;   _post_line  = self.lexer.line;   _post_col   = self.lexer.col;
+    _post_cur   = self.lexer.current; _post_look  = self.lexer.lookahead;
+    _post_haslk = self.lexer.has_lookahead; _post_push  = self.lexer.pushed_back;
+    _post_haspb = self.lexer.has_pushed_back; _post_slt = self.lexer.seen_line_term;
+    _post_pbc   = self.pushback_count; _post_pbs   = self.pushback_stack;
 
-    self.patch_jump(exit_jump);
+    // ----------------------------------------------------------------
+    // Step 6: cond_label — patch initial JUMP and update continue_target.
+    // ----------------------------------------------------------------
+    uint cond_label = self.code_count;
+    if (self.loop_depth > 0) {
+        self.loop_stack[self.loop_depth - 1].continue_target = cond_label;
+    }
+    if (!is_const_true) {
+        self.patch_jump(cond_jump);
+    }
+
+    // ----------------------------------------------------------------
+    // Step 7: Compile condition with IF_TRUE back edge to body_label.
+    // ----------------------------------------------------------------
+    if (is_const_true) {
+        // while(true) — unconditional back edge.
+        int back = (int)body_label - (int)self.code_count - 1;
+        self.emit(bytecode::make_sabc(Opcode.JUMP, back));
+    } else if (has_simple_cond) {
+        // Restore lexer to condition start, compile with pinned RHS.
+        self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+        self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+        self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+        self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+        self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+        Token ident_tok = self.advance()!;
+        Token _relop    = self.advance()!;   // consume relop
+        Token _num_tok  = self.advance()!;   // consume NUMBER (value in pinned_rhs_reg)
+        self.expect(TokenType.RPAREN)!;      // consume ')'
+
+        ushort lhs_reg = self.alloc_reg();
+        if (try reg = self.resolve_var(ident_tok.str_value)) {
+            if (reg != lhs_reg) {
+                self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+            }
+        } else {
+            uint name_idx2 = self.add_string_constant(ident_tok.str_value);
+            self.emit_a_bc(Opcode.GETVAR, (uint)lhs_reg, name_idx2);
+        }
+        ushort cmp_res = self.alloc_reg();
+        self.emit_abc(simple_cond_op, (uint)cmp_res, (uint)lhs_reg, (uint)pinned_rhs_reg);
+        self.free_reg(lhs_reg);
+        int back = (int)body_label - (int)self.code_count - 1;
+        self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_res, back));
+        self.free_reg(cmp_res);
+        self.free_reg(pinned_rhs_reg);
+    } else {
+        // General condition: restore and re-compile normally.
+        self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+        self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+        self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+        self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+        self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+        ushort cond_reg = self.expression()!;
+        self.expect(TokenType.RPAREN)!;
+        int back = (int)body_label - (int)self.code_count - 1;
+        self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cond_reg, back));
+        self.free_reg(cond_reg);
+    }
+
+    // exit: pop_loop patches all break jumps and resolves continue patches.
     self.pop_loop();
+
+    // Restore the lexer to the position after the body.
+    self.lexer.pos = _post_pos; self.lexer.line = _post_line; self.lexer.col = _post_col;
+    self.lexer.current = _post_cur; self.lexer.lookahead = _post_look;
+    self.lexer.has_lookahead = _post_haslk; self.lexer.pushed_back = _post_push;
+    self.lexer.has_pushed_back = _post_haspb; self.lexer.seen_line_term = _post_slt;
+    self.pushback_count = _post_pbc; self.pushback_stack = _post_pbs;
+
+    self.match(TokenType.SEMICOLON);
 }
 
 /// Parse for statement (basic for, for-in, for-of).
@@ -664,7 +859,10 @@ fn void? CompilerContext.for_statement(&self) {
     Opcode simple_cond_op = Opcode.LT;
     ushort pinned_rhs_reg = 0;
 
-    if (has_cond && _cond_pbc == 0 && !self.lexer.has_pushed_back && !self.lexer.has_lookahead) {
+    // Use the captured state (_cond_haslk / _cond_haspb) rather than the current lexer
+    // state: self.check() above calls lexer.peek() which sets has_lookahead as a side
+    // effect, so testing self.lexer.has_lookahead here always returns true (false negative).
+    if (has_cond && _cond_pbc == 0 && !_cond_haspb && !_cond_haslk) {
         Token? t1o = self.lexer.next_token();
         if (try t1 = t1o) {
             Token? t2o = self.lexer.next_token();

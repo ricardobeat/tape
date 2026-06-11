@@ -1896,7 +1896,7 @@ fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
     // Fast path: dense array storage
     if (obj.get_class() == hobject::ObjClass.ARRAY) {
         if (try v = obj.get_array_idx(key)) { return true; }
-        return false;
+        // Fall through: element may be stored as a named property (sparse or pre-dense)
     }
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
@@ -1912,7 +1912,7 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
             *out = v;
             return true;
         }
-        return false;
+        // Fall through: element may be stored as a named property (sparse or pre-dense)
     }
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
@@ -1933,13 +1933,21 @@ fn bool arr_check_callback(TVal val, Heap* heap) {
 }
 
 /// Helper: call a function with (v, k, O) args and thisArg.
-fn TVal arr_call_callback(TVal* vm, TVal callback, TVal thisArg, TVal v, uint k, HObject* o, Heap* heap) {
+/// If the callback throws, set ctx.should_throw and ctx.throw_value so the
+/// CALL handler in vm.c3 propagates the error back to an outer JS try/catch.
+fn TVal arr_call_callback(BuiltinContext* ctx, TVal callback, TVal thisArg, TVal v, uint k, HObject* o) {
     TVal[3] args;
     args[0] = v;
     TVal k_tv; k_tv.set_fastint((long)k);
     args[1] = k_tv;
     args[2].set_object((void*)o);
-    return heap.call_fn(vm, callback, &args[0], 3, thisArg);
+    TVal res = ctx.heap.call_fn(ctx.vm, callback, &args[0], 3, thisArg);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+    }
+    return res;
 }
 
 /// Array.prototype.forEach(callbackfn[, thisArg]) — ES5 §15.4.4.18
@@ -1962,7 +1970,8 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
-                arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
+                arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             }
         }
     }
@@ -1994,7 +2003,8 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
-                TVal mapped = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
+                TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 HString* akey = ctx.heap.int_to_hstring((long)aj);
                 if (akey != null) {
                     arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
@@ -2034,7 +2044,8 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
-                TVal sel = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
+                TVal sel = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&sel)) {
                     HString* akey = ctx.heap.int_to_hstring((long)aj);
                     if (akey != null) {
@@ -2049,6 +2060,76 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal len_tv; len_tv.set_fastint((long)aj);
     arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
     ctx.result.set_object((void*)arr);
+}
+
+/// Array.prototype.find(callbackfn[, thisArg]) — ES6 §22.1.3.8
+/// Returns the first element for which callbackfn returns truthy,
+/// or undefined if none.
+fn void builtin_array_proto_find(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
+        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
+        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    }
+    HObject* o = o_raw;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
+        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    }
+    TVal callback = ctx.regs[ctx.base_reg];
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+    uint len = array_get_length(o, ctx.heap);
+    for (uint k = 0; k < len; k++) {
+        if (arr_has_prop(o, k, ctx.heap)) {
+            TVal v;
+            if (arr_get_elem(o, k, ctx.heap, &v)) {
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (builtin_to_boolean(&test)) {
+                    (*ctx.result) = v;
+                    return;
+                }
+            }
+        }
+    }
+    ctx.result.set_undefined();
+}
+
+/// Array.prototype.findIndex(callbackfn[, thisArg]) — ES6 §22.1.3.9
+/// Returns the index of the first element for which callbackfn returns truthy,
+/// or -1 if none.
+fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
+        arr_throw_type_error(ctx.heap, "Cannot convert undefined or null to object");
+        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    }
+    HObject* o = o_raw;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx.heap)) {
+        ctx.result.set_undefined(); ctx.should_throw = true; return;
+    }
+    TVal callback = ctx.regs[ctx.base_reg];
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+    uint len = array_get_length(o, ctx.heap);
+    for (uint k = 0; k < len; k++) {
+        if (arr_has_prop(o, k, ctx.heap)) {
+            TVal v;
+            if (arr_get_elem(o, k, ctx.heap, &v)) {
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (builtin_to_boolean(&test)) {
+                    TVal k_tv; k_tv.set_fastint((long)k);
+                    (*ctx.result) = k_tv;
+                    return;
+                }
+            }
+        }
+    }
+    TVal neg; neg.set_fastint(-1);
+    (*ctx.result) = neg;
 }
 
 /// Array.prototype.every(callbackfn[, thisArg]) — ES5 §15.4.4.17
@@ -2071,7 +2152,8 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
-                TVal test = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (!builtin_to_boolean(&test)) {
                     ctx.result.set_boolean(false);
                     return;
@@ -2102,7 +2184,8 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem(o, k, ctx.heap, &v)) {
-                TVal test = arr_call_callback(ctx.vm, callback, thisArg, v, k, o, ctx.heap);
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
                     ctx.result.set_boolean(true);
                     return;
@@ -2155,6 +2238,13 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
                 acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, acc);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
             }
         }
         k++;
@@ -2208,6 +2298,13 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
                 acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, acc);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
             }
         }
         k--;
@@ -2265,10 +2362,8 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "includes",  BUILTIN_ARRAY_PROTO_INCLUDES))  return false;
     if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
-    if (!register_compiled_proto_method(proto, heap, global_env, "find",
-        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return v;k++}return undefined}")) return false;
-    if (!register_compiled_proto_method(proto, heap, global_env, "findIndex",
-        "(callback){var O=Object(this);var len=O.length;var k=0;while(k<len){var v=O[k];if(callback(v,k,O))return k;k++}return -1}")) return false;
+    if (!register_array_proto_method(proto, heap, "find",       BUILTIN_ARRAY_PROTO_FIND))       return false;
+    if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX))  return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
     if (!register_compiled_proto_method(proto, heap, global_env, "flatMap",
         "(callback,thisArg){var O=Object(this);var len=O.length;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;while(j<mapped.length){A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;
