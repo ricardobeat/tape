@@ -110,3 +110,44 @@ fn void CompilerContext.pushback(&self, Token tok) {
         self.pushback_count++;
     }
 }
+
+/// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
+/// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
+/// Used by loop rotation to skip over the for-loop increment without emitting code.
+/// Returns true on success, false on unexpected EOF or error.
+///
+/// Depth tracking: LPAREN/RPAREN increment/decrement a depth counter; the scan stops
+/// when a SEMICOLON is seen at depth 0, or when a RPAREN is seen at depth 0.
+fn bool CompilerContext.skip_expr_lex(&self) {
+    int depth = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) { return false; }
+        Token tok = tok_opt;
+        switch (tok.type) {
+            case TokenType.EOF_TOKEN: return false;
+            case TokenType.LPAREN:   depth++; continue;
+            case TokenType.LBRACKET: depth++; continue;
+            case TokenType.RPAREN: {
+                if (depth == 0) {
+                    // Put it back via the lexer's single-token pushback
+                    self.lexer.pushed_back = tok;
+                    self.lexer.has_pushed_back = true;
+                    return true;
+                }
+                depth--;
+            }
+            case TokenType.RBRACKET: {
+                if (depth > 0) { depth--; }
+            }
+            case TokenType.SEMICOLON: {
+                if (depth == 0) {
+                    self.lexer.pushed_back = tok;
+                    self.lexer.has_pushed_back = true;
+                    return true;
+                }
+            }
+            default: {}
+        }
+    }
+}

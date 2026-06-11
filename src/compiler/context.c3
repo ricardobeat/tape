@@ -323,17 +323,509 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         }
     }
 
-    // Copy instruction stream
+    // --- Peephole: fuse LDCONST rK, idx + GETPROP ra = rb, rK → NOP + GETPROPC ra = rb, idx ---
+    // Saves 1 dispatch per property access.  The key constant-pool index is baked into
+    // GETPROPC.c, so jumping into the NOP slot (if rK's LDCONST happened to be a jump
+    // target) still produces correct results: NOP falls through to GETPROPC which reads
+    // the index from the instruction itself, not from rK.
+    // Condition: idx must fit in 8 bits (≤ 255) because GETPROPC.c is 8 bits.
+    // Register safety: rK is the freshly-allocated key temp used only as GETPROP.c;
+    // the two instructions are adjacent so no other use of rK can appear between them.
+    if (self.code_count >= 2) {
+        for (uint i = 0; i + 1 < self.code_count; i++) {
+            if (self.code[i].op == Opcode.LDCONST && self.code[i + 1].op == Opcode.GETPROP) {
+                uint rK = (uint)self.code[i].a;
+                uint idx = self.code[i].get_bc();
+                // rK must be the key operand of GETPROP, and idx must fit in 8 bits
+                if ((uint)self.code[i + 1].c == rK && idx <= 255) {
+                    // Safety: rK must not be used by any later instruction.
+                    // In LHS (assignment) mode the compiler keeps rK alive for the
+                    // PUTPROP/DELPROP that follows (possibly with intervening instructions
+                    // for the RHS).  Scan forward from i+2; if any instruction reads rK
+                    // before a definite overwrite of rK, the LDCONST is load-bearing and
+                    // we must not NOP it.
+                    bool rK_used_after = false;
+                    for (uint j = i + 2; j < self.code_count; j++) {
+                        Instruction jns = self.code[j];
+                        Opcode jop2 = jns.op;
+                        // IF_TRUE/IF_FALSE: field A is a READ, not a write.
+                        if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                            if ((uint)jns.a == rK) { rK_used_after = true; break; }
+                            continue;
+                        }
+                        // If rK is read as b or c (source operands), it's still live.
+                        if ((uint)jns.b == rK || (uint)jns.c == rK) {
+                            rK_used_after = true;
+                            break;
+                        }
+                        // If rK is written (a is destination), it is no longer live.
+                        if ((uint)jns.a == rK) { break; }
+                    }
+                    if (!rK_used_after) {
+                        uint ra = (uint)self.code[i + 1].a;
+                        uint rb = (uint)self.code[i + 1].b;
+                        self.code[i]     = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                        self.code[i + 1] = bytecode::make_abc(Opcode.GETPROPC, ra, rb, idx);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Peephole: fuse LT/LE/GT/GE rA=rB,rC + IF_FALSE rA, sbx → JMP_NLT/NLE/NGT/NGE off,rB,rC + NOP ---
+    // Saves 1 dispatch and 1 boolean round-trip per loop condition.
+    // Rules:
+    //   1. code[i] is LT/LE/GT/GE; code[i+1] is IF_FALSE.
+    //   2. The result register rA (written by compare, read by IF_FALSE) is dead after i+1.
+    //   3. Slot i+1 (the IF_FALSE) must NOT be a jump target — landing there after fusion
+    //      would fall through the NOP without branching, which is wrong.
+    //   4. The adjusted offset (sbx+1) must fit in a signed 8-bit field (-128..127).
+    //      Offset math: IF_FALSE at slot i+1 reads sbx relative to curr_pc=i+2, landing at
+    //      i+2+sbx.  Fused op at slot i has curr_pc=i+1, so fused_offset = (i+2+sbx)-(i+1)
+    //      = sbx+1.
+    //   TODO: also handle IF_TRUE following a compare (currently skipped — loop conditions
+    //         emit IF_FALSE, so this covers the hot case).
+    if (self.code_count >= 2) {
+        // Build a jump-target bit-set: mark every slot that is the destination of a branch.
+        // We must NOT fuse when slot i+1 is a target.
+        // Sources of static targets:
+        //   JUMP (WIDE_SABC): offset = insn.get_sabc(), target = slot+1+offset
+        //   IF_TRUE / IF_FALSE (A_SBX): offset = insn.get_sbc(), target = slot+1+offset
+        //   TRY (A_BC): catch_offset = insn.get_bc(), target = slot + catch_offset
+        //               also reads the adjacent jump-slot for finally_offset
+        //   The fused JMP_N* ops added by this pass in the same run: they only appear
+        //   in slot i (replacing the compare), never as new targets, so we don't need
+        //   to worry about them here.
+        bool[MAX_CODE] jump_targets;
+        libc::memset(&jump_targets[0], 0, self.code_count);
+        for (uint i = 0; i < self.code_count; i++) {
+            Instruction ins = self.code[i];
+            switch (ins.op) {
+                case Opcode.JUMP: {
+                    int off = ins.get_sabc();
+                    int tgt = (int)i + 1 + off;
+                    if (tgt >= 0 && (uint)tgt < self.code_count) {
+                        jump_targets[tgt] = true;
+                    }
+                }
+                case Opcode.IF_TRUE:
+                case Opcode.IF_FALSE: {
+                    int off = ins.get_sbc();
+                    int tgt = (int)i + 1 + off;
+                    if (tgt >= 0 && (uint)tgt < self.code_count) {
+                        jump_targets[tgt] = true;
+                    }
+                }
+                case Opcode.TRY: {
+                    // TRY at slot i: catch target = i + catch_offset (get_bc())
+                    // The adjacent instruction (i+1) holds finally_offset in its BC field.
+                    uint catch_off = ins.get_bc();
+                    uint catch_tgt = i + catch_off;
+                    if (catch_tgt < self.code_count) {
+                        jump_targets[catch_tgt] = true;
+                    }
+                    if (i + 1 < self.code_count) {
+                        uint finally_off = self.code[i + 1].get_bc();
+                        if (finally_off != 0) {
+                            uint finally_tgt = i + finally_off;
+                            if (finally_tgt < self.code_count) {
+                                jump_targets[finally_tgt] = true;
+                            }
+                        }
+                    }
+                }
+                default: {}
+            }
+        }
+
+        for (uint i = 0; i + 1 < self.code_count; i++) {
+            Opcode cmp_op = self.code[i].op;
+            if (cmp_op != Opcode.LT && cmp_op != Opcode.LE
+                && cmp_op != Opcode.GT && cmp_op != Opcode.GE) { continue; }
+            bool is_if_false = (self.code[i + 1].op == Opcode.IF_FALSE);
+            bool is_if_true  = (self.code[i + 1].op == Opcode.IF_TRUE);
+            if (!is_if_false && !is_if_true) { continue; }
+
+            // The compare writes rA; IF_FALSE reads rA via its .a field.
+            uint rA = (uint)self.code[i].a;
+            if ((uint)self.code[i + 1].a != rA) { continue; }
+
+            // Rule 3: IF_FALSE slot must not be a jump target.
+            if (jump_targets[i + 1]) { continue; }
+
+            // Rule 2: rA must be dead on BOTH paths after fusion:
+            //   (a) fall-through path: from slot i+2 onward — linear scan until rA is
+            //       read (live) or overwritten (dead).
+            //   (b) branch path: from target T = i+2+sbx — same linear scan.
+            //       After fusion the compare instruction is gone, so when the branch fires
+            //       rA was never written.  If T reads rA before overwriting it, the fusion
+            //       would produce a stale value (e.g. old loop variable instead of 0/1).
+            // IMPORTANT: only check b/c as register sources for ABC-format instructions.
+            // For JUMP (WIDE_SABC), IF_FALSE/IF_TRUE (A_SBX), and A_BC ops, the b/c bits
+            // encode offsets or packed values, not register indices — do not misread them.
+            // Each scan is basic-block-local: stop (treat as live) at the first jump target
+            // encountered (a new basic block begins — we cannot prove rA dead on all
+            // incoming edges).
+            int sbx = self.code[i + 1].get_sbc();
+            int fused_off = sbx + 1;
+
+            // (a) fall-through scan from i+2: check rA is dead on the sequential path.
+            // At each jump target encountered, also verify rA is dead starting from
+            // that target (a back-edge or cross-edge may arrive there without our
+            // overwrites — if rA is already dead at the target regardless, it's fine).
+            bool rA_live = false;
+            for (uint j = i + 2; j < self.code_count; j++) {
+                if (jump_targets[j]) {
+                    // A path from outside arrives at j.  Check if rA is used at j
+                    // (or shortly after) before being overwritten on that path.
+                    // We do a quick single-instruction look at slot j.  If rA appears
+                    // as a source operand there, treat rA as live; otherwise continue
+                    // (a more thorough scan would recurse, but a one-instruction probe
+                    // handles all common patterns: the INC/ADD that is a loop back-edge
+                    // target never reads the compare-result register).
+                    Instruction tgt_ins = self.code[j];
+                    Opcode tgt_op = tgt_ins.op;
+                    bool rA_at_tgt = false;
+                    if (tgt_op == Opcode.IF_TRUE || tgt_op == Opcode.IF_FALSE) {
+                        rA_at_tgt = ((uint)tgt_ins.a == rA);
+                    } else {
+                        OpFormat tfmt = bytecode::get_op_format(tgt_op);
+                        if (tfmt == OpFormat.ABC) {
+                            // GETPROPC: C = constant-pool index, not a register.
+                            if (tgt_op == Opcode.GETPROPC) {
+                                rA_at_tgt = ((uint)tgt_ins.b == rA);
+                            } else {
+                                rA_at_tgt = ((uint)tgt_ins.b == rA || (uint)tgt_ins.c == rA);
+                            }
+                        }
+                    }
+                    if (rA_at_tgt) { rA_live = true; break; }
+                    // rA not read at j — continue the fall-through scan.
+                    continue;
+                }
+                Instruction jns = self.code[j];
+                Opcode jop2 = jns.op;
+                OpFormat jfmt = bytecode::get_op_format(jop2);
+                // IF_TRUE/IF_FALSE use field A as a source (the register being tested),
+                // not as a destination.  Check them for reads.
+                if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                    if ((uint)jns.a == rA) { rA_live = true; break; }
+                    continue; // no overwrite possible from A_SBX branch ops
+                }
+                if (jfmt == OpFormat.ABC) {
+                    // GETPROPC: C field is a constant-pool index, not a register.
+                    // Only check B for register reads.
+                    if (jop2 == Opcode.GETPROPC) {
+                        if ((uint)jns.b == rA) { rA_live = true; break; }
+                    } else {
+                        if ((uint)jns.b == rA || (uint)jns.c == rA) { rA_live = true; break; }
+                    }
+                }
+                // For non-WIDE_SABC/WIDE_ABC formats, field A is the destination (overwrite).
+                if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
+                    if ((uint)jns.a == rA) { break; }
+                }
+            }
+            if (rA_live) { continue; }
+
+            // (b) branch-path scan from target T (= i+2+sbx)
+            // After fusion the compare is gone; if the branch fires, rA was never written.
+            // Verify rA is dead starting at T.
+            int tgt_raw = (int)i + 2 + sbx;
+            if (tgt_raw >= 0 && (uint)tgt_raw < self.code_count) {
+                bool rA_live_branch = false;
+                for (uint j = (uint)tgt_raw; j < self.code_count; j++) {
+                    // Skip jump-target check for slot T itself (it IS a target).
+                    if (j != (uint)tgt_raw && jump_targets[j]) { rA_live_branch = true; break; }
+                    Instruction jns = self.code[j];
+                    Opcode jop2 = jns.op;
+                    OpFormat jfmt = bytecode::get_op_format(jop2);
+                    if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                        if ((uint)jns.a == rA) { rA_live_branch = true; break; }
+                        continue;
+                    }
+                    if (jfmt == OpFormat.ABC) {
+                        // GETPROPC: C = constant-pool index, not a register.
+                        if (jop2 == Opcode.GETPROPC) {
+                            if ((uint)jns.b == rA) { rA_live_branch = true; break; }
+                        } else {
+                            if ((uint)jns.b == rA || (uint)jns.c == rA) { rA_live_branch = true; break; }
+                        }
+                    }
+                    if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
+                        if ((uint)jns.a == rA) { break; }
+                    }
+                }
+                if (rA_live_branch) { continue; }
+            }
+
+            // Rule 4: adjusted offset must fit in signed 8 bits.
+            // (sbx already computed above)
+            if (fused_off < -128 || fused_off > 127) { continue; }
+
+            // All checks passed — fuse.
+            uint rB = (uint)self.code[i].b;
+            uint rC = (uint)self.code[i].c;
+            Opcode fused_op;
+            if (is_if_false) {
+                switch (cmp_op) {
+                    case Opcode.LT: fused_op = Opcode.JMP_NLT;
+                    case Opcode.LE: fused_op = Opcode.JMP_NLE;
+                    case Opcode.GT: fused_op = Opcode.JMP_NGT;
+                    default:        fused_op = Opcode.JMP_NGE;
+                }
+            } else {
+                switch (cmp_op) {
+                    case Opcode.LT: fused_op = Opcode.JMP_LT;
+                    case Opcode.LE: fused_op = Opcode.JMP_LE;
+                    case Opcode.GT: fused_op = Opcode.JMP_GT;
+                    default:        fused_op = Opcode.JMP_GE;
+                }
+            }
+            // Store signed offset as unsigned 8-bit in field A.
+            self.code[i]     = bytecode::make_abc(fused_op, (uint)(char)fused_off, rB, rC);
+            self.code[i + 1] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+        }
+    }
+
+    // --- Peephole: copy propagation — NOP LDREG rT = rS when immediately followed
+    // by a consumer that reads rT as a plain register operand (b or c), rT is dead
+    // after the consumer, and rS is not clobbered between them (trivially true since
+    // they are adjacent).
+    //
+    // Supported consumers: JMP_NLT/NLE/NGT/NGE (b/c = register operands),
+    //   LT/LE/GT/GE/ADD/SUB/MUL (b/c = register operands in ABC format).
+    // GETPROPC is excluded: its c field is a constant-pool index, not a register.
+    //
+    // Jump-target safety:
+    //   - If the LDREG slot is a jump target it becomes a NOP; control falls through
+    //     to the consumer which now reads rS directly — correct.
+    //   - If the consumer slot is a jump target, a jump landing there would have
+    //     expected rT to be loaded.  After substitution the consumer reads rS instead.
+    //     rS is the source register (the actual variable), so it still holds the
+    //     expected value — correct.
+    //   Therefore no jump-target guard is needed for either slot.
+    if (self.code_count >= 2) {
+        for (uint i = 0; i + 1 < self.code_count; i++) {
+            if (self.code[i].op != Opcode.LDREG) { continue; }
+
+            uint rT = (uint)self.code[i].a;
+            uint rS = (uint)self.code[i].b;  // get_bc() lower byte; c is 0 for LDREG
+
+            Instruction consumer = self.code[i + 1];
+            Opcode cop = consumer.op;
+
+            // Determine whether this consumer op reads b and/or c as plain registers
+            // and whether rT appears in those fields.
+            bool cop_reads_b_c =
+                cop == Opcode.JMP_NLT || cop == Opcode.JMP_NLE ||
+                cop == Opcode.JMP_NGT || cop == Opcode.JMP_NGE ||
+                cop == Opcode.JMP_LT  || cop == Opcode.JMP_LE  ||
+                cop == Opcode.JMP_GT  || cop == Opcode.JMP_GE  ||
+                cop == Opcode.LT || cop == Opcode.LE ||
+                cop == Opcode.GT || cop == Opcode.GE ||
+                cop == Opcode.ADD || cop == Opcode.SUB || cop == Opcode.MUL;
+
+            if (!cop_reads_b_c) { continue; }
+
+            uint cb = (uint)consumer.b;
+            uint cc = (uint)consumer.c;
+            bool rT_in_b = (cb == rT);
+            bool rT_in_c = (cc == rT);
+            if (!rT_in_b && !rT_in_c) { continue; }
+
+            // rT must be dead after the consumer: scan forward from i+2.
+            // If the consumer itself writes rT (consumer.a == rT), the LDREG value is
+            // immediately overwritten by the consumer — no scan needed, rT is dead.
+            // Note: IF_TRUE/IF_FALSE use field A as a READ (not a write) — handle them
+            // explicitly so they are not mistaken for an overwrite of rT.
+            bool rT_live = false;
+            if ((uint)consumer.a != rT) {
+                for (uint j = i + 2; j < self.code_count; j++) {
+                    Instruction jns = self.code[j];
+                    Opcode jop2 = jns.op;
+                    if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                        if ((uint)jns.a == rT) { rT_live = true; break; }
+                        continue;
+                    }
+                    OpFormat jfmt = bytecode::get_op_format(jop2);
+                    if (jfmt == OpFormat.ABC) {
+                        if ((uint)jns.b == rT || (uint)jns.c == rT) { rT_live = true; break; }
+                    }
+                    if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
+                        if ((uint)jns.a == rT) { break; }
+                    }
+                }
+            }
+            if (rT_live) { continue; }
+
+            // Substitute rS for rT in the consumer's b/c fields.
+            uint new_b = rT_in_b ? rS : cb;
+            uint new_c = rT_in_c ? rS : cc;
+            self.code[i + 1] = bytecode::make_abc(cop, (uint)consumer.a, new_b, new_c);
+            self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+        }
+    }
+
+    // --- Peephole: NOP dead LDREG rT = rX immediately before INC/DEC rX (or INC_VAR/DEC_VAR) ---
+    // Pattern: LDREG rT = rX / INC rX  (postfix i++ in statement position)
+    //   → NOP / INC rX
+    // The saved value rT is never read — the postfix result is discarded when i++ appears
+    // in the for-update slot or as an expression statement.  We verify rT is dead by
+    // scanning forward from i+2; if rT never appears as a source (b or c in ABC format)
+    // before being overwritten (written as a), it is dead and the LDREG is safe to NOP.
+    // Jump-target safety: it is fine to NOP a LDREG that is itself a jump target — the
+    // NOP simply falls through to the INC, which is the behaviour we want.
+    if (self.code_count >= 2) {
+        for (uint i = 0; i + 1 < self.code_count; i++) {
+            if (self.code[i].op != Opcode.LDREG) { continue; }
+            Opcode next_op = self.code[i + 1].op;
+            bool next_is_inc_dec = (next_op == Opcode.INC || next_op == Opcode.DEC
+                                    || next_op == Opcode.INC_VAR || next_op == Opcode.DEC_VAR);
+            if (!next_is_inc_dec) { continue; }
+
+            uint rT = (uint)self.code[i].a;   // destination of LDREG (the saved value)
+            uint rX = (uint)self.code[i].b;   // source of LDREG (the variable)
+
+            // For INC/DEC the operand is in field a; for INC_VAR/DEC_VAR the name idx
+            // is in bc and a is 0 — rX must match either way.
+            if (next_op == Opcode.INC || next_op == Opcode.DEC) {
+                if ((uint)self.code[i + 1].a != rX) { continue; }
+            }
+            // (For INC_VAR/DEC_VAR we can't directly verify the variable register here,
+            //  but in postfix_expr the INC_VAR is only emitted when lhs_was_getvar, and
+            //  the LDREG immediately precedes it — the pair is always a unit.)
+
+            // rT must be dead: scan forward from i+2.
+            // IF_TRUE/IF_FALSE use field A as a READ — handle them explicitly.
+            bool rT_live = false;
+            for (uint j = i + 2; j < self.code_count; j++) {
+                Instruction jns = self.code[j];
+                Opcode jop2 = jns.op;
+                if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                    if ((uint)jns.a == rT) { rT_live = true; break; }
+                    continue;
+                }
+                OpFormat jfmt = bytecode::get_op_format(jop2);
+                if (jfmt == OpFormat.ABC) {
+                    if ((uint)jns.b == rT || (uint)jns.c == rT) { rT_live = true; break; }
+                }
+                if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
+                    if ((uint)jns.a == rT) { break; }
+                }
+            }
+            if (rT_live) { continue; }
+
+            self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+        }
+    }
+
+    // --- NOP Compaction Pass ---
+    // Physically remove NOP instructions and remap all pc-relative offsets.
+    // Must run last, after all other peepholes have introduced NOPs.
+    //
+    // TRY jump slots: TRY is always followed by a NOP whose BC field holds the
+    // finally_offset.  The VM unconditionally reads and advances past this word,
+    // so it must be preserved even after compaction.  We mark those slots in
+    // `keep[]` before building the pc_map.
     if (self.code_count > 0) {
-        usz code_bytes = (usz)self.code_count * Instruction::size;
+        // Step 1: mark TRY jump slots as non-removable.
+        bool[MAX_CODE] nop_keep;
+        libc::memset(&nop_keep[0], 0, self.code_count);
+        for (uint i = 0; i < self.code_count; i++) {
+            if (self.code[i].op == Opcode.TRY && i + 1 < self.code_count) {
+                nop_keep[i + 1] = true;
+            }
+        }
+
+        // Step 2: build pc_map[old_pc] → new_pc.
+        // NOP slots that are not kept map to the new_pc of the next kept slot.
+        uint[MAX_CODE + 1] pc_map;
+        uint new_count = 0;
+        for (uint i = 0; i < self.code_count; i++) {
+            pc_map[i] = new_count;
+            if (self.code[i].op != Opcode.NOP || nop_keep[i]) {
+                new_count++;
+            }
+        }
+        pc_map[self.code_count] = new_count; // sentinel for targets at end
+
+        // Step 3: remap all branch/handler offsets in-place.
+        for (uint i = 0; i < self.code_count; i++) {
+            Opcode cop = self.code[i].op;
+            switch (cop) {
+                case Opcode.JUMP: {
+                    // WIDE_SABC: target = (pc+1) + sabc
+                    int sabc = self.code[i].get_sabc();
+                    int tgt_old = (int)i + 1 + sabc;
+                    int tgt_new = (int)pc_map[(uint)tgt_old];
+                    int new_sabc = tgt_new - ((int)pc_map[i] + 1);
+                    self.code[i] = bytecode::make_sabc(Opcode.JUMP, new_sabc);
+                }
+                case Opcode.IF_TRUE:
+                case Opcode.IF_FALSE: {
+                    // A_SBX: target = (pc+1) + sbx
+                    uint ra = (uint)self.code[i].a;
+                    int sbx = self.code[i].get_sbc();
+                    int tgt_old = (int)i + 1 + sbx;
+                    int tgt_new = (int)pc_map[(uint)tgt_old];
+                    int new_sbx = tgt_new - ((int)pc_map[i] + 1);
+                    self.code[i] = bytecode::make_a_sbx(cop, ra, new_sbx);
+                }
+                case Opcode.JMP_NLT:
+                case Opcode.JMP_NLE:
+                case Opcode.JMP_NGT:
+                case Opcode.JMP_NGE:
+                case Opcode.JMP_LT:
+                case Opcode.JMP_LE:
+                case Opcode.JMP_GT:
+                case Opcode.JMP_GE: {
+                    // ABC: signed 8-bit offset in field A; target = (pc+1) + (int)(char)a
+                    // NOP removal only shrinks distances, so the new offset is <= old.
+                    int off = (int)(ichar)self.code[i].a;
+                    int tgt_old = (int)i + 1 + off;
+                    int tgt_new = (int)pc_map[(uint)tgt_old];
+                    int new_off = tgt_new - ((int)pc_map[i] + 1);
+                    // Offset must still fit in signed 8 bits (removal only shrinks gaps).
+                    $assert $defined(new_off);
+                    self.code[i].a = (uint)(char)new_off;
+                }
+                case Opcode.TRY: {
+                    // A_BC: BC = catch_offset (absolute from TRY instruction).
+                    // Adjacent slot i+1 (NOP, kept): BC = finally_offset (same base).
+                    uint try_new = pc_map[i];
+                    uint catch_off_old = self.code[i].get_bc();
+                    uint catch_tgt_old = i + catch_off_old;
+                    uint new_catch_off = pc_map[catch_tgt_old] - try_new;
+                    uint finally_off_old = self.code[i + 1].get_bc();
+                    uint new_finally_off = 0;
+                    if (finally_off_old != 0) {
+                        uint finally_tgt_old = i + finally_off_old;
+                        new_finally_off = pc_map[finally_tgt_old] - try_new;
+                    }
+                    self.code[i] = bytecode::make_a_bc(Opcode.TRY, (uint)self.code[i].a, new_catch_off);
+                    self.code[i + 1] = bytecode::make_a_bc(Opcode.NOP, 0, new_finally_off);
+                }
+                default: {}
+            }
+        }
+
+        // Step 4: copy compacted instruction stream (skip non-kept NOPs).
+        usz code_bytes = (usz)new_count * Instruction::size;
         void* code_raw = libc::malloc(code_bytes);
         if (code_raw == null) {
             libc::free(raw);
             return COMPILE_ERROR~;
         }
-        libc::memcpy(code_raw, &self.code[0], code_bytes);
-        func.code = (Instruction*)code_raw;
-        func.code_count = self.code_count;
+        Instruction* dst_code = (Instruction*)code_raw;
+        uint dst_idx = 0;
+        for (uint i = 0; i < self.code_count; i++) {
+            if (self.code[i].op != Opcode.NOP || nop_keep[i]) {
+                dst_code[dst_idx++] = self.code[i];
+            }
+        }
+        func.code = dst_code;
+        func.code_count = new_count;
     }
 
     // Copy constant pool

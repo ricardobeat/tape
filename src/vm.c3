@@ -2572,6 +2572,158 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
+        // === FUSED COMPARE-AND-BRANCH ===
+        // Each op replicates the corresponding compare's exact semantics, then
+        // branches if the result is FALSE (i.e. branches when condition does NOT hold).
+        // Offset in A (signed 8-bit, cast via char) is relative to the already-
+        // incremented pc (same convention as IF_FALSE).
+        // NaN: !(NaN op x) is always true, so the branch IS taken — correct because
+        // we negate the same compare result that IF_FALSE would have tested.
+
+        case Opcode.JMP_NLT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() < rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
+            } else {
+                double jnlt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jnlt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jnlt_b < jnlt_c;
+            }
+            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_NLE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() <= rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
+            } else {
+                double jnle_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jnle_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jnle_b <= jnle_c;
+            }
+            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_NGT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() > rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
+            } else {
+                double jngt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jngt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jngt_b > jngt_c;
+            }
+            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_NGE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() >= rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+            } else {
+                double jnge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jnge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jnge_b >= jnge_c;
+            }
+            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_LT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() < rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
+            } else {
+                double jlt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jlt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jlt_b < jlt_c;
+            }
+            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_LE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() <= rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
+            } else {
+                double jle_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jle_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jle_b <= jle_c;
+            }
+            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_GT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() > rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
+            } else {
+                double jgt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jgt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jgt_b > jgt_c;
+            }
+            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
+        case Opcode.JMP_GE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() >= rc.get_fastint();
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+            } else {
+                double jge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                if (needs_restart) break;
+                double jge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                jmp_result = jge_b >= jge_c;
+            }
+            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            break;
+        }
+
         case Opcode.INSTANCEOF: {
             // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression
             // ra may alias rb (compiler optimization), so read rb before writing ra.
@@ -3068,6 +3220,234 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 ra.set_undefined();
+            }
+            break;
+
+        case Opcode.GETPROPC:
+            // Fused LDCONST+GETPROP: key comes from constant pool (always a string).
+            {
+                TVal key_tval = constants[(uint)insn.c];
+                HString* key_hstr = (HString*)key_tval.get_heapptr();
+                if (rb.is_object()) {
+                    HObject* hobj = (HObject*)rb.get_heapptr();
+
+                    // Inline Cache fast path: key is always non-null, skip lookup_key check.
+                    if (ic_base != null) {
+                        uint pc_off = (uint)(curr_pc - 1 - code_base);
+                        hobject::ICEntry* ic = ic_base + pc_off;
+                        if (ic.key == (void*)key_hstr && ic.shape_id == hobj.shape_id) {
+                            HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
+                            if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
+                                TVal ic_val = ic.prop_value_ptr.data.value;
+                                if (!ic_val.is_heap_allocated()) {
+                                    *ra = ic_val;
+                                } else {
+                                    vm.heap.tval_copy_ref(ra, &ic_val);
+                                    track_heap_store(act, ra, (uint)insn.a);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    // ARRAY exotic: .length fast path
+                    if (hobj.get_class() == hobject::ObjClass.ARRAY && (void*)key_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                        ra.set_fastint((long)hobj.array_length);
+                        break;
+                    }
+
+                    void* key = (void*)key_hstr;
+                    if (key != null) {
+                        // ARGUMENTS exotic: .length fast path
+                        if (hobj.get_class() == hobject::ObjClass.ARGUMENTS && key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra.set_fastint((long)hobj.array_used);
+                            break;
+                        }
+                        // STRING exotic: string-key indexed access (array-index string keys like "0")
+                        if (hobj.flags.exotic_stringobj && hobj.extra.prim.primitive_value.is_string()) {
+                            if (key_hstr != null && key_hstr.is_arridx()) {
+                                long sidx = (long)key_hstr.arridx;
+                                HString* prim_str = (HString*)hobj.extra.prim.primitive_value.get_heapptr();
+                                if (sidx < (long)prim_str.clen) {
+                                    uint cp = prim_str.char_at((uint)sidx);
+                                    char[4] sbuf;
+                                    uint sblen = hstring::encode_codepoint(cp, sbuf[:4]);
+                                    HString* interned = intern_string(vm, sbuf[:sblen]);
+                                    if (interned != null) {
+                                        vm.heap.set_reg_string(ra, interned);
+                                    } else {
+                                        return VM_ERROR~;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        hobject::PropLookupResult res = hobj.get_prop_or_accessor_proto(key, true);
+                        if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                            TVal obj_val;
+                            obj_val.set_object(hobj);
+                            if (invoke_getter(vm, &res.acc, &obj_val, (uint)insn.a,
+                                              act, &curr_pc, &needs_restart, regs_base)) {
+                                regs_base = act.bottom;
+                                break;
+                            }
+                            break;
+                        } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                            vm.heap.tval_copy_ref(ra, &res.data_val);
+                            track_heap_store(act, ra, (uint)insn.a);
+                            // Populate IC for this site
+                            if (res.owner != null && ic_base != null) {
+                                uint pc_off = (uint)(curr_pc - 1 - code_base);
+                                hobject::ICEntry* ic = ic_base + pc_off;
+                                int owner_idx = res.owner.find_prop_idx(key);
+                                if (owner_idx >= 0) {
+                                    ic.shape_id = hobj.shape_id;
+                                    ic.proto = res.owner == hobj ? null : (void*)res.owner;
+                                    ic.prop_idx = (uint)owner_idx;
+                                    ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
+                                    if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
+                                    ic.key = key;
+                                    if (key != null) { ((types::HeapHeader*)key).incref(); }
+                                    ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
+                                    ic.cached_prop_alloc = res.owner.prop_alloc;
+                                }
+                            }
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else if (rb.is_null() || rb.is_undefined()) {
+                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = vm.heap.type_err_proto;
+                        char[types::ERROR_MSG_BUF] buf;
+                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
+                                                 (rb.is_null() ? "null" : "undefined"),
+                                                 key_hstr != null ? key_hstr.get_cstr() : "?");
+                        if (len > 0 && len < types::ERROR_MSG_BUF) {
+                            HString* msg_str = intern_string(vm, buf[:len]);
+                            TVal msg_val;
+                            msg_val.set_string(msg_str);
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                        TVal err_val;
+                        err_val.set_object(err);
+                        if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                } else if (rb.is_string()) {
+                    HString* h_str = (HString*)rb.get_heapptr();
+                    if (h_str != null && h_str.is_symbol() && vm.heap.symbol_proto != null) {
+                        if (key_hstr != null) {
+                            TVal? result = vm.heap.symbol_proto.get_prop_proto((void*)key_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra, &v);
+                                track_heap_store(act, ra, (uint)insn.a);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        // Auto-box string primitive: constant string key — skip numeric-index fast path
+                        if (key_hstr != null) {
+                            // Fast path: .length → string character count
+                            if ((void*)key_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                                ra.set_fastint((long)h_str.clen);
+                                break;
+                            }
+                            if (vm.heap.string_proto != null) {
+                                TVal? result = vm.heap.string_proto.get_prop_proto((void*)key_hstr);
+                                if (try v = result) {
+                                    vm.heap.tval_copy_ref(ra, &v);
+                                    track_heap_store(act, ra, (uint)insn.a);
+                                } else {
+                                    ra.set_undefined();
+                                }
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else {
+                            ra.set_undefined();
+                        }
+                    }
+                } else if (rb.is_number() || rb.is_fastint()) {
+                    if (key_hstr != null && vm.heap.number_proto != null) {
+                        TVal? result = vm.heap.number_proto.get_prop_proto((void*)key_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(act, ra, (uint)insn.a);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else if (rb.is_boolean()) {
+                    if (key_hstr != null && vm.heap.bool_proto != null) {
+                        TVal? result = vm.heap.bool_proto.get_prop_proto((void*)key_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(act, ra, (uint)insn.a);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else if (rb.is_lightfunc()) {
+                    // LIGHTFUNC: resolve .name and .length from metadata, other props from Function.prototype
+                    uint fn_idx = (uint)(usz)rb.get_heapptr();
+                    if (key_hstr != null) {
+                        if (key_hstr.equals("name")) {
+                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                            if (meta.name.len > 0) {
+                                HString* name_str = intern_string(vm, meta.name);
+                                vm.heap.set_reg_string(ra, name_str);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (key_hstr.equals("length")) {
+                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                            if (meta.arity >= 0) {
+                                ra.set_number(meta.arity);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (key_hstr.equals("prototype")) {
+                            // Resolve .prototype for constructor lightfuncs (Boolean, Number, etc.)
+                            HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                            if (proto_obj != null) {
+                                ra.set_object(proto_obj);
+                                track_heap_store(act, ra, (uint)insn.a);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (vm.heap.function_proto != null) {
+                            // Walk Function.prototype for .call, .apply, .bind, etc.
+                            TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra, &v);
+                                track_heap_store(act, ra, (uint)insn.a);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else {
+                    ra.set_undefined();
+                }
             }
             break;
 

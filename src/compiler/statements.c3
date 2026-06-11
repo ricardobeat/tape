@@ -612,50 +612,252 @@ fn void? CompilerContext.for_statement(&self) {
         self.expect(TokenType.SEMICOLON)!;
     }
 
-    // Condition
-    uint cond_start = self.code_count;
-    uint exit_jump = NO_PATCH;
+    // --- Rotated for-loop layout ---
+    // Avoid running the condition before the first body iteration by rotating:
+    //
+    //   JUMP → cond_label            (executed once; provides zero-iteration check)
+    //   body_label:
+    //     <body>
+    //   incr_label:                  ← continue targets here
+    //     <increment>
+    //   cond_label:
+    //     <condition>  (IF_TRUE → body_label  — back edge)
+    //   exit:                        ← break patches here
+    //
+    // With the JMP_LT/JMP_LE/JMP_GT/JMP_GE peephole, the per-iteration hot path
+    // is: body → increment → LT + IF_TRUE → JMP_LT body_label ≈4 dispatches.
+    //
+    // Literal hoisting: for the common condition `<ident> <relop> <numeric literal>`,
+    // we pre-load the literal into a pinned register before the initial JUMP.
+    // This removes LDINT/LDCONST from the per-iteration hot path.
+    //
+    // Implementation: we save the lexer state at the condition and increment,
+    // use a token-scanner (skip_expr_lex) to skip them without emitting code,
+    // compile the body at body_label, then restore+compile increment at incr_label,
+    // then restore+compile condition at cond_label with IF_TRUE → body_label.
 
-    if (!self.check(TokenType.SEMICOLON)) {
-        ushort cond_reg = self.expression()!;
-        exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cond_reg);
-        self.free_reg(cond_reg);
+    // ----------------------------------------------------------------
+    // Step 0: Detect simple condition: IDENTIFIER <relop> NUMBER ;
+    // ----------------------------------------------------------------
+
+    uint  _cond_pos; uint  _cond_line; uint  _cond_col;
+    Token _cond_cur; Token _cond_look; bool  _cond_haslk;
+    Token _cond_push; bool _cond_haspb; bool _cond_slt;
+    uint  _cond_pbc;  Token[4] _cond_pbs;
+    _cond_pos   = self.lexer.pos;
+    _cond_line  = self.lexer.line;
+    _cond_col   = self.lexer.col;
+    _cond_cur   = self.lexer.current;
+    _cond_look  = self.lexer.lookahead;
+    _cond_haslk = self.lexer.has_lookahead;
+    _cond_push  = self.lexer.pushed_back;
+    _cond_haspb = self.lexer.has_pushed_back;
+    _cond_slt   = self.lexer.seen_line_term;
+    _cond_pbc   = self.pushback_count;
+    _cond_pbs   = self.pushback_stack;
+
+    bool has_cond = !self.check(TokenType.SEMICOLON);
+
+    // Detect `IDENTIFIER <relop> NUMBER ;` (only when pushback is empty)
+    bool has_simple_cond = false;
+    double simple_cond_rhs = 0.0;
+    Opcode simple_cond_op = Opcode.LT;
+    ushort pinned_rhs_reg = 0;
+
+    if (has_cond && _cond_pbc == 0 && !self.lexer.has_pushed_back && !self.lexer.has_lookahead) {
+        Token? t1o = self.lexer.next_token();
+        if (try t1 = t1o) {
+            Token? t2o = self.lexer.next_token();
+            if (try t2 = t2o) {
+                Token? t3o = self.lexer.next_token();
+                if (try t3 = t3o) {
+                    Token? t4o = self.lexer.next_token();
+                    if (try t4 = t4o) {
+                        bool is_ident = (t1.type == TokenType.IDENTIFIER);
+                        bool is_relop = (t2.type == TokenType.LT || t2.type == TokenType.LE
+                                      || t2.type == TokenType.GT || t2.type == TokenType.GE);
+                        bool is_num   = (t3.type == TokenType.NUMBER);
+                        bool is_semi  = (t4.type == TokenType.SEMICOLON);
+                        if (is_ident && is_relop && is_num && is_semi) {
+                            has_simple_cond = true;
+                            simple_cond_rhs = t3.num_value;
+                            switch (t2.type) {
+                                case TokenType.LT: simple_cond_op = Opcode.LT;
+                                case TokenType.LE: simple_cond_op = Opcode.LE;
+                                case TokenType.GT: simple_cond_op = Opcode.GT;
+                                default:           simple_cond_op = Opcode.GE;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Restore to before detection scan.
+        self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+        self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+        self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+        self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+        self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
     }
-    self.expect(TokenType.SEMICOLON)!;
 
-    // Update expression — compile it but jump over it initially
-    uint update_jump = self.emit_jump(Opcode.JUMP);
-    uint update_start = self.code_count;
-
-    if (!self.check(TokenType.RPAREN)) {
-        ushort update_reg = self.expression()!;
-        self.free_reg(update_reg);
+    // ----------------------------------------------------------------
+    // Step 1: Pre-load the pinned RHS register (before initial JUMP).
+    // ----------------------------------------------------------------
+    if (has_simple_cond) {
+        pinned_rhs_reg = self.alloc_reg();
+        int int_rhs = (int)simple_cond_rhs;
+        if ((double)int_rhs == simple_cond_rhs
+            && int_rhs >= bytecode::MIN_SBC && int_rhs <= bytecode::MAX_SBC) {
+            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)pinned_rhs_reg, int_rhs));
+        } else {
+            uint rhs_const_idx = self.add_number_constant(simple_cond_rhs);
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)pinned_rhs_reg, rhs_const_idx));
+        }
     }
 
-    // Jump back to condition
-    int cond_back = (int)cond_start - (int)self.code_count - 1;
-    self.emit(bytecode::make_sabc(Opcode.JUMP, cond_back));
+    // ----------------------------------------------------------------
+    // Step 2: Emit initial JUMP → cond_label and record body_label.
+    // ----------------------------------------------------------------
+    uint cond_jump = 0;
+    bool has_empty_cond = !has_cond;
+    if (!has_empty_cond) {
+        cond_jump = self.emit_jump(Opcode.JUMP);  // forward → cond_label
+    }
+    uint body_label = self.code_count;
 
-    self.expect(TokenType.RPAREN)!;
+    // ----------------------------------------------------------------
+    // Step 3: Skip condition tokens (no code emitted) using token scanner.
+    // ----------------------------------------------------------------
+    if (has_cond) {
+        // skip_expr_lex scans until `;` or `)` at depth 0, leaving the terminator
+        // in the lexer's pushed_back buffer.
+        self.skip_expr_lex();
+    }
+    self.expect(TokenType.SEMICOLON)!;  // consume the `;` after condition
 
-    self.patch_jump(update_jump);
+    // ----------------------------------------------------------------
+    // Step 4: Save lexer state for increment, then skip it.
+    // ----------------------------------------------------------------
+    uint  _incr_pos; uint  _incr_line; uint  _incr_col;
+    Token _incr_cur; Token _incr_look; bool  _incr_haslk;
+    Token _incr_push; bool _incr_haspb; bool _incr_slt;
+    uint  _incr_pbc;  Token[4] _incr_pbs;
+    _incr_pos   = self.lexer.pos;   _incr_line  = self.lexer.line;   _incr_col   = self.lexer.col;
+    _incr_cur   = self.lexer.current; _incr_look  = self.lexer.lookahead;
+    _incr_haslk = self.lexer.has_lookahead; _incr_push  = self.lexer.pushed_back;
+    _incr_haspb = self.lexer.has_pushed_back; _incr_slt = self.lexer.seen_line_term;
+    _incr_pbc   = self.pushback_count; _incr_pbs   = self.pushback_stack;
 
-    // Push loop with continue_target pointing to the update expression
-    self.push_loop(update_start, true);
+    bool has_incr = !self.check(TokenType.RPAREN);
+    if (has_incr) {
+        self.skip_expr_lex();
+    }
+    self.expect(TokenType.RPAREN)!;   // consume `)` after increment
 
-    // Compile body
+    // ----------------------------------------------------------------
+    // Step 5: Push loop and compile body.
+    // ----------------------------------------------------------------
+    // continue_target placeholder = body_label; updated to incr_label after body.
+    self.push_loop(body_label, true);
     self.statement()!;
 
-    // Jump to update
-    int update_back = (int)update_start - (int)self.code_count - 1;
-    self.emit(bytecode::make_sabc(Opcode.JUMP, update_back));
+    // Save the lexer state after the body — this is where the outer parser
+    // must resume after for_statement returns.  Steps 6 and 7 will restore
+    // lexer state for re-compilation; we restore to here at the very end.
+    uint  _post_pos; uint  _post_line; uint  _post_col;
+    Token _post_cur; Token _post_look; bool  _post_haslk;
+    Token _post_push; bool _post_haspb; bool _post_slt;
+    uint  _post_pbc;  Token[4] _post_pbs;
+    _post_pos   = self.lexer.pos;   _post_line  = self.lexer.line;   _post_col   = self.lexer.col;
+    _post_cur   = self.lexer.current; _post_look  = self.lexer.lookahead;
+    _post_haslk = self.lexer.has_lookahead; _post_push  = self.lexer.pushed_back;
+    _post_haspb = self.lexer.has_pushed_back; _post_slt = self.lexer.seen_line_term;
+    _post_pbc   = self.pushback_count; _post_pbs   = self.pushback_stack;
 
-    // Patch exit
-    if (exit_jump != NO_PATCH) {
-        self.patch_jump(exit_jump);
+    // ----------------------------------------------------------------
+    // Step 6: incr_label — patch continue_target, then compile increment.
+    // ----------------------------------------------------------------
+    uint incr_label = self.code_count;
+    if (self.loop_depth > 0) {
+        self.loop_stack[self.loop_depth - 1].continue_target = incr_label;
     }
 
+    if (has_incr) {
+        self.lexer.pos = _incr_pos; self.lexer.line = _incr_line; self.lexer.col = _incr_col;
+        self.lexer.current = _incr_cur; self.lexer.lookahead = _incr_look;
+        self.lexer.has_lookahead = _incr_haslk; self.lexer.pushed_back = _incr_push;
+        self.lexer.has_pushed_back = _incr_haspb; self.lexer.seen_line_term = _incr_slt;
+        self.pushback_count = _incr_pbc; self.pushback_stack = _incr_pbs;
+        ushort incr_reg = self.expression()!;
+        self.free_reg(incr_reg);
+    }
+
+    // ----------------------------------------------------------------
+    // Step 7: cond_label — patch initial JUMP, compile condition with IF_TRUE back edge.
+    // ----------------------------------------------------------------
+    if (!has_empty_cond) {
+        self.patch_jump(cond_jump);
+    }
+
+    if (!has_empty_cond) {
+        if (has_simple_cond) {
+            // Re-compile condition from saved lexer state, using pinned_rhs_reg.
+            self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+            self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+            self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+            self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+            self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+            Token ident_tok = self.advance()!;
+            Token _relop    = self.advance()!;  // consume relop
+            Token _num_tok  = self.advance()!;  // consume NUMBER (value already in pinned_rhs_reg)
+            self.expect(TokenType.SEMICOLON)!;  // consume `;`
+
+            ushort lhs_reg = self.alloc_reg();
+            if (try reg = self.resolve_var(ident_tok.str_value)) {
+                if (reg != lhs_reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+                }
+            } else {
+                uint name_idx2 = self.add_string_constant(ident_tok.str_value);
+                self.emit_a_bc(Opcode.GETVAR, (uint)lhs_reg, name_idx2);
+            }
+            ushort cmp_res = self.alloc_reg();
+            self.emit_abc(simple_cond_op, (uint)cmp_res, (uint)lhs_reg, (uint)pinned_rhs_reg);
+            self.free_reg(lhs_reg);
+            int back = (int)body_label - (int)self.code_count - 1;
+            self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_res, back));
+            self.free_reg(cmp_res);
+            self.free_reg(pinned_rhs_reg);
+        } else {
+            // General condition: restore and re-compile normally.
+            self.lexer.pos = _cond_pos; self.lexer.line = _cond_line; self.lexer.col = _cond_col;
+            self.lexer.current = _cond_cur; self.lexer.lookahead = _cond_look;
+            self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
+            self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
+            self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+            ushort cond_reg = self.expression()!;
+            self.expect(TokenType.SEMICOLON)!;
+            int back = (int)body_label - (int)self.code_count - 1;
+            self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cond_reg, back));
+            self.free_reg(cond_reg);
+        }
+    } else {
+        // for(;;) — unconditional back edge
+        int back = (int)body_label - (int)self.code_count - 1;
+        self.emit(bytecode::make_sabc(Opcode.JUMP, back));
+    }
+
+    // exit: pop_loop patches all break jumps to current position.
     self.pop_loop();
+
+    // Restore the lexer to the position after the body so the outer parser
+    // continues from the right source position.
+    self.lexer.pos = _post_pos; self.lexer.line = _post_line; self.lexer.col = _post_col;
+    self.lexer.current = _post_cur; self.lexer.lookahead = _post_look;
+    self.lexer.has_lookahead = _post_haslk; self.lexer.pushed_back = _post_push;
+    self.lexer.has_pushed_back = _post_haspb; self.lexer.seen_line_term = _post_slt;
+    self.pushback_count = _post_pbc; self.pushback_stack = _post_pbs;
+
     self.pop_scope_to(saved_scope);
     self.free_regs_to(saved_reg);
 }
@@ -1106,9 +1308,12 @@ fn void? CompilerContext.continue_statement(&self) {
                     return COMPILE_ERROR~;
                 }
                 uint loop_idx = self.labels[i].loop_index;
-                uint target = self.loop_stack[loop_idx].continue_target;
-                int offset = (int)target - (int)self.code_count - 1;
-                self.emit(bytecode::make_sabc(Opcode.JUMP, offset));
+                // Use deferred patching so the continue target can be updated
+                // after the body is compiled (needed for rotated for-loops where
+                // continue_target is set to incr_label after body compilation).
+                uint jump_addr = self.emit_jump(Opcode.JUMP);
+                self.loop_stack[loop_idx].continue_patch_head =
+                    self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
                 self.match(TokenType.SEMICOLON);
                 return;
             }

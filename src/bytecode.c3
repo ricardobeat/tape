@@ -175,6 +175,9 @@ enum Opcode : char {
 
     /// `A = B[C]`  — get property.
     GETPROP,
+    /// `A = B[K]`  — get property with constant pool key.  Fused LDCONST+GETPROP.
+    /// Format ABC: A = dst reg, B = obj reg, C = constant-pool index of property key string.
+    GETPROPC,
     /// `A[B] = C`  — put (set) property.
     PUTPROP,
     /// `A = delete B[C]`  — delete property.
@@ -389,6 +392,34 @@ enum Opcode : char {
     /// `variable[constants[BC]] = variable[constants[BC]] - 1` — fused
     /// GETVAR + DEC + PUTVAR.  Same layout as INC_VAR.
     DEC_VAR,
+
+    // ---- Fused compare-and-branch -------------------------------------------
+
+    /// Fused `LT rB, rC` + `IF_FALSE`: branch if NOT (rB < rC).
+    /// Format ABC: A = signed 8-bit jump offset (cast via char), B/C = comparison registers.
+    /// Offset relative to the instruction after this one (same convention as IF_FALSE).
+    /// NaN semantics: !(NaN < x) is true, so the branch IS taken when either operand is NaN.
+    JMP_NLT,
+    /// Fused `LE rB, rC` + `IF_FALSE`: branch if NOT (rB <= rC).
+    JMP_NLE,
+    /// Fused `GT rB, rC` + `IF_FALSE`: branch if NOT (rB > rC).
+    JMP_NGT,
+    /// Fused `GE rB, rC` + `IF_FALSE`: branch if NOT (rB >= rC).
+    JMP_NGE,
+
+    // ---- Fused compare-and-branch (branch if TRUE) ---------------------------
+
+    /// Fused `LT rB, rC` + `IF_TRUE`: branch if (rB < rC) is TRUE.
+    /// Format ABC: A = signed 8-bit jump offset (cast via char), B/C = comparison registers.
+    /// Offset relative to the instruction after this one (same convention as JMP_NLT).
+    /// NaN semantics: (NaN < x) is false → no branch taken when either operand is NaN.
+    JMP_LT,
+    /// Fused `LE rB, rC` + `IF_TRUE`: branch if (rB <= rC) is TRUE.
+    JMP_LE,
+    /// Fused `GT rB, rC` + `IF_TRUE`: branch if (rB > rC) is TRUE.
+    JMP_GT,
+    /// Fused `GE rB, rC` + `IF_TRUE`: branch if (rB >= rC) is TRUE.
+    JMP_GE,
 
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
@@ -645,12 +676,24 @@ fn usz Instruction.disassemble(&self, char[] buf) {
 
     switch (fmt) {
         case ABC:
-            pos = write_str(buf, pos, "r");
-            pos = write_uint(buf, pos, self.a);
-            pos = write_str(buf, pos, " = r");
-            pos = write_uint(buf, pos, self.b);
-            pos = write_str(buf, pos, ", r");
-            pos = write_uint(buf, pos, self.c);
+            // Fused compare-branch ops encode A as a signed 8-bit offset, not a register.
+            if (op == Opcode.JMP_NLT || op == Opcode.JMP_NLE
+                || op == Opcode.JMP_NGT || op == Opcode.JMP_NGE
+                || op == Opcode.JMP_LT  || op == Opcode.JMP_LE
+                || op == Opcode.JMP_GT  || op == Opcode.JMP_GE) {
+                pos = write_int(buf, pos, (int)(ichar)self.a);
+                pos = write_str(buf, pos, ", r");
+                pos = write_uint(buf, pos, self.b);
+                pos = write_str(buf, pos, ", r");
+                pos = write_uint(buf, pos, self.c);
+            } else {
+                pos = write_str(buf, pos, "r");
+                pos = write_uint(buf, pos, self.a);
+                pos = write_str(buf, pos, " = r");
+                pos = write_uint(buf, pos, self.b);
+                pos = write_str(buf, pos, ", r");
+                pos = write_uint(buf, pos, self.c);
+            }
 
         case A_BC:
             pos = write_str(buf, pos, "r");
@@ -977,6 +1020,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.IF_TRUE.ordinal]     = "IF_TRUE",
     [Opcode.IF_FALSE.ordinal]    = "IF_FALSE",
     [Opcode.GETPROP.ordinal]     = "GETPROP",
+    [Opcode.GETPROPC.ordinal]    = "GETPROPC",
     [Opcode.PUTPROP.ordinal]     = "PUTPROP",
     [Opcode.DELPROP.ordinal]     = "DELPROP",
     [Opcode.NEWOBJ.ordinal]      = "NEWOBJ",
@@ -1034,6 +1078,14 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.DEC.ordinal]          = "DEC",
     [Opcode.INC_VAR.ordinal]      = "INC_VAR",
     [Opcode.DEC_VAR.ordinal]      = "DEC_VAR",
+    [Opcode.JMP_NLT.ordinal]      = "JMP_NLT",
+    [Opcode.JMP_NLE.ordinal]      = "JMP_NLE",
+    [Opcode.JMP_NGT.ordinal]      = "JMP_NGT",
+    [Opcode.JMP_NGE.ordinal]      = "JMP_NGE",
+    [Opcode.JMP_LT.ordinal]       = "JMP_LT",
+    [Opcode.JMP_LE.ordinal]       = "JMP_LE",
+    [Opcode.JMP_GT.ordinal]       = "JMP_GT",
+    [Opcode.JMP_GE.ordinal]       = "JMP_GE",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
