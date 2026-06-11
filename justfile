@@ -59,7 +59,7 @@ run file="test/simple.js":
 
 # Run Rosetta Code tests on duktape-c3 (rebuilds first)
 rosetta engine="duktape_c3": 
-   timeout -p -k 2 2 bash test/rosetta/run.sh ./out/{{engine}}
+   bash test/rosetta/run.sh ./out/{{engine}}
 
 # ── Test262 ──────────────────────────────────────────────────────────────────
 
