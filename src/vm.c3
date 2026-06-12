@@ -1992,9 +1992,14 @@ fn TVal? Vm.run(Vm* vm) {
                             libc::memcpy(buf, &int_buf, (usz)int_len);
                             libc::memcpy(buf + int_len, str.get_cstr(), s_len);
                         }
-                        HString* interned = intern_string(vm, buf[:total]);
+                        uint hash = vm.heap.hash_string(buf[:total]);
+                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
                         if (heap_allocated) libc::free(buf);
-                        vm.heap.set_reg_string(ra, interned);
+                        if (try s = maybe_s) {
+                            vm.heap.set_reg_string(ra, s);
+                        } else {
+                            ra.set_undefined();
+                        }
                         break;
                     }
                 }
@@ -2046,9 +2051,14 @@ fn TVal? Vm.run(Vm* vm) {
                         libc::memcpy(buf + a_len, rs.get_cstr(), b_len);
                     }
 
-                    HString* interned = intern_string(vm, buf[:total]);
+                    uint hash = vm.heap.hash_string(buf[:total]);
+                    HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
                     if (heap_allocated) libc::free(buf);
-                    vm.heap.set_reg_string(ra, interned);
+                    if (try s = maybe_s) {
+                        vm.heap.set_reg_string(ra, s);
+                    } else {
+                        ra.set_undefined();
+                    }
                 } else {
                     ra.set_undefined();
                 }

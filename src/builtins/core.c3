@@ -659,6 +659,7 @@ fn HString* builtin_intern_string(Heap* heap, char[] data) {
     if (try s = new_s) {
         heap.str_table_insert(s);
         ((types::HeapHeader*)s).incref();
+        s.flags.is_interned = true;
         return s;
     }
     return null;
