@@ -5,6 +5,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::bytecode;
 import std::io;
+import std::core::mem::mempool;
 import libc;
 
 // ============================================================================
@@ -298,6 +299,15 @@ struct Heap {
     // 3 bits per builtin index: 0=name deleted, 1=length deleted, 2=prototype deleted.
     // Indexed as: bit = fn_idx * 3 + prop_bit
     ulong[LF_DELETED_WORDS] lf_deleted_props;
+
+    // Pool allocators for HObject headers — eliminates per-object malloc overhead.
+    // Three size classes matching alloc_size_for_class():
+    //   plain (72B): OBJECT, ERROR, ARGUMENTS, PROXY
+    //   array (80B): ARRAY
+    //   func  (104B): FUNCTION, REGEXP, BOOLEAN, NUMBER, STRING, DATE, etc.
+    mempool::FixedBlockPool obj_pool_plain;
+    mempool::FixedBlockPool obj_pool_array;
+    mempool::FixedBlockPool obj_pool_func;
 }
 
 // ============================================================================
@@ -360,6 +370,40 @@ fn void default_free(void* udata, void* ptr) {
 fn void default_fatal(void* udata, char* msg) {
     io::eprintfn("DUKTAPE FATAL: %s", msg);
     libc::abort();
+}
+
+// ============================================================================
+// Libc allocator for FixedBlockPool
+// ============================================================================
+
+/// Thin wrapper around libc malloc/calloc/free that satisfies the
+/// std::core::mem::allocator::Allocator interface required by FixedBlockPool.
+struct LibcPoolAllocator (Allocator)
+{
+    char _dummy;
+}
+
+const LibcPoolAllocator LIBC_POOL_ALLOCATOR = {};
+
+fn void*? LibcPoolAllocator.acquire(&self, sz bytes, AllocInitType init_type, sz alignment) @dynamic
+{
+    if (init_type == ZERO) {
+        void* ptr = libc::calloc(1, (usz)bytes);
+        return ptr ?: null;
+    }
+    void* p = libc::malloc((usz)bytes);
+    return p ?: null;
+}
+
+fn void*? LibcPoolAllocator.resize(&self, void* old_ptr, sz new_bytes, sz alignment) @dynamic
+{
+    void* ptr = libc::realloc(old_ptr, (usz)new_bytes);
+    return ptr ?: null;
+}
+
+fn void LibcPoolAllocator.release(&self, void* old_ptr, bool aligned) @dynamic
+{
+    libc::free(old_ptr);
 }
 
 // ============================================================================
@@ -457,6 +501,13 @@ fn Heap*? create(
     }
     h.microtask_count = 0;
     h.microtask_draining = false;
+
+    // Initialize object pool allocators (3 size classes).
+    {
+        h.obj_pool_plain.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_PLAIN, 512);
+        h.obj_pool_array.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_ARRAY, 512);
+        h.obj_pool_func.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_FUNC, 512);
+    }
 
     // Activate this heap for RC operations and shape transitions.
     hobject::hobject_set_active_heap((void*)h);
@@ -766,7 +817,7 @@ fn void Heap.destroy(&self) {
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            hobject::hobject_free((HObject*)cur);
+            hobject::hobject_free((HObject*)cur, (void*)self);
         }
         cur = next;
     }
@@ -850,6 +901,11 @@ fn void Heap.destroy(&self) {
         self.shapes = null;
     }
 
+    // Destroy object pool allocators — releases all pool pages to libc.
+    self.obj_pool_plain.free();
+    self.obj_pool_array.free();
+    self.obj_pool_func.free();
+
     // Finally free the Heap struct itself
     FreeFunc    ffn   = self.free_func;
     void*       udata = self.heap_udata;
@@ -875,7 +931,7 @@ fn void Heap.reset(&self) {
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            hobject::hobject_free((HObject*)cur);
+            hobject::hobject_free((HObject*)cur, (void*)self);
         }
         cur = next;
     }
@@ -1024,6 +1080,17 @@ fn void Heap.reset(&self) {
     self.shape_gen   = 0;
     self.shapes[0]   = hobject::shape_create(0, 0, SHAPE_NONE, null);
     self.init_transition_table();
+
+    // Destroy and reinitialize object pool allocators — all pool pages are
+    // freed to libc, fresh pools start with clean bump + empty freelist.
+    self.obj_pool_plain.free();
+    self.obj_pool_array.free();
+    self.obj_pool_func.free();
+    {
+        self.obj_pool_plain.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_PLAIN, 512);
+        self.obj_pool_array.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_ARRAY, 512);
+        self.obj_pool_func.init(&LIBC_POOL_ALLOCATOR, hobject::OBJ_SIZE_FUNC, 512);
+    }
 
     // Reintern builtin strings into the now-empty string table
     self.init_builtin_strs();
@@ -1186,7 +1253,7 @@ fn void Heap.decref(&self, HeapHeader* hdr) {
         } else {
             hdr.unlink(&self.heap_allocated);
             if (hdr.is_object()) {
-                hobject::hobject_free((HObject*)hdr);
+                hobject::hobject_free((HObject*)hdr, (void*)self);
             } else {
                 // Buffer
                 self.free_func(self.heap_udata, hdr);
@@ -1616,7 +1683,7 @@ fn void Heap.sweep(&self) {
             }
             // Free
             if (cur.is_object()) {
-                hobject::hobject_free((HObject*)cur);
+                hobject::hobject_free((HObject*)cur, (void*)self);
             } else if (cur.is_string()) {
                 libc::free(cur);
             } else {
