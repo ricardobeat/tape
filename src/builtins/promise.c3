@@ -338,7 +338,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
     }
 
     HObject* exec_func = (HObject*)executor.get_heapptr();
-    if (exec_func.extra.func.comp_func == null && exec_func.extra.func.builtin_fn_index < 0) {
+    if ((*exec_func.extra_ptr()).func.comp_func == null && (*exec_func.extra_ptr()).func.builtin_fn_index < 0) {
         ctx.result.set_object(promise);
         return;
     }
@@ -376,7 +376,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
         return;
     }
     HObject* resolve_func = resolve_func_raw;
-    resolve_func.extra.func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
+    (*resolve_func.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
     resolve_func.flags.callable = true;
     resolve_func.prototype = heap.function_proto;
     // Store promise reference on the function object
@@ -391,7 +391,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
         return;
     }
     HObject* reject_func = reject_func_raw;
-    reject_func.extra.func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
+    (*reject_func.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
     reject_func.flags.callable = true;
     reject_func.prototype = heap.function_proto;
     reject_func.put_prop(promise_key, promise_ref, hobject::PROP_FLAGS_WEC);
@@ -1095,7 +1095,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    ctor.extra.func.builtin_fn_index = (int)BUILTIN_PROMISE;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE;
 
     // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

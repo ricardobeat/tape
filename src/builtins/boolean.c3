@@ -29,7 +29,7 @@ fn void builtin_boolean(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.bool_proto;
-        obj.extra.prim.primitive_value.set_boolean(b);
+        (*obj.extra_ptr()).prim.primitive_value.set_boolean(b);
         ctx.result.set_object(obj);
     } else {
         ctx.result.set_boolean(b);
@@ -44,8 +44,8 @@ fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
-            obj.extra.prim.primitive_value.is_boolean()) {
-            b = obj.extra.prim.primitive_value.get_boolean();
+            (*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
+            b = (*obj.extra_ptr()).prim.primitive_value.get_boolean();
         }
     } else if (this_val.is_boolean()) {
         b = this_val.get_boolean();
@@ -59,8 +59,8 @@ fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
-            obj.extra.prim.primitive_value.is_boolean()) {
-            ctx.result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
+            (*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
+            ctx.result.set_boolean((*obj.extra_ptr()).prim.primitive_value.get_boolean());
             return;
         }
     } else if (this_val.is_boolean()) {

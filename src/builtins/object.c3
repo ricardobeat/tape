@@ -32,7 +32,7 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         if (catch err = obj_raw) return false;
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.bool_proto;
-        obj.extra.prim.primitive_value.set_boolean(val.get_boolean());
+        (*obj.extra_ptr()).prim.primitive_value.set_boolean(val.get_boolean());
         ctx.result.set_object(obj);
         return true;
     }
@@ -42,7 +42,7 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         if (catch err = obj_raw) return false;
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
-        obj.extra.prim.primitive_value = val;
+        (*obj.extra_ptr()).prim.primitive_value = val;
         ctx.result.set_object(obj);
         return true;
     }
@@ -54,7 +54,7 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
         HString* prim_str = (HString*)val.get_heapptr();
-        obj.extra.prim.primitive_value.set_string(prim_str);
+        (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
@@ -134,7 +134,7 @@ fn void builtin_object(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.bool_proto;
-        obj.extra.prim.primitive_value.set_boolean(arg.get_boolean());
+        (*obj.extra_ptr()).prim.primitive_value.set_boolean(arg.get_boolean());
         ctx.result.set_object(obj);
         return;
     }
@@ -147,7 +147,7 @@ fn void builtin_object(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
-        obj.extra.prim.primitive_value = arg;
+        (*obj.extra_ptr()).prim.primitive_value = arg;
         ctx.result.set_object(obj);
         return;
     }
@@ -162,7 +162,7 @@ fn void builtin_object(BuiltinContext* ctx) {
         obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
         HString* prim_str = (HString*)arg.get_heapptr();
-        obj.extra.prim.primitive_value.set_string(prim_str);
+        (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
         // Set .length own property (ES5 §15.5.5.1)
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
@@ -221,8 +221,8 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
 
     // STRING exotic: integer indices [0, clen) are enumerable own properties
     // synthesised lazily from the primitive value — no materialised slots needed.
-    if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
-        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null) {
             for (uint i = 0; i < prim.clen; i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
@@ -398,8 +398,8 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
 
     // STRING exotic: integer indices [0, clen) are own properties (enumerable by spec).
     // Synthesise them before the named property list so they precede "length".
-    if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
-        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null) {
             for (uint i = 0; i < prim.clen; i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
@@ -822,9 +822,9 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         // If default lookup returned undefined and P is a string index,
         // synthesize a character descriptor with writable:true, enumerable:true, configurable:true.
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string() &&
+            (*obj.extra_ptr()).prim.primitive_value.is_string() &&
             is_numeric && kd.len > 0 && kd.len <= 10) {
-            HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+            HString* prim_str = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
             if (arr_idx < (ulong)prim_str.clen) {
                 uint cp = prim_str.char_at((uint)arr_idx);
                 char[4] cbuf;
@@ -2597,8 +2597,8 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
         return;
     }
     // STRING exotic: integer indices [0, clen) are own properties served lazily.
-    if (obj.flags.exotic_stringobj && key.is_arridx() && obj.extra.prim.primitive_value.is_string()) {
-        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+    if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
         return;
     }
@@ -2636,8 +2636,8 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
         return;
     }
     // STRING exotic: integer indices [0, clen) are enumerable own properties served lazily.
-    if (obj.flags.exotic_stringobj && key.is_arridx() && obj.extra.prim.primitive_value.is_string()) {
-        HString* prim = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+    if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         // Indices in [0, clen) are enumerable per ES5 §15.5.5.1
         ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
         return;
@@ -2769,7 +2769,7 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = obj_raw) return false;
     HObject* obj = obj_raw;
-    obj.extra.func.builtin_fn_index = (int)BUILTIN_OBJECT;
+    (*obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_OBJECT;
 
     // Set .constructor on Object.prototype to point to the actual Object constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

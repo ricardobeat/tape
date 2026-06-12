@@ -387,7 +387,7 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
 fn uint array_get_length(HObject* obj, Heap* heap) {
     // Fast path: ARRAY uses cached array_length field (no prop table walk).
     if (obj.get_class() == ARRAY) {
-        return obj.array_length;
+        return *obj.array_len_ptr();
     }
     // ARGUMENTS and other array-likes: read from prop table.
     if (obj.get_class() == ARGUMENTS) {
@@ -420,7 +420,7 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
 fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
     // Fast path: ARRAY uses cached array_length field + prop table sync.
     if (obj.get_class() == ARRAY) {
-        obj.array_length = len_val;
+        *obj.array_len_ptr() = len_val;
         HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (len_key != null) {
             int idx = obj.find_prop_idx(len_key);
@@ -1591,7 +1591,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
                 items_obj = w;
                 // For strings, set the wrapped primitive value
                 if (items.is_string()) {
-                    items_obj.extra.prim.primitive_value = items;
+                    (*items_obj.extra_ptr()).prim.primitive_value = items;
                 }
                 HString* proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
                 if (proto_key != null && heap.string_proto != null) {
@@ -1727,7 +1727,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = wrapped) { ctx.result.set_undefined(); return; }
         array_like = wrapped;
-        array_like.extra.prim.primitive_value = items;
+        (*array_like.extra_ptr()).prim.primitive_value = items;
     }
 
     // Get .length
@@ -1842,7 +1842,7 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
         HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.BOOLEAN);
         if (try obj = obj_raw) {
             obj.prototype = heap.bool_proto;
-            obj.extra.prim.primitive_value.set_boolean(val.get_boolean());
+            (*obj.extra_ptr()).prim.primitive_value.set_boolean(val.get_boolean());
             return obj;
         }
         return null;
@@ -1852,7 +1852,7 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
         HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.NUMBER);
         if (try obj = obj_raw) {
             obj.prototype = heap.number_proto;
-            obj.extra.prim.primitive_value = val;
+            (*obj.extra_ptr()).prim.primitive_value = val;
             return obj;
         }
         return null;
@@ -1864,7 +1864,7 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
             obj.flags.exotic_stringobj = true;
             obj.prototype = heap.string_proto;
             HString* prim_str = (HString*)val.get_heapptr();
-            obj.extra.prim.primitive_value.set_string(prim_str);
+            (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
             HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
             TVal len_tv;
             len_tv.set_fastint((long)prim_str.clen);
@@ -2329,7 +2329,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = arr_raw) return false;
     HObject* arr = arr_raw;
-    arr.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY;
+    (*arr.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY;
 
     // Set .constructor on Array.prototype to point to the actual Array constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -2398,7 +2398,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY_PROTO_SYMBOL_ITER;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_PROTO_SYMBOL_ITER;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             // Set .name

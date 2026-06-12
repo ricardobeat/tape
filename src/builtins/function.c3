@@ -121,12 +121,12 @@ fn void builtin_function(BuiltinContext* ctx) {
         return;
     }
     HObject* func_obj = func_obj_raw;
-    func_obj.extra.func.comp_func = func;
-    func_obj.extra.func.builtin_fn_index = -1;
+    (*func_obj.extra_ptr()).func.comp_func = func;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
 
     // Use the global environment (per ES5 §15.3.2.1 step 5)
-    func_obj.extra.func.var_env = ctx.global_env;
-    func_obj.extra.func.lex_env = ctx.global_env;
+    (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
+    (*func_obj.extra_ptr()).func.lex_env = ctx.global_env;
 
     // Set the function's .prototype property (standard for JS functions)
     // and its internal [[Prototype]] to Function.prototype
@@ -235,7 +235,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     // For OBJECT downstreams — dispatch directly if BUILTIN_FN, else re-dispatch
     if (downstream.is_object()) {
         HObject* hobj = (HObject*)downstream.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN && hobj.extra.func.builtin_fn_index >= 0) {
+        if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN && (*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
             // Direct dispatch for BUILTIN_FN objects (e.g. Array.prototype.forEach.call(...))
             for (ushort i = 0; i < remaining; i++) {
                 ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
@@ -256,7 +256,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
             inner_ctx.callee_obj = hobj;
             // Also set the this slot in registers for builtins that read ctx.regs[ctx.base_reg - 1]
             ctx.regs[ctx.base_reg - 1] = new_this;
-            builtins::dispatch_builtin((uint)hobj.extra.func.builtin_fn_index, &inner_ctx);
+            builtins::dispatch_builtin((uint)(*hobj.extra_ptr()).func.builtin_fn_index, &inner_ctx);
             return;
         }
         // Fallback: re-dispatch for compiled functions and bound functions
@@ -522,7 +522,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.flags.callable = true;
     bound_obj.flags.is_bound = true;
     bound_obj.prototype = ctx.heap.function_proto;
-    bound_obj.extra.func.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
+    (*bound_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
 
     // Also maintain constructable flag if downstream is constructable
     bool downstream_constructable = false;
@@ -584,8 +584,8 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     int downstream_len = 0;
     if (downstream.is_object()) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
-        if (tobj != null && tobj.extra.func.comp_func != null) {
-            downstream_len = (int)tobj.extra.func.comp_func.num_formals;
+        if (tobj != null && (*tobj.extra_ptr()).func.comp_func != null) {
+            downstream_len = (int)(*tobj.extra_ptr()).func.comp_func.num_formals;
         }
     }
 
@@ -735,7 +735,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
-    func_obj.extra.func.builtin_fn_index = (int)BUILTIN_FUNCTION;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_FUNCTION;
 
     // Create Function.prototype
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);

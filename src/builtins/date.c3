@@ -27,8 +27,8 @@ fn double date_get_time_value(TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.DATE &&
-            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
-            return obj.extra.prim.primitive_value.get_number_or_fastint();
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         }
     }
     return double::nan;
@@ -215,7 +215,7 @@ fn void builtin_date(BuiltinContext* ctx) {
                                         (long)hour, (long)min, (long)sec, (long)ms);
         }
 
-        obj.extra.prim.primitive_value.set_number(time_val);
+        (*obj.extra_ptr()).prim.primitive_value.set_number(time_val);
 
         ctx.result.set_object(obj);
     } else {
@@ -601,7 +601,7 @@ fn double date_time_clip(double t) {
 
 /// Helper: set the ms value on a Date object.
 fn void date_set_ms(HObject* obj, double new_ms) {
-    obj.extra.prim.primitive_value.set_number(new_ms);
+    (*obj.extra_ptr()).prim.primitive_value.set_number(new_ms);
 }
 
 /// Date.prototype.getTimezoneOffset() — ES5 §15.9.5.26
@@ -1217,7 +1217,7 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? date_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = date_raw) return false;
     HObject* date_obj = date_raw;
-    date_obj.extra.func.builtin_fn_index = (int)BUILTIN_DATE;
+    (*date_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_DATE;
 
     // Set Date.prototype on the constructor
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];

@@ -437,7 +437,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    ctor.extra.func.builtin_fn_index = (int)BUILTIN_SYMBOL;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SYMBOL;
 
     // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

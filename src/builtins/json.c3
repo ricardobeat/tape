@@ -609,9 +609,9 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
 
     // Boolean wrapper: just read [[BooleanData]] per spec
     if (cls == ObjClass.BOOLEAN) {
-        if (obj.extra.prim.primitive_value.is_boolean()) {
+        if ((*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
             TVal result;
-            result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
+            result.set_boolean((*obj.extra_ptr()).prim.primitive_value.get_boolean());
             return result;
         }
         return val;
@@ -637,8 +637,8 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
             }
         }
         // No callable toString — fall back to primitive value
-        if (obj.extra.prim.primitive_value.is_string()) {
-            return obj.extra.prim.primitive_value;
+        if ((*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            return (*obj.extra_ptr()).prim.primitive_value;
         }
         return val;
     }
@@ -664,7 +664,7 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
             }
         }
         // Fallback: primitive value
-        return obj.extra.prim.primitive_value;
+        return (*obj.extra_ptr()).prim.primitive_value;
     }
 
     return val;
@@ -1299,8 +1299,8 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                 }
                             }
                             // Fallback: primitive value
-                            if (str_key == null && eobj.extra.prim.primitive_value.is_string()) {
-                                str_key = (HString*)eobj.extra.prim.primitive_value.get_heapptr();
+                            if (str_key == null && (*eobj.extra_ptr()).prim.primitive_value.is_string()) {
+                                str_key = (HString*)(*eobj.extra_ptr()).prim.primitive_value.get_heapptr();
                             }
                         } else if (eobj.get_class() == ObjClass.NUMBER) {
                             // ToString(value): call toString() to respect overrides
@@ -1330,7 +1330,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                             }
                             // Fallback: primitive value
                             if (str_key == null) {
-                                TVal pv = eobj.extra.prim.primitive_value;
+                                TVal pv = (*eobj.extra_ptr()).prim.primitive_value;
                                 if (pv.is_fastint()) {
                                     str_key = ctx.heap.int_to_hstring(pv.get_fastint());
                                 } else if (pv.is_number()) {
@@ -1399,7 +1399,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                     }
                 }
                 if (space_arg.is_object() && space_arg.get_heapptr() != null) {
-                    space_arg = sobj.extra.prim.primitive_value;
+                    space_arg = (*sobj.extra_ptr()).prim.primitive_value;
                 }
             } else if (sobj.get_class() == ObjClass.STRING) {
                 // ToString(space) → call toString()
@@ -1421,8 +1421,8 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                     }
                 }
                 if (space_arg.is_object() && space_arg.get_heapptr() != null &&
-                    sobj.extra.prim.primitive_value.is_string()) {
-                    space_arg = sobj.extra.prim.primitive_value;
+                    (*sobj.extra_ptr()).prim.primitive_value.is_string()) {
+                    space_arg = (*sobj.extra_ptr()).prim.primitive_value;
                 }
             }
         }

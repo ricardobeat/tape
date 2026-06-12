@@ -395,6 +395,26 @@ union HObjectExtra {
 ///
 /// Property storage uses QuickJS-style shapes: property names and flags
 /// live in the shared Shape, objects only store values.
+/// Common prefix of all HObject variants.  Every object starts with these fields,
+/// allowing the GC to walk linked lists and access shapes/properties at fixed offsets.
+/// Plain objects (OBJECT, ERROR, ARGUMENTS, PROXY) allocate only this prefix (72 bytes).
+/// Other classes add trailing data after HObjectBase.
+struct HObjectBase {
+    ObjFlags      flags;
+    uint          refcount;
+    HeapHeader*   next;
+    HeapHeader*   prev;
+    HObject*      prototype;
+    ushort        shape_id;
+    Shape*        shape;
+    ushort        prop_capacity;
+    ushort        prop_count;
+    ushort        array_size;
+    ushort        array_used;
+    void*         prop_alloc;
+    PropHashInfo* prop_hash;
+}
+
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
     ObjFlags      flags;
@@ -441,6 +461,42 @@ struct HObject {
     // --- Array length shadow cache -----------------------------------------
     /// Cached array length for fast reads. Synced by put_prop and SETALEN.
     uint          array_length;
+}
+
+// ============================================================================
+// HObject — Per-class allocation sizes and trailing-data accessors
+// ============================================================================
+
+/// Allocation size for each object class.
+/// Plain objects allocate only HObjectBase (72 bytes).
+/// ARRAY adds 8 bytes for array_length.
+/// All others add HObjectExtra (32 bytes) for subtype-specific fields.
+fn usz alloc_size_for_class(ObjClass cls) @inline {
+    switch (cls) {
+        case ObjClass.OBJECT:
+        case ObjClass.ERROR:
+        case ObjClass.ARGUMENTS:
+        case ObjClass.PROXY:
+            return HObjectBase::size;
+        case ObjClass.ARRAY:
+            return HObjectBase::size + 8;  // array_length + 4 pad
+        default:
+            return HObjectBase::size + HObjectExtra::size;
+    }
+}
+
+/// Accessor for subtype-specific fields.  Returns a reference to the
+/// HObjectExtra union at offset HObjectBase::size from the object.
+/// Valid for FUNCTION, GENERATOR, REGEXP, BOOLEAN, NUMBER, STRING, DATE,
+/// THREAD, and *_ITERATOR classes.
+fn HObjectExtra* HObject.extra_ptr(&self) @inline {
+    return (HObjectExtra*)((char*)self + HObjectBase::size);
+}
+
+/// Accessor for array_length.  Returns a pointer to the uint at offset
+/// HObjectBase::size.  Only valid for ARRAY objects (flags.exotic_array).
+fn uint* HObject.array_len_ptr(&self) @inline {
+    return (uint*)((char*)self + HObjectBase::size);
 }
 
 // ============================================================================
@@ -498,8 +554,8 @@ fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 /// Infer the callable kind from existing fields — no stored field needed.
 fn CallableKind HObject.callable_kind(&self) @inline {
     if (self.flags.is_bound) return CallableKind.BOUND_FN;
-    if (self.extra.func.builtin_fn_index >= 0) return CallableKind.BUILTIN_FN;
-    if (self.extra.func.comp_func != null) return CallableKind.COMPILED_FN;
+    if ((*self.extra_ptr()).func.builtin_fn_index >= 0) return CallableKind.BUILTIN_FN;
+    if ((*self.extra_ptr()).func.comp_func != null) return CallableKind.COMPILED_FN;
     return CallableKind.OTHER;
 }
 
@@ -827,9 +883,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
         if (self.flags.exotic_array && key == builtin_length_key) {
             if (val.is_fastint()) {
-                self.array_length = (uint)val.get_fastint();
+                *self.array_len_ptr() = (uint)val.get_fastint();
             } else if (val.is_number()) {
-                self.array_length = (uint)val.get_number();
+                *self.array_len_ptr() = (uint)val.get_number();
             }
         }
         // Sync numeric-string keys into the dense array part so that both
@@ -842,8 +898,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             HString* ks = (HString*)key;
             if (ks.is_arridx()) {
                 self.set_array_idx(ks.arridx, val);
-                if (ks.arridx >= self.array_length) {
-                    self.array_length = ks.arridx + 1;
+                if (ks.arridx >= *self.array_len_ptr()) {
+                    *self.array_len_ptr() = ks.arridx + 1;
                 }
             }
         }
@@ -873,9 +929,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
     if (self.flags.exotic_array && key == builtin_length_key) {
         if (val.is_fastint()) {
-            self.array_length = (uint)val.get_fastint();
+            *self.array_len_ptr() = (uint)val.get_fastint();
         } else if (val.is_number()) {
-            self.array_length = (uint)val.get_number();
+            *self.array_len_ptr() = (uint)val.get_number();
         }
     }
 
@@ -885,8 +941,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         HString* ks = (HString*)key;
         if (ks.is_arridx()) {
             self.set_array_idx(ks.arridx, val);
-            if (ks.arridx >= self.array_length) {
-                self.array_length = ks.arridx + 1;
+            if (ks.arridx >= *self.array_len_ptr()) {
+                *self.array_len_ptr() = ks.arridx + 1;
             }
         }
     }
@@ -1203,12 +1259,13 @@ fn void HObject.grow_array(&self, uint new_size) {
 ///
 /// Returns `null` on allocation failure.
 fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
-    void* raw = ((heap::Heap*)heap_ptr).alloc(HObject::size) ?? null;
+    usz alloc_sz = alloc_size_for_class(cls);
+    void* raw = ((heap::Heap*)heap_ptr).alloc(alloc_sz) ?? null;
     if (raw == null) {
         return OBJ_ALLOC_FAULT~;
     }
 
-    libc::memset(raw, 0, HObject::size);
+    libc::memset(raw, 0, alloc_sz);
 
     HObject* obj = (HObject*)raw;
 
@@ -1224,16 +1281,16 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     if (cls == ObjClass.FUNCTION) {
         obj.flags.callable      = true;
         obj.flags.constructable = true;
+        (*obj.extra_ptr()).func.builtin_fn_index = -1;
     } else if (cls == ObjClass.ARRAY) {
         obj.flags.exotic_array = true;
-        obj.array_length = 0;
+        obj.array_len_ptr()[0] = 0;
     } else if (cls == ObjClass.ARGUMENTS) {
         obj.flags.exotic_arguments = true;
     } else if (cls == ObjClass.PROXY) {
         obj.flags.exotic_proxyobj = true;
     }
 
-    obj.extra.func.builtin_fn_index = -1;
     obj.shape_id = 0;
     obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
     return obj;
@@ -1247,9 +1304,9 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 fn void hobject_free(HObject* obj) {
     if (obj == null) { return; }
 
-    if (obj.flags.obj_class == ObjClass.REGEXP && obj.extra.regexp.regexp_data != null) {
-        re_bindings::re_free(obj.extra.regexp.regexp_data);
-        obj.extra.regexp.regexp_data = null;
+    if (obj.flags.obj_class == ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
+        re_bindings::re_free((*obj.extra_ptr()).regexp.regexp_data);
+        (*obj.extra_ptr()).regexp.regexp_data = null;
     }
 
     // Free the per-object property hash table.

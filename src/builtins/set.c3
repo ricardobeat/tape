@@ -226,14 +226,14 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    HObject* target = iter.extra.iter.target;
+    HObject* target = (*iter.extra_ptr()).iter.target;
     if (target == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    uint idx = iter.extra.iter.index;
-    uint kind = iter.extra.iter.kind;
+    uint idx = (*iter.extra_ptr()).iter.index;
+    uint kind = (*iter.extra_ptr()).iter.kind;
 
     bool done = false;
     TVal value;
@@ -263,7 +263,7 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
                     value.set_object(pair);
                 }
             }
-            iter.extra.iter.index += 1;
+            (*iter.extra_ptr()).iter.index += 1;
         } else {
             done = true;
         }
@@ -353,7 +353,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (catch err = fn_raw) return false;
         HObject* fn_obj = fn_raw;
-        fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_SET_PROTO_SYMBOL_ITER;
+        (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET_PROTO_SYMBOL_ITER;
         fn_obj.flags.callable = true;
         fn_obj.prototype = heap.function_proto;
         // Set .name
@@ -394,7 +394,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    ctor.extra.func.builtin_fn_index = (int)BUILTIN_SET;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET;
 
     // Set .constructor on Set.prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

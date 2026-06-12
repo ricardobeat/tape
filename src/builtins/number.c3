@@ -21,8 +21,8 @@ fn double number_proto_get_this(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
-            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
-            return obj.extra.prim.primitive_value.get_number_or_fastint();
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         }
     } else if (this_val.is_number()) {
         return this_val.get_number();
@@ -83,7 +83,7 @@ fn void builtin_number(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
-        obj.extra.prim.primitive_value = num;
+        (*obj.extra_ptr()).prim.primitive_value = num;
         ctx.result.set_object(obj);
     } else {
         if (num.is_fastint()) {
@@ -340,11 +340,11 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
-            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
-            if (obj.extra.prim.primitive_value.is_fastint()) {
-                ctx.result.set_fastint(obj.extra.prim.primitive_value.get_fastint());
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            if ((*obj.extra_ptr()).prim.primitive_value.is_fastint()) {
+                ctx.result.set_fastint((*obj.extra_ptr()).prim.primitive_value.get_fastint());
             } else {
-                ctx.result.set_number(obj.extra.prim.primitive_value.get_number());
+                ctx.result.set_number((*obj.extra_ptr()).prim.primitive_value.get_number());
             }
             return;
         }
@@ -477,7 +477,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? num_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
-    num.extra.func.builtin_fn_index = (int)BUILTIN_NUMBER;
+    (*num.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_NUMBER;
 
     // Set .constructor on Number.prototype to point to the actual Number object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

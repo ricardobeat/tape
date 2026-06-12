@@ -751,21 +751,21 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
         hobject::ObjClass cls = obj.get_class();
         // Fast path: wrapper objects unwrap directly
         if (cls == hobject::ObjClass.BOOLEAN &&
-            obj.extra.prim.primitive_value.is_boolean()) {
+            (*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
             TVal result;
-            result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
+            result.set_boolean((*obj.extra_ptr()).prim.primitive_value.get_boolean());
             return result;
         }
         if (cls == hobject::ObjClass.NUMBER &&
-            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
             TVal result;
-            result.set_number(obj.extra.prim.primitive_value.get_number_or_fastint());
+            result.set_number((*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string()) {
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
             TVal result;
-            result.set_string(obj.extra.prim.primitive_value.get_heapptr());
+            result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return result;
         }
         // Check Symbol.toPrimitive (ES6 §7.1.1)
@@ -897,8 +897,8 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
         // STRING exotic: enumerate integer indices [0, clen) from the primitive value
         // before the named property list so index order matches the spec.
-        if (cur.flags.exotic_stringobj && cur.extra.prim.primitive_value.is_string()) {
-            HString* prim = (HString*)cur.extra.prim.primitive_value.get_heapptr();
+        if (cur.flags.exotic_stringobj && (*cur.extra_ptr()).prim.primitive_value.is_string()) {
+            HString* prim = (HString*)(*cur.extra_ptr()).prim.primitive_value.get_heapptr();
             if (prim != null) {
                 for (uint i = 0; i < prim.clen; i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
@@ -1147,10 +1147,10 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
         // Nothing special needed for var_env/lex_env
     } else if (func_val.is_object()) {
         HObject* hobj = (HObject*)func_val.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.extra.func.comp_func != null) {
-            target_func = hobj.extra.func.comp_func;
-            var_env = hobj.extra.func.var_env;
-            lex_env = hobj.extra.func.lex_env;
+        if (hobj != null && hobj.is_callable() && (*hobj.extra_ptr()).func.comp_func != null) {
+            target_func = (*hobj.extra_ptr()).func.comp_func;
+            var_env = (*hobj.extra_ptr()).func.var_env;
+            lex_env = (*hobj.extra_ptr()).func.lex_env;
         } else {
             return false;
         }
@@ -1225,8 +1225,8 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
 
     // Fast path: builtin function getter — call directly, no JS frame needed
     if (func_obj.callable_kind() == hobject::CallableKind.BUILTIN_FN &&
-        func_obj.extra.func.builtin_fn_index >= 0) {
-        uint fn_idx = (uint)func_obj.extra.func.builtin_fn_index;
+        (*func_obj.extra_ptr()).func.builtin_fn_index >= 0) {
+        uint fn_idx = (uint)(*func_obj.extra_ptr()).func.builtin_fn_index;
         TVal[1] temp_regs;
         temp_regs[0] = *this_val;  // this at regs[base_reg - 1] = regs[0]
         builtins::BuiltinContext ctx;
@@ -1256,7 +1256,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
         return false;
     }
 
-    CompiledFunction* target = func_obj.extra.func.comp_func;
+    CompiledFunction* target = (*func_obj.extra_ptr()).func.comp_func;
     if (target == null) return false;
 
     // Set up call frame: callee_reg = result_reg (we reuse it)
@@ -1287,8 +1287,8 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.max_heap_reg = 0;
     new_act.caller_valstack_top = vm.valstack_top;
 
-    EnvRecord* invoke_getter_var_env = func_obj.extra.func.var_env;
-    if (try fv_ig = env::env_create_function_scope(vm.heap, func_obj.extra.func.var_env)) { invoke_getter_var_env = fv_ig; }
+    EnvRecord* invoke_getter_var_env = (*func_obj.extra_ptr()).func.var_env;
+    if (try fv_ig = env::env_create_function_scope(vm.heap, (*func_obj.extra_ptr()).func.var_env)) { invoke_getter_var_env = fv_ig; }
     new_act.parent = act;
     new_act.func = target;
     new_act.var_env = invoke_getter_var_env;
@@ -1568,7 +1568,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
         if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
-            uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+            uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
 
             uint total = 1 + nargs;
             if (total > 16) total = 16;
@@ -1602,8 +1602,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 3: compiled function on HObject
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.extra.func.comp_func != null) {
-            CompiledFunction* target = hobj.extra.func.comp_func;
+        if (hobj != null && hobj.is_callable() && (*hobj.extra_ptr()).func.comp_func != null) {
+            CompiledFunction* target = (*hobj.extra_ptr()).func.comp_func;
             uint nregs = target.num_regs;
 
             // Grow the valstack first (while activation_count is still the
@@ -1629,8 +1629,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             // Set up activation[0] for the function
             Activation* act = &vm.activations[0];
             vm.activation_count = 1;
-            EnvRecord* cfn_var_env = hobj.extra.func.var_env;
-            if (try fv_cfn = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { cfn_var_env = fv_cfn; }
+            EnvRecord* cfn_var_env = (*hobj.extra_ptr()).func.var_env;
+            if (try fv_cfn = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { cfn_var_env = fv_cfn; }
             act.func = target;
             act.parent = null;
             act.var_env = cfn_var_env;
@@ -2946,10 +2946,10 @@ fn TVal? Vm.run(Vm* vm) {
             void* key = get_prop_key(vm, rb);
             if (key != null) {
                 // STRING exotic: integer index keys in [0, clen) are own properties served lazily.
-                if (obj.flags.exotic_stringobj && obj.extra.prim.primitive_value.is_string()) {
+                if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
                     HString* key_hstr = (HString*)key;
                     if (key_hstr != null && key_hstr.is_arridx()) {
-                        HString* prim_str = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+                        HString* prim_str = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
                         if (prim_str != null && key_hstr.arridx < prim_str.clen) {
                             ra.set_boolean(true);
                             break;
@@ -3035,7 +3035,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // ARRAY exotic: .length fast path — return array_length directly
                 if (hobj.get_class() == hobject::ObjClass.ARRAY && rc.is_string() && rc.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                    ra.set_fastint((long)hobj.array_length);
+                    ra.set_fastint((long)*hobj.array_len_ptr());
                     break;
                 }
 
@@ -3049,7 +3049,7 @@ fn TVal? Vm.run(Vm* vm) {
                     // STRING exotic: indexed access reads characters lazily from the primitive value.
                     // Handles both fastint/number keys (e.g. s[0]) and array-index string keys
                     // (e.g. s["0"]), avoiding the need to materialise per-character own properties.
-                    if (hobj.flags.exotic_stringobj && hobj.extra.prim.primitive_value.is_string()) {
+                    if (hobj.flags.exotic_stringobj && (*hobj.extra_ptr()).prim.primitive_value.is_string()) {
                         long sidx = -1;
                         if (rc.is_fastint()) {
                             sidx = rc.get_fastint();
@@ -3064,7 +3064,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                         }
                         if (sidx >= 0) {
-                            HString* prim_str = (HString*)hobj.extra.prim.primitive_value.get_heapptr();
+                            HString* prim_str = (HString*)(*hobj.extra_ptr()).prim.primitive_value.get_heapptr();
                             if (sidx < (long)prim_str.clen) {
                                 uint cp = prim_str.char_at((uint)sidx);
                                 char[4] sbuf;
@@ -3338,7 +3338,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                     // ARRAY exotic: .length fast path
                     if (hobj.get_class() == hobject::ObjClass.ARRAY && (void*)key_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                        ra.set_fastint((long)hobj.array_length);
+                        ra.set_fastint((long)*hobj.array_len_ptr());
                         break;
                     }
 
@@ -3350,10 +3350,10 @@ fn TVal? Vm.run(Vm* vm) {
                             break;
                         }
                         // STRING exotic: string-key indexed access (array-index string keys like "0")
-                        if (hobj.flags.exotic_stringobj && hobj.extra.prim.primitive_value.is_string()) {
+                        if (hobj.flags.exotic_stringobj && (*hobj.extra_ptr()).prim.primitive_value.is_string()) {
                             if (key_hstr != null && key_hstr.is_arridx()) {
                                 long sidx = (long)key_hstr.arridx;
-                                HString* prim_str = (HString*)hobj.extra.prim.primitive_value.get_heapptr();
+                                HString* prim_str = (HString*)(*hobj.extra_ptr()).prim.primitive_value.get_heapptr();
                                 if (sidx < (long)prim_str.clen) {
                                     uint cp = prim_str.char_at((uint)sidx);
                                     char[4] sbuf;
@@ -3565,8 +3565,8 @@ fn TVal? Vm.run(Vm* vm) {
                         uint idx = (uint)idx_long;
                         hobj.set_array_idx(idx, *rc);
                         // Update .length fast: use array_length field directly (ARRAY only)
-                        if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= hobj.array_length) {
-                            hobj.array_length = idx + 1;
+                        if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= *hobj.array_len_ptr()) {
+                            *hobj.array_len_ptr() = idx + 1;
                         }
                         break;
                     }
@@ -3595,7 +3595,7 @@ fn TVal? Vm.run(Vm* vm) {
                     } else if (rc.is_number()) {
                         new_len = (uint)rc.get_number();
                     }
-                    hobj.array_length = new_len;
+                    *hobj.array_len_ptr() = new_len;
                     // Also update the prop table for spec correctness
                     HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                     int len_slot = hobj.find_prop_idx(len_str);
@@ -3623,8 +3623,8 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal setter_fn = entry.setter;
                             if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
                                 HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
-                                if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
-                                    CompiledFunction* target = setter_obj.extra.func.comp_func;
+                                if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
+                                    CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
 
                                     uint callee_reg = (uint)insn.a + 1;
                                     uint frame_start = callee_reg + 2;
@@ -3646,8 +3646,8 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_act.max_heap_reg = 0;
                                         new_act.caller_valstack_top = vm.valstack_top;
 
-                                        EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
-                                        if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
+                                        EnvRecord* setter_var_env = (*setter_obj.extra_ptr()).func.var_env;
+                                        if (try fv_s = env::env_create_function_scope(vm.heap, (*setter_obj.extra_ptr()).func.var_env)) { setter_var_env = fv_s; }
                                         new_act.parent = act;
                                         new_act.func = target;
                                         new_act.var_env = setter_var_env;
@@ -3703,8 +3703,8 @@ fn TVal? Vm.run(Vm* vm) {
                         if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
                             // Invoke setter from prototype
                             HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
-                            if (setter_obj.is_callable() && setter_obj.extra.func.comp_func != null) {
-                                CompiledFunction* target = setter_obj.extra.func.comp_func;
+                            if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
+                                CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
 
                                 uint callee_reg = (uint)insn.a + 1;
                                 uint frame_start = callee_reg + 2;
@@ -3726,8 +3726,8 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_act.max_heap_reg = 0;
                                     new_act.caller_valstack_top = vm.valstack_top;
 
-                                    EnvRecord* setter_var_env = setter_obj.extra.func.var_env;
-                                    if (try fv_s = env::env_create_function_scope(vm.heap, setter_obj.extra.func.var_env)) { setter_var_env = fv_s; }
+                                    EnvRecord* setter_var_env = (*setter_obj.extra_ptr()).func.var_env;
+                                    if (try fv_s = env::env_create_function_scope(vm.heap, (*setter_obj.extra_ptr()).func.var_env)) { setter_var_env = fv_s; }
                                     new_act.parent = act;
                                     new_act.func = target;
                                     new_act.var_env = setter_var_env;
@@ -3917,11 +3917,11 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
-                                obj.extra.regexp.regexp_data = compiled;
-                                obj.extra.regexp.flags = js_flags;
+                                (*obj.extra_ptr()).regexp.regexp_data = compiled;
+                                (*obj.extra_ptr()).regexp.flags = js_flags;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.extra.prim.primitive_value.set_string(pattern_hs);
+                                (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);
                                 // Set lastIndex (ES5 §15.10.7) — only own data property
                                 HString* lastindex_key = intern_string(vm, "lastIndex");
                                 TVal lastindex_tv;
@@ -3940,10 +3940,10 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
                             if (try obj = obj_raw) {
                                 obj.prototype = vm.heap.regexp_proto;
-                                obj.extra.regexp.regexp_data = null;
-                                obj.extra.regexp.flags = js_flags;
+                                (*obj.extra_ptr()).regexp.regexp_data = null;
+                                (*obj.extra_ptr()).regexp.flags = js_flags;
                                 HString* pattern_hs = intern_string(vm, pattern_data);
-                                obj.extra.prim.primitive_value.set_string(pattern_hs);
+                                (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);
                                 ra.set_object(obj);
                                 track_heap_store(act, ra, (uint)insn.a);
                             } else {
@@ -3967,7 +3967,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 uint count = insn.get_bc();
-                hobj.array_length = count;
+                *hobj.array_len_ptr() = count;
                 HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_val;
                 len_val.set_fastint((long)count);
@@ -4220,7 +4220,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (func_val.is_object()) {
                 HObject* hobj_fast = (HObject*)func_val.get_heapptr();
                 if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.callable_kind() == hobject::CallableKind.COMPILED_FN) {
-                    CompiledFunction* target_fast = hobj_fast.extra.func.comp_func;
+                    CompiledFunction* target_fast = (*hobj_fast.extra_ptr()).func.comp_func;
                     if (target_fast == null) { regs_base[result_reg].set_undefined(); break; }
                     if (!target_fast.is_generator()) {
 
@@ -4255,10 +4255,10 @@ fn TVal? Vm.run(Vm* vm) {
                     // Skip env allocation when the callee has no local bindings —
                     // the parent's env is sufficient (no var hoisting needed).
                     if (target_fast.needs_env()) {
-                        fast_var_env = hobj_fast.extra.func.var_env;
-                        if (try fv_f = env::env_create_function_scope(vm.heap, hobj_fast.extra.func.var_env)) { fast_var_env = fv_f; }
+                        fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
+                        if (try fv_f = env::env_create_function_scope(vm.heap, (*hobj_fast.extra_ptr()).func.var_env)) { fast_var_env = fv_f; }
                     } else {
-                        fast_var_env = hobj_fast.extra.func.var_env;
+                        fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
                     }
                     if (fast_var_env == null) {
                         regs_base[result_reg].set_undefined();
@@ -4485,8 +4485,8 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Handle bound function objects — dispatch to builtin_bound_call
             if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
-                if (hobj.extra.func.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -4522,8 +4522,8 @@ fn TVal? Vm.run(Vm* vm) {
                     break;
                 }
             } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
-                if (hobj.extra.func.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -4554,7 +4554,7 @@ fn TVal? Vm.run(Vm* vm) {
                         nargs = ctx.re_nargs;
                         // Only support re-dispatch to compiled functions from here;
                         // if the target is another builtin, just break
-                        if (hobj.extra.func.comp_func != null) {
+                        if ((*hobj.extra_ptr()).func.comp_func != null) {
                             // Continue to compiled function handling below (skip error)
                         } else {
                             break;
@@ -4590,7 +4590,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             }
 
-            CompiledFunction* target = hobj.extra.func.comp_func;
+            CompiledFunction* target = (*hobj.extra_ptr()).func.comp_func;
 
             // === Generator function handling (ES6 §25.3) ===
             if (target.is_generator()) {
@@ -4690,8 +4690,8 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.func = target;
                 gs.num_regs = target.num_regs;
                 gs.saved_pc = target.code;
-                gs.var_env = hobj.extra.gen.var_env;
-                gs.lex_env = hobj.extra.gen.lex_env;
+                gs.var_env = (*hobj.extra_ptr()).gen.var_env;
+                gs.lex_env = (*hobj.extra_ptr()).gen.lex_env;
                 vm.heap.tval_copy_ref(&gs.this_binding, &regs_base[callee_reg + 1]);
 
                 // Allocate and copy saved registers
@@ -4755,7 +4755,7 @@ fn TVal? Vm.run(Vm* vm) {
                     break;
                 }
                 gen_obj.prototype = vm.heap.generator_proto;
-                gen_obj.extra.gen.generator_data = gs;
+                (*gen_obj.extra_ptr()).gen.generator_data = gs;
 
                 // Return generator object as the call result
                 TVal* result_slot = regs_base + result_reg;
@@ -4788,9 +4788,9 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.max_heap_reg = 0;
             new_act.caller_valstack_top = vm.valstack_top;
 
-            EnvRecord* call_var_env2 = hobj.extra.func.var_env;
+            EnvRecord* call_var_env2 = (*hobj.extra_ptr()).func.var_env;
             if (target.needs_env()) {
-                if (try fv_c2 = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { call_var_env2 = fv_c2; }
+                if (try fv_c2 = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { call_var_env2 = fv_c2; }
             }
             new_act.parent = act;
             new_act.func = target;
@@ -4993,8 +4993,8 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Handle builtin super constructors
             if (super_hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
-                if (super_hobj.extra.func.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)super_hobj.extra.func.builtin_fn_index;
+                if ((*super_hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)(*super_hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -5013,7 +5013,7 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            CompiledFunction* super_target = super_hobj.extra.func.comp_func;
+            CompiledFunction* super_target = (*super_hobj.extra_ptr()).func.comp_func;
 
             // Set up activation frame for superclass constructor
             // The 'this' slot should already have new_target (set by caller)
@@ -5040,8 +5040,8 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.max_heap_reg = 0;
             new_act.caller_valstack_top = vm.valstack_top;
 
-            EnvRecord* super_var_env = super_hobj.extra.func.var_env;
-            if (try fv_su = env::env_create_function_scope(vm.heap, super_hobj.extra.func.var_env)) { super_var_env = fv_su; }
+            EnvRecord* super_var_env = (*super_hobj.extra_ptr()).func.var_env;
+            if (try fv_su = env::env_create_function_scope(vm.heap, (*super_hobj.extra_ptr()).func.var_env)) { super_var_env = fv_su; }
             new_act.parent = act;
             new_act.func = super_target;
             new_act.var_env = super_var_env;
@@ -5212,8 +5212,8 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Handle bound function objects — dispatch to builtin_bound_call
             if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
-                if (hobj.extra.func.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -5249,8 +5249,8 @@ fn TVal? Vm.run(Vm* vm) {
                     break;
                 }
             } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
-                if (hobj.extra.func.builtin_fn_index >= 0) {
-                    uint fn_idx = (uint)hobj.extra.func.builtin_fn_index;
+                if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -5300,7 +5300,7 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
-            CompiledFunction* target = hobj.extra.func.comp_func;
+            CompiledFunction* target = (*hobj.extra_ptr()).func.comp_func;
 
             // Arrow functions cannot be used as constructors (ES6 §14.2.2)
             if (target.is_arrow()) {
@@ -5374,8 +5374,8 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.max_heap_reg = 0;
             new_act.caller_valstack_top = vm.valstack_top;
 
-            EnvRecord* ctor_var_env = hobj.extra.func.var_env;
-            if (try fv_ct = env::env_create_function_scope(vm.heap, hobj.extra.func.var_env)) { ctor_var_env = fv_ct; }
+            EnvRecord* ctor_var_env = (*hobj.extra_ptr()).func.var_env;
+            if (try fv_ct = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { ctor_var_env = fv_ct; }
             new_act.parent = act;
             new_act.func = target;
             new_act.var_env = ctor_var_env;
@@ -6325,9 +6325,9 @@ fn TVal? Vm.run(Vm* vm) {
                     func_obj.prototype = vm.heap.function_proto;
                     func_obj.flags.callable = true;
                     func_obj.flags.constructable = template.is_constructable();
-                    func_obj.extra.func.comp_func = template;
-                    func_obj.extra.func.var_env = act.var_env;
-                    func_obj.extra.func.lex_env = act.lex_env;
+                    (*func_obj.extra_ptr()).func.comp_func = template;
+                    (*func_obj.extra_ptr()).func.var_env = act.var_env;
+                    (*func_obj.extra_ptr()).func.lex_env = act.lex_env;
 
                     // Set .name property (ES6 §14.1.20: non-writable, non-enumerable, configurable)
                     // Always set name — anonymous functions get "" per spec
@@ -6433,7 +6433,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.extra.prim.primitive_value.set_boolean(ra.get_boolean());
+                (*obj.extra_ptr()).prim.primitive_value.set_boolean(ra.get_boolean());
             } else if (ra.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { rb.set_null(); break; }
@@ -6441,7 +6441,7 @@ fn TVal? Vm.run(Vm* vm) {
                 obj.flags.exotic_stringobj = true;
                 obj.prototype = vm.heap.string_proto;
                 HString* prim_str = (HString*)ra.get_heapptr();
-                obj.extra.prim.primitive_value.set_string(prim_str);
+                (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
                 // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable.
                 // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
@@ -6453,7 +6453,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { rb.set_null(); break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                vm.heap.tval_copy_ref(&obj.extra.prim.primitive_value, ra);
+                vm.heap.tval_copy_ref(&(*obj.extra_ptr()).prim.primitive_value, ra);
             } else {
                 rb.set_null();
                 break;
@@ -6736,7 +6736,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.bool_proto;
-                obj.extra.prim.primitive_value.set_boolean(obj_val.get_boolean());
+                (*obj.extra_ptr()).prim.primitive_value.set_boolean(obj_val.get_boolean());
             } else if (obj_val.is_string()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
                 if (catch _err = wrapped) { break; }
@@ -6744,7 +6744,7 @@ fn TVal? Vm.run(Vm* vm) {
                 obj.flags.exotic_stringobj = true;
                 obj.prototype = vm.heap.string_proto;
                 HString* prim_str = (HString*)obj_val.get_heapptr();
-                obj.extra.prim.primitive_value.set_string(prim_str);
+                (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
                 // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable.
                 // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
@@ -6756,7 +6756,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (catch _err = wrapped) { break; }
                 obj = wrapped;
                 obj.prototype = vm.heap.number_proto;
-                vm.heap.tval_copy_ref(&obj.extra.prim.primitive_value, &obj_val);
+                vm.heap.tval_copy_ref(&(*obj.extra_ptr()).prim.primitive_value, &obj_val);
             } else {
                 // POINTER or BUFFER
                 break;
@@ -6777,7 +6777,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Pop the current with-env from the scope chain.
             // NOTE: we do NOT free the env record here because a closure
             // created inside the `with` block may have captured it via
-            // func_obj.extra.func.var_env = act.var_env (see CLOSURE opcode).
+            // (*func_obj.extra_ptr()).func.var_env = act.var_env (see CLOSURE opcode).
             // Freeing it would leave a dangling pointer in the closure
             // and crash on subsequent env_get calls.
             if (act.var_env != null && act.var_env.parent != null) {

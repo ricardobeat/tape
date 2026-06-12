@@ -194,12 +194,12 @@ fn void builtin_eval(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.comp_func = func;
-    func_obj.extra.func.builtin_fn_index = -1;
+    (*func_obj.extra_ptr()).func.comp_func = func;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
 
     // For eval, use the global environment
-    func_obj.extra.func.var_env = ctx.global_env;
-    func_obj.extra.func.lex_env = ctx.global_env;
+    (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
+    (*func_obj.extra_ptr()).func.lex_env = ctx.global_env;
 
     // Replace the callee slot with the compiled function HObject
     TVal func_tv;

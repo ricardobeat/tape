@@ -1417,38 +1417,38 @@ fn void Heap.drain_gray(&self) {
         switch (obj.flags.obj_class) {
             case ObjClass.FUNCTION:
             case ObjClass.THREAD:
-                if (obj.extra.func.var_env != null && obj.extra.func.var_env.bindings != null) {
-                    self.mark_hobject(obj.extra.func.var_env.bindings);
+                if ((*obj.extra_ptr()).func.var_env != null && (*obj.extra_ptr()).func.var_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).func.var_env.bindings);
                 }
-                if (obj.extra.func.lex_env != null && obj.extra.func.lex_env.bindings != null) {
-                    self.mark_hobject(obj.extra.func.lex_env.bindings);
+                if ((*obj.extra_ptr()).func.lex_env != null && (*obj.extra_ptr()).func.lex_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).func.lex_env.bindings);
                 }
                 break;
             case ObjClass.GENERATOR:
-                if (obj.extra.gen.var_env != null && obj.extra.gen.var_env.bindings != null) {
-                    self.mark_hobject(obj.extra.gen.var_env.bindings);
+                if ((*obj.extra_ptr()).gen.var_env != null && (*obj.extra_ptr()).gen.var_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).gen.var_env.bindings);
                 }
-                if (obj.extra.gen.lex_env != null && obj.extra.gen.lex_env.bindings != null) {
-                    self.mark_hobject(obj.extra.gen.lex_env.bindings);
+                if ((*obj.extra_ptr()).gen.lex_env != null && (*obj.extra_ptr()).gen.lex_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).gen.lex_env.bindings);
                 }
                 break;
             case ObjClass.BOOLEAN:
             case ObjClass.NUMBER:
             case ObjClass.STRING:
             case ObjClass.DATE:
-                self.mark_tval(&obj.extra.prim.primitive_value);
+                self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
                 break;
             case ObjClass.ARRAY_ITERATOR:
             case ObjClass.MAP_ITERATOR:
             case ObjClass.SET_ITERATOR:
                 // Mark the iterated object (extra.iter.target, active only for
                 // these three iterator classes — not STRING_ITERATOR).
-                if (obj.extra.iter.target != null) {
-                    self.mark_hobject(obj.extra.iter.target);
+                if ((*obj.extra_ptr()).iter.target != null) {
+                    self.mark_hobject((*obj.extra_ptr()).iter.target);
                 }
                 break;
             case ObjClass.STRING_ITERATOR:
-                self.mark_tval(&obj.extra.prim.primitive_value);
+                self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
                 break;
             default:
                 break;
