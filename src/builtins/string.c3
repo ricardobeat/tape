@@ -1032,11 +1032,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     if (is_regexp_object(search_val)) {
         HObject* rx = (HObject*)search_val.get_heapptr();
 
-        HString* global_key = builtin_intern_string(ctx.heap, "global");
-        bool global_flag = false;
-        if (try gv = rx.get_prop(global_key)) {
-            if (gv.is_boolean()) global_flag = gv.get_boolean();
-        }
+        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
 
         bool replace_is_fn = false;
         TVal replace_val;
@@ -1855,11 +1851,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
         HObject* rx = (HObject*)regexp_arg.get_heapptr();
 
         // Get global flag
-        HString* global_key = builtin_intern_string(ctx.heap, "global");
-        bool global_flag = false;
-        if (try gv = rx.get_prop(global_key)) {
-            if (gv.is_boolean()) global_flag = gv.get_boolean();
-        }
+        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
 
         if (!global_flag) {
             // Non-global: single exec call
