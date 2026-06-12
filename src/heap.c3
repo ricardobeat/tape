@@ -288,6 +288,11 @@ struct Heap {
     // Populated lazily on first use; entries are pinned (STRING_PINNED_REFCOUNT)
     // so they are never freed by RC or GC sweep.
     HString*[256] small_int_strs;
+
+    // Lightfunc virtual property deletion tracking.
+    // 3 bits per builtin index: 0=name deleted, 1=length deleted, 2=prototype deleted.
+    // Indexed as: bit = fn_idx * 3 + prop_bit
+    ulong[32] lf_deleted_props;
 }
 
 // ============================================================================
@@ -982,6 +987,9 @@ fn void Heap.reset(&self) {
     for (usz i = 0; i < 256; i++) {
         self.small_int_strs[i] = null;
     }
+
+    // Clear lightfunc virtual property deletion tracking
+    libc::memset(&self.lf_deleted_props[0], 0, 32 * 8);
 
     // Clear longjmp state
     self.lj.lj_type = LjType.UNKNOWN;
@@ -1837,6 +1845,27 @@ fn void Heap.str_table_remove(&self, hstring::HString* hstr) {
  * Intern a string: return the existing copy if one exists, otherwise
  * allocate, insert, and return the new copy.  Returns null on alloc failure.
  */
+/// Lightfunc virtual property deletion tracking.
+/// Bit index = fn_idx * 3 + prop_bit, where prop_bit: 0=name, 1=length, 2=prototype.
+fn void lf_mark_deleted(ulong* bits, uint fn_idx, uint prop_bit) @inline {
+    uint idx = fn_idx * 3 + prop_bit;
+    bits[idx / 64] |= ((ulong)1 << (idx % 64));
+}
+
+fn bool lf_is_deleted(ulong* bits, uint fn_idx, uint prop_bit) @inline {
+    uint idx = fn_idx * 3 + prop_bit;
+    return (bits[idx / 64] & ((ulong)1 << (idx % 64))) != 0;
+}
+
+/// Resolve a lightfunc virtual property name to a prop_bit.
+/// Returns -1 if the key is not a virtual property.
+fn int lf_key_to_prop_bit(HString* key) @inline {
+    if (key.equals("name")) return 0;
+    if (key.equals("length")) return 1;
+    if (key.equals("prototype")) return 2;
+    return -1;
+}
+
 fn HString* Heap.str_intern(&self, char[] data) {
     uint hash = self.hash_string(data);
     HString* existing = self.str_table_lookup(data, hash);

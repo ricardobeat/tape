@@ -3198,29 +3198,47 @@ fn TVal? Vm.run(Vm* vm) {
                 HString* key = get_prop_key(vm, rc);
                 if (key != null) {
                     if (key.equals("name")) {
-                        builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
-                        if (meta.name.len > 0) {
-                            HString* name_str = intern_string(vm, meta.name);
-                            vm.heap.set_reg_string(ra, name_str);
-                        } else {
-                            ra.set_undefined();
-                        }
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 0)) {
+                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                            if (meta.name.len > 0) {
+                                HString* name_str = intern_string(vm, meta.name);
+                                vm.heap.set_reg_string(ra, name_str);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? result = vm.heap.function_proto.get_prop_proto(key);
+                            if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
                     } else if (key.equals("length")) {
-                        builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
-                        if (meta.arity >= 0) {
-                            ra.set_number(meta.arity);
-                        } else {
-                            ra.set_undefined();
-                        }
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 1)) {
+                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                            if (meta.arity >= 0) {
+                                ra.set_number(meta.arity);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? result = vm.heap.function_proto.get_prop_proto(key);
+                            if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
                     } else if (key.equals("prototype")) {
-                        // Resolve .prototype for constructor lightfuncs (Boolean, Number, etc.)
-                        HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
-                        if (proto_obj != null) {
-                            ra.set_object(proto_obj);
-                            track_heap_store(act, ra, (uint)insn.a);
-                        } else {
-                            ra.set_undefined();
-                        }
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 2)) {
+                            // Resolve .prototype for constructor lightfuncs (Boolean, Number, etc.)
+                            HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                            if (proto_obj != null) {
+                                ra.set_object(proto_obj);
+                                track_heap_store(act, ra, (uint)insn.a);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? result = vm.heap.function_proto.get_prop_proto(key);
+                            if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
                     } else if (vm.heap.function_proto != null) {
                         // Walk Function.prototype for .call, .apply, .bind, etc.
                         TVal? result = vm.heap.function_proto.get_prop_proto(key);
@@ -3425,29 +3443,40 @@ fn TVal? Vm.run(Vm* vm) {
                     uint fn_idx = (uint)(usz)rb.get_heapptr();
                     if (key_hstr != null) {
                         if (key_hstr.equals("name")) {
-                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
-                            if (meta.name.len > 0) {
-                                HString* name_str = intern_string(vm, meta.name);
-                                vm.heap.set_reg_string(ra, name_str);
-                            } else {
-                                ra.set_undefined();
-                            }
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 0)) {
+                                builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                                if (meta.name.len > 0) {
+                                    HString* name_str = intern_string(vm, meta.name);
+                                    vm.heap.set_reg_string(ra, name_str);
+                                } else { ra.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);
+                                if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                                else { ra.set_undefined(); }
+                            } else { ra.set_undefined(); }
                         } else if (key_hstr.equals("length")) {
-                            builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
-                            if (meta.arity >= 0) {
-                                ra.set_number(meta.arity);
-                            } else {
-                                ra.set_undefined();
-                            }
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 1)) {
+                                builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
+                                if (meta.arity >= 0) {
+                                    ra.set_number(meta.arity);
+                                } else { ra.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);
+                                if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                                else { ra.set_undefined(); }
+                            } else { ra.set_undefined(); }
                         } else if (key_hstr.equals("prototype")) {
-                            // Resolve .prototype for constructor lightfuncs (Boolean, Number, etc.)
-                            HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
-                            if (proto_obj != null) {
-                                ra.set_object(proto_obj);
-                                track_heap_store(act, ra, (uint)insn.a);
-                            } else {
-                                ra.set_undefined();
-                            }
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], fn_idx, 2)) {
+                                HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                                if (proto_obj != null) {
+                                    ra.set_object(proto_obj);
+                                    track_heap_store(act, ra, (uint)insn.a);
+                                } else { ra.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);
+                                if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                                else { ra.set_undefined(); }
+                            } else { ra.set_undefined(); }
                         } else if (vm.heap.function_proto != null) {
                             // Walk Function.prototype for .call, .apply, .bind, etc.
                             TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);
@@ -3726,6 +3755,18 @@ fn TVal? Vm.run(Vm* vm) {
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
                     ra.set_boolean(hobj.es_delete_prop(key));
+                }
+            } else if (rb.is_lightfunc()) {
+                // Handle deletion of virtual properties (name, length, prototype).
+                // These are configurable:true per ES5 §15.3.5.1, so delete returns true.
+                // Mark as deleted so subsequent GETPROP/hasOwn check the bitset.
+                uint fn_idx = (uint)(usz)rb.get_heapptr();
+                HString* key = get_prop_key(vm, rc);
+                if (key != null) {
+                    int bit = heap::lf_key_to_prop_bit(key);
+                    if (bit >= 0) {
+                        heap::lf_mark_deleted(&vm.heap.lf_deleted_props[0], fn_idx, (uint)bit);
+                    }
                 }
             }
             // For null, undefined, and other primitives:

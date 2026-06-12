@@ -288,6 +288,13 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
 
     // Handle lightfuncs: return ["name", "length"] as own property names
     if (arg.is_lightfunc()) {
+        uint fn_idx = (uint)(usz)arg.get_heapptr();
+        bool name_deleted = heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 0);
+        bool length_deleted = heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 1);
+        uint count = 0;
+        if (!name_deleted) count++;
+        if (!length_deleted) count++;
+
         HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         if (catch err = arr_raw) {
             ctx.result.set_undefined();
@@ -296,15 +303,21 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         HObject* arr = arr_raw;
         arr.prototype = ctx.heap.array_proto;
 
-        HString* name_str = builtin_intern_string(ctx.heap, "name");
-        TVal name_tv; name_tv.set_string(name_str);
-        array_set_elem(arr, 0, name_tv, ctx.heap);
+        uint idx = 0;
+        if (!name_deleted) {
+            HString* name_str = builtin_intern_string(ctx.heap, "name");
+            TVal name_tv; name_tv.set_string(name_str);
+            array_set_elem(arr, idx, name_tv, ctx.heap);
+            idx++;
+        }
+        if (!length_deleted) {
+            HString* length_str = builtin_intern_string(ctx.heap, "length");
+            TVal length_tv; length_tv.set_string(length_str);
+            array_set_elem(arr, idx, length_tv, ctx.heap);
+            idx++;
+        }
 
-        HString* length_str = builtin_intern_string(ctx.heap, "length");
-        TVal length_tv; length_tv.set_string(length_str);
-        array_set_elem(arr, 1, length_tv, ctx.heap);
-
-        TVal len_tv; len_tv.set_fastint(2);
+        TVal len_tv; len_tv.set_fastint((long)count);
         arr.put_prop(builtin_intern_string(ctx.heap, "length"), len_tv, hobject::PROP_FLAGS_WEC);
         ctx.result.set_object(arr);
         return;
@@ -552,6 +565,10 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         HString* key_hstr = (HString*)key;
 
         if (key_hstr.equals("name")) {
+            if (heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 0)) {
+                ctx.result.set_undefined();
+                return;
+            }
             builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
             if (meta.name.len > 0) {
                 HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -575,6 +592,10 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
             }
             return;
         } else if (key_hstr.equals("length")) {
+            if (heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 1)) {
+                ctx.result.set_undefined();
+                return;
+            }
             builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
             if (meta.arity >= 0) {
                 HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -2380,9 +2401,13 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* obj;
     if (this_val.is_lightfunc()) {
-        // Lightfuncs have .name and .length as own properties per ES6 spec
-        if (key.equals("name") || key.equals("length")) {
-            ctx.result.set_boolean(true);
+        // Lightfuncs have .name and .length as own properties per ES6 spec.
+        // Check deletion bitset: deleted virtual properties are no longer own properties.
+        uint fn_idx = (uint)(usz)this_val.get_heapptr();
+        if (key.equals("name")) {
+            ctx.result.set_boolean(!heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 0));
+        } else if (key.equals("length")) {
+            ctx.result.set_boolean(!heap::lf_is_deleted(&ctx.heap.lf_deleted_props[0], fn_idx, 1));
         } else {
             ctx.result.set_boolean(false);
         }
