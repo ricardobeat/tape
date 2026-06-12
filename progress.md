@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 155 ([[OwnPropertyKeys]] enumeration order — integer indices ascending first per ES2020 §10.1.12)
+**Last Updated:** Session 156 (re-benchmark after Session 155)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 155, 2026-06-12)
+## Summary (after Session 156, 2026-06-12)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~11,622 |
-| Currently failing (phases 0-8) | ~8,981 |
-| Pass rate (phases 0-8 only) | ~56.4% |
-| Overall pass rate | ~55.8% |
+| Currently passing (phases 0-8) | 11,919 |
+| Currently failing (phases 0-8) | 8,645 |
+| Pass rate (phases 0-8 only) | 58.0% |
+| Overall pass rate | 57.1% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 558 | 330 | 1,297 |
-| 1: Calling Convention | 426 | 54 | 34 | 338 |
+| 0-1: Core VM | 2,185 | 560 | 328 | 1,297 |
+| 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 914 | 230 | 825 |
-| 3: Object System | 7,766 | 3,304 | 2,495 | 1,967 |
-| 4: Error Handling | 402 | 117 | 84 | 201 |
-| 5: Built-in Constructors | 8,615 | 3,955 | 3,135 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,756 | 2,021 | 936 |
+| 3: Object System | 7,766 | 3,400 | 2,399 | 1,967 |
+| 4: Error Handling | 402 | 120 | 81 | 201 |
+| 5: Built-in Constructors | 8,615 | 4,029 | 3,061 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,753 | 2,024 | 936 |
 | 7: ES5 Features | 1,240 | 185 | 108 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 801 | 483 | 1,463 |
-| 11: Arrow/Templates | 427 | 61 | 42 | 324 |
+| 8: ES5 Built-in Objects | 2,747 | 900 | 384 | 1,463 |
+| 11: Arrow/Templates | 427 | 64 | 39 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 10 | 22 | 719 |
-| 15: Classes | 8,520 | 62 | 200 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 273 | 367 | 974 |
+| 15: Classes | 8,520 | 68 | 194 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 283 | 357 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Benchmark Summary
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 156 | Re-benchmark (no code changes) | +297 (cumulative since last benchmark) |
 | 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |
 | 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |
 | 153 | Lightfunc virtual property deletion tracking (.name/.length/.prototype); DELPROP marks deletions in bitset; GETPROP/hasOwn/getOwnPropertyDescriptor/getOwnPropertyNames respect deletions | +206 |
