@@ -27,7 +27,7 @@ assert(!0, "0 is falsy");
 assert(!"", "empty string is falsy");
 assert(!null, "null is falsy");
 assert(!undefined, "undefined is falsy");
-assert(!isNaN(NaN), "NaN is falsy"); // isNaN returns true for NaN
+assert(!NaN, "NaN is falsy");
 assert(!!1, "1 is truthy");
 assert(!!"hello", "non-empty string is truthy");
 assert(!!{}, "object is truthy");
