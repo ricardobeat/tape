@@ -648,6 +648,13 @@ fn void? CompilerContext.for_statement(&self) {
     uint saved_scope = self.scope_depth;
     ushort saved_reg = self.next_reg;
 
+    // Track for-init var so we can emit PUTVAR after the increment to sync
+    // the register-cached value back to the environment (needed so closures
+    // inside the loop and code after the loop see the correct final value).
+    bool has_for_var = false;
+    ushort for_var_reg = 0;
+    uint for_var_name_idx = 0;
+
     // Check for for-in / for-of
     TokenType next_tt = self.peek_type();
 
@@ -783,6 +790,9 @@ fn void? CompilerContext.for_statement(&self) {
             // Standard for loop: we already consumed the decl keyword and identifier
             // Declare the variable and optionally initialize
             ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
+            has_for_var = !is_lexical && !self.is_global;
+            for_var_reg = var_reg;
+            for_var_name_idx = self.add_string_constant(name_tok.str_value);
             if (self.match(TokenType.ASSIGN)) {
                 ushort init_val = self.assignment_expr()!;
                 if (init_val != var_reg) {
@@ -793,8 +803,7 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
             }
             // Also store in environment (needed at global scope for GETVAR)
-            uint name_idx = self.add_string_constant(name_tok.str_value);
-            self.emit_var_store(var_reg, name_idx, is_lexical, is_const);
+            self.emit_var_store(var_reg, for_var_name_idx, is_lexical, is_const);
 
             // More declarations?
             while (self.match(TokenType.COMMA)) {
@@ -1015,6 +1024,14 @@ fn void? CompilerContext.for_statement(&self) {
         self.pushback_count = _incr_pbc; self.pushback_stack = _incr_pbs;
         ushort incr_reg = self.expression()!;
         self.free_reg(incr_reg);
+    }
+
+    // Sync register-cached for-init var back to the environment so that
+    // closures inside the loop body see the updated value on each iteration,
+    // and code after the loop reads the correct final value via GETVAR.
+    if (has_for_var) {
+        self.emit_a_bc(Opcode.PUTVAR, (uint)for_var_reg, for_var_name_idx);
+        self.emit_a_bc(Opcode.GETVAR, (uint)for_var_reg, for_var_name_idx);
     }
 
     // ----------------------------------------------------------------

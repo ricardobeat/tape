@@ -300,8 +300,15 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         }
     }
     // Dense array indices (as strings)
+    // put_prop syncs arridx keys into both named properties and array_part,
+    // so Phase 1 already emitted those.  Skip array_part entries whose index
+    // also exists as a named arridx property to avoid duplicates.
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) {
+            if (obj.flags.exotic_array) {
+                HString* ki = ctx.heap.int_to_hstring((long)i);
+                if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+            }
             HString* key = ctx.heap.int_to_hstring((long)i);
             if (key == null) {
                 ctx.result.set_undefined();
