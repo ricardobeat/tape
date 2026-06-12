@@ -1168,7 +1168,9 @@ fn ushort? CompilerContext.new_expr(&self) {
                 self.next_reg = ctor_reg + 1;
             }
         } else if (self.match(TokenType.LBRACKET)) {
+            ushort saved_prop_obj = self.call_prop_obj_reg;
             ushort idx_reg = self.expression()!;
+            self.call_prop_obj_reg = saved_prop_obj;
             self.expect(TokenType.RBRACKET)!;
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);

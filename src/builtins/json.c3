@@ -196,7 +196,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
     HObject* arr;
     if (try a = arr_raw) {
         arr = a;
-        arr.prototype = null; // will be set by caller
+        arr.prototype = jctx.heap.array_proto;
     } else {
         TVal r; r.set_undefined(); return r;
     }
@@ -253,6 +253,7 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
     HObject* obj;
     if (try o = obj_raw) {
         obj = o;
+        obj.prototype = jctx.heap.object_proto;
     } else {
         TVal r; r.set_undefined(); return r;
     }
@@ -491,7 +492,11 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     if (result.is_object() && result.get_heapptr() != null) {
         HObject* obj = (HObject*)result.get_heapptr();
         if (obj.prototype == null) {
-            obj.prototype = ctx.heap.object_proto;
+            if (obj.get_class() == hobject::ObjClass.ARRAY) {
+                obj.prototype = ctx.heap.array_proto;
+            } else {
+                obj.prototype = ctx.heap.object_proto;
+            }
         }
     }
 
