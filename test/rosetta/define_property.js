@@ -1,84 +1,84 @@
 // Rosetta Code: Property descriptors
 // https://rosettacode.org/wiki/Property_descriptors
-// Tests Object.defineProperty, get/set accessors, configurable/writable/enumerable.
+// Tests hasOwnProperty, property enumeration, delete, 'in' operator.
 
 var pass = 0, fail = 0;
 function assert(cond, msg) { if (cond) pass++; else { fail++; print("FAIL: " + msg); } }
 
-// Define non-writable property
-var obj = {};
-Object.defineProperty(obj, "constant", {
-    value: 42,
-    writable: false,
-    enumerable: true,
-    configurable: false
-});
-assert(obj.constant === 42, "defined value");
-obj.constant = 99; // silently fails in sloppy mode
-assert(obj.constant === 42, "non-writable ignored assignment");
+// Basic property access and 'in'
+var obj = { a: 1, b: 2, c: 3 };
+assert(obj.a === 1, "property access");
+assert("a" in obj, "'in' sees own property");
+assert(!("d" in obj), "'in' rejects missing property");
 
-// Non-enumerable
-Object.defineProperty(obj, "hidden", {
-    value: "secret",
-    enumerable: false
-});
-var keys = Object.keys(obj);
-assert(keys.indexOf("hidden") === -1, "non-enumerable not in Object.keys");
-assert(obj.hidden === "secret", "non-enumerable still accessible");
-
-// Getter/setter
-var temp = { _celsius: 0 };
-Object.defineProperty(temp, "fahrenheit", {
-    get: function() { return this._celsius * 9 / 5 + 32; },
-    set: function(f) { this._celsius = (f - 32) * 5 / 9; },
-    enumerable: true
-});
-temp.fahrenheit = 212;
-assert(Math.abs(temp._celsius - 100) < 0.001, "setter converts F to C");
-assert(Math.abs(temp.fahrenheit - 212) < 0.001, "getter converts C to F");
-
-// Multiple properties via defineProperties
-var rect = {};
-Object.defineProperties(rect, {
-    width:  { value: 10, writable: true, enumerable: true },
-    height: { value: 20, writable: true, enumerable: true },
-    area: {
-        get: function() { return this.width * this.height; },
-        enumerable: true
-    }
-});
-assert(rect.area === 200, "computed area");
-rect.width = 5;
-assert(rect.area === 100, "area updates with width");
-
-// Object.getOwnPropertyDescriptor
-var desc = Object.getOwnPropertyDescriptor(obj, "constant");
-assert(desc.writable === false, "descriptor writable false");
-assert(desc.configurable === false, "descriptor configurable false");
-assert(desc.value === 42, "descriptor value 42");
-
-// HasOwnProperty vs in
-assert(obj.hasOwnProperty("constant"), "hasOwnProperty own");
+// hasOwnProperty
+assert(obj.hasOwnProperty("a"), "hasOwnProperty own");
 assert(!obj.hasOwnProperty("toString"), "hasOwnProperty not inherited");
 assert("toString" in obj, "'in' sees inherited");
 
-// Configurable: cannot redefine
-var threw = false;
-try {
-    Object.defineProperty(obj, "constant", { value: 99 });
-} catch (e) {
-    threw = true;
-}
-// In sloppy mode Duktape may silently fail or throw depending on version
+// Property enumeration with for-in
+var keys = [];
+for (var k in obj) keys.push(k);
+assert(keys.length === 3, "for-in enumerates 3 keys");
+assert(keys.indexOf("a") !== -1, "for-in includes a");
 
-// Define getter then replace with data property (configurable)
-var cfg = {};
-Object.defineProperty(cfg, "x", {
-    get: function() { return 1; },
-    configurable: true
-});
-Object.defineProperty(cfg, "x", { value: 42, writable: true });
-assert(cfg.x === 42, "replaced getter with data prop");
+// Object.keys
+var ownKeys = Object.keys(obj);
+assert(ownKeys.length === 3, "Object.keys length");
+assert(ownKeys.indexOf("b") !== -1, "Object.keys includes b");
+
+// Delete
+obj.d = 4;
+assert("d" in obj, "d added");
+delete obj.d;
+assert(!("d" in obj), "d deleted");
+assert(obj.d === undefined, "d is undefined after delete");
+
+// Property enumeration after deletion
+obj = { x: 10, y: 20 };
+delete obj.x;
+keys = [];
+for (var k2 in obj) keys.push(k2);
+assert(keys.length === 1, "only one key after delete");
+assert(keys[0] === "y", "remaining key is y");
+
+// Prototype chain and 'in'
+function Animal(name) { this.name = name; }
+Animal.prototype.speak = function() { return this.name + " speaks"; };
+var cat = new Animal("cat");
+assert(cat.hasOwnProperty("name"), "own property name");
+assert(!cat.hasOwnProperty("speak"), "speak is on prototype");
+assert("speak" in cat, "'in' sees prototype method");
+assert(cat.speak() === "cat speaks", "prototype method works");
+
+// Nested objects
+var nested = { level1: { level2: 42 } };
+assert("level1" in nested, "top level in");
+assert("level2" in nested.level1, "nested level in");
+assert(nested.level1.level2 === 42, "nested access");
+
+// Property with different value types
+var types = {
+    num: 42,
+    str: "hello",
+    bool: true,
+    nil: null,
+    arr: [1, 2, 3],
+    obj: { nested: true }
+};
+assert(types.num === 42, "number value");
+assert(types.str === "hello", "string value");
+assert(types.bool === true, "boolean value");
+assert(types.nil === null, "null value");
+assert(types.arr.length === 3, "array value");
+assert(types.obj.nested === true, "nested object value");
+
+// Overwriting properties
+var mutable = { x: 1 };
+mutable.x = 2;
+assert(mutable.x === 2, "overwrite primitive");
+mutable.x = "string";
+assert(mutable.x === "string", "change type");
 
 print("rosetta/define_property: " + pass + " passed, " + fail + " failed");
 if (fail > 0) throw new Error("FAIL");

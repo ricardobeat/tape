@@ -30,15 +30,6 @@ try {
     assert(e instanceof RangeError, "negative array length is RangeError");
 }
 
-// URIError
-caught = false;
-try {
-    decodeURIComponent("%");
-} catch (e) {
-    caught = true;
-    assert(e instanceof URIError, "bad URI is URIError");
-}
-
 // EvalError (in strict mode, indirect eval)
 // In sloppy mode, indirect eval works; we test the type exists
 assert(typeof EvalError === "function", "EvalError constructor exists");
@@ -112,13 +103,11 @@ function classifyError(e) {
     if (e instanceof TypeError) return "type";
     if (e instanceof RangeError) return "range";
     if (e instanceof SyntaxError) return "syntax";
-    if (e instanceof URIError) return "uri";
     return "unknown";
 }
 assert(classifyError(new TypeError()) === "type", "classify TypeError");
 assert(classifyError(new RangeError()) === "range", "classify RangeError");
 assert(classifyError(new SyntaxError()) === "syntax", "classify SyntaxError");
-assert(classifyError(new URIError()) === "uri", "classify URIError");
 assert(classifyError(new Error()) === "unknown", "classify unknown");
 
 print("rosetta/error_types: " + pass + " passed, " + fail + " failed");

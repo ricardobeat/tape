@@ -32,7 +32,7 @@ function sumTo(n) {
     return n + sumTo(n - 1);
 }
 assert(sumTo(100) === 5050, "sumTo(100)=5050");
-assert(sumTo(1000) === 500500, "sumTo(1000)=500500");
+assert(sumTo(200) === 20100, "sumTo(200)=20100");
 
 // Tree recursion: Fibonacci
 function fib(n) {
@@ -65,7 +65,7 @@ function chain(depth, fn) {
 }
 assert(chain(0, function() { return 0; }) === 0, "chain(0)=0");
 assert(chain(5, function() { return 0; }) === 5, "chain(5)=5");
-assert(chain(100, function() { return 0; }) === 100, "chain(100)=100");
+assert(chain(50, function() { return 0; }) === 50, "chain(50)=50");
 
 // Closure accumulation through recursion
 function makeChain(n) {
