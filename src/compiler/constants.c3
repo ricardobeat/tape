@@ -99,6 +99,8 @@ fn uint CompilerContext.add_string_constant(&self, char[] str) {
         hstr = hstring::hstring_alloc(self.heap, str, hash) ?? null;
         if (hstr != null) {
             hp.str_table_insert(hstr);
+            ((types::HeapHeader*)hstr).incref();
+            hstr.flags.is_interned = true;
         }
     }
 

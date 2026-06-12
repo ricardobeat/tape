@@ -393,7 +393,11 @@ fn TVal* valstack_bottom_ptr(Vm* vm) @inline {
 fn void* get_prop_key(Vm* vm, TVal* val) {
     Heap* h = vm.heap;
     switch (val.get_tag()) {
-        case STRING:    return val.get_heapptr();
+        case STRING: {
+            HString* s = (HString*)val.get_heapptr();
+            if (!s.flags.is_interned) return h.ensure_interned(s);
+            return s;
+        }
         case FASTINT:
             if (try s = vm_fastint_to_string(vm, val.get_fastint())) return s;
             return null;
@@ -1996,12 +2000,22 @@ fn TVal? Vm.run(Vm* vm) {
                             libc::memcpy(buf, &int_buf, (usz)int_len);
                             libc::memcpy(buf + int_len, str.get_cstr(), s_len);
                         }
-                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], vm.heap.hash_string(buf[:total]));
-                        if (heap_allocated) libc::free(buf);
-                        if (try s = maybe_s) {
-                            vm.heap.set_reg_string(ra, s);
+                        // Skip interning for accumulator (ra == source register),
+                        // intern for new strings that may be used as property keys.
+                        bool is_accum = (ra == rb || ra == rc);
+                        if (is_accum) {
+                            uint hash = vm.heap.hash_string(buf[:total]);
+                            HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
+                            if (heap_allocated) libc::free(buf);
+                            if (try s = maybe_s) {
+                                vm.heap.set_reg_string(ra, s);
+                            } else {
+                                ra.set_undefined();
+                            }
                         } else {
-                            ra.set_undefined();
+                            HString* interned = intern_string(vm, buf[:total]);
+                            if (heap_allocated) libc::free(buf);
+                            vm.heap.set_reg_string(ra, interned);
                         }
                         break;
                     }
@@ -2054,12 +2068,22 @@ fn TVal? Vm.run(Vm* vm) {
                         libc::memcpy(buf + a_len, rs.get_cstr(), b_len);
                     }
 
-                    HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], vm.heap.hash_string(buf[:total]));
-                    if (heap_allocated) libc::free(buf);
-                    if (try s = maybe_s) {
-                        vm.heap.set_reg_string(ra, s);
+                    // Skip interning for accumulator (ra == source register),
+                    // intern for new strings that may be used as property keys.
+                    bool is_accum = (ra == rb || ra == rc);
+                    if (is_accum) {
+                        uint hash = vm.heap.hash_string(buf[:total]);
+                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
+                        if (heap_allocated) libc::free(buf);
+                        if (try s = maybe_s) {
+                            vm.heap.set_reg_string(ra, s);
+                        } else {
+                            ra.set_undefined();
+                        }
                     } else {
-                        ra.set_undefined();
+                        HString* interned = intern_string(vm, buf[:total]);
+                        if (heap_allocated) libc::free(buf);
+                        vm.heap.set_reg_string(ra, interned);
                     }
                 } else {
                     ra.set_undefined();
