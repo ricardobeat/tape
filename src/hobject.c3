@@ -849,6 +849,15 @@ fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
 fn int HObject.find_prop_idx(&self, void* key) {
     if (key == null || self.get_shape() == null || self.prop_count == 0) return -1;
 
+    // Lazy-intern: if key is a non-interned HString, intern it now
+    // so that pointer equality works for property lookups.
+    if (_active_heap != null && ((usz)key >> 48) == 0) {
+        HString* s = (HString*)key;
+        if (!s.flags.is_interned) {
+            key = (void*)((heap::Heap*)_active_heap).ensure_interned(s);
+        }
+    }
+
     // Try hash table first
     if (self.prop_hash != null) {
         HashEntry* entries = (HashEntry*)self.prop_hash.table;

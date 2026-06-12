@@ -78,6 +78,8 @@ bitstruct HStringFlags : uint {
     bool  is_strict_reserved : 12;
     /// String data lives in an external buffer, not inline.
     bool  has_extdata       : 13;
+    /// String has been inserted into the heap's string table.
+    bool  is_interned       : 14;
 }
 
 // ============================================================================
@@ -189,6 +191,9 @@ fn bool HString.is_strict_reserved(&self)    { return self.flags.is_strict_reser
 
 /// Returns `true` when the data resides in an external buffer.
 fn bool HString.has_extdata(&self)           { return self.flags.has_extdata; }
+
+/// Returns `true` when the string has been inserted into the heap's string table.
+fn bool HString.is_interned(&self)           { return self.flags.is_interned; }
 
 // ============================================================================
 // HString — lazy computed fields

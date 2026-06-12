@@ -658,6 +658,8 @@ fn HString* builtin_intern_string(Heap* heap, char[] data) {
     HString*? new_s = hstring::hstring_alloc(heap, data, hash);
     if (try s = new_s) {
         heap.str_table_insert(s);
+        ((HeapHeader*)s).incref();
+        s.flags.is_interned = true;
         return s;
     }
     return null;
