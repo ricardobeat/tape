@@ -1729,6 +1729,11 @@ fn void Heap.sweep_strings(&self) {
             self.free_string(entry);
         }
     }
+
+    // Shrink table if usage fell below 25%
+    if (self.str_table_used < self.str_table_size / 4 && self.str_table_size > INITIAL_STR_TABLE_SIZE) {
+        self.str_table_shrink();
+    }
 }
 
 /**
@@ -1842,6 +1847,40 @@ fn void*? Heap.str_table_grow(&self) {
     self.str_table_size = new_size;
 
     return raw;  // non-null signals success
+}
+
+/**
+ * Shrink the string table by half, rehashing all live entries.
+ */
+fn void Heap.str_table_shrink(&self) {
+    uint new_size = self.str_table_size / 2;
+    if (new_size < INITIAL_STR_TABLE_SIZE) {
+        new_size = INITIAL_STR_TABLE_SIZE;
+    }
+
+    usz new_bytes = HString*::size * new_size;
+    void* raw = self.alloc_func(self.heap_udata, new_bytes);
+    if (raw == null) { return; }
+    libc::memset(raw, 0, new_bytes);
+
+    HString** new_table = (HString**)raw;
+
+    // Rehash existing entries
+    for (uint i = 0; i < self.str_table_size; i++) {
+        HString* entry = self.str_table[i];
+        if (entry == null || entry == STR_TABLE_TOMBSTONE) { continue; }
+
+        uint idx = entry.hash & (new_size - 1);
+        while (new_table[idx] != null) {
+            idx = (idx + 1) & (new_size - 1);
+        }
+        new_table[idx] = entry;
+    }
+
+    // Replace old table
+    self.free_func(self.heap_udata, self.str_table);
+    self.str_table = new_table;
+    self.str_table_size = new_size;
 }
 
 /**
