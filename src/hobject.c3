@@ -61,6 +61,12 @@ void* builtin_length_key = null;
 /// Default is false. Pass `-D NOSHAPECACHE` to drop the 8-byte shape pointer cache.
 const bool USE_SHAPE_CACHE = !$defined(NOSHAPECACHE);
 
+/// Number of PropValue slots embedded inline in the object allocation.
+/// Objects with 0-4 named properties (the common case) avoid a separate
+/// prop_alloc malloc.  The inline storage lives at the end of the object
+/// allocation (after HObjectBase + optional subtype fields).
+const uint INLINE_PROPS = 4;
+
 /// Initial number of property entry slots when first allocated.
 const uint PROPS_INITIAL_CAPACITY = 8;
 
@@ -452,20 +458,23 @@ const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8;               // ARRAY
 const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size; // FUNCTION, REGEXP, etc.
 
 /// Allocation size for each object class.
-/// Plain objects allocate only HObjectBase (72 bytes).
-/// ARRAY adds 8 bytes for array_length.
-/// All others add HObjectExtra (32 bytes) for subtype-specific fields.
+/// Includes INLINE_PROPS slots at the tail for small objects (0-4 properties),
+/// eliminating a separate prop_alloc malloc for the common case.
+/// Plain objects: HObjectBase + inline props (136 bytes).
+/// ARRAY: HObjectBase + 8 + inline props (144 bytes).
+/// Others: HObjectBase + HObjectExtra + inline props (168 bytes).
 fn usz alloc_size_for_class(ObjClass cls) @inline {
+    usz extra = INLINE_PROPS * PropValue::size;
     switch (cls) {
         case ObjClass.OBJECT:
         case ObjClass.ERROR:
         case ObjClass.ARGUMENTS:
         case ObjClass.PROXY:
-            return OBJ_SIZE_PLAIN;
+            return OBJ_SIZE_PLAIN + extra;
         case ObjClass.ARRAY:
-            return OBJ_SIZE_ARRAY;
+            return OBJ_SIZE_ARRAY + extra;
         default:
-            return OBJ_SIZE_FUNC;
+            return OBJ_SIZE_FUNC + extra;
     }
 }
 
@@ -509,20 +518,34 @@ fn void* pool_for_class(void* heap_ptr, ObjClass cls) @inline {
 // ============================================================================
 
 /// Compute total size of the property allocation block.
+/// When prop_alloc is null, the inline storage has no array part.
 fn usz HObject.prop_alloc_size(&self) {
+    if (self.prop_alloc == null) {
+        return (usz)self.prop_capacity * PropValue::size;
+    }
     usz size = (usz)self.prop_capacity * PropValue::size;
     size += (usz)self.array_size * TVal::size;
     return size;
 }
 
-/// Returns pointer to the property values array (derived from prop_alloc).
+/// Returns pointer to the inline prop storage (at end of object allocation).
+/// Only valid when prop_alloc == null.
+fn PropValue* HObject.inline_props_ptr(&self) @inline {
+    usz base_size = alloc_size_for_class(self.flags.obj_class) - INLINE_PROPS * PropValue::size;
+    return (PropValue*)((char*)self + base_size);
+}
+
+/// Returns pointer to the property values array.
+/// Uses inline storage when prop_alloc is null (small objects, 0-4 props),
+/// otherwise returns the heap-allocated block.
 fn PropValue* HObject.prop_values(&self) @inline {
-    if (self.prop_alloc == null) return null;
-    return (PropValue*)self.prop_alloc;
+    if (self.prop_alloc != null) return (PropValue*)self.prop_alloc;
+    return self.inline_props_ptr();
 }
 
 /// Returns pointer to the dense array part (derived from prop_alloc).
-/// Returns null when there is no array part.
+/// Returns null when there is no array part (prop_alloc is null for
+/// small objects, or array_size is 0).
 fn TVal* HObject.array_part(&self) @inline {
     if (self.prop_alloc == null || self.array_size == 0) return null;
     return (TVal*)((char*)self.prop_alloc + (usz)self.prop_capacity * PropValue::size);
@@ -1185,9 +1208,11 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
 // ============================================================================
 
 /// Grow the property value table when it is full.
+/// When transitioning from inline storage (prop_alloc == null) to a
+/// heap-allocated block, copies inline props and array data to the new block.
 fn void HObject.grow_props(&self) {
     uint new_cap;
-    if (self.prop_capacity == 0) {
+    if (self.prop_capacity <= INLINE_PROPS) {
         new_cap = PROPS_INITIAL_CAPACITY;
     } else {
         new_cap = self.prop_capacity * PROPS_GROW_NUM / PROPS_GROW_DEN;
@@ -1198,14 +1223,20 @@ fn void HObject.grow_props(&self) {
     // Cap at ushort max — objects with >65535 properties are pathological.
     if (new_cap > 65535) new_cap = 65535;
 
-    usz old_size = self.prop_alloc_size();
-    usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
-    usz new_size = old_size - old_prop_bytes + (usz)new_cap * PropValue::size;
+    usz new_prop_bytes = (usz)new_cap * PropValue::size;
+    usz new_size = new_prop_bytes + (usz)self.array_size * TVal::size;
 
     void* new_raw;
     if (self.prop_alloc == null) {
+        // Transition from inline to heap: allocate and copy inline data.
         new_raw = libc::malloc(new_size);
+        if (new_raw == null) return;
+        PropValue* inline_src = self.inline_props_ptr();
+        libc::memcpy(new_raw, inline_src, (usz)self.prop_count * PropValue::size);
     } else {
+        usz old_size = self.prop_alloc_size();
+        usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
+        new_size = old_size - old_prop_bytes + new_prop_bytes;
         new_raw = libc::realloc(self.prop_alloc, new_size);
     }
     if (new_raw == null) return;
@@ -1243,25 +1274,29 @@ fn void HObject.grow_props(&self) {
 /// Grow the dense array part to at least `new_size` TVal slots.
 ///
 /// New slots are initialised to undefined.
+/// When prop_alloc is null (inline props), allocates a new heap block
+/// and copies inline prop values to it.
 fn void HObject.grow_array(&self, uint new_size) {
     if (new_size <= self.array_size) return;
     // Dense arrays with >65535 elements would overflow ushort. Bail.
     if (new_size > 65535) return;
 
-    usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
-    usz old_array_size = self.array_size;
-
-    usz new_bytes = old_prop_bytes + (usz)new_size * TVal::size;
+    usz new_bytes = (usz)self.prop_capacity * PropValue::size + (usz)new_size * TVal::size;
 
     void* new_raw;
     if (self.prop_alloc == null) {
+        // Transition from inline to heap: allocate and copy inline props.
         new_raw = libc::malloc(new_bytes);
+        if (new_raw == null) return;
+        PropValue* inline_src = self.inline_props_ptr();
+        libc::memcpy(new_raw, inline_src, (usz)self.prop_count * PropValue::size);
     } else {
         new_raw = libc::realloc(self.prop_alloc, new_bytes);
     }
     if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
+    usz old_array_size = self.array_size;
     self.array_size = (ushort)new_size;
 
     usz added = (usz)(new_size - old_array_size);
@@ -1325,7 +1360,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     HObject* obj = (HObject*)raw;
 
     obj.prop_alloc = null;
-    obj.prop_capacity = 0;
+    obj.prop_capacity = INLINE_PROPS;
     obj.prop_count = 0;
 
     obj.flags.htype        = HType.OBJECT;
