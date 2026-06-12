@@ -31,6 +31,10 @@ build-quickjs:
     make -C quickjs qjs
     cp quickjs/qjs out/
 
+# Build with shape pointer cache disabled (`-D NOSHAPECACHE`)
+build-noshape t="test_vm":
+    c3c -D NOSHAPECACHE build "{{t}}"
+
 # Build a specific target: `just build <target>`  (e.g. just build test_vm)
 build t="duktape_c3":
     c3c build "{{t}}"
