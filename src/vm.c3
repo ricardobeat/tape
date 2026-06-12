@@ -1289,7 +1289,12 @@ fn void decref_callee_regs(Vm* vm, Activation* callee_act) {
     uint limit = callee_act.max_heap_reg;
     if (limit >= nregs) limit = nregs - 1;
     for (uint i = 0; i <= limit; i++) {
+        // Clear the slot after releasing the ref: callee frames overlap the
+        // caller's register window (sliding-window calls), and the caller's
+        // own decref_callee_regs would otherwise decref the stale bits a
+        // second time, underflowing the refcount.
         vm.heap.decref_tval(&regs[i]);
+        regs[i].set_undefined();
     }
 }
 
