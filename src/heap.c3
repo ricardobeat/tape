@@ -50,6 +50,11 @@ const uint  STRING_PINNED_REFCOUNT  = 0x7FFF_FFFF;
 const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
 const uint  GC_MAX_ROOTS            = 16;
+
+// Lightfunc deleted-property bitset sizing.
+// Each builtin index occupies 3 bits (name/length/prototype deleted flags).
+const uint LF_DELETED_WORDS   = 32;                           // ulong words in lf_deleted_props
+const uint LF_MAX_TRACKED     = (LF_DELETED_WORDS * 64) / 3; // 682 — max trackable builtin index
 /// Sentinel for deleted string table entries (tombstone for open addressing).
 const HString* STR_TABLE_TOMBSTONE = (HString*)1;
 
@@ -292,7 +297,7 @@ struct Heap {
     // Lightfunc virtual property deletion tracking.
     // 3 bits per builtin index: 0=name deleted, 1=length deleted, 2=prototype deleted.
     // Indexed as: bit = fn_idx * 3 + prop_bit
-    ulong[32] lf_deleted_props;
+    ulong[LF_DELETED_WORDS] lf_deleted_props;
 }
 
 // ============================================================================
@@ -989,7 +994,7 @@ fn void Heap.reset(&self) {
     }
 
     // Clear lightfunc virtual property deletion tracking
-    libc::memset(&self.lf_deleted_props[0], 0, 32 * 8);
+    libc::memset(&self.lf_deleted_props[0], 0, LF_DELETED_WORDS * 8);
 
     // Clear longjmp state
     self.lj.lj_type = LjType.UNKNOWN;
@@ -1848,11 +1853,13 @@ fn void Heap.str_table_remove(&self, hstring::HString* hstr) {
 /// Lightfunc virtual property deletion tracking.
 /// Bit index = fn_idx * 3 + prop_bit, where prop_bit: 0=name, 1=length, 2=prototype.
 fn void lf_mark_deleted(ulong* bits, uint fn_idx, uint prop_bit) @inline {
+    if (fn_idx >= LF_MAX_TRACKED) return;
     uint idx = fn_idx * 3 + prop_bit;
     bits[idx / 64] |= ((ulong)1 << (idx % 64));
 }
 
 fn bool lf_is_deleted(ulong* bits, uint fn_idx, uint prop_bit) @inline {
+    if (fn_idx >= LF_MAX_TRACKED) return false;
     uint idx = fn_idx * 3 + prop_bit;
     return (bits[idx / 64] & ((ulong)1 << (idx % 64))) != 0;
 }
