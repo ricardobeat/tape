@@ -292,6 +292,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_arridx()) continue;
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
+            if (obj.flags.exotic_array && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);

@@ -4338,9 +4338,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 new_regs[i].set_undefined();
                             }
                         }
-                        // Zero remaining registers (temps)
-                        if (undef_limit < new_nregs) {
-                            libc::memset(&new_regs[undef_limit], 0, (usz)(new_nregs - undef_limit) * TVal::size);
+                        // Zero remaining registers (temps), but skip past any
+                        // actual arguments already in the sliding-window slots.
+                        uint zero_start = undef_limit > nargs ? undef_limit : nargs;
+                        if (zero_start < new_nregs) {
+                            libc::memset(&new_regs[zero_start], 0, (usz)(new_nregs - zero_start) * TVal::size);
                         }
                     }
 
