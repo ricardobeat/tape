@@ -26,3 +26,4 @@
 | [023-missing-prototype-methods.md](023-missing-prototype-methods.md) | 🔶 PARTIAL | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize added (Session 150); remaining methods TBD |
 | 027-declvar-ic | ✅ DONE | DECLVAR inline cache: skip find_prop_idx on repeat calls (Session 150) |
 | 028-test262-conformance | ✅ DONE | arr_throw_type_error propagation; sloppy-mode PUTPROP; Array.prototype metadata; Object.seal/freeze non-objects; global `this` (Session 151) |
+| [029-memory-low-hanging-fruit.md](029-memory-low-hanging-fruit.md) | 📋 PENDING | 5 remaining memory tasks: per-class allocation, default proto, heap_ptr removal, uint→ushort, sparse IC |
