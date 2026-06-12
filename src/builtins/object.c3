@@ -236,11 +236,27 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     }
 
     // Own named properties (enumerable, excluding length on string exotic)
+    bool is_array = obj.flags.exotic_array;
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             // Skip the non-enumerable .length stored explicitly on string exotics
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
+            // Skip .length on arrays (non-enumerable per spec) and array indices
+            // already covered by the dense array loop below
+            if (is_array) {
+                if ((void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
+                // Skip numeric-index keys (will be emitted by the dense array loop)
+                char* kd = key.get_cstr();
+                uint kl = key.blen;
+                bool is_index = kl > 0;
+                if (is_index) {
+                    for (uint c = 0; c < kl; c++) {
+                        if (kd[c] < '0' || kd[c] > '9') { is_index = false; break; }
+                    }
+                }
+                if (is_index) continue;
+            }
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);
