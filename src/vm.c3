@@ -6228,11 +6228,11 @@ fn TVal? Vm.run(Vm* vm) {
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
                                 // Direct write — skip find_prop_idx + put_prop overhead
                                 PropValue* pv = &b.prop_values()[vic.prop_idx];
-                                if (b.heap_ptr != null && pv.data.value.is_string()) {
-                                    ((heap::Heap*)b.heap_ptr).decref_tval(&pv.data.value);
+                                if (hobject::_active_heap != null && pv.data.value.is_string()) {
+                                    ((heap::Heap*)hobject::_active_heap).decref_tval(&pv.data.value);
                                 }
                                 pv.data.value = *ra;
-                                if (b.heap_ptr != null && ra.is_string()) {
+                                if (hobject::_active_heap != null && ra.is_string()) {
                                     void* ptr = ra.get_heapptr();
                                     if (ptr != null) ((types::HeapHeader*)ptr).incref();
                                 }

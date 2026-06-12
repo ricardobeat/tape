@@ -458,6 +458,9 @@ fn Heap*? create(
     h.microtask_count = 0;
     h.microtask_draining = false;
 
+    // Activate this heap for RC operations and shape transitions.
+    hobject::hobject_set_active_heap((void*)h);
+
     return h;
 }
 
@@ -751,15 +754,15 @@ fn hobject::Shape* Heap.get_shape(&self, uint shape_id) {
  * the heap struct itself.
  */
 fn void Heap.destroy(&self) {
-    // Free all objects through the heap_allocated linked list.
-    // Null heap_ptr first so hobject_free skips its RC decref loop —
+    // Deactivate the active heap so hobject_free skips its RC decref loop —
     // teardown frees everything directly, mixing decref with str_table
     // backshift-delete corrupts the table for the subsequent str_table sweep.
+    hobject::hobject_clear_active_heap();
+
     HeapHeader* cur = self.heap_allocated;
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            ((HObject*)cur).heap_ptr = null;
             hobject::hobject_free((HObject*)cur);
         }
         cur = next;
@@ -861,14 +864,14 @@ fn void Heap.destroy(&self) {
  * causes allocator fragmentation and RSS bloat.
  */
 fn void Heap.reset(&self) {
-    // Free all tracked HObjects via heap_allocated linked list.
-    // Null heap_ptr first so hobject_free skips the RC decref loop —
+    // Deactivate the active heap so hobject_free skips the RC decref loop —
     // same teardown-mode guard as in destroy().
+    hobject::hobject_clear_active_heap();
+
     HeapHeader* cur = self.heap_allocated;
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            ((HObject*)cur).heap_ptr = null;
             hobject::hobject_free((HObject*)cur);
         }
         cur = next;
@@ -1021,6 +1024,9 @@ fn void Heap.reset(&self) {
 
     // Reintern builtin strings into the now-empty string table
     self.init_builtin_strs();
+
+    // Re-activate the heap for the next run.
+    hobject::hobject_set_active_heap((void*)self);
 }
 
 // ============================================================================

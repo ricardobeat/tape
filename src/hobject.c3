@@ -34,6 +34,21 @@ import libc;
 faultdef PROP_NOT_FOUND;
 faultdef OBJ_ALLOC_FAULT;
 
+/// Active heap pointer. Set during heap init, nulled during teardown.
+/// Replaces the per-object heap_ptr field (8 bytes/object).
+void* _active_heap;
+
+/// Called by heap::init() — records the active heap for RC operations and shape transitions.
+fn void hobject_set_active_heap(void* heap) {
+    _active_heap = heap;
+}
+
+/// Called by heap::destroy() and heap::reset() before teardown — prevents
+/// hobject_free from doing string RC during teardown.
+fn void hobject_clear_active_heap() {
+    _active_heap = null;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -396,8 +411,6 @@ struct HObject {
     /// Pointer to the shared Shape describing this object's property layout.
     /// Property names, flags, and the hash table live here.
     Shape*        shape;
-    /// Back-pointer to the heap for shape transitions.
-    void*         heap_ptr;
 
     // --- Per-object property values ----------------------------------------
     /// Allocated capacity of prop_values (>= shape->prop_count).
@@ -502,8 +515,8 @@ fn void HObject.seal(&self) {
     // Abandon dense array part: move elements to named properties with
     // non-configurable flag.  The flat array part stores only TVals, not
     // per-element flags, so we need the property table for the flag change.
-    if (self.array_part() != null && self.array_used > 0 && self.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)self.heap_ptr;
+    if (self.array_part() != null && self.array_used > 0 && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
         char[12] digit_buf;
         for (uint i = 0; i < self.array_size; i++) {
             TVal v = self.array_part()[i];
@@ -669,7 +682,7 @@ fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
 /// into a single standalone shape.  Does NOT register in the transition table,
 /// so no other object will find this shape.
 fn void HObject.make_shape_private(&self) {
-    if (self.heap_ptr == null || self.shape == null) return;
+    if (_active_heap == null || self.shape == null) return;
     hobject::Shape* ns = shape_create(self.prop_count, 0, 0xFFFF_FFFF, null);
     if (ns == null) return;
 
@@ -685,14 +698,14 @@ fn void HObject.make_shape_private(&self) {
         walk = walk.parent_shape;
     }
 
-    heap::Heap* h = (heap::Heap*)self.heap_ptr;
+    heap::Heap* h = (heap::Heap*)_active_heap;
     uint new_id = h.alloc_shape_slot();
     if (new_id != heap::SHAPE_NONE) {
         h.shapes[new_id] = ns;
         self.shape_id = new_id;
         self.shape = ns;
     } else {
-        shape_free(ns, self.heap_ptr);
+        shape_free(ns, _active_heap);
     }
 }
 
@@ -800,11 +813,11 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
         PropValue* pv = &self.prop_values()[idx];
-        if (self.heap_ptr != null && pv.data.value.is_string()) {
-            ((heap::Heap*)self.heap_ptr).decref_tval(&pv.data.value);
+        if (_active_heap != null && pv.data.value.is_string()) {
+            ((heap::Heap*)_active_heap).decref_tval(&pv.data.value);
         }
         pv.data.value = val;
-        if (self.heap_ptr != null && val.is_string()) {
+        if (_active_heap != null && val.is_string()) {
             void* ptr = val.get_heapptr();
             if (ptr != null) {
                 ((types::HeapHeader*)ptr).incref();
@@ -849,7 +862,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     uint new_idx = self.prop_count;
     libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
     self.prop_values()[new_idx].data.value = val;
-    if (self.heap_ptr != null && val.is_string()) {
+    if (_active_heap != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -881,8 +894,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // --- Transition shape to include the new property ---
     // We already called find_prop_idx() above which confirmed the key is new,
     // so use transition_shape_new() which skips the O(N) chain walk.
-    if (self.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)self.heap_ptr;
+    if (_active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
         uint new_shape_id = h.transition_shape_new(self.shape_id, key);
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
@@ -984,15 +997,15 @@ fn bool HObject.delete_prop(&self, void* key) {
         }
 
         // Register with heap and attach to this object.
-        if (self.heap_ptr != null) {
-            heap::Heap* h = (heap::Heap*)self.heap_ptr;
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
             uint new_id = h.alloc_shape_slot();
             if (new_id != heap::SHAPE_NONE) {
                 h.shapes[new_id] = ns;
                 self.shape_id = new_id;
                 self.shape = ns;
             } else {
-                shape_free(ns, self.heap_ptr);
+                shape_free(ns, _active_heap);
                 self.shape = null;
             }
         } else {
@@ -1065,11 +1078,11 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
         }
     }
 
-    if (self.heap_ptr != null && self.array_part()[idx].is_string()) {
-        ((heap::Heap*)self.heap_ptr).decref_tval(&self.array_part()[idx]);
+    if (_active_heap != null && self.array_part()[idx].is_string()) {
+        ((heap::Heap*)_active_heap).decref_tval(&self.array_part()[idx]);
     }
     self.array_part()[idx] = val;
-    if (self.heap_ptr != null && val.is_string()) {
+    if (_active_heap != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -1111,8 +1124,8 @@ fn void HObject.grow_props(&self) {
 
     // prop_alloc may have moved — invalidate ICs that cached prop_value pointers.
     // (shape_id is unchanged, so the gen bump is what invalidates them.)
-    if (self.heap_ptr != null) {
-        ((heap::Heap*)self.heap_ptr).bump_shape_gen(self.shape_id);
+    if (_active_heap != null) {
+        ((heap::Heap*)_active_heap).bump_shape_gen(self.shape_id);
     }
 
     // Move the dense array part to its new position before updating pointers.
@@ -1174,6 +1187,8 @@ fn void HObject.grow_array(&self, uint new_size) {
 ///
 /// `heap_ptr` is an opaque pointer to the Heap; the object is **not**
 /// automatically inserted into the heap's GC list — the caller must do so.
+/// The heap pointer is accessed via the module-level `_active_heap` instead
+/// of a per-object field, saving 8 bytes per object.
 ///
 /// The object starts with:
 ///   - flags.htype          = HType.OBJECT
@@ -1217,7 +1232,6 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     obj.extra.func.builtin_fn_index = -1;
     obj.shape_id = 0;
     obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
-    obj.heap_ptr = heap_ptr;
     return obj;
 }
 
@@ -1244,8 +1258,8 @@ fn void hobject_free(HObject* obj) {
     // Only strings are RC-freed here — objects still use M&S and can form cycles;
     // decref-freeing objects from within another object's teardown would corrupt the
     // heap_allocated list and cause use-after-free on generator/closure env chains.
-    if (obj.prop_alloc != null && obj.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)obj.heap_ptr;
+    if (obj.prop_alloc != null && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
         PropValue* pvs = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
             if (pvs[i].data.value.is_string()) {
