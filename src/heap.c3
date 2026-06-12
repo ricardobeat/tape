@@ -647,6 +647,7 @@ fn uint Heap.alloc_shape_slot(&self) {
     }
     uint id = self.shape_count;
     self.shape_count++;
+    if (id >= 0xFFFE) return SHAPE_NONE;
     return id;
 }
 
