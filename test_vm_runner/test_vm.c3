@@ -11,6 +11,29 @@ import duktape::hstring;
 import std::io;
 import libc;
 
+fn void dump_func(CompiledFunction* f, int depth) {
+    String indent = depth == 0 ? "" : "  ";
+    for (int d = 0; d < depth; d++) {
+        io::printf("  ");
+    }
+    io::printfn("=== FUNC depth=%d (%d insns, %d regs, %d consts, %d inner) ===", depth, f.code_count, f.num_regs, f.const_count, f.inner_count);
+    for (uint i = 0; i < f.code_count; i++) {
+        char[128] buf;
+        buf[0] = 0;
+        usz len = f.code[i].disassemble(&buf);
+        buf[len] = 0;
+        for (int d = 0; d < depth; d++) {
+            io::printf("  ");
+        }
+        for (usz j = 0; j < len; j++) { io::putchar(buf[j]); }
+        io::putchar('\n');
+    }
+    for (uint i = 0; i < f.inner_count; i++) {
+        CompiledFunction* inner = f.inner_funcs[i];
+        dump_func(inner, depth + 1);
+    }
+}
+
 fn int main(String[] args) {
     String path = args.len > 1 ? args[1] : "test/simple.js";
     char[]? source = file::load_temp(path);
@@ -29,30 +52,8 @@ fn int main(String[] args) {
     CompiledFunction* f;
     if (try ff = func) { f = ff; } else { io::eprintfn("Compile failed"); return 1; }
 
-    // Dump bytecode
-    io::printfn("=== OUTER FUNCTION (%d insns, %d regs, %d consts, %d inner) ===", f.code_count, f.num_regs, f.const_count, f.inner_count);
-    for (uint i = 0; i < f.code_count; i++) {
-        char[128] buf;
-        buf[0] = 0;
-        usz len = f.code[i].disassemble(&buf);
-        buf[len] = 0;
-        for (usz j = 0; j < len; j++) { io::putchar(buf[j]); }
-        io::putchar('\n');
-    }
-
-    // Dump inner functions
-    for (uint i = 0; i < f.inner_count; i++) {
-        CompiledFunction* inner = f.inner_funcs[i];
-        io::printfn("=== INNER[%d] (%d insns, %d regs, %d consts) ===", i, inner.code_count, inner.num_regs, inner.const_count);
-        for (uint j = 0; j < inner.code_count; j++) {
-            char[128] buf2;
-            buf2[0] = 0;
-            usz len2 = inner.code[j].disassemble(&buf2);
-            buf2[len2] = 0;
-            for (usz k = 0; k < len2; k++) { io::putchar(buf2[k]); }
-            io::putchar('\n');
-        }
-    }
+    // Dump bytecode recursively
+    dump_func(f, 0);
 
     io::printfn("=== EXECUTING ===");
 
