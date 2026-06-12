@@ -15,12 +15,13 @@ live_objects:     12,419
 peak_objects:     12,419
 strings:           9,425    (in string table)
 shapes:            1,293
-malloc_overhead:   ~341 KB  (est. 16 B/call for libc metadata)
 ```
 
 - **Total malloc'd**: 9,310 KB
 - **RSS observed**: 16,384 KB
-- **Gap**: 7,074 KB (malloc metadata, fragmentation, code, stack, VM internals)
+- **Gap**: 7,074 KB — unexplained. This gap is larger than every itemized cost below
+  combined; profiling it (allocator retention, fragmentation, large one-off buffers,
+  code, stack) should happen before assuming the items below close it.
 
 ---
 
@@ -55,27 +56,50 @@ After Items 3 & 4 & 1, our HObjectBase is **64 bytes** — identical to original
 **QuickJS**: Properties split between shared `Shape` (names/flags/hash — one allocation shared by all objects with same layout) and per-object `JSProperty[]` (values only). Per-object prop array is still a separate malloc.
 
 **Fix options**:
-- A. **Inline small prop tables** — embed 4 PropValue slots directly in the object tail (after prototype), avoiding the separate malloc for 0-4 property objects. Saves 10,000 mallocs × 16 B overhead = 160 KB just in metadata, plus reduces RSS.
+- A. **Inline small prop tables** — embed 4 PropValue slots directly in the object tail (after prototype), avoiding the separate malloc for 0-4 property objects.
 - B. **Pool allocator** — use fixed-size arenas like QuickJS to eliminate per-allocation malloc overhead for small allocations. Complex but highest impact.
+
+Note: option A changes per-class object sizes, which redefines the size classes used by the pool allocator (Item 1). The pool size-class table must be the single source of truth (derived from `alloc_size_for_class`) so this change only edits one place.
 
 ### 2. PropValue setter waste — 8 bytes unused per data property slot
 
-**Current**: `PropValue` is 16 bytes (TVal value + TVal setter). For data properties, the `setter` field (8 bytes) is never used. With ~35,000 active property slots in memory_test.js, that's **280 KB** wasted.
+**Current**: `PropValue` is 16 bytes (TVal value + TVal setter). For data properties, the `setter` field (8 bytes) is never used. Data properties are the overwhelming majority of slots (~35,000 active slots in memory_test.js).
 
-**Original Duktape**: Uses a union where `value` and `getter` overlap at offset 0, and `setter` extends beyond at offset 8. When a slot is a data property, bytes 8-15 are just padding (same as us). But the union reduces the per-slot size to max(data, accessor pair) = 16 bytes. So Duktape has the SAME waste.
+**Original Duktape and QuickJS** both have the same waste: 16-byte slots sized for the accessor case. No need to stay faithful to either — other engines solve this better.
 
-**QuickJS**: Same pattern — `JSProperty` is also 16 bytes with an overlapping union.
+**Chosen fix — boxed accessor pairs (SpiderMonkey / JavaScriptCore design)**:
+Every slot becomes a single 8-byte TVal. Accessors don't live in the slot at all — a
+getter/setter pair is boxed into its own small heap cell, and the slot holds a pointer
+to it:
 
-**Conclusion**: All three engines waste 8 bytes per data property slot. This is universal bloat, not unique to us.
-
-**Fix**: Move `setter` into the union with `value`/`getter`:
 ```c3
-union PropData {
-    struct { TVal value; TVal setter; } data;  // 16 B — waste but keeps alignment
-    struct { TVal getter; TVal setter; } acc;   // 16 B
-};
+struct GetterSetter {   // GC-managed cell, traced like any heap object
+    HeapHeader hdr;
+    TVal getter;
+    TVal setter;
+}
 ```
-Then data properties only need 8 bytes (value), accessors need 16 bytes (getter+setter). But this requires variable-sized property slots, which complicates the prop_values[] array. Not trivial.
+
+The shape's per-property flags already record "this is an accessor", so reads know how
+to interpret the slot. `prop_idx` semantics, IC behavior, and the `prop_values[]` layout
+all stay uniform — slots just shrink 16 B → 8 B. Accessors pay one extra indirection and
+a 16+ B cell, but they are rare and not hot.
+
+Costs: one new GC-managed cell type (must be traced and refcounted); accessor get/set
+takes one more pointer hop; data→accessor redefinition allocates a cell.
+
+**Alternatives considered (rejected)**:
+- **Segregated slot arrays (V8-flavored)**: separate value array and accessor side
+  array, shape records which. Same memory win, but slot-index bookkeeping during
+  transitions (delete, data→accessor redefine) is much more complex than option 1.
+- **Heap-wide accessor table keyed by (object, key)**: uniform 8 B slots, zero cost for
+  accessor-free objects, but lifetime management of the side table (deletion, GC,
+  potential object moves) is awkward.
+- **Two-slot accessors (Lua-spirit, keep slots uniform and special-case the rare
+  thing)**: accessor properties occupy two consecutive 8 B slots. No new heap cell, but
+  property indices stop matching shape indices, requiring translation in every IC and
+  `prop_idx` computation — exactly the kind of indexing blast radius that produced the
+  plan 029 bugs.
 
 ### 3. String header: 32 B vs QuickJS 12 B
 
@@ -90,7 +114,7 @@ Then data properties only need 8 bytes (value), accessors need 16 bytes (getter+
 | arridx | 4 B | — (cached elsewhere) | |
 | **Total** | **32 B** | **12 B** | +20 B |
 
-With 9,425 strings, the header alone costs 302 KB vs QuickJS's 113 KB — a **189 KB** difference. Not the dominant cost, but notable.
+With 9,425 strings in the table, the per-header delta compounds. Not the dominant cost, but notable.
 
 **Fix**: Compute `clen` lazily instead of storing it (5,100+ strings). Remove `arridx` from HString and compute on demand (or cache in a side table for hot strings only).
 
@@ -102,7 +126,7 @@ With 9,425 strings, the header alone costs 302 KB vs QuickJS's 113 KB — a **18
 
 **QuickJS**: Only `JSShape*` pointer (8 bytes) — no separate shape_id. The shape IS refcounted, so the pointer is the canonical reference.
 
-**Fix**: Drop the `shape` pointer (8 bytes) and dereference through `heap->shapes[shape_id]` via `_active_heap`. Saves 8 bytes × 12,419 objects = **97 KB**. Adds one indirection per property access. Acceptable for memory-constrained builds (`-D NOSHAPECACHE`).
+**Fix**: Drop the `shape` pointer (8 bytes) and dereference through `heap->shapes[shape_id]` via `_active_heap`. Adds one indirection per property access. Gated behind `-D NOSHAPECACHE` for memory-constrained builds — the default build keeps the cache, so this saves nothing by default.
 
 ### 5. QuickJS pool allocator — the big differentiator
 
@@ -111,39 +135,71 @@ QuickJS uses arenas of fixed-size blocks with an 8-byte inline header (`JSMalloc
 - Eliminates fragmentation from variable-size allocations
 - Groups allocations of the same size into contiguous pages
 
-Our port calls `libc::malloc` for every tiny allocation (21,847 calls for memory_test.js). Each call has 16-32 bytes of metadata overhead. Total overhead: **349-699 KB** just for malloc bookkeeping.
+Our port calls `libc::malloc` for every tiny allocation (21,847 calls for memory_test.js), each carrying libc metadata overhead and contributing to fragmentation.
 
-**Fix**: Implement a simple pool allocator for object headers (the most frequent allocation). With 12,419 object allocations, even a basic pool would save 12,419 × 16 = **194 KB** in metadata alone, plus reduced fragmentation.
+**Fix**: Implement a pool allocator for object headers (the most frequent allocation), eliminating per-allocation metadata and grouping same-size objects into contiguous pages. Note: pool pages are not returned to the OS until the pool is destroyed, so RSS reflects peak object count, not live count.
 
 ---
 
 ## C3 Stdlib Options
 
-### `std::core::mem_mempool` — Fixed-size slab allocator
+### `std::core::mem::mempool` — `FixedBlockPool` fixed-size slab allocator
 
-The C3 stdlib ships a **slab/pool allocator** (`core::mem_mempool`). Perfect for allocating
-HObjects of known sizes:
+The C3 stdlib ships a fixed-block pool allocator. Perfect for allocating HObjects of
+known sizes:
 
 ```c3
-import std::core::mem_mempool;
+import std::core::mem::mempool;
 
 // One pool per allocation size class
-Mempool obj_pool_64;   // plain objects (64 bytes)
-Mempool obj_pool_72;   // ARRAY objects (72 bytes)
-Mempool obj_pool_96;   // FUNCTION/REGEXP/etc (96 bytes)
+FixedBlockPool obj_pool_64;   // plain objects
+FixedBlockPool obj_pool_96;   // FUNCTION/REGEXP/etc
 
-obj_pool_64.init(64);  // block size = 64 bytes
-void* p = obj_pool_64.alloc();~  // zero-init single block
-obj_pool_64.free(p);                // return to pool
+obj_pool_64.init(allocator, 64);   // requires an Allocator + block size
+void* p = obj_pool_64.alloc();     // zero-initialized block
+obj_pool_64.dealloc(p);            // return ONE block to pool
+// obj_pool_64.free() destroys the ENTIRE pool — never call per object
 ```
 
-- Eliminates per-allocation `libc::malloc` metadata (16-24 bytes saved per object)
-- Reduces fragmentation — all objects of same size class share contiguous slabs
-- `alloc()` zero-initializes (replaces our `libc::malloc` + `libc::memset` pair)
-- Built-in, no need to write our own
+- Eliminates per-allocation `libc::malloc` metadata
+- Reduces fragmentation — all objects of same size class share contiguous pages
+- `alloc()` zero-initializes (pages are calloc'd; freelist reuse is `mem::clear`ed) —
+  replaces our `libc::malloc` + `libc::memset` pair
+- `dealloc()` carries an `@require` that validates the pointer by walking the page
+  list — O(pages) per free, but only in safe-mode builds; release builds compile it
+  out and dealloc is an O(1) freelist push. Combined with `--sanitize=address`, debug
+  builds get wrong-pool/double-free detection for free.
 
-**Integration**: Replace `Heap.alloc()` call in `hobject_alloc()` with pool lookup by `alloc_size_for_class(cls)`.
-Fall back to `Heap.alloc()` if pool is exhausted.
+**Integration design** (free-path provenance is the hard part — the GC sweeper must
+route each object back to the correct pool):
+
+1. **Compile-time class→pool table.** Generate the size-class table at compile time
+   from the struct definitions themselves (`$foreach` / `.sizeof` / `$assert`), so it
+   can never drift from `alloc_size_for_class`:
+   ```c3
+   const usz[] POOL_SIZES = { HObjectBase.sizeof, HArrayObject.sizeof, HFunctionObject.sizeof };
+   $assert(HObjectBase.sizeof <= 64);  // layout regressions fail the build
+   ```
+   Provenance at free time is then `pool_for_class(obj.cls)` — a pure function of the
+   class field the sweeper already reads. Zero runtime metadata per object. If Item 5
+   (inline prop tables) changes struct sizes, the size classes reflow automatically.
+2. **Fallback flag bit.** One bitstruct flag bit in the object header marks
+   malloc-fallback allocations (pool exhausted, oversized class). The free path
+   branches on this bit: flag set → `Heap.free()`, otherwise → owning pool's
+   `dealloc()`.
+3. `hobject_alloc()` replaces its `Heap.alloc()` call with the pool lookup; falls back
+   to `Heap.alloc()` + flag bit when needed.
+
+Note: pool pages are not returned to the OS until the pool is destroyed, so RSS
+reflects peak object count, not live count.
+
+**Potential follow-up — half-BIBOP page map**: `FixedBlockPool.init` accepts an
+`alignment` parameter (pages go through `calloc_aligned`), so page-aligned pools come
+for free. With a small side map of `masked_page_addr → pool`, provenance becomes O(1)
+for *any* pointer with no class knowledge required. Not needed while only object
+headers are pooled (the class enum is provenance enough), but it is the natural second
+stage if pooling expands to allocations whose type isn't knowable at the free site
+(prop tables, strings, shape blocks), and the stepping stone to bulk page sweeping.
 
 ### `@pool()` / `mem::@stack_mem()` — Arena/scratch allocators
 
@@ -292,20 +348,23 @@ immediately. Essential for validating Item 1-class changes.
 These were introduced by the `uint→ushort` compression in plan 029 and must be resolved
 before adding further changes that depend on `_active_heap` or shape IDs.
 
-### Bug A — IC generation wrap (hobject.c3:1530, vm.c3:2401)
+### Bug A — IC generation wrap (hobject.c3:1587)
 
-`VarICEntry.generation` was narrowed to `ushort` but `Shape.generation` remains `uint`.
-After 65536 mutations to a shape, the stored ushort wraps and aliases a past generation
-value. The IC-validation compare (`vm.c3:2231`: `shape.generation == vic.generation`)
-promotes the ushort to uint — so when the live generation is e.g. 65537 and the IC was
-stored at generation 1, both produce ushort 1 and the IC appears valid. A stale `prop_idx`
-is then used to read/write the wrong slot in `prop_values[]`.
+`VarICEntry.generation` was narrowed to `ushort` but `Shape.generation` remains `uint`
+(hobject.c3:1465). After 65536 mutations to a shape, the stored ushort wraps and aliases
+a past generation value. The IC-validation compare (`shape.generation ==
+vic.generation`) promotes the ushort to uint — so when the live generation is e.g. 65537
+and the IC was stored at generation 1, both produce ushort 1 and the IC appears valid. A
+stale `prop_idx` is then used to read/write the wrong slot in `prop_values[]`.
 
-**Fix**: Widen `VarICEntry.generation` back to `uint`. The field is 2 bytes inside a
-struct that also has `ushort prop_idx` — widening costs 2 bytes of padding per entry, a
-negligible regression against the plan 029 wins.
+There are **four** compare/store site pairs, all of which must be fixed:
+vm.c3:2234/2404, 5959/6037, 6095/6176, and 6255/6286.
 
-### Bug B — Shape ID 65535 aliases SHAPE_ID_NONE (heap.c3:648)
+**Fix**: Widen `VarICEntry.generation` back to `uint` and drop the `(ushort)` cast at
+all four store sites. The field sits next to `ushort prop_idx` — widening costs 2 bytes
+of padding per entry, a negligible regression against the plan 029 wins.
+
+### Bug B — Shape ID 65535 aliases SHAPE_ID_NONE (heap.c3:637)
 
 `alloc_shape_slot()` returns `uint` with no cap below 65535. When `shape_count` reaches
 65535 organically, the returned id passes the `SHAPE_NONE` (0xFFFF_FFFF) guard and is cast
@@ -322,15 +381,16 @@ is treated as "no transition found", breaking shape sharing and IC for that obje
 
 ## Recommended Implementation Order
 
-| # | Item | Est. savings | C3 help | Effort | Risk |
-|---|---|---|---|---|---|
-| A | **Fix IC generation wrap** (`VarICEntry.generation` → `uint`) | 0 KB | — | Trivial | None |
-| B | **Cap shape IDs at 65534** in `alloc_shape_slot` | 0 KB | — | Trivial | None |
-| 1 | **Pool allocator via `mem_mempool`** | ~250 KB | `std::core::mem_mempool` | Low | Low |
-| 2 | Drop `shape` pointer | ~100 KB | — | Low | Low |
-| 3 | Use `inline` struct subtyping for HObject/HObjectBase | 0 KB (code quality) | `inline` keyword | Low | Very low |
-| 4 | Compute `clen` lazily | ~60 KB | — | Low | Very low |
-| 5 | Inline small prop tables | ~300 KB | — | Medium | Medium |
+| # | Item | C3 help | Effort | Risk |
+|---|---|---|---|---|
+| A | **Fix IC generation wrap** (`VarICEntry.generation` → `uint`, 4 sites) | — | Trivial | None |
+| B | **Cap shape IDs at 65534** in `alloc_shape_slot` | — | Trivial | None |
+| 0 | **Profile the 7 MB malloc-to-RSS gap** before assuming items below close it | — | Low | None |
+| 1 | **Pool allocator via `FixedBlockPool`** + compile-time class→pool table | `std::core::mem::mempool`, `$foreach`/`$assert` | Low | Low |
+| 2 | Drop `shape` pointer (`-D NOSHAPECACHE` builds only) | — | Low | Low |
+| 3 | Use `inline` struct subtyping for HObject/HObjectBase | `inline` keyword | Low | Very low |
+| 4 | Compute `clen` lazily | — | Low | Very low |
+| 5 | Inline small prop tables (size classes reflow via Item 1's table) | — | Medium | Medium |
 
 **Items A & B** must go first — they are correctness fixes for plan 029 regressions.
 Item 2 (drop `shape` pointer) relies on `_active_heap` being correct; shipping that on
