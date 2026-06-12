@@ -452,10 +452,11 @@ struct HObject {
 // HObject — Per-class allocation sizes and trailing-data accessors
 // ============================================================================
 
-/// Pool size classes — derived from actual struct sizes.
-const usz OBJ_SIZE_PLAIN = HObjectBase::size;                   // OBJECT, ERROR, ARGUMENTS, PROXY
-const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8;               // ARRAY
-const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size; // FUNCTION, REGEXP, etc.
+/// Pool size classes — derived from actual struct sizes plus inline prop space.
+const usz INLINE_EXTRA = INLINE_PROPS * PropValue::size;
+const usz OBJ_SIZE_PLAIN = HObjectBase::size + INLINE_EXTRA;                            // OBJECT, ERROR, ARGUMENTS, PROXY
+const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8 + INLINE_EXTRA;                        // ARRAY
+const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // FUNCTION, REGEXP, etc.
 
 /// Allocation size for each object class.
 /// Includes INLINE_PROPS slots at the tail for small objects (0-4 properties),
@@ -464,17 +465,16 @@ const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size; // FUNCTION, 
 /// ARRAY: HObjectBase + 8 + inline props (144 bytes).
 /// Others: HObjectBase + HObjectExtra + inline props (168 bytes).
 fn usz alloc_size_for_class(ObjClass cls) @inline {
-    usz extra = INLINE_PROPS * PropValue::size;
     switch (cls) {
         case ObjClass.OBJECT:
         case ObjClass.ERROR:
         case ObjClass.ARGUMENTS:
         case ObjClass.PROXY:
-            return OBJ_SIZE_PLAIN + extra;
+            return OBJ_SIZE_PLAIN;
         case ObjClass.ARRAY:
-            return OBJ_SIZE_ARRAY + extra;
+            return OBJ_SIZE_ARRAY;
         default:
-            return OBJ_SIZE_FUNC + extra;
+            return OBJ_SIZE_FUNC;
     }
 }
 
