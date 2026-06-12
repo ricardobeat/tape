@@ -170,7 +170,7 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
         }
         wm.array_part()[cnt - 2].set_undefined();
         wm.array_part()[cnt - 1].set_undefined();
-        wm.array_used = cnt - 2;
+        wm.array_used = (ushort)(cnt - 2);
 
         ctx.result.set_boolean(true);
     } else {

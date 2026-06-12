@@ -2398,7 +2398,7 @@ fn TVal? Vm.run(Vm* vm) {
                 vic.env = ic_env;
                 vic.bindings = ic_env.bindings;
                 vic.shape_id = ic_env.bindings.shape_id;
-                vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                vic.generation = (ushort)vm.heap.shapes[ic_env.bindings.shape_id].generation;
                 vic.prop_idx = (ushort)ic_prop_idx;
                 if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                 vic.key = key;
@@ -3102,7 +3102,7 @@ fn TVal? Vm.run(Vm* vm) {
                             if (owner_idx >= 0) {
                                 ic.shape_id = hobj.shape_id;
                                 ic.proto = res.owner == hobj ? null : (void*)res.owner;
-                                ic.prop_idx = (uint)owner_idx;
+                                ic.prop_idx = (ushort)owner_idx;
                                 ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
                                 if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
                                 ic.key = key;
@@ -3389,7 +3389,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 if (owner_idx >= 0) {
                                     ic.shape_id = hobj.shape_id;
                                     ic.proto = res.owner == hobj ? null : (void*)res.owner;
-                                    ic.prop_idx = (uint)owner_idx;
+                                    ic.prop_idx = (ushort)owner_idx;
                                     ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
                                     if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
                                     ic.key = key;
@@ -6007,7 +6007,7 @@ fn TVal? Vm.run(Vm* vm) {
                             vic.env = ic_env;
                             vic.bindings = ic_env.bindings;
                             vic.shape_id = ic_env.bindings.shape_id;
-                            vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                            vic.generation = (ushort)vm.heap.shapes[ic_env.bindings.shape_id].generation;
                             vic.prop_idx = (ushort)ic_prop_idx;
                             if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                             vic.key = key;
@@ -6146,7 +6146,7 @@ fn TVal? Vm.run(Vm* vm) {
                         vic.env = ic_env;
                         vic.bindings = ic_env.bindings;
                         vic.shape_id = ic_env.bindings.shape_id;
-                        vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                        vic.generation = (ushort)vm.heap.shapes[ic_env.bindings.shape_id].generation;
                         vic.prop_idx = (ushort)ic_prop_idx;
                         if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
                         vic.key = key;
@@ -6256,7 +6256,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 vic.env = (void*)act.var_env;
                                 vic.bindings = (void*)b;
                                 vic.shape_id = b.shape_id;
-                                vic.generation = vm.heap.shapes[b.shape_id].generation;
+                                vic.generation = (ushort)vm.heap.shapes[b.shape_id].generation;
                                 vic.prop_idx = (ushort)idx;
                                 vic.key = key;
                                 vic.search_head = null;

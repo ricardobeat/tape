@@ -138,7 +138,7 @@ fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
             ws.array_part()[i] = ws.array_part()[i + 1];
         }
         ws.array_part()[cnt - 1].set_undefined();
-        ws.array_used = cnt - 1;
+        ws.array_used = (ushort)(cnt - 1);
 
         ctx.result.set_boolean(true);
     } else {

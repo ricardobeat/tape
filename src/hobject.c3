@@ -407,20 +407,20 @@ struct HObject {
 
     // --- Shape (shared property layout) ------------------------------------
     /// Shape ID for inline cache support (index into Heap.shapes[]).
-    uint          shape_id;
+    ushort        shape_id;
     /// Pointer to the shared Shape describing this object's property layout.
     /// Property names, flags, and the hash table live here.
     Shape*        shape;
 
     // --- Per-object property values ----------------------------------------
     /// Allocated capacity of prop_values (>= shape->prop_count).
-    uint          prop_capacity;
+    ushort        prop_capacity;
     /// Number of properties currently in use (synced with shape->prop_count).
-    uint          prop_count;
+    ushort        prop_count;
 
     // --- Dense array part ------------------------------------------------
-    uint          array_size;
-    uint          array_used;
+    ushort        array_size;
+    ushort        array_used;
 
     // --- Unified property allocation block --------------------------------
     /// Single allocation that holds prop_values and array_part contiguously.
@@ -699,10 +699,10 @@ fn void HObject.make_shape_private(&self) {
     }
 
     heap::Heap* h = (heap::Heap*)_active_heap;
-    uint new_id = h.alloc_shape_slot();
-    if (new_id != heap::SHAPE_NONE) {
-        h.shapes[new_id] = ns;
-        self.shape_id = new_id;
+    uint slot = h.alloc_shape_slot();
+    if (slot != heap::SHAPE_NONE) {
+        h.shapes[slot] = ns;
+        self.shape_id = (ushort)slot;
         self.shape = ns;
     } else {
         shape_free(ns, _active_heap);
@@ -896,7 +896,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // so use transition_shape_new() which skips the O(N) chain walk.
     if (_active_heap != null) {
         heap::Heap* h = (heap::Heap*)_active_heap;
-        uint new_shape_id = h.transition_shape_new(self.shape_id, key);
+        ushort new_shape_id = h.transition_shape_new(self.shape_id, key);
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
             self.shape = h.get_shape(new_shape_id);
@@ -962,7 +962,7 @@ fn bool HObject.delete_prop(&self, void* key) {
     }
 
     uint ui = (uint)idx;
-    uint new_count = self.prop_count - 1;
+    ushort new_count = (ushort)(self.prop_count - 1);
 
     // Compact prop_values: shift [ui+1..prop_count-1] → [ui..prop_count-2]
     for (uint i = ui; i < new_count; i++) {
@@ -999,10 +999,10 @@ fn bool HObject.delete_prop(&self, void* key) {
         // Register with heap and attach to this object.
         if (_active_heap != null) {
             heap::Heap* h = (heap::Heap*)_active_heap;
-            uint new_id = h.alloc_shape_slot();
-            if (new_id != heap::SHAPE_NONE) {
-                h.shapes[new_id] = ns;
-                self.shape_id = new_id;
+            uint slot = h.alloc_shape_slot();
+            if (slot != heap::SHAPE_NONE) {
+                h.shapes[slot] = ns;
+                self.shape_id = (ushort)slot;
                 self.shape = ns;
             } else {
                 shape_free(ns, _active_heap);
@@ -1105,6 +1105,8 @@ fn void HObject.grow_props(&self) {
             new_cap = self.prop_capacity + 4;
         }
     }
+    // Cap at ushort max — objects with >65535 properties are pathological.
+    if (new_cap > 65535) new_cap = 65535;
 
     usz old_size = self.prop_alloc_size();
     usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
@@ -1119,8 +1121,8 @@ fn void HObject.grow_props(&self) {
     if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
-    uint old_prop_capacity = self.prop_capacity;
-    self.prop_capacity = new_cap;
+    ushort old_prop_capacity = self.prop_capacity;
+    self.prop_capacity = (ushort)new_cap;
 
     // prop_alloc may have moved — invalidate ICs that cached prop_value pointers.
     // (shape_id is unchanged, so the gen bump is what invalidates them.)
@@ -1153,6 +1155,8 @@ fn void HObject.grow_props(&self) {
 /// New slots are initialised to undefined.
 fn void HObject.grow_array(&self, uint new_size) {
     if (new_size <= self.array_size) return;
+    // Dense arrays with >65535 elements would overflow ushort. Bail.
+    if (new_size > 65535) return;
 
     usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
     usz old_array_size = self.array_size;
@@ -1168,7 +1172,7 @@ fn void HObject.grow_array(&self, uint new_size) {
     if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
-    self.array_size = new_size;
+    self.array_size = (ushort)new_size;
 
     usz added = (usz)(new_size - old_array_size);
     ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
@@ -1493,9 +1497,9 @@ fn void shape_free(Shape* sh, void* heap_ptr) {
 /// walk.
 struct ICEntry {
     /// Shape ID of the object when this entry was populated.
-    uint   shape_id;
+    ushort shape_id;
     /// Property index within the owner's prop_values[].
-    uint   prop_idx;
+    ushort prop_idx;
     /// Cached property flags (avoid shape walk on IC hit).
     PropFlags prop_flags;
     /// Prototype pointer where the property was found (null = own property).
@@ -1521,9 +1525,9 @@ struct VarICEntry {
     /// The HObject* bindings object of the env (for shape check).
     void*   bindings;
     /// Shape ID of the bindings object when this entry was populated.
-    uint    shape_id;
+    ushort  shape_id;
     /// Generation of the shape at population time.
-    uint    generation;
+    ushort  generation;
     /// Property index within bindings.props[].
     ushort  prop_idx;
     /// The interned key (HString*) this entry was populated for.

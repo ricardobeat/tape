@@ -140,7 +140,7 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
             set.array_part()[i] = set.array_part()[i + 1];
         }
         set.array_part()[cnt - 1].set_undefined();
-        set.array_used = cnt - 1;
+        set.array_used = (ushort)(cnt - 1);
 
         HString* size_key = builtin_intern_string(ctx.heap, "size");
         TVal size_val;

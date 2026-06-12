@@ -235,7 +235,7 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
         // Clear the last two slots
         map.array_part()[cnt - 2].set_undefined();
         map.array_part()[cnt - 1].set_undefined();
-        map.array_used = cnt - 2;
+        map.array_used = (ushort)(cnt - 2);
 
         HString* size_key = builtin_intern_string(ctx.heap, "size");
         TVal size_val;
