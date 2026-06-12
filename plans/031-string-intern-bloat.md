@@ -1,8 +1,8 @@
 # Plan 031 — Fix String Intern Table Bloat (4.7× memory regression)
 
 **Date**: June 12, 2026
-**Status**: Partially implemented — Fixes 2-4 merged to main (14,048 KB, -11%).
-Fix 1 (skip interning) reverted: breaks string comparison (pointer equality assumption).
+**Status**: Complete — All fixes 1-4 merged to main. Final memory: 6,512 KB (-59% vs plan start).
+Fix 1 successfully implemented via selective skip-interning + lazy interning (commit 614eca0).
 
 ---
 
@@ -186,8 +186,38 @@ c3c -D NOSHAPECACHE build test_vm && ./out/test_vm test/simple.js
 | vs QJS (memory_test) | 2.6× | **2.3×** | improved |
 | vs Duktape orig | 2.5× | **2.3×** | improved |
 
-## Why Fix 1 (skip interning) was reverted
+## Final Results — All Fixes Complete (commit 614eca0)
 
-The engine uses **pointer equality for string comparison** (all strings are interned). Skipping interning for concat results breaks every `str1 === str2`, `switch(str)`, property lookup, etc. Original Duktape handles this via "dynamic strings" with spare capacity — a deeper refactor.
+### Fix 1 Implementation (Second Attempt)
 
-**Path forward**: Content-based string comparison for non-interned strings (modify EQ/STRICTEQ opcodes) would unlock Fix 1. The `is_interned` flag and lazy interning infrastructure (now reverted but understood) would be reactivated at that point.
+Selective interning for ADD opcode concat:
+- **Accumulator pattern only** (`ra == rb || ra == rc`, e.g., `str += x`): skip interning
+- **Fresh concat results** (new accumulator): intern normally
+  - Rationale: Fresh results often become property keys; avoiding interning breaks lookups for them
+  - Mirrors QuickJS's approach — detects re-use pattern at runtime
+
+Lazy interning single gate:
+- **Location**: `get_prop_key()` in `src/vm.c3` — STRING case calls `Heap.ensure_interned()`
+- **Removed from**: `find_prop_idx()` — had it in both places caused ~70× slowdown (two `str_table_lookup` calls per property access)
+- **Bug fixed**: `map["key_" + i] = v; map["key_0"]` now returns correct value
+  - Root cause: `ensure_interned()` existed but had zero call sites — non-interned concat keys stored under pointer never deduplicated against string table, pointer-equality miss in `find_prop_idx`
+  - Fix: call `ensure_interned()` from `get_prop_key()`
+
+Compile-time string literals:
+- `src/compiler/constants.c3` now sets `is_interned = true` for literals
+
+### Memory Results (commit 614eca0)
+
+| Metric | Before plan 031 | After fixes 1-4 | vs Original Duktape | vs QuickJS |
+|--------|-----------------|-----------------|---------------------|-----------|
+| memory_test.js RSS | 15,776 KB | **6,512 KB** | **1.04×** (6,384 KB) | **1.09×** (6,112 KB) |
+| Improvement | — | **-59%** (-9,264 KB) | — | — |
+
+### Correctness & Performance
+
+- **Rosetta**: 43/43 passing (unchanged)
+- **Shape benchmarks** (bench_shape_no_call.js, bench_shape_stress.js): ~0.9-1.0s
+  - Identical to pre-plan-031 baseline (fa27a7c)
+  - No regression from interning changes
+  - Note: ~1s runtime is pre-existing gap vs reference engines (10-17ms for same code), tracked separately; caused by shape transition cost with 10k unique properties, not by plan 031
+- **bench_memory_heavy.js, bench_object.js**: VM_ERROR (pre-existing at fa27a7c, unrelated to this plan)
