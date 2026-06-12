@@ -85,6 +85,7 @@ const uint ACT_FLAG_DIRECT_EVAL    = 1u << 4;
 /// Flags for catcher struct.
 const uint CATCHER_FLAG_CATCH_ENABLED    = 1u << 0;
 const uint CATCHER_FLAG_FINALLY_ENABLED  = 1u << 1;
+const uint CATCHER_FLAG_PENDING_RETURN   = 1u << 2;
 
 /// A catcher entry pushed by TRY for exception handling.
 /// Singly-linked list rooted in Activation.cat.
@@ -99,6 +100,8 @@ struct Catcher {
     Instruction* catch_pc;
     /// Absolute PC of the finally handler (FINALLY instruction), or null if none.
     Instruction* finally_pc;
+    /// Saved return value for return-through-finally (set by RET).
+    TVal return_val;
 }
 
 // ============================================================================
@@ -5707,6 +5710,20 @@ fn TVal? Vm.run(Vm* vm) {
         // === RETURNS ===
 
         case Opcode.RET: {
+            // Check for active finally catchers: if we're returning through
+            // a try-finally, save the return value and jump to the finally
+            // handler.  After ENDFINALLY, the saved value will be used.
+            Catcher* ret_cat = (Catcher*)act.cat;
+            if (ret_cat != null && ret_cat.finally_pc != null) {
+                // Save return value and mark pending return
+                ret_cat.return_val = *ra;
+                ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                // Jump to finally handler
+                curr_pc = ret_cat.finally_pc;
+                act.curr_pc = curr_pc;
+                break;
+            }
+
             // Inline handle_return — eliminates function call overhead on every return.
             TVal val = *ra;
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
@@ -5778,6 +5795,16 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.RETUNDEF: {
+            // Check for active finally catchers (same as RET)
+            Catcher* ret2_cat = (Catcher*)act.cat;
+            if (ret2_cat != null && ret2_cat.finally_pc != null) {
+                ret2_cat.return_val.set_undefined();
+                ret2_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                curr_pc = ret2_cat.finally_pc;
+                act.curr_pc = curr_pc;
+                break;
+            }
+
             TVal undef_val;
             undef_val.set_undefined();
 
@@ -6588,26 +6615,80 @@ fn TVal? Vm.run(Vm* vm) {
             break;
 
         case Opcode.ENDFINALLY: {
-            // Check if we entered the finally block via a pending exception.
-            // Look for a catcher with FINALLY_ENABLED that has a pending thrown_val.
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null && (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
-                bool has_pending = (!cat.thrown_val.is_undefined());
-                TVal pending_val = cat.thrown_val;
+                // Save pending state before freeing the catcher
+                bool has_pending_exc = (!cat.thrown_val.is_undefined());
+                TVal pending_exc_val = cat.thrown_val;
+                bool has_pending_ret = (cat.flags & CATCHER_FLAG_PENDING_RETURN) != 0;
+                TVal saved_ret_val = cat.return_val;
 
                 // Pop the finally catcher
                 act.cat = (void*)cat.parent;
                 libc::free(cat);
 
-                if (has_pending) {
+                if (has_pending_ret) {
+                    // Complete the return that was intercepted by the finally block.
+                    TVal val = saved_ret_val;
+                    Activation* callee_act = &vm.activations[vm.activation_count - 1];
+                    TVal* callee_result = callee_act.retval;
+
+                    bool val_pinned = false;
+                    if (val.is_heap_allocated() && val.get_heapptr() != null) {
+                        ((HeapHeader*)val.get_heapptr()).incref();
+                        val_pinned = true;
+                    }
+
+                    decref_callee_regs(vm, callee_act);
+
+                    vm.activation_count--;
+
+                    if (vm.activation_count == 0) {
+                        vm.heap.tval_copy_ref(&vm.return_val, &val);
+                        if (val_pinned) vm.heap.decref_tval(&val);
+                        return vm.return_val;
+                    }
+                    if (callee_result != null) {
+                        if (!val.is_heap_allocated()) {
+                            if (callee_result.is_heap_allocated()) {
+                                vm.heap.decref_tval(callee_result);
+                            }
+                            *callee_result = val;
+                        } else if (val_pinned) {
+                            vm.heap.decref_tval(callee_result);
+                            *callee_result = val;
+                            val_pinned = false;
+                        } else {
+                            vm.heap.tval_copy_ref(callee_result, &val);
+                        }
+                    }
+                    if (val_pinned) vm.heap.decref_tval(&val);
+                    act = &vm.activations[vm.activation_count - 1];
+                    vm.valstack_bottom = act.bottom;
+                    vm.valstack_top = act.caller_valstack_top;
+                    CompiledFunction* caller_func = (CompiledFunction*)act.func;
+                    if (caller_func != vm.current_func) {
+                        vm.current_func = caller_func;
+                        code_base = caller_func.code;
+                        code_count = caller_func.code_count;
+                        code_end = code_base + code_count;
+                        constants = caller_func.constants;
+                        ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                        var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
+                        nregs = caller_func.num_regs;
+                    }
+                    curr_pc = act.curr_pc;
+                    regs_base = act.bottom;
+                    break;
+                }
+
+                if (has_pending_exc) {
                     // Re-throw the pending exception
-                    if (!vm_throw_value(vm, pending_val, act, &curr_pc, &needs_restart)) {
+                    if (!vm_throw_value(vm, pending_exc_val, act, &curr_pc, &needs_restart)) {
                         return VM_ERROR~;
                     }
                 }
-                // else: normal continuation, nothing to re-throw
             }
-            // else: entered via normal flow (no catcher), nothing to do
             break;
         }
 
