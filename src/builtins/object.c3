@@ -1064,13 +1064,15 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     }
 
     // Step 5: [[DefineOwnProperty]]
+    // Check if property already exists
+    int existing_idx = obj.find_prop_idx(key);
     // ES5 §8.12.9 step 1: If every field in Desc is absent, return true.
-    if (!has_any_field) {
+    // This short-circuit only applies when the property already exists;
+    // for a new property we must still create it (with all-false defaults).
+    if (!has_any_field && existing_idx >= 0) {
         ctx.result.set_object(obj);
         return;
     }
-    // Check if property already exists
-    int existing_idx = obj.find_prop_idx(key);
     if (existing_idx < 0) {
         // Property doesn't exist — check extensibility
         if (!obj.flags.extensible) {
@@ -1180,6 +1182,46 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
             bool has_enum_in_desc = (enum_k != null) && desc_obj.find_prop_idx(enum_k) >= 0;
             bool has_conf_in_desc = (conf_k != null) && desc_obj.find_prop_idx(conf_k) >= 0;
+            // ES5 §8.12.9 step 7: non-configurable property — reject if descriptor
+            // tries to set configurable:true, or changes enumerable.
+            if (!cur_flags.configurable) {
+                if (has_conf_in_desc && desc_flags.configurable) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err_gc = err_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_key_gc = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str_gc = builtin_intern_string(ctx.heap, "Cannot redefine property: configurable");
+                    if (msg_key_gc == null || msg_str_gc == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv_gc;
+                    msg_tv_gc.set_string(msg_str_gc);
+                    err.put_prop(msg_key_gc, msg_tv_gc, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+                if (has_enum_in_desc && desc_flags.enumerable != cur_flags.enumerable) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err_ge = err_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_key_ge = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str_ge = builtin_intern_string(ctx.heap, "Cannot redefine property: enumerable");
+                    if (msg_key_ge == null || msg_str_ge == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv_ge;
+                    msg_tv_ge.set_string(msg_str_ge);
+                    err.put_prop(msg_key_ge, msg_tv_ge, hobject::PROP_FLAGS_WEC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+            }
             if (has_enum_in_desc) cur_flags.enumerable   = desc_flags.enumerable;
             if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
             obj.set_prop_flags((uint)existing_idx, cur_flags);
