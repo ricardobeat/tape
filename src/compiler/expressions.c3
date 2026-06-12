@@ -1136,6 +1136,51 @@ fn ushort? CompilerContext.new_expr(&self) {
         self.max_reg = self.next_reg;
     }
 
+    // Handle trailing member access and calls: new X().prop, new X()[idx], new X().method()
+    for (;;) {
+        if (self.match(TokenType.DOT)) {
+            Token? prop_name_opt = self.lexer.next_token();
+            if (catch err = prop_name_opt) return COMPILE_ERROR~;
+            Token prop_name = prop_name_opt;
+            char[] prop_str = prop_name.str_value;
+            if (prop_str.len == 0) {
+                prop_str = lexer::keyword_to_string(prop_name.type);
+            }
+            if (prop_name.type != TokenType.IDENTIFIER && prop_str.len == 0) {
+                return COMPILE_ERROR~;
+            }
+            uint prop_const = self.add_string_constant(prop_str);
+            ushort prop_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
+            ushort result = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)prop_reg);
+            self.free_reg(prop_reg);
+            // Check if this is a method call: new X().method(args)
+            if (self.check(TokenType.LPAREN)) {
+                // Keep ctor_reg alive as 'this' for the method call
+                self.call_prop_obj_reg = ctor_reg;
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+                ctor_reg = self.emit_call(ctor_reg)!;
+            } else {
+                self.free_reg(ctor_reg);
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+            }
+        } else if (self.match(TokenType.LBRACKET)) {
+            ushort idx_reg = self.expression()!;
+            self.expect(TokenType.RBRACKET)!;
+            ushort result = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
+            self.free_reg(idx_reg);
+            self.free_reg(ctor_reg);
+            ctor_reg = result;
+            self.next_reg = ctor_reg + 1;
+        } else {
+            break;
+        }
+    }
+
     return ctor_reg;
 }
 
