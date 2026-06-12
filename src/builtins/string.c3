@@ -17,7 +17,7 @@ import duktape::re_bindings;
 /// Populate indexed character properties on a String wrapper object (ES5 §15.5.5.1).
 /// Each character position becomes a non-writable, enumerable, non-configurable own property.
 fn void populate_string_indexed_props(HObject* obj, HString* s, Heap* heap) {
-    for (uint i = 0; i < s.clen; i++) {
+    for (uint i = 0; i < s.char_length(); i++) {
         HString* key = heap.int_to_hstring((long)i);
         if (key == null) continue;
         uint cp = s.char_at(i);
@@ -54,7 +54,7 @@ fn void builtin_string(BuiltinContext* ctx) {
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
-        len_tv.set_fastint((long)s.clen);
+        len_tv.set_fastint((long)s.char_length());
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
         // Indexed character properties are served lazily via the exotic_stringobj flag;
         // no per-character own properties are materialised at construction time.

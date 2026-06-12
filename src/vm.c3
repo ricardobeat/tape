@@ -903,7 +903,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         if (cur.flags.exotic_stringobj && (*cur.extra_ptr()).prim.primitive_value.is_string()) {
             HString* prim = (HString*)(*cur.extra_ptr()).prim.primitive_value.get_heapptr();
             if (prim != null) {
-                for (uint i = 0; i < prim.clen; i++) {
+                for (uint i = 0; i < prim.char_length(); i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
                     if (k == null) continue;
                     if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
@@ -932,7 +932,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                         if (cur.prop_key_at(i) != null) {
                             HString* k = (HString*)cur.prop_key_at(i);
                             if (k.is_arridx()) {
-                                sbuf[p * 2] = k.arridx;
+                                sbuf[p * 2] = k.array_index();
                                 sbuf[p * 2 + 1] = i;
                                 p++;
                             }
@@ -2937,8 +2937,9 @@ fn TVal? Vm.run(Vm* vm) {
             // Fast path: dense array with string key that might be an index
             if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && rb.is_string()) {
                 HString* skey = (HString*)rb.get_heapptr();
-                if (skey.arridx != hstring::ARRIDX_NONE && skey.arridx < (uint)obj.array_size) {
-                    TVal? av = obj.get_array_idx(skey.arridx);
+                uint skey_idx = skey.array_index();
+                if (skey_idx != hstring::ARRIDX_NONE && skey_idx < (uint)obj.array_size) {
+                    TVal? av = obj.get_array_idx(skey_idx);
                     if (try v = av) {
                         ra.set_boolean(true);
                         break;
@@ -2953,7 +2954,7 @@ fn TVal? Vm.run(Vm* vm) {
                     HString* key_hstr = (HString*)key;
                     if (key_hstr != null && key_hstr.is_arridx()) {
                         HString* prim_str = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-                        if (prim_str != null && key_hstr.arridx < prim_str.clen) {
+                        if (prim_str != null && key_hstr.array_index() < prim_str.char_length()) {
                             ra.set_boolean(true);
                             break;
                         }
@@ -3063,12 +3064,12 @@ fn TVal? Vm.run(Vm* vm) {
                             // String key that is a canonical array index (cached on HString)
                             HString* key_hstr = (HString*)rc.get_heapptr();
                             if (key_hstr != null && key_hstr.is_arridx()) {
-                                sidx = (long)key_hstr.arridx;
+                                sidx = (long)key_hstr.array_index();
                             }
                         }
                         if (sidx >= 0) {
                             HString* prim_str = (HString*)(*hobj.extra_ptr()).prim.primitive_value.get_heapptr();
-                            if (sidx < (long)prim_str.clen) {
+                            if (sidx < (long)prim_str.char_length()) {
                                 uint cp = prim_str.char_at((uint)sidx);
                                 char[4] sbuf;
                                 uint sblen = hstring::encode_codepoint(cp, sbuf[:4]);
@@ -3181,7 +3182,7 @@ fn TVal? Vm.run(Vm* vm) {
                             str_idx = (long)d;
                         }
                     }
-                    if (str_idx >= 0 && str_idx < (long)str_prim.clen) {
+                    if (str_idx >= 0 && str_idx < (long)str_prim.char_length()) {
                         uint cp = str_prim.char_at((uint)str_idx);
                         char[4] cbuf;
                         uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
@@ -3198,7 +3199,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (key != null) {
                         // Fast path: .length → string character count
                         if (key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                            ra.set_fastint((long)h_str.clen);
+                            ra.set_fastint((long)h_str.char_length());
                             break;
                         }
                         // Slow path: walk String.prototype chain
@@ -3355,9 +3356,9 @@ fn TVal? Vm.run(Vm* vm) {
                         // STRING exotic: string-key indexed access (array-index string keys like "0")
                         if (hobj.flags.exotic_stringobj && (*hobj.extra_ptr()).prim.primitive_value.is_string()) {
                             if (key_hstr != null && key_hstr.is_arridx()) {
-                                long sidx = (long)key_hstr.arridx;
+                                long sidx = (long)key_hstr.array_index();
                                 HString* prim_str = (HString*)(*hobj.extra_ptr()).prim.primitive_value.get_heapptr();
-                                if (sidx < (long)prim_str.clen) {
+                                if (sidx < (long)prim_str.char_length()) {
                                     uint cp = prim_str.char_at((uint)sidx);
                                     char[4] sbuf;
                                     uint sblen = hstring::encode_codepoint(cp, sbuf[:4]);
@@ -3449,7 +3450,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (key_hstr != null) {
                             // Fast path: .length → string character count
                             if ((void*)key_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                                ra.set_fastint((long)h_str.clen);
+                                ra.set_fastint((long)h_str.char_length());
                                 break;
                             }
                             if (vm.heap.string_proto != null) {
@@ -6473,7 +6474,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_tv;
-                len_tv.set_fastint((long)prim_str.clen);
+                len_tv.set_fastint((long)prim_str.char_length());
                 obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
             } else if (ra.is_number() || ra.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
@@ -6830,7 +6831,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Indexed character properties are served lazily via exotic_stringobj during enumeration.
                 HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
                 TVal len_tv;
-                len_tv.set_fastint((long)prim_str.clen);
+                len_tv.set_fastint((long)prim_str.char_length());
                 obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
             } else if (obj_val.is_number() || obj_val.is_fastint()) {
                 HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);

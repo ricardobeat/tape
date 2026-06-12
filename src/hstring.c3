@@ -106,10 +106,6 @@ struct HString {
     uint hash;
     /// Byte length of the UTF-8 data (excluding the NUL terminator).
     uint blen;
-    /// Character (codepoint) length.
-    uint clen;
-    /// Cached numeric array-index value, or ARRIDX_NONE.
-    uint arridx;
 }
 
 // ============================================================================
@@ -195,6 +191,30 @@ fn bool HString.is_strict_reserved(&self)    { return self.flags.is_strict_reser
 fn bool HString.has_extdata(&self)           { return self.flags.has_extdata; }
 
 // ============================================================================
+// HString — lazy computed fields
+// ============================================================================
+
+/// Compute the character (codepoint) length on demand.
+///
+/// For ASCII strings this equals `blen`.  For multi-byte UTF-8 the bytes
+/// are walked once to count codepoints.
+fn uint HString.char_length(&self) {
+    if (self.flags.is_ascii) return self.blen;
+    return compute_charlen(self.get_data());
+}
+
+/// Returns the numeric array-index value if this string is a valid array
+/// index ("0" .. "4294967294"), or `ARRIDX_NONE` otherwise.
+fn uint HString.array_index(&self) {
+    if (!self.flags.is_arridx) return ARRIDX_NONE;
+    uint idx_val;
+    if (is_valid_array_index(self.get_data(), &idx_val)) {
+        return idx_val;
+    }
+    return ARRIDX_NONE;
+}
+
+// ============================================================================
 // HString — Unicode helpers
 // ============================================================================
 
@@ -202,9 +222,9 @@ fn bool HString.has_extdata(&self)           { return self.flags.has_extdata; }
 ///
 /// For pure-ASCII strings the operation is O(1).  For multi-byte strings
 /// the function scans from the beginning in O(n) where n = char_idx.
-/// Returns `UNICODE_REPLACEMENT` if `char_idx >= clen`.
+/// Returns `UNICODE_REPLACEMENT` if `char_idx >= char_length()`.
 fn uint HString.char_at(&self, uint char_idx) {
-    if (char_idx >= self.clen) {
+    if (char_idx >= self.char_length()) {
         return UNICODE_REPLACEMENT;
     }
 
@@ -294,19 +314,10 @@ fn HString*? hstring_alloc(void* heap_ptr, char[] data, uint hash) {
     bool ascii = check_is_ascii(data);
     s.flags.is_ascii = ascii;
 
-    if (ascii) {
-        s.clen = (uint)data.len;
-    } else {
-        s.clen = compute_charlen(data);
-    }
-
     // --- Array-index detection ---
     uint idx_val;
     if (is_valid_array_index(data, &idx_val)) {
         s.flags.is_arridx = true;
-        s.arridx = idx_val;
-    } else {
-        s.arridx = ARRIDX_NONE;
     }
 
     // --- Symbol / hidden-symbol detection ---
@@ -357,13 +368,11 @@ fn HString*? hstring_concat(void* heap_ptr, HString* a, HString* b) {
     s.flags.htype = HType.STRING;
 
     s.blen = (uint)(a_len + b_len);
-    s.clen = a.clen + b.clen;
 
     bool ascii = a.flags.is_ascii && b.flags.is_ascii;
     s.flags.is_ascii = ascii;
 
     s.hash = 0;  // caller must compute hash before interning
-    s.arridx = ARRIDX_NONE;
 
     char* dest = (char*)((usz)raw + HSTRING_HDR_SIZE);
     if (a_len > 0) {

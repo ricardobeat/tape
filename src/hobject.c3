@@ -897,9 +897,10 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         if (self.flags.exotic_array) {
             HString* ks = (HString*)key;
             if (ks.is_arridx()) {
-                self.set_array_idx(ks.arridx, val);
-                if (ks.arridx >= *self.array_len_ptr()) {
-                    *self.array_len_ptr() = ks.arridx + 1;
+                uint ks_idx = ks.array_index();
+                self.set_array_idx(ks_idx, val);
+                if (ks_idx >= *self.array_len_ptr()) {
+                    *self.array_len_ptr() = ks_idx + 1;
                 }
             }
         }
@@ -940,9 +941,10 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     if (self.flags.exotic_array) {
         HString* ks = (HString*)key;
         if (ks.is_arridx()) {
-            self.set_array_idx(ks.arridx, val);
-            if (ks.arridx >= *self.array_len_ptr()) {
-                *self.array_len_ptr() = ks.arridx + 1;
+            uint ks_idx = ks.array_index();
+            self.set_array_idx(ks_idx, val);
+            if (ks_idx >= *self.array_len_ptr()) {
+                *self.array_len_ptr() = ks_idx + 1;
             }
         }
     }
