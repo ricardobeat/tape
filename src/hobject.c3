@@ -58,6 +58,9 @@ fn void hobject_clear_active_heap() {
 /// Used by put_prop to sync array_length on LENGTH writes.
 void* builtin_length_key = null;
 
+/// Default is false. Pass `-D NOSHAPECACHE` to drop the 8-byte shape pointer cache.
+const bool USE_SHAPE_CACHE = !$defined(NOSHAPECACHE);
+
 /// Initial number of property entry slots when first allocated.
 const uint PROPS_INITIAL_CAPACITY = 8;
 
@@ -409,7 +412,7 @@ struct HObjectBase {
     HeapHeader*   prev;
     HObject*      prototype;
     ushort        shape_id;
-    Shape*        shape;
+    Shape*        shape @if(USE_SHAPE_CACHE);
     ushort        prop_capacity;
     ushort        prop_count;
     ushort        array_size;
@@ -433,7 +436,7 @@ struct HObject {
     ushort        shape_id;
     /// Pointer to the shared Shape describing this object's property layout.
     /// Property names, flags, and the hash table live here.
-    Shape*        shape;
+    Shape*        shape @if(USE_SHAPE_CACHE);
 
     // --- Per-object property values ----------------------------------------
     /// Allocated capacity of prop_values (>= shape->prop_count).
@@ -559,6 +562,33 @@ fn TVal* HObject.array_part(&self) @inline {
 /// Returns a HeapHeader pointer to this object (binary-compatible cast).
 fn HeapHeader* HObject.as_header(&self) @inline {
     return (HeapHeader*)self;
+}
+
+// ============================================================================
+// HObject — shape accessors
+// ============================================================================
+
+/// Get the Shape pointer for this object.
+/// With NOSHAPECACHE: dereferences through heap->shapes[shape_id].
+/// Without: returns the cached self.shape pointer.
+fn Shape* HObject.get_shape(&self) @inline {
+$if USE_SHAPE_CACHE:
+    return self.shape;
+$else
+    heap::Heap* h = (heap::Heap*)_active_heap;
+    if (h == null) return null;
+    if (self.shape_id >= h.shape_count) return null;
+    return h.shapes[self.shape_id];
+$endif
+}
+
+/// Set the Shape pointer for this object.
+/// With NOSHAPECACHE: writes to self.shape.
+/// Without: no-op (shape is derived from shape_id).
+fn void HObject.set_shape(&self, Shape* sh) @inline {
+$if USE_SHAPE_CACHE:
+    self.shape = sh;
+$endif
 }
 
 // ============================================================================
@@ -707,7 +737,7 @@ fn void HObject.ensure_prop_hash(&self) {
     // Rebuild from the shape chain — the shape is the authoritative source
     // (during put_prop growth the new key is already in the shape, but not
     // yet in the old hash table).
-    hobject::Shape* sh = self.shape;
+    hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         hobject::ShapeProperty* sp = sh.props();
         for (uint j = 0; j < sh.own_count; j++) {
@@ -740,7 +770,7 @@ fn void HObject.ensure_prop_hash(&self) {
 /// Get the property key at a given index by walking the shape chain.
 /// Returns null if the index is out of range.
 fn void* HObject.prop_key_at(&self, uint idx) @inline {
-    hobject::Shape* sh = self.shape;
+    hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
             return sh.props()[idx - sh.offset].key;
@@ -753,7 +783,7 @@ fn void* HObject.prop_key_at(&self, uint idx) @inline {
 /// Get property flags at a given index by walking the shape chain.
 /// Flags are authoritative in the ShapeProperty (kept in sync on writes).
 fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
-    hobject::Shape* sh = self.shape;
+    hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
             return sh.props()[idx - sh.offset].flags;
@@ -767,12 +797,12 @@ fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
 /// into a single standalone shape.  Does NOT register in the transition table,
 /// so no other object will find this shape.
 fn void HObject.make_shape_private(&self) {
-    if (_active_heap == null || self.shape == null) return;
+    if (_active_heap == null || self.get_shape() == null) return;
     hobject::Shape* ns = shape_create(self.prop_count, 0, 0xFFFF_FFFF, null);
     if (ns == null) return;
 
     hobject::ShapeProperty* new_sp = ns.props();
-    hobject::Shape* walk = self.shape;
+    hobject::Shape* walk = self.get_shape();
     while (walk != null) {
         hobject::ShapeProperty* old_sp = walk.props();
         for (uint j = 0; j < walk.own_count; j++) {
@@ -788,7 +818,7 @@ fn void HObject.make_shape_private(&self) {
     if (slot != heap::SHAPE_NONE) {
         h.shapes[slot] = ns;
         self.shape_id = (ushort)slot;
-        self.shape = ns;
+        self.set_shape(ns);
     } else {
         shape_free(ns, _active_heap);
     }
@@ -799,7 +829,7 @@ fn void HObject.make_shape_private(&self) {
 /// Skips the expensive private-shape creation when flags already match.
 fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
     // Fast path: flags already correct — no shape mutation needed.
-    hobject::Shape* sh = self.shape;
+    hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
             if (sh.props()[idx - sh.offset].flags == new_flags) return;
@@ -808,7 +838,7 @@ fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
         sh = sh.parent_shape;
     }
     self.make_shape_private();
-    sh = self.shape;
+    sh = self.get_shape();
     while (sh != null) {
         if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
             sh.props()[idx - sh.offset].flags = new_flags;
@@ -821,7 +851,7 @@ fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
 /// Find the index of the property with the given interned key.
 /// Uses the per-object hash table if present, otherwise walks the shape chain.
 fn int HObject.find_prop_idx(&self, void* key) {
-    if (key == null || self.shape == null || self.prop_count == 0) return -1;
+    if (key == null || self.get_shape() == null || self.prop_count == 0) return -1;
 
     // Try hash table first
     if (self.prop_hash != null) {
@@ -839,7 +869,7 @@ fn int HObject.find_prop_idx(&self, void* key) {
     }
 
     // Walk shape chain for small objects
-    hobject::Shape* sh = self.shape;
+    hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         hobject::ShapeProperty* sp = sh.props();
         for (uint i = 0; i < sh.own_count; i++) {
@@ -984,7 +1014,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         ushort new_shape_id = h.transition_shape_new(self.shape_id, key);
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
-            self.shape = h.get_shape(new_shape_id);
+            self.set_shape(h.get_shape(new_shape_id));
         }
         // If the caller wants non-default flags, update the shape.
         // set_prop_flags handles making the shape private if shared.
@@ -1062,11 +1092,11 @@ fn bool HObject.delete_prop(&self, void* key) {
     Shape* ns = shape_create(new_count, 0, 0xFFFF_FFFF, null);
     if (ns != null) {
         // Collect surviving property names by walking the old shape chain
-        if (self.shape != null) {
+        if (self.get_shape() != null) {
             ShapeProperty* new_sp = ns.props();
             uint ni = 0;
             // Walk the old shape chain to get all properties
-            Shape* walk = self.shape;
+            Shape* walk = self.get_shape();
             while (walk != null) {
                 ShapeProperty* old_sp = walk.props();
                 for (uint j = 0; j < walk.own_count; j++) {
@@ -1088,17 +1118,17 @@ fn bool HObject.delete_prop(&self, void* key) {
             if (slot != heap::SHAPE_NONE) {
                 h.shapes[slot] = ns;
                 self.shape_id = (ushort)slot;
-                self.shape = ns;
+                self.set_shape(ns);
             } else {
                 shape_free(ns, _active_heap);
-                self.shape = null;
+                self.set_shape(null);
             }
         } else {
             shape_free(ns, null);
-            self.shape = null;
+            self.set_shape(null);
         }
     } else {
-        self.shape = null;
+        self.set_shape(null);
     }
 
     // Indexes after the deleted slot shifted down by one, so rebuild the
@@ -1343,7 +1373,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     }
 
     obj.shape_id = 0;
-    obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
+    obj.set_shape(((heap::Heap*)heap_ptr).get_shape(0));  // root shape
     return obj;
 }
 
