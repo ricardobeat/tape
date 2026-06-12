@@ -1970,6 +1970,20 @@ fn void Heap.str_table_remove(&self, hstring::HString* hstr) {
     }
 }
 
+/// Lazy-intern: ensure an HString is in the string table.  If already
+/// interned, returns it unchanged.  Otherwise looks up by content (may
+/// find an existing copy), or inserts this string.  Used by property
+/// lookup when a non-interned concatenation result is used as a key.
+fn HString* Heap.ensure_interned(&self, hstring::HString* s) {
+    if (s.flags.is_interned) return s;
+    HString* existing = self.str_table_lookup(s.get_data(), s.hash);
+    if (existing != null) return existing;
+    self.str_table_insert(s);
+    ((HeapHeader*)s).incref();
+    s.flags.is_interned = true;
+    return s;
+}
+
 /**
  * Intern a string: return the existing copy if one exists, otherwise
  * allocate, insert, and return the new copy.  Returns null on alloc failure.

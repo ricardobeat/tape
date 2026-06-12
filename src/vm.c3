@@ -1081,7 +1081,11 @@ fn bool strict_eq(TVal* a, TVal* b) @inline {
                 if (math::is_nan(a.get_number()) && math::is_nan(b.get_number())) return false;
                 return a.get_number() == b.get_number();
             case FASTINT:   return a.get_fastint() == b.get_fastint();
-            case STRING:    return a.get_heapptr() == b.get_heapptr();
+            case STRING: {
+                HString* sa = (HString*)a.get_heapptr();
+                HString* sb = (HString*)b.get_heapptr();
+                return sa != null && sb != null && sa.equals_hstring(sb);
+            }
             case OBJECT:    return a.get_heapptr() == b.get_heapptr();
             default:        return false;
         }
@@ -1992,9 +1996,13 @@ fn TVal? Vm.run(Vm* vm) {
                             libc::memcpy(buf, &int_buf, (usz)int_len);
                             libc::memcpy(buf + int_len, str.get_cstr(), s_len);
                         }
-                        HString* interned = intern_string(vm, buf[:total]);
+                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], vm.heap.hash_string(buf[:total]));
                         if (heap_allocated) libc::free(buf);
-                        vm.heap.set_reg_string(ra, interned);
+                        if (try s = maybe_s) {
+                            vm.heap.set_reg_string(ra, s);
+                        } else {
+                            ra.set_undefined();
+                        }
                         break;
                     }
                 }
@@ -2046,9 +2054,13 @@ fn TVal? Vm.run(Vm* vm) {
                         libc::memcpy(buf + a_len, rs.get_cstr(), b_len);
                     }
 
-                    HString* interned = intern_string(vm, buf[:total]);
+                    HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], vm.heap.hash_string(buf[:total]));
                     if (heap_allocated) libc::free(buf);
-                    vm.heap.set_reg_string(ra, interned);
+                    if (try s = maybe_s) {
+                        vm.heap.set_reg_string(ra, s);
+                    } else {
+                        ra.set_undefined();
+                    }
                 } else {
                     ra.set_undefined();
                 }
@@ -2515,7 +2527,12 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     case FASTINT:   seq_r = (rb.get_fastint() == rc.get_fastint()); break;
-                    case STRING:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case STRING: {
+                        HString* sa = (HString*)rb.get_heapptr();
+                        HString* sb = (HString*)rc.get_heapptr();
+                        seq_r = sa != null && sb != null && sa.equals_hstring(sb);
+                        break;
+                    }
                     case OBJECT:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
                     case LIGHTFUNC: seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
                     case POINTER:   seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
@@ -2554,7 +2571,12 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     case FASTINT:   sneq_r = (rb.get_fastint() != rc.get_fastint()); break;
-                    case STRING:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case STRING: {
+                        HString* sa = (HString*)rb.get_heapptr();
+                        HString* sb = (HString*)rc.get_heapptr();
+                        sneq_r = !(sa != null && sb != null && sa.equals_hstring(sb));
+                        break;
+                    }
                     case OBJECT:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
                     case LIGHTFUNC: sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
                     case POINTER:   sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;

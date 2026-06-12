@@ -147,11 +147,18 @@ fn bool HString.equals(&self, char[] data) {
     return libc::memcmp(self.get_cstr(), data.ptr, data.len) == 0;
 }
 
-/// Compares two interned HStrings.  Since every unique byte sequence is
-/// stored exactly once in the string table, pointer equality is
-/// sufficient.
+/// Compares two HStrings for equality.  When both are interned pointer
+/// equality is sufficient (the string table guarantees uniqueness).  When
+/// either is non-interned (e.g. a concatenation temporary), compare by
+/// content, using the pre-computed hash as a fast-reject.
 fn bool HString.equals_hstring(&self, HString* other) {
-    return self == other;
+    if (self == other) return true;
+    if (!self.flags.is_interned || !other.flags.is_interned) {
+        if (self.blen != other.blen) return false;
+        if (self.hash != other.hash) return false;
+        return libc::memcmp(self.get_cstr(), other.get_cstr(), self.blen) == 0;
+    }
+    return false;
 }
 
 /// Lexicographic comparison of two HStrings.
