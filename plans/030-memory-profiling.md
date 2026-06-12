@@ -117,27 +117,113 @@ Our port calls `libc::malloc` for every tiny allocation (21,847 calls for memory
 
 ---
 
-## Proposed Action Items
+## C3 Stdlib Options
 
-| # | Item | Est. savings | Effort | Risk |
-|---|---|---|---|---|---|
-| A | Inline small prop tables (0-4 slots in tail) | ~300 KB | Low-Medium | Low |
-| B | Pool allocator for HObjects | ~200 KB | Medium | Medium |
-| C | Drop `shape` pointer (use heap→shapes[id]) | ~97 KB | Low | Low |
-| D | Compute clen lazily (shrink HString) | ~60 KB | Low | Very low |
-| E | Categorize alloc/free tracking for continued profiling | — | Low | None |
+### `std::core::mem_mempool` — Fixed-size slab allocator
 
-**Combined estimated savings**: ~750 KB on memory_test.js (16.4 → 15.6 MB).
-Still far from 6 MB. The remaining gap requires deeper investigation — likely systemic malloc fragmentation and the sheer number of separate allocations per object.
+The C3 stdlib ships a **slab/pool allocator** (`core::mem_mempool`). Perfect for allocating
+HObjects of known sizes:
+
+```c3
+import std::core::mem_mempool;
+
+// One pool per allocation size class
+Mempool obj_pool_64;   // plain objects (64 bytes)
+Mempool obj_pool_72;   // ARRAY objects (72 bytes)
+Mempool obj_pool_96;   // FUNCTION/REGEXP/etc (96 bytes)
+
+obj_pool_64.init(64);  // block size = 64 bytes
+void* p = obj_pool_64.alloc();~  // zero-init single block
+obj_pool_64.free(p);                // return to pool
+```
+
+- Eliminates per-allocation `libc::malloc` metadata (16-24 bytes saved per object)
+- Reduces fragmentation — all objects of same size class share contiguous slabs
+- `alloc()` zero-initializes (replaces our `libc::malloc` + `libc::memset` pair)
+- Built-in, no need to write our own
+
+**Integration**: Replace `Heap.alloc()` call in `hobject_alloc()` with pool lookup by `alloc_size_for_class(cls)`.
+Fall back to `Heap.alloc()` if pool is exhausted.
+
+### `@pool()` / `mem::@stack_mem()` — Arena/scratch allocators
+
+```c3
+// Temp arena freed at scope exit — zero overhead, no individual frees needed
+@pool() {
+    // All allocations here use temp allocator, freed automatically
+    char[] buf = mem::temp_array(char, 4096);
+}
+
+// Stack-based arena (fixed size, no heap)
+mem::@stack_mem(65536; |Allocator arena| {
+    // Allocations from 'arena' live on the stack
+});
+```
+
+Useful for:
+- **Compilation temporaries** — parser AST nodes, compiler intermediate data
+- **Regex compilation** — bytecode buffers, temporary strings
+- **GC gray stack** — already using a dynamic array, but could benefit from pre-sized arena
+
+### `collections::List{T}` — Typed dynamic array
+
+```c3
+import std::collections::list;
+alias PropList = List{PropValue};
+
+PropList props;
+props.init(heap_allocator, initial_capacity = 8);
+props.push(prop_val);
+props[i] = val;        // zero-cost operator[]
+props.free();
+```
+
+Could replace our manual `prop_alloc` management (realloc, memmove, zero-init). But adds
+`List`'s own overhead (capacity, size fields) which are already in HObject. Not a direct
+replacement — more of a refactoring opportunity.
+
+### `mem::new_array(T, n)` — Typed zero-init allocation
+
+```c3
+PropValue* pv = mem::new_array(PropValue, 8);  // alloc + zero-init, 8 slots
+mem::free(pv);
+```
+
+Cleaner than `libc::malloc(n * sizeof(X))` + `libc::memset(p, 0, ...)`. Already equivalent
+to what we do in `grow_props`. Minor code quality improvement.
+
+### Generics for sized pools
+
+C3 generics could make a type-safe pool per HObject variant:
+
+```c3
+struct PoolAlloc <Type> {
+    Mempool pool;
+}
+fn void PoolAlloc.init(Type self, sz block_size = Type::size) {
+    self.pool.init(block_size);
+}
+fn Type* PoolAlloc.alloc(Type self) { return (Type*)self.pool.alloc(); }
+fn void PoolAlloc.free(Type self, Type* p) { self.pool.free(p); }
+```
+
+This would let us allocate `PoolAlloc{HObjectBase}.alloc()` for plain objects, etc.
+But the `mem_mempool` API is already type-agnostic — generics add little value here.
 
 ---
 
-## Next Steps
+## Recommended Implementation Order
 
-1. **Item C** (drop `shape` pointer): Quickest win, minimal risk. ~100 KB.
-2. **Item D** (lazy `clen`): Simple string header shrink. ~60 KB.
-3. **Item A** (inline property tables): Eliminates 10,000+ mallocs. ~300 KB.
-4. **Deeper profiling**: Track peak live bytes (not cumulative) to distinguish temporary allocations from live data. The 9,310 KB cumulative total includes freed temp allocations from grow_props/grow_array.
+| # | Item | Est. savings | C3 stdlib help | Effort | Risk |
+|---|---|---|---|---|---|
+| 1 | **Pool allocator via `mem_mempool`** | ~250 KB | `std::core::mem_mempool` | Low | Low |
+| 2 | Drop `shape` pointer | ~100 KB | — | Low | Low |
+| 3 | Compute `clen` lazily | ~60 KB | — | Low | Very low |
+| 4 | Inline small prop tables | ~300 KB | — | Medium | Medium |
+
+**Item 1** (pool allocator) becomes the priority — C3 ships the allocator for free,
+we just wire it into `hobject_alloc`. Replaces 12,000+ `libc::malloc` calls with
+pool allocations. Re-run profiling after to reassess the remaining gap.
 
 ## Verification
 
