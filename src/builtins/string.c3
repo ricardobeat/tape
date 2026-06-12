@@ -1818,6 +1818,7 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     uint search_len = search_hstr.blen;
 
     if (search_len == 0) { ctx.result.set_fastint((long)(start < 0 ? 0 : (long)start)); return; }
+    if (start > (int)(len - search_len)) start = (int)(len - search_len);
 
     int result = -1;
     for (int i = start; i >= 0 && i + (int)search_len <= (int)len; i--) {
