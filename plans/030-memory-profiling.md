@@ -1,7 +1,7 @@
 # Plan 030 — Memory Profiling & Gap Analysis
 
 **Date**: June 12, 2026
-**Status**: Research complete; tasks below
+**Status**: Implemented
 **Goal**: Close the 2.6× RSS gap vs original Duktape (16 MB → ~6 MB on `memory_test.js`)
 
 ---
