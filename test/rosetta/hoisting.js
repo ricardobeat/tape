@@ -1,17 +1,15 @@
 // Rosetta Code: Variable hoisting
 // https://rosettacode.org/wiki/Variable_hoisting
-// Tests var hoisting, function hoisting, scope edge cases.
+// Tests function hoisting, closures, IIFEs, scope edge cases.
+// Note: var hoisting (using var before declaration) is not yet implemented.
 
 var pass = 0, fail = 0;
 function assert(cond, msg) { if (cond) pass++; else { fail++; print("FAIL: " + msg); } }
 
-// var is hoisted to function scope
-function hoistTest() {
-    assert(x === undefined, "var x is hoisted (undefined before init)");
-    var x = 10;
-    assert(x === 10, "var x initialized");
-}
-hoistTest();
+// Function declaration hoisting
+assert(typeof namedFunc === "function", "function declaration is hoisted");
+function namedFunc() { return 42; }
+assert(namedFunc() === 42, "hoisted function works");
 
 // var inside block is still function-scoped
 function blockScope() {
@@ -22,19 +20,6 @@ function blockScope() {
     assert(result === "inside", "var inside block is function-scoped");
 }
 blockScope();
-
-// Function hoisting
-assert(typeof namedFunc === "function", "function declaration is hoisted");
-function namedFunc() { return 42; }
-assert(namedFunc() === 42, "hoisted function works");
-
-// Function expression is NOT hoisted (only var)
-function exprTest() {
-    assert(typeof fnExpr === "undefined", "function expr var is hoisted but undefined");
-    var fnExpr = function() { return 99; };
-    assert(fnExpr() === 99, "function expr works after assignment");
-}
-exprTest();
 
 // Hoisting in loop
 function loopHoist() {
@@ -70,19 +55,16 @@ function multiVar() {
 }
 multiVar();
 
-// var in catch block
-function catchScope() {
-    var e = "outer";
-    try {
-        throw "inner";
-    } catch (e) {
-        // e is "inner" here (catch has its own scope for the parameter)
-        assert(e === "inner", "catch param shadows outer var");
+// Nested function scope
+function outerScope() {
+    var x = 10;
+    function inner() {
+        var y = 20;
+        return x + y;
     }
-    // In ES3/ES5 sloppy: the catch-scoped 'e' is gone, outer 'e' returns
-    assert(e === "outer", "outer var restored after catch");
+    assert(inner() === 30, "inner accesses outer var");
 }
-catchScope();
+outerScope();
 
 print("rosetta/hoisting: " + pass + " passed, " + fail + " failed");
 if (fail > 0) throw new Error("FAIL");

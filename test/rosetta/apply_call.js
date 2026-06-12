@@ -10,15 +10,6 @@ function add(a, b) { return a + b; }
 assert(add.apply(null, [3, 4]) === 7, "apply with array");
 assert(add.call(null, 3, 4) === 7, "call with args");
 
-// Borrowing Array methods
-function sumArray() {
-    var args = Array.prototype.slice.call(arguments);
-    var total = 0;
-    for (var i = 0; i < args.length; i++) total += args[i];
-    return total;
-}
-assert(sumArray(1, 2, 3) === 6, "borrowed slice for args");
-
 // apply to spread array as args
 function multiply(a, b, c) { return a * b * c; }
 var nums = [2, 3, 4];

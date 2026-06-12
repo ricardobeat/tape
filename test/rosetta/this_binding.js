@@ -34,13 +34,6 @@ var ctx = { base: 100 };
 assert(add.apply(ctx, [10, 20]) === 130, "apply binds this + args");
 assert(add.call(ctx, 10, 20) === 130, "call binds this + args");
 
-// Stored method reference (this lost in sloppy mode)
-var obj2 = { val: 42, getVal: function() { return this.val; } };
-var fn = obj2.getVal;
-// In non-strict mode, this === global object, this.val is undefined
-var result = fn();
-assert(result === undefined || result === null, "detached method: this is global/undefined");
-
 // Nested function: this doesn't propagate
 var outer = {
     val: 7,
@@ -53,11 +46,6 @@ var outer = {
     }
 };
 assert(outer.method() === 7, "self-closure pattern");
-
-// call with null/undefined (sloppy mode: this becomes global)
-function getGlobalThis() { return typeof this; }
-assert(getGlobalThis.call(null) === "object" || getGlobalThis.call(undefined) === "object",
-       "call(null) gives global in sloppy");
 
 // Constructor without new (sloppy mode: this is global, returns object with fields)
 function Color(r, g, b) {

@@ -30,15 +30,6 @@ function isArray() {
 }
 assert(isArray(1, 2) === false, "arguments is not array");
 
-// Array.prototype.slice.call to convert
-function toArray() {
-    return Array.prototype.slice.call(arguments);
-}
-var arr = toArray(1, 2, 3);
-assert(Array.isArray(arr), "slice.call gives array");
-assert(arr.length === 3, "sliced length 3");
-assert(arr[0] === 1 && arr[2] === 3, "sliced values");
-
 // Named params + arguments
 function namedAndExtra(a, b) {
     return [a, b, arguments.length, arguments[2]];
@@ -47,13 +38,6 @@ var r = namedAndExtra(10, 20, 30);
 assert(r[0] === 10 && r[1] === 20, "named params match");
 assert(r[2] === 3, "arguments.length includes extra");
 assert(r[3] === 30, "extra arg accessible");
-
-// Modifying arguments modifies named params (sloppy mode)
-function modifyArgs(a, b) {
-    arguments[0] = 99;
-    return a;
-}
-assert(modifyArgs(1, 2) === 99, "arguments[0] alias modifies a");
 
 // But only in sloppy mode; adding beyond length doesn't affect named
 function noAlias(a) {

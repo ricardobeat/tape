@@ -702,7 +702,10 @@ fn void? CompilerContext.for_statement(&self) {
             if (self.peek_type() == TokenType.IN) {
                 // for (var x in obj) { ... }
                 self.advance()!;  // consume 'in'
-                ushort iter_var = self.declare_var(name_tok.str_value, is_const ? CONST : LET);
+                // Use a temp register for NEXTFOR output — don't register-cache
+                // the variable because PUTVAR clears the register after syncing
+                // to the environment. The body must use GETVAR to read the key.
+                ushort iter_var = self.alloc_reg();
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
 
@@ -717,7 +720,6 @@ fn void? CompilerContext.for_statement(&self) {
                 ushort has_next = self.alloc_reg();
                 self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
                 // Sync the for-in variable to the environment so GETVAR can find it
-                // (needed at global scope where resolve_var is not used)
                 uint forin_name_idx = self.add_string_constant(name_tok.str_value);
                 self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
 

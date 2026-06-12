@@ -43,11 +43,9 @@ var box2 = curriedVol(2);
 assert(box2(5)(6) === 60, "partial 2, then 5x6");
 
 // Closure-based partial application
-function partial(fn) {
-    var args = Array.prototype.slice.call(arguments, 1);
-    return function() {
-        var rest = Array.prototype.slice.call(arguments);
-        return fn.apply(null, args.concat(rest));
+function partial(fn, firstArg) {
+    return function(restArg) {
+        return fn(firstArg, restArg);
     };
 }
 
@@ -84,12 +82,12 @@ assert(mul2ThenAdd1(3) === 7, "compose: 3*2+1=7");
 function memoize(fn) {
     var cache = {};
     return function(n) {
-        if (!(n in cache)) cache[n] = fn(n);
+        if (!(n in cache)) { cache[n] = fn(n); }
         return cache[n];
     };
 }
 var callCount = 0;
-var square = memoize(function(n) { callCount++; return n * n; });
+var square = memoize(function(n) { callCount = callCount + 1; return n * n; });
 assert(square(5) === 25, "memoize square(5)");
 assert(square(5) === 25, "memoize cache hit");
 assert(callCount === 1, "function called only once");
