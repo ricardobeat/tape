@@ -95,27 +95,49 @@ print(s(200));  // NaN — fails
 
 ---
 
-## 6. `Object.keys` duplicate indices on arrays (object_keys.js)
+## 6. `for (let/const x in obj)` silently uses var semantics
 
 **Minimal repro**:
 ```js
-print(JSON.stringify(Object.keys([10,20,30])));
-// Actual: ["0","0","1","2"] — "0" is duplicated
-// Expected: ["0","1","2"]
+for (const x in {a:1}) { x = 2; }  // should throw TypeError
+for (let x in {a:1}) { let x = 0; } // inner let should shadow (TDZ check)
 ```
 
-With 1-element array:
+**Root cause**: `statements.c3:708` was changed from `declare_var(name, is_const ? CONST : LET)` to `alloc_reg()`. The binding is never pushed to the scope stack, so `is_const`/`is_lexical` semantics (write-protection, TDZ, duplicate detection) are never enforced. The PUTVAR on line 724 syncs the value by name using var-style env walk regardless of the `let`/`const` declaration.
+
+**What needs to change**: Either restore `declare_var` (but avoid the PUTVAR-clears-register problem that motivated the change), or call `alloc_reg` then immediately push a scope-stack entry with the correct `is_const`/`is_lexical` flags so that inner-body references can resolve it properly.
+
+**Impact**: `for (const x in ...)` doesn't protect against assignment; `for (let x in ...)` doesn't enforce TDZ or duplicate-binding detection.
+
+---
+
+## 7. `String.prototype.lastIndexOf` — unsigned underflow when search string is longer than target
+
+**Minimal repro**:
 ```js
-print(Object.keys([10]).length);   // 2 — should be 1
-print(Object.keys([10,20]).length); // 3 — should be 2
-print(Object.keys([10,20,30]).length); // 4 — should be 3
+print("ab".lastIndexOf("abc")); // should be -1, result is implementation-defined
 ```
 
-**Root cause**: The `Object.keys` implementation in `src/builtins/object.c3` iterates both the named properties AND the dense array part. Array index properties appear in both, causing duplicates. A previous fix on the `fix/rosetta-tests` branch added filtering for this, but it wasn't fully merged or has regressed.
+**Root cause**: `src/builtins/string.c3:1821` — `len` and `search_len` are both `uint`. When `search_len > len`, `(len - search_len)` wraps to `UINT_MAX - k`. Casting to `int` is implementation-defined. The loop guard `i >= 0 && i + search_len <= len` usually saves it in practice, but the clamp itself is non-portable and there's no early-return guard.
 
-**What needs to change**: In `builtin_object_keys`, when the object is an array exotic, skip numeric-index keys from the named properties loop (they'll be emitted by the dense array loop). Also ensure `length` is skipped for arrays.
+**What needs to change**: Add `if (search_len > len) { ctx.result.set_fastint(-1); return; }` before the clamp line.
 
-**Impact**: Blocks 1 assertion in `object_keys.js`. Also affects `for-in` enumeration of arrays.
+**Impact**: Incorrect or non-portable behavior for `str.lastIndexOf(needle)` when `needle` is longer than `str`.
+
+---
+
+## 8. `call_prop_obj_reg` stale after `new X()[expr]` — wrong `this` in chained method call
+
+**Minimal repro**:
+```js
+new Foo()[bar.baz].method();  // bar used as 'this' instead of the indexed result
+```
+
+**Root cause**: `src/compiler/expressions.c3:1171` — the computed-index branch of the trailing-access loop calls `self.expression()` to evaluate the index. If that sub-expression contains a property access (e.g. `bar.baz`), `member_expr` sets `call_prop_obj_reg` to `bar`'s register. After `expression()` returns, the bracket branch does not reset `call_prop_obj_reg`. If the next loop iteration is a `.method()` call, `emit_call` picks up the stale value and emits `LDREG this ← bar's register`.
+
+**What needs to change**: Save and restore `call_prop_obj_reg` around the `self.expression()` call in the LBRACKET branch (or explicitly clear it after the bracket branch completes).
+
+**Impact**: `new X()[expr].method()` passes wrong `this` to the method when `expr` is a member expression like `a.b`.
 
 ---
 
@@ -127,8 +149,10 @@ print(Object.keys([10,20,30]).length); // 4 — should be 3
 | hoisting.js | 4 assertions | #2 (function hoisting) + #3 (var hoisting) |
 | date_basics.js | 2 assertions | #4 (Date string parsing) |
 | mutual_recursion.js | 1 assertion | #5 (stack depth) |
-| object_keys.js | 1 assertion | #6 (Object.keys duplicates) |
 | try_catch.js | 1 assertion | finally on return (see below) |
+| any for-in with let/const | silent wrong | #6 (for-let/const-in var semantics) |
+| str.lastIndexOf(longer) | non-portable | #7 (uint underflow) |
+| new X()[a.b].method() | wrong this | #8 (stale call_prop_obj_reg) |
 
 ## Bonus: try-finally on return (try_catch.js)
 
