@@ -138,7 +138,7 @@ fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
             ws.array_part()[i] = ws.array_part()[i + 1];
         }
         ws.array_part()[cnt - 1].set_undefined();
-        ws.array_used = cnt - 1;
+        ws.array_used = (ushort)(cnt - 1);
 
         ctx.result.set_boolean(true);
     } else {
@@ -172,7 +172,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    ctor.extra.func.builtin_fn_index = (int)BUILTIN_WEAKSET;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_WEAKSET;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

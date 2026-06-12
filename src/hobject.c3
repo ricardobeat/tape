@@ -34,6 +34,21 @@ import libc;
 faultdef PROP_NOT_FOUND;
 faultdef OBJ_ALLOC_FAULT;
 
+/// Active heap pointer. Set during heap init, nulled during teardown.
+/// Replaces the per-object heap_ptr field (8 bytes/object).
+void* _active_heap;
+
+/// Called by heap::init() — records the active heap for RC operations and shape transitions.
+fn void hobject_set_active_heap(void* heap) {
+    _active_heap = heap;
+}
+
+/// Called by heap::destroy() and heap::reset() before teardown — prevents
+/// hobject_free from doing string RC during teardown.
+fn void hobject_clear_active_heap() {
+    _active_heap = null;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -380,6 +395,26 @@ union HObjectExtra {
 ///
 /// Property storage uses QuickJS-style shapes: property names and flags
 /// live in the shared Shape, objects only store values.
+/// Common prefix of all HObject variants.  Every object starts with these fields,
+/// allowing the GC to walk linked lists and access shapes/properties at fixed offsets.
+/// Plain objects (OBJECT, ERROR, ARGUMENTS, PROXY) allocate only this prefix (72 bytes).
+/// Other classes add trailing data after HObjectBase.
+struct HObjectBase {
+    ObjFlags      flags;
+    uint          refcount;
+    HeapHeader*   next;
+    HeapHeader*   prev;
+    HObject*      prototype;
+    ushort        shape_id;
+    Shape*        shape;
+    ushort        prop_capacity;
+    ushort        prop_count;
+    ushort        array_size;
+    ushort        array_used;
+    void*         prop_alloc;
+    PropHashInfo* prop_hash;
+}
+
 struct HObject {
     // --- Inline HeapHeader ------------------------------------------------
     ObjFlags      flags;
@@ -392,22 +427,20 @@ struct HObject {
 
     // --- Shape (shared property layout) ------------------------------------
     /// Shape ID for inline cache support (index into Heap.shapes[]).
-    uint          shape_id;
+    ushort        shape_id;
     /// Pointer to the shared Shape describing this object's property layout.
     /// Property names, flags, and the hash table live here.
     Shape*        shape;
-    /// Back-pointer to the heap for shape transitions.
-    void*         heap_ptr;
 
     // --- Per-object property values ----------------------------------------
     /// Allocated capacity of prop_values (>= shape->prop_count).
-    uint          prop_capacity;
+    ushort        prop_capacity;
     /// Number of properties currently in use (synced with shape->prop_count).
-    uint          prop_count;
+    ushort        prop_count;
 
     // --- Dense array part ------------------------------------------------
-    uint          array_size;
-    uint          array_used;
+    ushort        array_size;
+    ushort        array_used;
 
     // --- Unified property allocation block --------------------------------
     /// Single allocation that holds prop_values and array_part contiguously.
@@ -428,6 +461,42 @@ struct HObject {
     // --- Array length shadow cache -----------------------------------------
     /// Cached array length for fast reads. Synced by put_prop and SETALEN.
     uint          array_length;
+}
+
+// ============================================================================
+// HObject — Per-class allocation sizes and trailing-data accessors
+// ============================================================================
+
+/// Allocation size for each object class.
+/// Plain objects allocate only HObjectBase (72 bytes).
+/// ARRAY adds 8 bytes for array_length.
+/// All others add HObjectExtra (32 bytes) for subtype-specific fields.
+fn usz alloc_size_for_class(ObjClass cls) @inline {
+    switch (cls) {
+        case ObjClass.OBJECT:
+        case ObjClass.ERROR:
+        case ObjClass.ARGUMENTS:
+        case ObjClass.PROXY:
+            return HObjectBase::size;
+        case ObjClass.ARRAY:
+            return HObjectBase::size + 8;  // array_length + 4 pad
+        default:
+            return HObjectBase::size + HObjectExtra::size;
+    }
+}
+
+/// Accessor for subtype-specific fields.  Returns a reference to the
+/// HObjectExtra union at offset HObjectBase::size from the object.
+/// Valid for FUNCTION, GENERATOR, REGEXP, BOOLEAN, NUMBER, STRING, DATE,
+/// THREAD, and *_ITERATOR classes.
+fn HObjectExtra* HObject.extra_ptr(&self) @inline {
+    return (HObjectExtra*)((char*)self + HObjectBase::size);
+}
+
+/// Accessor for array_length.  Returns a pointer to the uint at offset
+/// HObjectBase::size.  Only valid for ARRAY objects (flags.exotic_array).
+fn uint* HObject.array_len_ptr(&self) @inline {
+    return (uint*)((char*)self + HObjectBase::size);
 }
 
 // ============================================================================
@@ -485,8 +554,8 @@ fn bool HObject.is_bound(&self)         @inline { return self.flags.is_bound; }
 /// Infer the callable kind from existing fields — no stored field needed.
 fn CallableKind HObject.callable_kind(&self) @inline {
     if (self.flags.is_bound) return CallableKind.BOUND_FN;
-    if (self.extra.func.builtin_fn_index >= 0) return CallableKind.BUILTIN_FN;
-    if (self.extra.func.comp_func != null) return CallableKind.COMPILED_FN;
+    if ((*self.extra_ptr()).func.builtin_fn_index >= 0) return CallableKind.BUILTIN_FN;
+    if ((*self.extra_ptr()).func.comp_func != null) return CallableKind.COMPILED_FN;
     return CallableKind.OTHER;
 }
 
@@ -502,8 +571,8 @@ fn void HObject.seal(&self) {
     // Abandon dense array part: move elements to named properties with
     // non-configurable flag.  The flat array part stores only TVals, not
     // per-element flags, so we need the property table for the flag change.
-    if (self.array_part() != null && self.array_used > 0 && self.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)self.heap_ptr;
+    if (self.array_part() != null && self.array_used > 0 && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
         char[12] digit_buf;
         for (uint i = 0; i < self.array_size; i++) {
             TVal v = self.array_part()[i];
@@ -669,7 +738,7 @@ fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
 /// into a single standalone shape.  Does NOT register in the transition table,
 /// so no other object will find this shape.
 fn void HObject.make_shape_private(&self) {
-    if (self.heap_ptr == null || self.shape == null) return;
+    if (_active_heap == null || self.shape == null) return;
     hobject::Shape* ns = shape_create(self.prop_count, 0, 0xFFFF_FFFF, null);
     if (ns == null) return;
 
@@ -685,14 +754,14 @@ fn void HObject.make_shape_private(&self) {
         walk = walk.parent_shape;
     }
 
-    heap::Heap* h = (heap::Heap*)self.heap_ptr;
-    uint new_id = h.alloc_shape_slot();
-    if (new_id != heap::SHAPE_NONE) {
-        h.shapes[new_id] = ns;
-        self.shape_id = new_id;
+    heap::Heap* h = (heap::Heap*)_active_heap;
+    uint slot = h.alloc_shape_slot();
+    if (slot != heap::SHAPE_NONE) {
+        h.shapes[slot] = ns;
+        self.shape_id = (ushort)slot;
         self.shape = ns;
     } else {
-        shape_free(ns, self.heap_ptr);
+        shape_free(ns, _active_heap);
     }
 }
 
@@ -800,11 +869,11 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
         PropValue* pv = &self.prop_values()[idx];
-        if (self.heap_ptr != null && pv.data.value.is_string()) {
-            ((heap::Heap*)self.heap_ptr).decref_tval(&pv.data.value);
+        if (_active_heap != null && pv.data.value.is_string()) {
+            ((heap::Heap*)_active_heap).decref_tval(&pv.data.value);
         }
         pv.data.value = val;
-        if (self.heap_ptr != null && val.is_string()) {
+        if (_active_heap != null && val.is_string()) {
             void* ptr = val.get_heapptr();
             if (ptr != null) {
                 ((types::HeapHeader*)ptr).incref();
@@ -814,9 +883,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
         if (self.flags.exotic_array && key == builtin_length_key) {
             if (val.is_fastint()) {
-                self.array_length = (uint)val.get_fastint();
+                *self.array_len_ptr() = (uint)val.get_fastint();
             } else if (val.is_number()) {
-                self.array_length = (uint)val.get_number();
+                *self.array_len_ptr() = (uint)val.get_number();
             }
         }
         // Sync numeric-string keys into the dense array part so that both
@@ -829,8 +898,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             HString* ks = (HString*)key;
             if (ks.is_arridx()) {
                 self.set_array_idx(ks.arridx, val);
-                if (ks.arridx >= self.array_length) {
-                    self.array_length = ks.arridx + 1;
+                if (ks.arridx >= *self.array_len_ptr()) {
+                    *self.array_len_ptr() = ks.arridx + 1;
                 }
             }
         }
@@ -849,7 +918,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     uint new_idx = self.prop_count;
     libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
     self.prop_values()[new_idx].data.value = val;
-    if (self.heap_ptr != null && val.is_string()) {
+    if (_active_heap != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -860,9 +929,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // Sync array_length shadow cache on LENGTH writes to ARRAY exotic
     if (self.flags.exotic_array && key == builtin_length_key) {
         if (val.is_fastint()) {
-            self.array_length = (uint)val.get_fastint();
+            *self.array_len_ptr() = (uint)val.get_fastint();
         } else if (val.is_number()) {
-            self.array_length = (uint)val.get_number();
+            *self.array_len_ptr() = (uint)val.get_number();
         }
     }
 
@@ -872,8 +941,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         HString* ks = (HString*)key;
         if (ks.is_arridx()) {
             self.set_array_idx(ks.arridx, val);
-            if (ks.arridx >= self.array_length) {
-                self.array_length = ks.arridx + 1;
+            if (ks.arridx >= *self.array_len_ptr()) {
+                *self.array_len_ptr() = ks.arridx + 1;
             }
         }
     }
@@ -881,9 +950,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // --- Transition shape to include the new property ---
     // We already called find_prop_idx() above which confirmed the key is new,
     // so use transition_shape_new() which skips the O(N) chain walk.
-    if (self.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)self.heap_ptr;
-        uint new_shape_id = h.transition_shape_new(self.shape_id, key);
+    if (_active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        ushort new_shape_id = h.transition_shape_new(self.shape_id, key);
         if (new_shape_id != self.shape_id) {
             self.shape_id = new_shape_id;
             self.shape = h.get_shape(new_shape_id);
@@ -949,7 +1018,7 @@ fn bool HObject.delete_prop(&self, void* key) {
     }
 
     uint ui = (uint)idx;
-    uint new_count = self.prop_count - 1;
+    ushort new_count = (ushort)(self.prop_count - 1);
 
     // Compact prop_values: shift [ui+1..prop_count-1] → [ui..prop_count-2]
     for (uint i = ui; i < new_count; i++) {
@@ -984,15 +1053,15 @@ fn bool HObject.delete_prop(&self, void* key) {
         }
 
         // Register with heap and attach to this object.
-        if (self.heap_ptr != null) {
-            heap::Heap* h = (heap::Heap*)self.heap_ptr;
-            uint new_id = h.alloc_shape_slot();
-            if (new_id != heap::SHAPE_NONE) {
-                h.shapes[new_id] = ns;
-                self.shape_id = new_id;
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            uint slot = h.alloc_shape_slot();
+            if (slot != heap::SHAPE_NONE) {
+                h.shapes[slot] = ns;
+                self.shape_id = (ushort)slot;
                 self.shape = ns;
             } else {
-                shape_free(ns, self.heap_ptr);
+                shape_free(ns, _active_heap);
                 self.shape = null;
             }
         } else {
@@ -1065,11 +1134,11 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
         }
     }
 
-    if (self.heap_ptr != null && self.array_part()[idx].is_string()) {
-        ((heap::Heap*)self.heap_ptr).decref_tval(&self.array_part()[idx]);
+    if (_active_heap != null && self.array_part()[idx].is_string()) {
+        ((heap::Heap*)_active_heap).decref_tval(&self.array_part()[idx]);
     }
     self.array_part()[idx] = val;
-    if (self.heap_ptr != null && val.is_string()) {
+    if (_active_heap != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -1092,6 +1161,8 @@ fn void HObject.grow_props(&self) {
             new_cap = self.prop_capacity + 4;
         }
     }
+    // Cap at ushort max — objects with >65535 properties are pathological.
+    if (new_cap > 65535) new_cap = 65535;
 
     usz old_size = self.prop_alloc_size();
     usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
@@ -1106,13 +1177,13 @@ fn void HObject.grow_props(&self) {
     if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
-    uint old_prop_capacity = self.prop_capacity;
-    self.prop_capacity = new_cap;
+    ushort old_prop_capacity = self.prop_capacity;
+    self.prop_capacity = (ushort)new_cap;
 
     // prop_alloc may have moved — invalidate ICs that cached prop_value pointers.
     // (shape_id is unchanged, so the gen bump is what invalidates them.)
-    if (self.heap_ptr != null) {
-        ((heap::Heap*)self.heap_ptr).bump_shape_gen(self.shape_id);
+    if (_active_heap != null) {
+        ((heap::Heap*)_active_heap).bump_shape_gen(self.shape_id);
     }
 
     // Move the dense array part to its new position before updating pointers.
@@ -1140,6 +1211,8 @@ fn void HObject.grow_props(&self) {
 /// New slots are initialised to undefined.
 fn void HObject.grow_array(&self, uint new_size) {
     if (new_size <= self.array_size) return;
+    // Dense arrays with >65535 elements would overflow ushort. Bail.
+    if (new_size > 65535) return;
 
     usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
     usz old_array_size = self.array_size;
@@ -1155,7 +1228,7 @@ fn void HObject.grow_array(&self, uint new_size) {
     if (new_raw == null) return;
 
     self.prop_alloc = new_raw;
-    self.array_size = new_size;
+    self.array_size = (ushort)new_size;
 
     usz added = (usz)(new_size - old_array_size);
     ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
@@ -1174,6 +1247,8 @@ fn void HObject.grow_array(&self, uint new_size) {
 ///
 /// `heap_ptr` is an opaque pointer to the Heap; the object is **not**
 /// automatically inserted into the heap's GC list — the caller must do so.
+/// The heap pointer is accessed via the module-level `_active_heap` instead
+/// of a per-object field, saving 8 bytes per object.
 ///
 /// The object starts with:
 ///   - flags.htype          = HType.OBJECT
@@ -1184,12 +1259,13 @@ fn void HObject.grow_array(&self, uint new_size) {
 ///
 /// Returns `null` on allocation failure.
 fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
-    void* raw = ((heap::Heap*)heap_ptr).alloc(HObject::size) ?? null;
+    usz alloc_sz = alloc_size_for_class(cls);
+    void* raw = ((heap::Heap*)heap_ptr).alloc(alloc_sz) ?? null;
     if (raw == null) {
         return OBJ_ALLOC_FAULT~;
     }
 
-    libc::memset(raw, 0, HObject::size);
+    libc::memset(raw, 0, alloc_sz);
 
     HObject* obj = (HObject*)raw;
 
@@ -1205,19 +1281,18 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     if (cls == ObjClass.FUNCTION) {
         obj.flags.callable      = true;
         obj.flags.constructable = true;
+        (*obj.extra_ptr()).func.builtin_fn_index = -1;
     } else if (cls == ObjClass.ARRAY) {
         obj.flags.exotic_array = true;
-        obj.array_length = 0;
+        obj.array_len_ptr()[0] = 0;
     } else if (cls == ObjClass.ARGUMENTS) {
         obj.flags.exotic_arguments = true;
     } else if (cls == ObjClass.PROXY) {
         obj.flags.exotic_proxyobj = true;
     }
 
-    obj.extra.func.builtin_fn_index = -1;
     obj.shape_id = 0;
     obj.shape = ((heap::Heap*)heap_ptr).get_shape(0);  // root shape
-    obj.heap_ptr = heap_ptr;
     return obj;
 }
 
@@ -1229,9 +1304,9 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 fn void hobject_free(HObject* obj) {
     if (obj == null) { return; }
 
-    if (obj.flags.obj_class == ObjClass.REGEXP && obj.extra.regexp.regexp_data != null) {
-        re_bindings::re_free(obj.extra.regexp.regexp_data);
-        obj.extra.regexp.regexp_data = null;
+    if (obj.flags.obj_class == ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
+        re_bindings::re_free((*obj.extra_ptr()).regexp.regexp_data);
+        (*obj.extra_ptr()).regexp.regexp_data = null;
     }
 
     // Free the per-object property hash table.
@@ -1244,8 +1319,8 @@ fn void hobject_free(HObject* obj) {
     // Only strings are RC-freed here — objects still use M&S and can form cycles;
     // decref-freeing objects from within another object's teardown would corrupt the
     // heap_allocated list and cause use-after-free on generator/closure env chains.
-    if (obj.prop_alloc != null && obj.heap_ptr != null) {
-        heap::Heap* h = (heap::Heap*)obj.heap_ptr;
+    if (obj.prop_alloc != null && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
         PropValue* pvs = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
             if (pvs[i].data.value.is_string()) {
@@ -1479,9 +1554,9 @@ fn void shape_free(Shape* sh, void* heap_ptr) {
 /// walk.
 struct ICEntry {
     /// Shape ID of the object when this entry was populated.
-    uint   shape_id;
+    ushort shape_id;
     /// Property index within the owner's prop_values[].
-    uint   prop_idx;
+    ushort prop_idx;
     /// Cached property flags (avoid shape walk on IC hit).
     PropFlags prop_flags;
     /// Prototype pointer where the property was found (null = own property).
@@ -1507,9 +1582,9 @@ struct VarICEntry {
     /// The HObject* bindings object of the env (for shape check).
     void*   bindings;
     /// Shape ID of the bindings object when this entry was populated.
-    uint    shape_id;
+    ushort  shape_id;
     /// Generation of the shape at population time.
-    uint    generation;
+    ushort  generation;
     /// Property index within bindings.props[].
     ushort  prop_idx;
     /// The interned key (HString*) this entry was populated for.

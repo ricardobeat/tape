@@ -170,7 +170,7 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
         }
         wm.array_part()[cnt - 2].set_undefined();
         wm.array_part()[cnt - 1].set_undefined();
-        wm.array_used = cnt - 2;
+        wm.array_used = (ushort)(cnt - 2);
 
         ctx.result.set_boolean(true);
     } else {
@@ -205,7 +205,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    ctor.extra.func.builtin_fn_index = (int)BUILTIN_WEAKMAP;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_WEAKMAP;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

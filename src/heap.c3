@@ -458,6 +458,9 @@ fn Heap*? create(
     h.microtask_count = 0;
     h.microtask_draining = false;
 
+    // Activate this heap for RC operations and shape transitions.
+    hobject::hobject_set_active_heap((void*)h);
+
     return h;
 }
 
@@ -536,11 +539,13 @@ const uint SHAPE_INITIAL_CAP   = 64;
 const uint SHAPE_NONE          = 0xFFFF_FFFF;
 const uint SHAPE_TRANS_INITIAL = 16;   // must be power of 2
 const uint SHAPE_TRANS_LOAD    = 70;   // max load percentage before grow
+/// Sentinel for ushort shape IDs (max ushort = 65535, cap valid IDs at 65534).
+const ushort SHAPE_ID_NONE     = 0xFFFF;
 
 struct TransitionEntry {
     uint parent_id;
     void* key;
-    uint shape_id;
+    ushort shape_id;
 }
 
 fn void Heap.init_transition_table(&self) {
@@ -560,18 +565,18 @@ fn uint hash_transition(uint parent_id, void* key) @inline {
     return h;
 }
 
-fn uint Heap.lookup_transition(&self, uint parent_id, void* key) {
+fn ushort Heap.lookup_transition(&self, uint parent_id, void* key) {
     uint h = hash_transition(parent_id, key);
     uint mask = self.trans_mask;
     uint slot = h & mask;
     TransitionEntry* table = self.trans_table;
     for (uint i = 0; i <= mask; i++) {
         TransitionEntry* e = &table[slot];
-        if (e.parent_id == SHAPE_NONE) return SHAPE_NONE;
+        if (e.parent_id == SHAPE_NONE) return SHAPE_ID_NONE;
         if (e.parent_id == parent_id && e.key == key) return e.shape_id;
         slot = (slot + 1) & mask;
     }
-    return SHAPE_NONE;
+    return SHAPE_ID_NONE;
 }
 
 fn void Heap.transition_table_grow(&self) {
@@ -595,7 +600,7 @@ fn void Heap.transition_table_grow(&self) {
     self.trans_mask = new_mask;
 }
 
-fn void Heap.insert_transition(&self, uint parent_id, void* key, uint shape_id) {
+fn void Heap.insert_transition(&self, uint parent_id, void* key, ushort shape_id) {
     if ((self.trans_count + 1) * 100 > (self.trans_mask + 1) * SHAPE_TRANS_LOAD) {
         self.transition_table_grow();
     }
@@ -660,7 +665,7 @@ fn uint hash_key_ptr(void* key) @inline {
 ///
 /// Otherwise, creates a new shape that extends the current one:
 /// copies all existing ShapeProperties and appends the new one.
-fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
+fn ushort Heap.transition_shape(&self, ushort cur_shape_id, void* key) {
     if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
         return cur_shape_id;
     }
@@ -681,8 +686,8 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     }
 
     // Check transition table for existing child shape.
-    uint existing = self.lookup_transition(cur_shape_id, key);
-    if (existing != SHAPE_NONE) {
+    ushort existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_ID_NONE) {
         return existing;
     }
 
@@ -693,18 +698,19 @@ fn uint Heap.transition_shape(&self, uint cur_shape_id, void* key) {
     uint new_id = self.alloc_shape_slot();
     if (new_id == SHAPE_NONE) {
         hobject::shape_free(ns, (void*)self);
+        return cur_shape_id;
     }
 
     self.shapes[new_id] = ns;
     // Register this transition for future deduplication.
-    self.insert_transition(cur_shape_id, key, new_id);
-    return new_id;
+    self.insert_transition(cur_shape_id, key, (ushort)new_id);
+    return (ushort)new_id;
 }
 
 /// Transition to a new shape for a property that is KNOWN to be new.
 /// Skips the O(N) chain walk — the caller has already confirmed via
 /// find_prop_idx() that the key does not exist in the object.
-fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
+fn ushort Heap.transition_shape_new(&self, ushort cur_shape_id, void* key) {
     if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
         return cur_shape_id;
     }
@@ -713,8 +719,8 @@ fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
 
     // Check transition table for existing child shape (another object may have
     // already taken the same transition).
-    uint existing = self.lookup_transition(cur_shape_id, key);
-    if (existing != SHAPE_NONE) {
+    ushort existing = self.lookup_transition(cur_shape_id, key);
+    if (existing != SHAPE_ID_NONE) {
         return existing;
     }
 
@@ -729,11 +735,11 @@ fn uint Heap.transition_shape_new(&self, uint cur_shape_id, void* key) {
     }
 
     self.shapes[new_id] = ns;
-    self.insert_transition(cur_shape_id, key, new_id);
-    return new_id;
+    self.insert_transition(cur_shape_id, key, (ushort)new_id);
+    return (ushort)new_id;
 }
 
-fn void Heap.bump_shape_gen(&self, uint shape_id) {
+fn void Heap.bump_shape_gen(&self, ushort shape_id) {
     if (shape_id < self.shape_count && self.shapes[shape_id] != null) {
         self.shapes[shape_id].generation++;
         self.shape_gen++;
@@ -741,7 +747,7 @@ fn void Heap.bump_shape_gen(&self, uint shape_id) {
 }
 
 /// Get a shape pointer by ID. Returns null if invalid.
-fn hobject::Shape* Heap.get_shape(&self, uint shape_id) {
+fn hobject::Shape* Heap.get_shape(&self, ushort shape_id) {
     if (shape_id >= self.shape_count) return null;
     return self.shapes[shape_id];
 }
@@ -751,15 +757,15 @@ fn hobject::Shape* Heap.get_shape(&self, uint shape_id) {
  * the heap struct itself.
  */
 fn void Heap.destroy(&self) {
-    // Free all objects through the heap_allocated linked list.
-    // Null heap_ptr first so hobject_free skips its RC decref loop —
+    // Deactivate the active heap so hobject_free skips its RC decref loop —
     // teardown frees everything directly, mixing decref with str_table
     // backshift-delete corrupts the table for the subsequent str_table sweep.
+    hobject::hobject_clear_active_heap();
+
     HeapHeader* cur = self.heap_allocated;
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            ((HObject*)cur).heap_ptr = null;
             hobject::hobject_free((HObject*)cur);
         }
         cur = next;
@@ -861,14 +867,14 @@ fn void Heap.destroy(&self) {
  * causes allocator fragmentation and RSS bloat.
  */
 fn void Heap.reset(&self) {
-    // Free all tracked HObjects via heap_allocated linked list.
-    // Null heap_ptr first so hobject_free skips the RC decref loop —
+    // Deactivate the active heap so hobject_free skips the RC decref loop —
     // same teardown-mode guard as in destroy().
+    hobject::hobject_clear_active_heap();
+
     HeapHeader* cur = self.heap_allocated;
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
-            ((HObject*)cur).heap_ptr = null;
             hobject::hobject_free((HObject*)cur);
         }
         cur = next;
@@ -1021,6 +1027,9 @@ fn void Heap.reset(&self) {
 
     // Reintern builtin strings into the now-empty string table
     self.init_builtin_strs();
+
+    // Re-activate the heap for the next run.
+    hobject::hobject_set_active_heap((void*)self);
 }
 
 // ============================================================================
@@ -1408,38 +1417,38 @@ fn void Heap.drain_gray(&self) {
         switch (obj.flags.obj_class) {
             case ObjClass.FUNCTION:
             case ObjClass.THREAD:
-                if (obj.extra.func.var_env != null && obj.extra.func.var_env.bindings != null) {
-                    self.mark_hobject(obj.extra.func.var_env.bindings);
+                if ((*obj.extra_ptr()).func.var_env != null && (*obj.extra_ptr()).func.var_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).func.var_env.bindings);
                 }
-                if (obj.extra.func.lex_env != null && obj.extra.func.lex_env.bindings != null) {
-                    self.mark_hobject(obj.extra.func.lex_env.bindings);
+                if ((*obj.extra_ptr()).func.lex_env != null && (*obj.extra_ptr()).func.lex_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).func.lex_env.bindings);
                 }
                 break;
             case ObjClass.GENERATOR:
-                if (obj.extra.gen.var_env != null && obj.extra.gen.var_env.bindings != null) {
-                    self.mark_hobject(obj.extra.gen.var_env.bindings);
+                if ((*obj.extra_ptr()).gen.var_env != null && (*obj.extra_ptr()).gen.var_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).gen.var_env.bindings);
                 }
-                if (obj.extra.gen.lex_env != null && obj.extra.gen.lex_env.bindings != null) {
-                    self.mark_hobject(obj.extra.gen.lex_env.bindings);
+                if ((*obj.extra_ptr()).gen.lex_env != null && (*obj.extra_ptr()).gen.lex_env.bindings != null) {
+                    self.mark_hobject((*obj.extra_ptr()).gen.lex_env.bindings);
                 }
                 break;
             case ObjClass.BOOLEAN:
             case ObjClass.NUMBER:
             case ObjClass.STRING:
             case ObjClass.DATE:
-                self.mark_tval(&obj.extra.prim.primitive_value);
+                self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
                 break;
             case ObjClass.ARRAY_ITERATOR:
             case ObjClass.MAP_ITERATOR:
             case ObjClass.SET_ITERATOR:
                 // Mark the iterated object (extra.iter.target, active only for
                 // these three iterator classes — not STRING_ITERATOR).
-                if (obj.extra.iter.target != null) {
-                    self.mark_hobject(obj.extra.iter.target);
+                if ((*obj.extra_ptr()).iter.target != null) {
+                    self.mark_hobject((*obj.extra_ptr()).iter.target);
                 }
                 break;
             case ObjClass.STRING_ITERATOR:
-                self.mark_tval(&obj.extra.prim.primitive_value);
+                self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
                 break;
             default:
                 break;

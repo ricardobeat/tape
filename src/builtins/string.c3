@@ -50,7 +50,7 @@ fn void builtin_string(BuiltinContext* ctx) {
         HObject* obj = obj_raw;
         obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
-        obj.extra.prim.primitive_value.set_string(s);
+        (*obj.extra_ptr()).prim.primitive_value.set_string(s);
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
@@ -179,8 +179,8 @@ fn void builtin_string_proto_toString(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string()) {
-            ctx.result.set_string(obj.extra.prim.primitive_value.get_heapptr());
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            ctx.result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return;
         }
     } else if (this_val.is_string()) {
@@ -196,8 +196,8 @@ fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string()) {
-            ctx.result.set_string(obj.extra.prim.primitive_value.get_heapptr());
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            ctx.result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return;
         }
     } else if (this_val.is_string()) {
@@ -221,8 +221,8 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string()) {
-            return (HString*)obj.extra.prim.primitive_value.get_heapptr();
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            return (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         }
     }
     // TypeError: String.prototype method called on incompatible value
@@ -717,7 +717,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
             int result = re_bindings::re_exec(
-                rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
                 &out_start, &out_end, &out_num_captures,
                 &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
             );
@@ -1032,7 +1032,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     if (is_regexp_object(search_val)) {
         HObject* rx = (HObject*)search_val.get_heapptr();
 
-        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
 
         bool replace_is_fn = false;
         TVal replace_val;
@@ -1056,7 +1056,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
             libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
             int result = re_bindings::re_exec(
-                rx.extra.regexp.regexp_data, input, input_len, 0,
+                (*rx.extra_ptr()).regexp.regexp_data, input, input_len, 0,
                 &out_start, &out_end, &out_num_captures,
                 &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
             );
@@ -1136,7 +1136,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                 libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
                 int result = re_bindings::re_exec(
-                    rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                    (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
                     &out_start, &out_end, &out_num_captures,
                     &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
                 );
@@ -1269,7 +1269,7 @@ fn void builtin_string_proto_replaceAll(BuiltinContext* ctx) {
     if (is_regexp_object(&search_val)) {
         HObject* rx = (HObject*)search_val.get_heapptr();
         // Read global flag directly from internal flags (get_prop doesn't invoke accessor getters)
-        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
         if (!global_flag) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
@@ -1320,7 +1320,7 @@ fn void builtin_string_proto_replaceAll(BuiltinContext* ctx) {
             libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
             int result = re_bindings::re_exec(
-                rx.extra.regexp.regexp_data, input, ilen, search_pos,
+                (*rx.extra_ptr()).regexp.regexp_data, input, ilen, search_pos,
                 &out_start, &out_end, &out_num_captures,
                 &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
             );
@@ -1853,7 +1853,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
         HObject* rx = (HObject*)regexp_arg.get_heapptr();
 
         // Get global flag
-        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
 
         if (!global_flag) {
             // Non-global: single exec call
@@ -1874,7 +1874,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
             }
 
             int result = re_bindings::re_exec(
-                rx.extra.regexp.regexp_data, input, input_len, start_pos,
+                (*rx.extra_ptr()).regexp.regexp_data, input, input_len, start_pos,
                 &out_start, &out_end, &out_num_captures,
                 &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
             );
@@ -1948,7 +1948,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                 libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
                 int result = re_bindings::re_exec(
-                    rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                    (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
                     &out_start, &out_end, &out_num_captures,
                     &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
                 );
@@ -2077,7 +2077,7 @@ fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
         // Read the global flag directly from the internal flags byte.
         // (get_prop("global") doesn't invoke accessor getters — it
         // returns the getter function object instead of the boolean.)
-        bool global_flag = (rx.extra.regexp.flags & 1) != 0;
+        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
         if (!global_flag) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
@@ -2122,7 +2122,7 @@ fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
             libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
             int result = re_bindings::re_exec(
-                rx.extra.regexp.regexp_data, input, input_len, search_pos,
+                (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
                 &out_start, &out_end, &out_num_captures,
                 &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
             );
@@ -2382,7 +2382,7 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
         libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
         int result = re_bindings::re_exec(
-            rx.extra.regexp.regexp_data, input, input_len, 0,
+            (*rx.extra_ptr()).regexp.regexp_data, input, input_len, 0,
             &out_start, &out_end, &out_num_captures,
             &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
         );
@@ -2469,7 +2469,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_STRING_PROTO_SYMBOL_ITER;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING_PROTO_SYMBOL_ITER;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             HString* name_key = builtin_intern_string(heap, "name");
@@ -2496,7 +2496,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? str_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = str_obj_raw) return false;
     HObject* str_obj = str_obj_raw;
-    str_obj.extra.func.builtin_fn_index = (int)BUILTIN_STRING;
+    (*str_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING;
 
     // Set .constructor on String.prototype to point to the actual String object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

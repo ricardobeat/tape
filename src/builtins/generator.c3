@@ -36,7 +36,7 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     }
 
     Heap* vm_heap = ctx.heap;
-    GeneratorState* gs = (GeneratorState*)gen_obj.extra.gen.generator_data;
+    GeneratorState* gs = (GeneratorState*)(*gen_obj.extra_ptr()).gen.generator_data;
     if (gs == null) {
         ctx.result.set_undefined();
         return;
@@ -87,9 +87,9 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
-    func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
-    func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;
+    (*func_obj.extra_ptr()).func.comp_func = (CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
     func_tv.set_object(func_obj);
@@ -119,7 +119,7 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     }
 
     Heap* vm_heap = ctx.heap;
-    GeneratorState* gs = (GeneratorState*)gen_obj.extra.gen.generator_data;
+    GeneratorState* gs = (GeneratorState*)(*gen_obj.extra_ptr()).gen.generator_data;
     if (gs == null) {
         ctx.result.set_undefined();
         return;
@@ -164,9 +164,9 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
-    func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
-    func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;
+    (*func_obj.extra_ptr()).func.comp_func = (CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
     func_tv.set_object(func_obj);
@@ -196,7 +196,7 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     }
 
     Heap* vm_heap = ctx.heap;
-    GeneratorState* gs = (GeneratorState*)gen_obj.extra.gen.generator_data;
+    GeneratorState* gs = (GeneratorState*)(*gen_obj.extra_ptr()).gen.generator_data;
     if (gs == null) {
         ctx.result.set_undefined();
         return;
@@ -278,9 +278,9 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     func_obj.flags.callable = true;
-    func_obj.extra.func.comp_func = (CompiledFunction*)gs.func;
-    func_obj.extra.func.var_env = (EnvRecord*)gs.var_env;
-    func_obj.extra.func.lex_env = (EnvRecord*)gs.lex_env;
+    (*func_obj.extra_ptr()).func.comp_func = (CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
     func_tv.set_object(func_obj);

@@ -599,21 +599,21 @@ fn TVal to_primitive_value_local(TVal* val) @public {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
         if (cls == hobject::ObjClass.BOOLEAN &&
-            obj.extra.prim.primitive_value.is_boolean()) {
+            (*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
             TVal result;
-            result.set_boolean(obj.extra.prim.primitive_value.get_boolean());
+            result.set_boolean((*obj.extra_ptr()).prim.primitive_value.get_boolean());
             return result;
         }
         if (cls == hobject::ObjClass.NUMBER &&
-            (obj.extra.prim.primitive_value.is_number() || obj.extra.prim.primitive_value.is_fastint())) {
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
             TVal result;
-            result.set_number(obj.extra.prim.primitive_value.get_number_or_fastint());
+            result.set_number((*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint());
             return result;
         }
         if (cls == hobject::ObjClass.STRING &&
-            obj.extra.prim.primitive_value.is_string()) {
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
             TVal result;
-            result.set_string(obj.extra.prim.primitive_value.get_heapptr());
+            result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return result;
         }
     }
@@ -751,7 +751,7 @@ fn uint clamp_index(double d, uint len) {
 fn bool is_regexp_object(TVal* val) {
     if (!val.is_object() || val.get_heapptr() == null) return false;
     HObject* obj = (HObject*)val.get_heapptr();
-    return obj.get_class() == hobject::ObjClass.REGEXP && obj.extra.regexp.regexp_data != null;
+    return obj.get_class() == hobject::ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null;
 }
 
 fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
@@ -1074,7 +1074,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
-    func_obj.extra.func.builtin_fn_index = (int)fn_index;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)
@@ -1118,10 +1118,10 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     HObject*? func_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_obj_raw) return false;
     HObject* func_obj = func_obj_raw;
-    func_obj.extra.func.comp_func = func;
-    func_obj.extra.func.builtin_fn_index = -1;
-    func_obj.extra.func.var_env = global_env;
-    func_obj.extra.func.lex_env = global_env;
+    (*func_obj.extra_ptr()).func.comp_func = func;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
+    (*func_obj.extra_ptr()).func.var_env = global_env;
+    (*func_obj.extra_ptr()).func.lex_env = global_env;
     func_obj.prototype = heap.function_proto;
     func_obj.flags.callable = true;
     HString* name_str = builtin_intern_string(heap, "name");
@@ -1173,7 +1173,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
-    func_obj.extra.func.builtin_fn_index = (int)fn_index;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
     // Set .name (non-writable, non-enumerable, configurable)

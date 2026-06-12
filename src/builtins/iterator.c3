@@ -31,8 +31,8 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
-    iter.extra.iter.target = iterable;
-    iter.extra.iter.index = 0;
+    (*iter.extra_ptr()).iter.target = iterable;
+    (*iter.extra_ptr()).iter.index = 0;
     iter.prototype = heap.iterator_proto;
 
     // Add .next method as an own property
@@ -40,7 +40,7 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -68,15 +68,15 @@ fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
-    iter.extra.iter.target = iterable;
-    iter.extra.iter.index = 0;
-    iter.extra.iter.kind = kind;
+    (*iter.extra_ptr()).iter.target = iterable;
+    (*iter.extra_ptr()).iter.index = 0;
+    (*iter.extra_ptr()).iter.kind = kind;
     iter.prototype = heap.iterator_proto;
     HString* next_key = builtin_intern_string(heap, "next");
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -97,16 +97,16 @@ fn void create_map_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.MAP_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
-    iter.extra.iter.target = map;
-    iter.extra.iter.index = 0;
-    iter.extra.iter.kind = kind;
+    (*iter.extra_ptr()).iter.target = map;
+    (*iter.extra_ptr()).iter.index = 0;
+    (*iter.extra_ptr()).iter.kind = kind;
     iter.prototype = heap.iterator_proto;
 
     HString* next_key = builtin_intern_string(heap, "next");
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_MAP_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_ITERATOR_NEXT;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -127,16 +127,16 @@ fn void create_set_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.SET_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
-    iter.extra.iter.target = set;
-    iter.extra.iter.index = 0;
-    iter.extra.iter.kind = kind;
+    (*iter.extra_ptr()).iter.target = set;
+    (*iter.extra_ptr()).iter.index = 0;
+    (*iter.extra_ptr()).iter.kind = kind;
     iter.prototype = heap.iterator_proto;
 
     HString* next_key = builtin_intern_string(heap, "next");
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_SET_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET_ITERATOR_NEXT;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -171,8 +171,8 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
         str_data = (HString*)this_val.get_heapptr();
     } else if (this_val.is_object()) {
         HObject* obj = (HObject*)this_val.get_heapptr();
-        if (obj.extra.prim.primitive_value.is_string()) {
-            str_data = (HString*)obj.extra.prim.primitive_value.get_heapptr();
+        if ((*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            str_data = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         }
     }
 
@@ -188,8 +188,8 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     // Store the string as primitive_value (for GC tracing via mark_tval).
     // extra.prim.primitive_value occupies bytes 0-7; extra.iter.index
     // occupies bytes 8-11 — non-overlapping, so both can be used together.
-    iter.extra.prim.primitive_value.set_string(str_data);
-    iter.extra.iter.index = 0;
+    (*iter.extra_ptr()).prim.primitive_value.set_string(str_data);
+    (*iter.extra_ptr()).iter.index = 0;
     iter.prototype = heap.iterator_proto;
 
     // Add .next method as an own property
@@ -197,7 +197,7 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_STRING_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING_ITERATOR_NEXT;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -232,13 +232,13 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    HObject* target = iter.extra.iter.target;
+    HObject* target = (*iter.extra_ptr()).iter.target;
     if (target == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    uint idx = iter.extra.iter.index;
+    uint idx = (*iter.extra_ptr()).iter.index;
 
     // Check if done — always use .length (cached array_length for ARRAY exotic)
     bool done = false;
@@ -248,7 +248,7 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     // Get length: use cached array_length for ARRAY exotic, else .length property
     long len = 0;
     if (target.get_class() == hobject::ObjClass.ARRAY) {
-        len = (long)target.array_length;
+        len = (long)*target.array_len_ptr();
     } else {
         TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);
         if (try lv = len_val) {
@@ -291,11 +291,11 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     }
 
     if (!done) {
-        iter.extra.iter.index = idx + 1;
+        (*iter.extra_ptr()).iter.index = idx + 1;
     }
 
     // Adjust value based on iterator kind
-    uint kind = iter.extra.iter.kind;
+    uint kind = (*iter.extra_ptr()).iter.kind;
     if (kind == 1) {
         // keys() iterator: value = index
         value.set_fastint((long)idx);
@@ -351,13 +351,13 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    HString* str = (HString*)iter.extra.prim.primitive_value.get_heapptr();
+    HString* str = (HString*)(*iter.extra_ptr()).prim.primitive_value.get_heapptr();
     if (str == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    uint idx = iter.extra.iter.index;
+    uint idx = (*iter.extra_ptr()).iter.index;
     char[] data = str.get_data();
 
     // Check if done — for simplicity, iterate by code units (bytes for ASCII)
@@ -380,7 +380,7 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    iter.extra.iter.index = idx + 1;
+    (*iter.extra_ptr()).iter.index = idx + 1;
 
     // Create result object: {value: char, done: false}
     HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -422,7 +422,7 @@ fn bool register_iterator_prototype(Heap* heap) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (catch err = fn_raw) return false;
         HObject* fn_obj = fn_raw;
-        fn_obj.extra.func.builtin_fn_index = (int)BUILTIN_ITERATOR_PROTO_SYMBOL_ITER;
+        (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ITERATOR_PROTO_SYMBOL_ITER;
         fn_obj.flags.callable = true;
         fn_obj.prototype = heap.function_proto;
         // Set .name
