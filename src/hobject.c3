@@ -28,6 +28,7 @@ import duktape::bytecode;
 import duktape::env;
 import duktape::re_bindings;
 import duktape::heap;
+import std::core::mem::mempool;
 import libc;
 
 // Faults for optional returns
@@ -195,6 +196,8 @@ bitstruct ObjFlags : uint {
     bool exotic_proxyobj   : 15;
     /// Internal [[Class]] tag (6 bits → up to 64 classes).
     ObjClass obj_class     : 16..21;
+    /// Set when pool allocation was exhausted and this object fell back to malloc.
+    bool pool_fallback     : 22;
 }
 
 // ============================================================================
@@ -467,6 +470,11 @@ struct HObject {
 // HObject — Per-class allocation sizes and trailing-data accessors
 // ============================================================================
 
+/// Pool size classes — derived from actual struct sizes.
+const usz OBJ_SIZE_PLAIN = HObjectBase::size;                   // OBJECT, ERROR, ARGUMENTS, PROXY
+const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8;               // ARRAY
+const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size; // FUNCTION, REGEXP, etc.
+
 /// Allocation size for each object class.
 /// Plain objects allocate only HObjectBase (72 bytes).
 /// ARRAY adds 8 bytes for array_length.
@@ -477,11 +485,11 @@ fn usz alloc_size_for_class(ObjClass cls) @inline {
         case ObjClass.ERROR:
         case ObjClass.ARGUMENTS:
         case ObjClass.PROXY:
-            return HObjectBase::size;
+            return OBJ_SIZE_PLAIN;
         case ObjClass.ARRAY:
-            return HObjectBase::size + 8;  // array_length + 4 pad
+            return OBJ_SIZE_ARRAY;
         default:
-            return HObjectBase::size + HObjectExtra::size;
+            return OBJ_SIZE_FUNC;
     }
 }
 
@@ -497,6 +505,27 @@ fn HObjectExtra* HObject.extra_ptr(&self) @inline {
 /// HObjectBase::size.  Only valid for ARRAY objects (flags.exotic_array).
 fn uint* HObject.array_len_ptr(&self) @inline {
     return (uint*)((char*)self + HObjectBase::size);
+}
+
+// ============================================================================
+// Pool allocation helpers
+// ============================================================================
+
+/// Select the correct pool for a given object class.
+/// Returns a pointer to the pool, or null if the class has no pool.
+fn void* pool_for_class(void* heap_ptr, ObjClass cls) @inline {
+    heap::Heap* h = (heap::Heap*)heap_ptr;
+    switch (cls) {
+        case ObjClass.OBJECT:
+        case ObjClass.ERROR:
+        case ObjClass.ARGUMENTS:
+        case ObjClass.PROXY:
+            return &h.obj_pool_plain;
+        case ObjClass.ARRAY:
+            return &h.obj_pool_array;
+        default:
+            return &h.obj_pool_func;
+    }
 }
 
 // ============================================================================
@@ -1250,6 +1279,10 @@ fn void HObject.grow_array(&self, uint new_size) {
 /// The heap pointer is accessed via the module-level `_active_heap` instead
 /// of a per-object field, saving 8 bytes per object.
 ///
+/// Attempts pool allocation first (O(1) bump or freelist pop). Falls back
+/// to malloc when the pool is exhausted; the pool_fallback flag is set so
+/// hobject_free routes the free correctly.
+///
 /// The object starts with:
 ///   - flags.htype          = HType.OBJECT
 ///   - flags.extensible     = true
@@ -1260,11 +1293,28 @@ fn void HObject.grow_array(&self, uint new_size) {
 /// Returns `null` on allocation failure.
 fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     usz alloc_sz = alloc_size_for_class(cls);
-    void* raw = ((heap::Heap*)heap_ptr).alloc(alloc_sz) ?? null;
+
+    // Try pool allocation first
+    void* raw = null;
+    bool from_pool = false;
+    void* pool = pool_for_class(heap_ptr, cls);
+    if (pool != null) {
+        raw = ((mem::mempool::FixedBlockPool*)pool).alloc();
+        from_pool = true;
+    }
+
+    // Fall back to malloc when pool is exhausted or unavailable
+    if (raw == null) {
+        raw = ((heap::Heap*)heap_ptr).alloc(alloc_sz) ?? null;
+        from_pool = false;
+    }
+
     if (raw == null) {
         return OBJ_ALLOC_FAULT~;
     }
 
+    // FixedBlockPool.alloc() zero-initializes via freelist path (mem::clear).
+    // Bump-allocator path returns non-zeroed memory, so memset is still needed.
     libc::memset(raw, 0, alloc_sz);
 
     HObject* obj = (HObject*)raw;
@@ -1273,10 +1323,11 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
     obj.prop_capacity = 0;
     obj.prop_count = 0;
 
-    obj.flags.htype      = HType.OBJECT;
-    obj.flags.extensible = true;
-    obj.flags.obj_class  = cls;
-    obj.refcount         = 1;
+    obj.flags.htype        = HType.OBJECT;
+    obj.flags.extensible   = true;
+    obj.flags.obj_class    = cls;
+    obj.flags.pool_fallback = !from_pool;
+    obj.refcount           = 1;
 
     if (cls == ObjClass.FUNCTION) {
         obj.flags.callable      = true;
@@ -1301,7 +1352,11 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 ///
 /// The caller must have already unlinked the object from the heap's GC list
 /// and string table references.
-fn void hobject_free(HObject* obj) {
+///
+/// Pool-allocated objects (flags.pool_fallback == false) are returned to
+/// their FixedBlockPool for reuse.  Malloc-allocated objects are freed
+/// via libc::free.
+fn void hobject_free(HObject* obj, void* heap_ptr) {
     if (obj == null) { return; }
 
     if (obj.flags.obj_class == ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
@@ -1344,7 +1399,17 @@ fn void hobject_free(HObject* obj) {
         obj.prop_alloc = null;
     }
 
-    libc::free(obj);
+    // Route the HObject header to pool or malloc depending on allocation source.
+    if (obj.flags.pool_fallback) {
+        libc::free(obj);
+    } else {
+        void* pool = pool_for_class(heap_ptr, obj.flags.obj_class);
+        if (pool != null) {
+            ((mem::mempool::FixedBlockPool*)pool).dealloc(obj);
+        } else {
+            libc::free(obj);
+        }
+    }
 }
 
 // ============================================================================
