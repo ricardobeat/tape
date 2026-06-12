@@ -1970,20 +1970,6 @@ fn void Heap.str_table_remove(&self, hstring::HString* hstr) {
     }
 }
 
-/// Ensure an HString is interned.  If already interned, returns it unchanged.
-/// If not interned, looks up in the string table first (may find an existing
-/// interned copy with the same bytes), otherwise inserts this string.
-/// Returns null on allocation failure during table grow.
-fn HString* Heap.ensure_interned(&self, hstring::HString* s) {
-    if (s.flags.is_interned) return s;
-    HString* existing = self.str_table_lookup(s.get_data(), s.hash);
-    if (existing != null) return existing;
-    self.str_table_insert(s);
-    ((HeapHeader*)s).incref();
-    s.flags.is_interned = true;
-    return s;
-}
-
 /**
  * Intern a string: return the existing copy if one exists, otherwise
  * allocate, insert, and return the new copy.  Returns null on alloc failure.
