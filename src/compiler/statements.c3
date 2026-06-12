@@ -720,12 +720,13 @@ fn void? CompilerContext.for_statement(&self) {
 
             // Check for "in" (for-in) or "of" (for-of)
             if (self.peek_type() == TokenType.IN) {
-                // for (var x in obj) { ... }
+                // for (let/const/var x in obj) { ... }
                 self.advance()!;  // consume 'in'
-                // Use a temp register for NEXTFOR output — don't register-cache
-                // the variable because PUTVAR clears the register after syncing
-                // to the environment. The body must use GETVAR to read the key.
-                ushort iter_var = self.alloc_reg();
+                // Declare the for-in variable properly so let/const semantics
+                // (write-protection, TDZ, duplicate detection) are enforced.
+                // Use declare_var to register-cache it; after storing to env,
+                // reload via GETVAR to restore the register (PUTVAR clears it).
+                ushort iter_var = self.declare_var(name_tok.str_value, decl_kind);
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
 
@@ -739,9 +740,13 @@ fn void? CompilerContext.for_statement(&self) {
                 // Emit NEXTFOR: iter_var = next key, B = has_next
                 ushort has_next = self.alloc_reg();
                 self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
-                // Sync the for-in variable to the environment so GETVAR can find it
+                // Sync the for-in variable to the environment and reload register
                 uint forin_name_idx = self.add_string_constant(name_tok.str_value);
-                self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, forin_name_idx);
+                self.emit_var_store(iter_var, forin_name_idx, is_lexical, is_const);
+                // For var, reload after PUTVAR to restore register value
+                if (!is_lexical) {
+                    self.emit_a_bc(Opcode.GETVAR, (uint)iter_var, forin_name_idx);
+                }
 
                 // If no more keys, exit
                 uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
