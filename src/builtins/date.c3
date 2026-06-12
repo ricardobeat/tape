@@ -160,6 +160,144 @@ fn usz date_format_iso(double time_val, char* buf, usz buf_size) {
         tz_sign, offs_hours, offs_mins);
 }
 
+/// Parse an ISO 8601 date string into milliseconds since epoch.
+/// Supported formats: "YYYY-MM-DDTHH:mm:ss.sssZ", "YYYY-MM-DDTHH:mm:ssZ",
+/// "YYYY-MM-DD". Returns NaN on parse failure.
+fn double date_parse_iso_str(char* str, usz len) {
+    // Minimum: "YYYY-MM-DD" = 10 chars
+    if (len < 10) return double::nan;
+
+    // Parse year
+    long year = 0;
+    usz pos = 0;
+    bool has_sign = false;
+    if (str[pos] == '+' || str[pos] == '-') { has_sign = true; pos++; }
+    usz year_start_pos = pos;
+    while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+        year = year * 10 + (long)(str[pos] - '0');
+        pos++;
+    }
+    usz year_digits = pos - year_start_pos;
+    // Year must have at least 4 digits
+    if (year_digits < 4) return double::nan;
+    // Handle leading sign
+    if (has_sign && str[0] == '-') year = -year;
+
+    // Expect '-'
+    if (pos >= len || str[pos] != '-') return double::nan;
+    pos++;
+
+    // Parse month (2 digits)
+    long month = 0;
+    usz month_start = pos;
+    while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+        month = month * 10 + (long)(str[pos] - '0');
+        pos++;
+    }
+    if (pos - month_start != 2) return double::nan;
+
+    // Expect '-'
+    if (pos >= len || str[pos] != '-') return double::nan;
+    pos++;
+
+    // Parse day (2 digits)
+    long day = 0;
+    usz day_start = pos;
+    while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+        day = day * 10 + (long)(str[pos] - '0');
+        pos++;
+    }
+    if (pos - day_start != 2) return double::nan;
+
+    long hour = 0;
+    long minute = 0;
+    long second = 0;
+    long millis = 0;
+
+    // Optional time part: 'T' or space
+    if (pos < len && (str[pos] == 'T' || str[pos] == ' ')) {
+        pos++;
+
+        // Parse hour (2 digits)
+        usz hour_start = pos;
+        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+            hour = hour * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        if (pos - hour_start != 2) return double::nan;
+
+        if (pos >= len || str[pos] != ':') return double::nan;
+        pos++;
+
+        // Parse minute (2 digits)
+        usz min_start = pos;
+        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+            minute = minute * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        if (pos - min_start != 2) return double::nan;
+
+        if (pos < len && str[pos] == ':') {
+            pos++;
+
+            // Parse second (2 digits)
+            usz sec_start = pos;
+            while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+                second = second * 10 + (long)(str[pos] - '0');
+                pos++;
+            }
+            if (pos - sec_start != 2) return double::nan;
+
+            // Optional fractional seconds
+            if (pos < len && str[pos] == '.') {
+                pos++;
+                long frac = 0;
+                uint frac_digits = 0;
+                while (pos < len && str[pos] >= '0' && str[pos] <= '9' && frac_digits < 3) {
+                    frac = frac * 10 + (long)(str[pos] - '0');
+                    frac_digits++;
+                    pos++;
+                }
+                // Consume remaining digits beyond 3
+                while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
+                // Normalize to milliseconds
+                while (frac_digits < 3) { frac *= 10; frac_digits++; }
+                millis = frac;
+            }
+        }
+    }
+
+    // Optional timezone designator
+    if (pos < len && str[pos] == 'Z') {
+        // UTC timezone — use date_utc_to_ms
+        pos++;
+        return date_utc_to_ms(year, month - 1, day, hour, minute, second, millis);
+    } else if (pos + 5 < len && (str[pos] == '+' || str[pos] == '-')) {
+        // Parse timezone offset: +HH:MM or -HH:MM
+        bool neg = (str[pos] == '-');
+        pos++;
+        long tz_hour = 0;
+        for (uint i = 0; i < 2 && pos < len && str[pos] >= '0' && str[pos] <= '9'; i++) {
+            tz_hour = tz_hour * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        if (pos < len && str[pos] == ':') pos++;
+        long tz_min = 0;
+        for (uint i = 0; i < 2 && pos < len && str[pos] >= '0' && str[pos] <= '9'; i++) {
+            tz_min = tz_min * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        long offset_ms = (tz_hour * 60 + tz_min) * 60000;
+        if (neg) offset_ms = -offset_ms;
+        // Convert to UTC: local = utc + offset, so utc = local - offset
+        double local_ms = date_local_to_ms(year, month - 1, day, hour, minute, second, millis);
+        return local_ms - (double)offset_ms;
+    }
+
+    // Use date_local_to_ms for local time
+    return date_local_to_ms(year, month - 1, day, hour, minute, second, millis);
+}
+
 /// Date() as function — returns current date-time string (ES5 §15.9.2.1).
 fn void builtin_date(BuiltinContext* ctx) {
     double now = date_now_ms();
@@ -179,15 +317,19 @@ fn void builtin_date(BuiltinContext* ctx) {
         } else if (ctx.argc == 1) {
             TVal* arg = &ctx.regs[ctx.base_reg];
             if (arg.is_string()) {
-                // Parse string (simplified — try as number first)
+                // Parse string: try ISO 8601 first, then as number
                 HString* s = (HString*)arg.get_heapptr();
-                double num_val = builtin_string_to_number(s);
-                if (math::is_nan(num_val)) {
-                    // Non-numeric string — try basic parsing
-                    // For now, default to current time
-                    time_val = now;
-                } else {
-                    time_val = num_val;
+                char* str = s.get_cstr();
+                usz slen = s.blen;
+                time_val = date_parse_iso_str(str, slen);
+                if (math::is_nan(time_val)) {
+                    // Try as numeric string
+                    double num_val = builtin_string_to_number(s);
+                    if (!math::is_nan(num_val)) {
+                        time_val = num_val;
+                    } else {
+                        time_val = now;
+                    }
                 }
             } else if (arg.is_number() || arg.is_fastint()) {
                 time_val = arg.get_number_or_fastint();
