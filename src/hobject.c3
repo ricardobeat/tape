@@ -1584,7 +1584,7 @@ struct VarICEntry {
     /// Shape ID of the bindings object when this entry was populated.
     ushort  shape_id;
     /// Generation of the shape at population time.
-    ushort  generation;
+    uint    generation;
     /// Property index within bindings.props[].
     ushort  prop_idx;
     /// The interned key (HString*) this entry was populated for.
