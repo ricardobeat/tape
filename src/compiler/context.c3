@@ -531,32 +531,43 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             // (b) branch-path scan from target T (= i+2+sbx)
             // After fusion the compare is gone; if the branch fires, rA was never written.
             // Verify rA is dead starting at T.
-            int tgt_raw = (int)i + 2 + sbx;
-            if (tgt_raw >= 0 && (uint)tgt_raw < self.code_count) {
-                bool rA_live_branch = false;
-                for (uint j = (uint)tgt_raw; j < self.code_count; j++) {
-                    // Skip jump-target check for slot T itself (it IS a target).
-                    if (j != (uint)tgt_raw && jump_targets[j]) { rA_live_branch = true; break; }
-                    Instruction jns = self.code[j];
-                    Opcode jop2 = jns.op;
-                    OpFormat jfmt = bytecode::get_op_format(jop2);
-                    if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
-                        if ((uint)jns.a == rA) { rA_live_branch = true; break; }
-                        continue;
-                    }
-                    if (jfmt == OpFormat.ABC) {
-                        // GETPROPC: C = constant-pool index, not a register.
-                        if (jop2 == Opcode.GETPROPC) {
-                            if ((uint)jns.b == rA) { rA_live_branch = true; break; }
-                        } else {
-                            if ((uint)jns.b == rA || (uint)jns.c == rA) { rA_live_branch = true; break; }
+            //
+            // Exception: when rA aliases a source operand (rA == rB or rA == rC),
+            // the compare clobbers that operand, but after fusion the register retains
+            // its pre-compare value — exactly what the branch target expects.
+            // (Example: `LE r3, r3, r0` as a loop condition — r3 must survive as the
+            // loop counter, and JMP_LE correctly preserves it.)
+            uint rB = (uint)self.code[i].b;
+            uint rC = (uint)self.code[i].c;
+            bool ra_aliases_src = (rA == rB || rA == rC);
+            if (!ra_aliases_src) {
+                int tgt_raw = (int)i + 2 + sbx;
+                if (tgt_raw >= 0 && (uint)tgt_raw < self.code_count) {
+                    bool rA_live_branch = false;
+                    for (uint j = (uint)tgt_raw; j < self.code_count; j++) {
+                        // Skip jump-target check for slot T itself (it IS a target).
+                        if (j != (uint)tgt_raw && jump_targets[j]) { rA_live_branch = true; break; }
+                        Instruction jns = self.code[j];
+                        Opcode jop2 = jns.op;
+                        OpFormat jfmt = bytecode::get_op_format(jop2);
+                        if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                            if ((uint)jns.a == rA) { rA_live_branch = true; break; }
+                            continue;
+                        }
+                        if (jfmt == OpFormat.ABC) {
+                            // GETPROPC: C = constant-pool index, not a register.
+                            if (jop2 == Opcode.GETPROPC) {
+                                if ((uint)jns.b == rA) { rA_live_branch = true; break; }
+                            } else {
+                                if ((uint)jns.b == rA || (uint)jns.c == rA) { rA_live_branch = true; break; }
+                            }
+                        }
+                        if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
+                            if ((uint)jns.a == rA) { break; }
                         }
                     }
-                    if (jfmt != OpFormat.WIDE_SABC && jfmt != OpFormat.WIDE_ABC) {
-                        if ((uint)jns.a == rA) { break; }
-                    }
+                    if (rA_live_branch) { continue; }
                 }
-                if (rA_live_branch) { continue; }
             }
 
             // Rule 4: adjusted offset must fit in signed 8 bits.
@@ -564,8 +575,6 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             if (fused_off < -128 || fused_off > 127) { continue; }
 
             // All checks passed — fuse.
-            uint rB = (uint)self.code[i].b;
-            uint rC = (uint)self.code[i].c;
             Opcode fused_op;
             if (is_if_false) {
                 switch (cmp_op) {
