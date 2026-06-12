@@ -249,6 +249,10 @@ struct CompilerContext {
     // that could capture them, the env can be skipped.
     bool has_closures;
 
+    // Hoisted function declaration names (so main pass can skip recompilation).
+    char[][16] hoisted_fn_names;
+    ushort hoisted_fn_count;
+
     // Direct eval tracking — when true, the CALL path must create a fresh env.
     bool has_direct_eval;
 

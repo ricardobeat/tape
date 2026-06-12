@@ -23,6 +23,9 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     // Check for "use strict" directive prologue at program level
     ctx.parse_directives()!;
 
+    // Hoist var and function declarations at the global level.
+    ctx.hoist_decls(true)!;
+
     // Parse statements until EOF
     while (!ctx.is_at_end()) {
         ctx.statement()!;
@@ -49,6 +52,9 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
 
     // Check for "use strict" directive prologue at eval level
     ctx.parse_directives()!;
+
+    // Hoist var and function declarations at the eval level.
+    ctx.hoist_decls(true)!;
 
     // Parse statements until EOF
     while (!ctx.is_at_end()) {

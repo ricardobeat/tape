@@ -13,6 +13,255 @@ import std::io;
 // Function compilation
 // ============================================================================
 
+/// Skip past a braced block in the lexer without compiling.
+/// Assumes the lexer is positioned just after '{'. Advances past matching '}'.
+fn void CompilerContext.skip_braced_block(&self) {
+    uint brace_depth = 1;
+    while (brace_depth > 0) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) break;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) break;
+        if (tt == TokenType.LBRACE) { brace_depth++; }
+        else if (tt == TokenType.RBRACE) { brace_depth--; }
+    }
+}
+
+/// Skip past a full function declaration body starting from '('.
+/// Consumes '(' params ')' '{' body '}'.
+fn void CompilerContext.skip_function_body(&self) {
+    // Skip '(' ... ')'
+    uint paren_depth = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) return;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) return;
+        if (tt == TokenType.LPAREN) { paren_depth++; }
+        else if (tt == TokenType.RPAREN) {
+            if (paren_depth == 0) break; // found the matching ')'
+            paren_depth--;
+        }
+    }
+    // Skip '{' ... '}'
+    // The next token should be '{'. Skip until the matching '}'.
+    uint brace_depth = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) return;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) return;
+        if (tt == TokenType.LBRACE) { brace_depth++; }
+        else if (tt == TokenType.RBRACE) {
+            if (brace_depth == 0) break; // found matching '}'
+            brace_depth--;
+        }
+    }
+}
+
+/// Skip past an arbitrary expression in the lexer without compiling.
+/// Tracks paren, brace, and bracket depth.
+fn void CompilerContext.skip_expression(&self) {
+    uint paren_depth = 0;
+    uint brace_depth = 0;
+    uint bracket_depth = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) break;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) break;
+        if (tt == TokenType.LPAREN) { paren_depth++; }
+        else if (tt == TokenType.RPAREN) {
+            if (paren_depth == 0 && brace_depth == 0 && bracket_depth == 0) {
+                // This closing paren belongs to the caller — push back
+                self.lexer.pushback(tok_opt);
+                break;
+            }
+            if (paren_depth > 0) paren_depth--;
+        }
+        else if (tt == TokenType.LBRACE) { brace_depth++; }
+        else if (tt == TokenType.RBRACE) {
+            if (brace_depth == 0 && bracket_depth == 0 && paren_depth == 0) break;
+            if (brace_depth > 0) brace_depth--;
+        }
+        else if (tt == TokenType.LBRACKET) { bracket_depth++; }
+        else if (tt == TokenType.RBRACKET) {
+            if (bracket_depth > 0) bracket_depth--;
+        }
+        else if (paren_depth == 0 && brace_depth == 0 && bracket_depth == 0) {
+            // At top level: break on comma, semicolon, EOF
+            if (tt == TokenType.COMMA || tt == TokenType.SEMICOLON) {
+                self.lexer.pushback(tok_opt);
+                break;
+            }
+        }
+    }
+}
+
+/// Pre-scan function body for var and function declarations and emit hoisted
+/// bytecode so they are available before any statements run.
+fn void? CompilerContext.hoist_decls(&self, bool is_global) {
+    // --- Save lexer state (for final restore) ---
+    uint saved_pos    = self.lexer.pos;
+    uint saved_line   = self.lexer.line;
+    uint saved_col    = self.lexer.col;
+    Token saved_cur   = self.lexer.current;
+    Token saved_look  = self.lexer.lookahead;
+    bool  saved_haslk = self.lexer.has_lookahead;
+    Token saved_push  = self.lexer.pushed_back;
+    bool  saved_haspb = self.lexer.has_pushed_back;
+    bool  saved_slt   = self.lexer.seen_line_term;
+
+    uint brace_depth = 0;
+
+    while (true) {
+        // Save lexer state before consuming this token (so we can restore
+        // and re-consume it for function compilation).
+        uint pos_before = self.lexer.pos;
+        uint line_before = self.lexer.line;
+        uint col_before = self.lexer.col;
+        Token cur_before = self.lexer.current;
+        Token look_before = self.lexer.lookahead;
+        bool haslk_before = self.lexer.has_lookahead;
+        Token push_before = self.lexer.pushed_back;
+        bool haspb_before = self.lexer.has_pushed_back;
+        bool slt_before = self.lexer.seen_line_term;
+
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) break;
+        TokenType tt = tok_opt.type;
+
+        if (tt == TokenType.EOF_TOKEN) break;
+
+        if (tt == TokenType.LBRACE) {
+            brace_depth++;
+            continue;
+        }
+        if (tt == TokenType.RBRACE) {
+            if (!is_global && brace_depth == 0) break;
+            brace_depth--;
+            continue;
+        }
+
+        if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+            // Check for generator star
+            Token? star_opt = self.lexer.next_token();
+            if (catch _err2 = star_opt) continue;
+            if (star_opt.type != TokenType.STAR) {
+                // Not a star — put it back (it's the function name)
+                self.lexer.pushback(star_opt);
+            }
+            Token? name_opt = self.lexer.next_token();
+            if (catch _err = name_opt) break;
+            if (name_opt.type != TokenType.IDENTIFIER) continue;
+
+            char[] fn_name = name_opt.str_value;
+            if (fn_name.len == 0) continue;
+
+            // Check if already hoisted
+            bool already = false;
+            for (ushort hi = 0; hi < self.hoisted_fn_count; hi++) {
+                if (str_eq(self.hoisted_fn_names[hi], fn_name)) {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) {
+                // Skip the rest of the function body
+                self.skip_function_body();
+                continue;
+            }
+
+            // Record as hoisted
+            if (self.hoisted_fn_count < 16) {
+                self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
+                self.hoisted_fn_count++;
+            }
+
+            // Restore lexer to before 'function' so we can re-consume it properly
+            self.lexer.pos             = pos_before;
+            self.lexer.line            = line_before;
+            self.lexer.col             = col_before;
+            self.lexer.current         = cur_before;
+            self.lexer.lookahead       = look_before;
+            self.lexer.has_lookahead   = haslk_before;
+            self.lexer.pushed_back     = push_before;
+            self.lexer.has_pushed_back = haspb_before;
+            self.lexer.seen_line_term  = slt_before;
+
+            // Re-consume 'function'
+            self.expect(TokenType.FUNCTION)!;
+
+            // Handle generator star
+            bool saved_gen = self.is_generator;
+            self.is_generator = false;
+            if (self.match(TokenType.STAR)) {
+                self.is_generator = true;
+            }
+
+            Token name_tok2 = self.expect(TokenType.IDENTIFIER)!;
+
+            ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
+            self.has_local_bindings = true;
+
+            CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
+
+            self.is_generator = saved_gen;
+
+            // Add to inner functions table
+            uint inner_idx = 0;
+            if (self.inner_func_count < MAX_INNER_FUNCS) {
+                inner_idx = self.inner_func_count;
+                self.inner_funcs[inner_idx] = inner;
+                self.inner_func_count++;
+                self.has_closures = true;
+            }
+
+            // Emit CLOSURE + DECLVAR
+            self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
+            uint name_idx = self.add_string_constant(name_tok2.str_value);
+            self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
+
+            // Lexer is now past the function body. Continue scanning.
+        } else if (brace_depth == 0 && tt == TokenType.VAR) {
+            // var declarations
+            for (;;) {
+                Token? name_opt2 = self.lexer.next_token();
+                if (catch _err = name_opt2) break;
+                Token name_tok2 = name_opt2;
+                if (name_tok2.type != TokenType.IDENTIFIER) break;
+
+                ushort var_reg = self.declare_var(name_tok2.str_value, VAR);
+                self.has_local_bindings = true;
+                self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
+                uint var_name_idx = self.add_string_constant(name_tok2.str_value);
+                self.emit_a_bc(Opcode.DECLVAR, (uint)var_reg, var_name_idx);
+
+                // Check for initializer or comma
+                Token? sep_opt = self.lexer.next_token();
+                if (catch _err = sep_opt) break;
+                TokenType sep = sep_opt.type;
+                if (sep == TokenType.ASSIGN) {
+                    self.skip_expression();
+                } else if (sep != TokenType.COMMA) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // --- Restore lexer state ---
+    self.lexer.pos             = saved_pos;
+    self.lexer.line            = saved_line;
+    self.lexer.col             = saved_col;
+    self.lexer.current         = saved_cur;
+    self.lexer.lookahead       = saved_look;
+    self.lexer.has_lookahead   = saved_haslk;
+    self.lexer.pushed_back     = saved_push;
+    self.lexer.has_pushed_back = saved_haspb;
+    self.lexer.seen_line_term  = saved_slt;
+}
+
 /// Parse function body (parameters and block) and compile into a nested context.
 fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Parse parameter list
@@ -138,6 +387,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         int skip_off = (int)self.code_count - (int)skip_addr - 1;
         self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
     }
+
+    // Hoist var and function declarations to the top of the function scope.
+    self.hoist_decls(false)!;
 
     // Compile function body block
     self.block(true)!;

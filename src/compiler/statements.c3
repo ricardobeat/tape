@@ -328,25 +328,45 @@ fn void? CompilerContext.var_declaration(&self) {
             if (self.is_strict && is_restricted_name(name_tok.str_value)) {
                 return COMPILE_ERROR~;
             }
-            ushort reg = self.declare_var(name_tok.str_value, kind);
+            ushort reg;
+            bool already_declared = false;
+            if (!is_lexical) {
+                // var declarations: check if already declared (from hoisting
+                // or from an outer var declaration in the same function).
+                // If so, reuse the existing register and skip DECLVAR/LDUNDEF.
+                ushort? existing = self.resolve_var(name_tok.str_value);
+                if (try er = existing) {
+                    reg = er;
+                    already_declared = true;
+                } else {
+                    reg = self.declare_var(name_tok.str_value, kind);
+                }
+            } else {
+                reg = self.declare_var(name_tok.str_value, kind);
+            }
             ushort saved_reg = self.next_reg;
 
             // Optional initializer
+            bool has_init = false;
             if (self.match(TokenType.ASSIGN)) {
                 ushort val_reg = self.assignment_expr()!;
                 if (val_reg != reg) {
                     self.emit_abc(Opcode.LDREG, (uint)reg, (uint)val_reg, 0);
                 }
                 self.free_reg(val_reg);
-            } else {
-                // Default initialize to undefined
+                has_init = true;
+            } else if (!already_declared) {
+                // Default initialize to undefined (only for new declarations)
                 self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
             }
 
             // Store in the environment so inner functions can find it
             // var → var_env (function-scoped), let/const → lex_env (block-scoped)
-            uint name_idx = self.add_string_constant(name_tok.str_value);
-            self.emit_var_store(reg, name_idx, is_lexical, is_const);
+            // For already-declared vars, only emit store if there's an initializer
+            if (!already_declared || has_init) {
+                uint name_idx = self.add_string_constant(name_tok.str_value);
+                self.emit_var_store(reg, name_idx, is_lexical, is_const);
+            }
 
             // At global scope, free the var register and any leaked temporaries
             // from the initializer evaluation.  Global vars use PUTVAR/GETVAR
