@@ -210,16 +210,96 @@ fn void PoolAlloc.free(Type self, Type* p) { self.pool.free(p); }
 This would let us allocate `PoolAlloc{HObjectBase}.alloc()` for plain objects, etc.
 But the `mem_mempool` API is already type-agnostic — generics add little value here.
 
+### `inline` Struct Subtyping — true structural inheritance
+
+C3's `inline` keyword on a struct member flattens the member's fields into the parent:
+
+```c3
+struct HObjectBase { ObjFlags flags; ... PropHashInfo* prop_hash; }
+struct HObject {
+    inline HObjectBase base;   // fields accessible as self.flags, self.prop_count, etc.
+    HObjectExtra extra;        // 32 bytes at offset HObjectBase::size
+    uint array_length;         // 4 bytes
+}
+// HObject* implicitly converts to HObjectBase* and HeapHeader*
+```
+
+This means:
+- No duplicate field definitions needed between HObjectBase and HObject
+- `HObject*` → `HeapHeader*` cast works (same layout at offset 0)
+- `HObject*` → `HObjectBase*` conversion is implicit (no cast needed)
+- All existing `self.flags`, `self.prop_count` etc. keep working without any changes
+
+Could simplify our current approach where HObjectBase duplicates HObject's first N fields
+verbatim to guarantee layout compatibility. Lower maintenance burden.
+
+### `@packed` — Eliminate struct padding
+
+```c3
+struct ShapeProperty @packed {
+    void*     key;   // 8 bytes
+    PropFlags flags; // 1 byte (bitstruct : char)
+}
+// 9 bytes instead of 16 (no padding to align key)
+```
+
+Useful for memory-critical structs: `ShapeProperty` (16→12? no, key needs 8-byte alignment),
+`Shape` (24→20), `PropHashInfo` (16→12). Gains are modest (2-4 bytes each) but
+compound across thousands of allocations.
+
+Caveat: unaligned access may be slower. Not recommended for hot-path structs like
+`PropValue` or `ICEntry`.
+
+### `mem::new_with_padding` — Cleaner variable-size allocation
+
+```c3
+// Current: manual size calculation + memset
+usz sz = alloc_size_for_class(cls);
+void* raw = heap.alloc(sz);
+libc::memset(raw, 0, sz);
+
+// With new_with_padding:
+HObjectBase* raw = mem::new_with_padding(HObjectBase, extra_bytes);
+// Allocates sizeof(HObjectBase) + extra_bytes, all zero-initialized
+```
+
+Cleaner than our `alloc_size_for_class` switch. The extra bytes are zeroed automatically.
+Requires the heap's allocator to implement the `Allocator` interface (or we adapt
+`Heap.alloc` to match `mem::malloc` semantics).
+
+### `$$memset` / `$$memcpy` — Compiler builtins
+
+C3's LLVM backend provides optimized `$$memset` / `$$memcpy` builtins that map to
+LLVM intrinsics. Replace `libc::memset` / `libc::memcpy` in hot paths:
+- `grow_props` (memmove array part on realloc)
+- `GC mark` (iterating property values)
+- `hobject_alloc` (zero-init new objects)
+
+### `--sanitize=address` — ASan for validation
+
+```bash
+c3c build --sanitize=address duktape_c3
+```
+
+Catches heap corruption, use-after-free, buffer overflows at runtime. Would have caught
+our earlier `hobject_alloc` heap corruption (writing to offset 72 on 72-byte allocation)
+immediately. Essential for validating Item 1-class changes.
+
 ---
 
 ## Recommended Implementation Order
 
-| # | Item | Est. savings | C3 stdlib help | Effort | Risk |
+| # | Item | Est. savings | C3 help | Effort | Risk |
 |---|---|---|---|---|---|
 | 1 | **Pool allocator via `mem_mempool`** | ~250 KB | `std::core::mem_mempool` | Low | Low |
 | 2 | Drop `shape` pointer | ~100 KB | — | Low | Low |
-| 3 | Compute `clen` lazily | ~60 KB | — | Low | Very low |
-| 4 | Inline small prop tables | ~300 KB | — | Medium | Medium |
+| 3 | Use `inline` struct subtyping for HObject/HObjectBase | 0 KB (code quality) | `inline` keyword | Low | Very low |
+| 4 | Compute `clen` lazily | ~60 KB | — | Low | Very low |
+| 5 | Inline small prop tables | ~300 KB | — | Medium | Medium |
+
+**Item 3** is a no-brainer refactor — eliminates duplicate field definitions, makes the
+struct relationship self-documenting, and ensures HObject*/HObjectBase*/HeapHeader* casts
+stay safe as we evolve the struct. Should be done before any further HObject surgery.
 
 **Item 1** (pool allocator) becomes the priority — C3 ships the allocator for free,
 we just wire it into `hobject_alloc`. Replaces 12,000+ `libc::malloc` calls with
