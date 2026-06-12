@@ -235,11 +235,62 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         }
     }
 
-    // Own named properties (enumerable, excluding length on string exotic)
+    // Own named properties — ES2020 §10.1.12 [[OwnPropertyKeys]]:
+    // integer indices ascending first, then string keys in insertion order.
+    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    {
+        uint int_count = 0;
+        for (uint i = 0; i < obj.prop_count; i++) {
+            if (obj.prop_key_at(i) != null && ((HString*)obj.prop_key_at(i)).is_arridx()) {
+                int_count++;
+            }
+        }
+        if (int_count > 0) {
+            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            if (sort_buf != null) {
+                uint p = 0;
+                for (uint i = 0; i < obj.prop_count; i++) {
+                    if (obj.prop_key_at(i) != null) {
+                        HString* key = (HString*)obj.prop_key_at(i);
+                        if (key.is_arridx()) {
+                            sort_buf[p * 2] = key.arridx;
+                            sort_buf[p * 2 + 1] = i;
+                            p++;
+                        }
+                    }
+                }
+                // Insertion sort by arridx
+                for (uint i = 1; i < int_count; i++) {
+                    uint t0 = sort_buf[i * 2];
+                    uint t1 = sort_buf[i * 2 + 1];
+                    uint j = i;
+                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
+                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
+                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                        j--;
+                    }
+                    sort_buf[j * 2] = t0;
+                    sort_buf[j * 2 + 1] = t1;
+                }
+                for (uint i = 0; i < int_count; i++) {
+                    uint si = sort_buf[i * 2 + 1];
+                    if (obj.get_prop_flags(si).enumerable) {
+                        HString* key = (HString*)obj.prop_key_at(si);
+                        TVal key_tv;
+                        key_tv.set_string(key);
+                        array_set_elem(arr, idx, key_tv, ctx.heap);
+                        idx++;
+                    }
+                }
+                libc::free(sort_buf);
+            }
+        }
+    }
+    // Phase 2: non-index named properties (insertion order)
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
-            // Skip the non-enumerable .length stored explicitly on string exotics
+            if (key.is_arridx()) continue;
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             TVal key_tv;
             key_tv.set_string(key);
@@ -360,10 +411,59 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
 
-    // Fill array with named own property names (all, enumerable and non-enumerable)
+    // Named own property names — integer indices ascending, then strings in insertion order.
+    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    {
+        uint int_count = 0;
+        for (uint i = 0; i < obj.prop_count; i++) {
+            if (obj.prop_key_at(i) != null && ((HString*)obj.prop_key_at(i)).is_arridx()) {
+                int_count++;
+            }
+        }
+        if (int_count > 0) {
+            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            if (sort_buf != null) {
+                uint p = 0;
+                for (uint i = 0; i < obj.prop_count; i++) {
+                    if (obj.prop_key_at(i) != null) {
+                        HString* key = (HString*)obj.prop_key_at(i);
+                        if (key.is_arridx()) {
+                            sort_buf[p * 2] = key.arridx;
+                            sort_buf[p * 2 + 1] = i;
+                            p++;
+                        }
+                    }
+                }
+                // Insertion sort by arridx
+                for (uint i = 1; i < int_count; i++) {
+                    uint t0 = sort_buf[i * 2];
+                    uint t1 = sort_buf[i * 2 + 1];
+                    uint j = i;
+                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
+                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
+                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                        j--;
+                    }
+                    sort_buf[j * 2] = t0;
+                    sort_buf[j * 2 + 1] = t1;
+                }
+                for (uint i = 0; i < int_count; i++) {
+                    uint si = sort_buf[i * 2 + 1];
+                    HString* key = (HString*)obj.prop_key_at(si);
+                    TVal key_tv;
+                    key_tv.set_string(key);
+                    array_set_elem(arr, idx, key_tv, ctx.heap);
+                    idx++;
+                }
+                libc::free(sort_buf);
+            }
+        }
+    }
+    // Phase 2: non-index named properties (insertion order)
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
+            if (key.is_arridx()) continue;
             TVal key_tv;
             key_tv.set_string(key);
             array_set_elem(arr, idx, key_tv, ctx.heap);

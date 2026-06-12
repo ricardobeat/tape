@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 154 (defineProperty §8.12.9 fixes — empty descriptor short-circuit, generic descriptor path, string exotic configurable)
+**Last Updated:** Session 155 ([[OwnPropertyKeys]] enumeration order — integer indices ascending first per ES2020 §10.1.12)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 154, 2026-06-12)
+## Summary (after Session 155, 2026-06-12)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~11,542 |
-| Currently failing (phases 0-8) | ~9,061 |
-| Pass rate (phases 0-8 only) | ~55.9% |
-| Overall pass rate | ~55.3% |
+| Currently passing (phases 0-8) | ~11,622 |
+| Currently failing (phases 0-8) | ~8,981 |
+| Pass rate (phases 0-8 only) | ~56.4% |
+| Overall pass rate | ~55.8% |
 
 ## Per-Phase Status
 
@@ -21,12 +21,12 @@
 | 0-1: Core VM | 2,185 | 558 | 330 | 1,297 |
 | 1: Calling Convention | 426 | 54 | 34 | 338 |
 | 2: Basic Operators | 1,969 | 914 | 230 | 825 |
-| 3: Object System | 7,766 | 3,276 | 2,523 | 1,967 |
-| 4: Error Handling | 402 | 115 | 86 | 201 |
-| 5: Built-in Constructors | 8,615 | 3,908 | 3,182 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,757 | 2,020 | 936 |
+| 3: Object System | 7,766 | 3,304 | 2,495 | 1,967 |
+| 4: Error Handling | 402 | 117 | 84 | 201 |
+| 5: Built-in Constructors | 8,615 | 3,955 | 3,135 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,756 | 2,021 | 936 |
 | 7: ES5 Features | 1,240 | 185 | 108 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 797 | 487 | 1,463 |
+| 8: ES5 Built-in Objects | 2,747 | 801 | 483 | 1,463 |
 | 11: Arrow/Templates | 427 | 61 | 42 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 10 | 22 | 719 |
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |
 | 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |
 | 153 | Lightfunc virtual property deletion tracking (.name/.length/.prototype); DELPROP marks deletions in bitset; GETPROP/hasOwn/getOwnPropertyDescriptor/getOwnPropertyNames respect deletions | +206 |
 | 152 | Catch variable forced through environment (GETVAR/PUTVAR) via is_captured flag; fixes evaluation-order + symbol-to-prim tests | +15 |

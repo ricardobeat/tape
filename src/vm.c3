@@ -912,11 +912,61 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             }
         }
 
-        // Own named properties (non-index own props, e.g. explicitly assigned slots)
+        // Own named properties — integer indices ascending, then strings in insertion order.
+        // Phase 1: integer-indexed named properties (sorted by numeric index)
+        {
+            uint int_count = 0;
+            for (uint i = 0; i < cur.prop_count; i++) {
+                if (cur.prop_key_at(i) != null && ((HString*)cur.prop_key_at(i)).is_arridx()) {
+                    int_count++;
+                }
+            }
+            if (int_count > 0) {
+                uint* sbuf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+                if (sbuf != null) {
+                    uint p = 0;
+                    for (uint i = 0; i < cur.prop_count; i++) {
+                        if (cur.prop_key_at(i) != null) {
+                            HString* k = (HString*)cur.prop_key_at(i);
+                            if (k.is_arridx()) {
+                                sbuf[p * 2] = k.arridx;
+                                sbuf[p * 2 + 1] = i;
+                                p++;
+                            }
+                        }
+                    }
+                    // Insertion sort by arridx
+                    for (uint i = 1; i < int_count; i++) {
+                        uint t0 = sbuf[i * 2];
+                        uint t1 = sbuf[i * 2 + 1];
+                        uint j = i;
+                        while (j > 0 && sbuf[(j - 1) * 2] > t0) {
+                            sbuf[j * 2] = sbuf[(j - 1) * 2];
+                            sbuf[j * 2 + 1] = sbuf[(j - 1) * 2 + 1];
+                            j--;
+                        }
+                        sbuf[j * 2] = t0;
+                        sbuf[j * 2 + 1] = t1;
+                    }
+                    for (uint i = 0; i < int_count; i++) {
+                        uint si = sbuf[i * 2 + 1];
+                        HString* k = (HString*)cur.prop_key_at(si);
+                        if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                            libc::free(sbuf);
+                            libc::free(keys);
+                            libc::free(seen);
+                            return null;
+                        }
+                    }
+                    libc::free(sbuf);
+                }
+            }
+        }
+        // Phase 2: non-index named properties (insertion order)
         for (uint i = 0; i < cur.prop_count; i++) {
             if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
-                // Skip "length" on string exotic objects (non-enumerable by spec)
+                if (k.is_arridx()) continue;
                 if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
