@@ -152,6 +152,9 @@ struct Heap {
     uint  live_obj_count;
     uint  peak_live_obj_count;   /// High-water mark for live objects
 
+    // Periodic GC trigger for alloc_no_gc (sweeps dead refcount-1 strings)
+    uint  string_alloc_count;
+
     // Gray set for iterative mark — dynamic array of HObject* pointers.
     // Avoids C-stack overflow on deep object graphs.
     void** gray_objects;
@@ -1160,6 +1163,11 @@ fn void*? Heap.alloc_no_gc(&self, usz size) {
         if (ptr == null) {
             return HEAP_ALLOC_FAULT~;
         }
+    }
+    self.string_alloc_count++;
+    if (self.string_alloc_count >= 512) {
+        self.string_alloc_count = 0;
+        self.trigger_gc();
     }
     return ptr;
 }
