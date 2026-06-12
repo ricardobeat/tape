@@ -29,8 +29,8 @@ faultdef STACK_OVERFLOW;
 // Constants
 // ============================================================================
 
-const uint MAX_CALLS        = 128;
-const uint INITIAL_VALSTACK = 256;
+const uint MAX_CALLS        = 512;
+const uint INITIAL_VALSTACK = 1024;
 
 // ============================================================================
 // Activation record (matches duk_activation in duktape)
