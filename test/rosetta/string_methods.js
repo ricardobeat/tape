@@ -31,8 +31,8 @@ assert(s.substring(5, 0) === "Hello", "substring swaps args");
 
 // slice
 assert(s.slice(0, 5) === "Hello", "slice(0,5)");
-assert(s.slice(-6) === "orld!", "slice negative");
-assert(s.slice(-6, -1) === "orld", "slice negative both");
+assert(s.slice(-6) === "World!", "slice negative");
+assert(s.slice(-6, -1) === "World", "slice negative both");
 assert(s.slice(7, 12) === "World", "slice(7,12)");
 
 // toUpperCase / toLowerCase

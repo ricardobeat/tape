@@ -31,8 +31,8 @@ assert("cafe\u0301".length === 5, "cafe + combining accent = 5 chars");
 assert("\uD83D\uDE00".length === 2, "emoji surrogate pair = 2 code units");
 
 // Quote styles
-var dq = "double quotes";
-var sq = 'single quotes';
+var dq = "same string";
+var sq = 'same string';
 assert(dq === sq, "double and single quotes equal");
 
 // Multi-line via string concat or escape
@@ -51,7 +51,7 @@ assert(cols.join(",") === "a,b,c", "tab split values");
 // Backslash in strings
 var path = "C:\\Users\\test";
 assert(path.indexOf("Users") === 3, "backslash path");
-assert(path.length === 12, "backslash path length");
+assert(path.length === 13, "backslash path length");
 
 // Empty string operations
 assert("".length === 0, "empty length 0");

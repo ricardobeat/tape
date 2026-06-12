@@ -70,7 +70,7 @@ try {
 } catch (e) {
     depth += e;
 }
-assert(depth === 5, "nested catches accumulate: " + depth);
+assert(depth === 6, "nested catches accumulate: " + depth);
 
 // Re-throw
 var rethrown = false;
