@@ -391,9 +391,9 @@ union HObjectExtra {
 
 /// The core ECMAScript object representation.
 ///
-/// Memory layout is chosen so that the first three fields (flags,
-/// next, prev) are binary-compatible with HeapHeader, allowing a raw cast
-/// for the GC's linked-list walk.
+/// Memory layout uses inline struct subtyping: HObjectBase's fields are
+/// flattened into HObject via `inline HObjectBase base`.  The first fields
+/// (flags, GC pointers) are binary-compatible with HeapHeader for raw casts.
 ///
 /// Subtype-specific fields (function, primitive wrapper, regexp, generator,
 /// and iterator state) are stored in a union to save memory — only one
@@ -405,6 +405,10 @@ union HObjectExtra {
 /// allowing the GC to walk linked lists and access shapes/properties at fixed offsets.
 /// Plain objects (OBJECT, ERROR, ARGUMENTS, PROXY) allocate only this prefix (72 bytes).
 /// Other classes add trailing data after HObjectBase.
+///
+/// HObject includes this via `inline HObjectBase base`, which flattens
+/// the fields into HObject's layout — no duplicate definitions needed.
+/// The HeapHeader-compatible prefix is preserved at offset 0.
 struct HObjectBase {
     ObjFlags      flags;
     uint          refcount;
@@ -421,52 +425,21 @@ struct HObjectBase {
     PropHashInfo* prop_hash;
 }
 
+/// The core ECMAScript object representation.
+///
+/// Uses inline struct subtyping: the base prefix (flags, refcount, GC
+/// pointers, shape, property storage) is inherited from HObjectBase via
+/// C3's `inline` keyword.  This flattens HObjectBase's fields directly
+/// into HObject so that `self.flags`, `self.prop_count`, etc. work
+/// without qualification, while keeping HObjectBase::size correct for
+/// trailing-data offset calculations.
+///
+/// Subtype-specific fields live in a union (HObjectExtra) discriminated
+/// by flags.obj_class.
 struct HObject {
-    // --- Inline HeapHeader ------------------------------------------------
-    ObjFlags      flags;
-    uint          refcount;
-    HeapHeader*   next;
-    HeapHeader*   prev;
-
-    // --- Prototype --------------------------------------------------------
-    HObject*      prototype;
-
-    // --- Shape (shared property layout) ------------------------------------
-    /// Shape ID for inline cache support (index into Heap.shapes[]).
-    ushort        shape_id;
-    /// Pointer to the shared Shape describing this object's property layout.
-    /// Property names, flags, and the hash table live here.
-    Shape*        shape @if(USE_SHAPE_CACHE);
-
-    // --- Per-object property values ----------------------------------------
-    /// Allocated capacity of prop_values (>= shape->prop_count).
-    ushort        prop_capacity;
-    /// Number of properties currently in use (synced with shape->prop_count).
-    ushort        prop_count;
-
-    // --- Dense array part ------------------------------------------------
-    ushort        array_size;
-    ushort        array_used;
-
-    // --- Unified property allocation block --------------------------------
-    /// Single allocation that holds prop_values and array_part contiguously.
-    void*         prop_alloc;
-
-    // --- Per-object hash table for fast property lookup -------------------
-    /// Pointer to hash table metadata (null when prop_count < HASH_MIN_PROPS).
-    /// Saves 8 bytes per object vs. inline fields for objects without hash tables.
-    PropHashInfo* prop_hash;
-
-    // --- Subtype-specific fields (overlapping union) -----------------------
-    /// Only one variant is active, determined by flags.obj_class.
-    /// Iterator objects (ARRAY_ITERATOR, MAP_ITERATOR, SET_ITERATOR) use the
-    /// extra.iter variant.  STRING_ITERATOR additionally reuses extra.prim for
-    /// GC tracing of the iterated string (non-overlapping byte ranges).
-    HObjectExtra  extra;
-
-    // --- Array length shadow cache -----------------------------------------
-    /// Cached array length for fast reads. Synced by put_prop and SETALEN.
-    uint          array_length;
+    inline HObjectBase base;
+    HObjectExtra      extra;
+    uint              array_length;
 }
 
 // ============================================================================
