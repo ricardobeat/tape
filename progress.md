@@ -1,16 +1,16 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 151 (test262 conformance fixes: error propagation, sloppy-mode writes, metadata, seal/freeze, global this)
+**Last Updated:** Session 152 (catch variable environment lookup — forced through GETVAR/PUTVAR)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 151, 2026-06-11)
+## Summary (after Session 152, 2026-06-12)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~11,120 |
-| Currently failing (phases 0-8) | ~9,440 |
+| Currently passing (phases 0-8) | ~11,122 |
+| Currently failing (phases 0-8) | ~9,439 |
 | Pass rate (phases 0-8 only) | ~54.1% |
 | Overall pass rate | 53.4% |
 
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 152 | Catch variable forced through environment (GETVAR/PUTVAR) via is_captured flag; fixes evaluation-order + symbol-to-prim tests | +15 |
 | 151 | Fix arr_throw_type_error error propagation; sloppy-mode PUTPROP silent discard; Array.prototype callback .length metadata; Object.seal/freeze non-objects; global `this` binding | +142 |
 | 150 | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize; DECLVAR inline cache | TBD |
 | 149 | Fix vm_call_fn_impl Case 3 callback execution; find/findIndex native builtins; print toString; callback error propagation | TBD |

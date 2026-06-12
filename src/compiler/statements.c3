@@ -1183,6 +1183,13 @@ fn void? CompilerContext.try_statement(&self) {
             self.expect(TokenType.RPAREN)!;
 
             ushort catch_var = self.declare_var(catch_param.str_value, VAR);
+            // Force the catch variable through the environment (GETVAR/PUTVAR)
+            // instead of direct register access.  PUTVAR clears the source
+            // register after storing to the env (for refcount correctness),
+            // so a later register read would get undefined.
+            if (!self.is_global && self.scope_depth > 0) {
+                self.scope_stack[self.scope_depth - 1].is_captured = true;
+            }
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
             // PUTVAR the exception into the env so that subsequent
             // GETVAR/TYPEOFIDENT for the catch variable finds it.
