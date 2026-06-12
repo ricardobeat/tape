@@ -1,7 +1,8 @@
 # Plan 031 — Fix String Intern Table Bloat (4.7× memory regression)
 
 **Date**: June 12, 2026
-**Status**: Research complete; ready to implement
+**Status**: Partially implemented — Fixes 2-4 merged to main (14,048 KB, -11%).
+Fix 1 (skip interning) reverted: breaks string comparison (pointer equality assumption).
 
 ---
 
@@ -172,3 +173,21 @@ c3c build test_vm && ./out/test_vm test/simple.js
 c3c -D NONANBOX build test_vm && ./out/test_vm test/simple.js
 c3c -D NOSHAPECACHE build test_vm && ./out/test_vm test/simple.js
 ```
+
+---
+
+## Results (Fixes 2-4 only)
+
+| Metric | Before (plan 030) | After (fixes 2-4) | Delta |
+|--------|------------------|-------------------|-------|
+| memory_test.js RSS | 15,776 KB | 14,048 KB | **-11%** (-1,728 KB) |
+| memory_heavy.js RSS | — | 29,616 KB (0.9× QJS) | — |
+| rosetta | 41/43 | **43/43** | +2 fixed |
+| vs QJS (memory_test) | 2.6× | **2.3×** | improved |
+| vs Duktape orig | 2.5× | **2.3×** | improved |
+
+## Why Fix 1 (skip interning) was reverted
+
+The engine uses **pointer equality for string comparison** (all strings are interned). Skipping interning for concat results breaks every `str1 === str2`, `switch(str)`, property lookup, etc. Original Duktape handles this via "dynamic strings" with spare capacity — a deeper refactor.
+
+**Path forward**: Content-based string comparison for non-interned strings (modify EQ/STRICTEQ opcodes) would unlock Fix 1. The `is_interned` flag and lazy interning infrastructure (now reverted but understood) would be reactivated at that point.
