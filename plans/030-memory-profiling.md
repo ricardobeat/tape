@@ -287,15 +287,54 @@ immediately. Essential for validating Item 1-class changes.
 
 ---
 
+## Correctness Bugs from Plan 029 (fix before proceeding)
+
+These were introduced by the `uint→ushort` compression in plan 029 and must be resolved
+before adding further changes that depend on `_active_heap` or shape IDs.
+
+### Bug A — IC generation wrap (hobject.c3:1530, vm.c3:2401)
+
+`VarICEntry.generation` was narrowed to `ushort` but `Shape.generation` remains `uint`.
+After 65536 mutations to a shape, the stored ushort wraps and aliases a past generation
+value. The IC-validation compare (`vm.c3:2231`: `shape.generation == vic.generation`)
+promotes the ushort to uint — so when the live generation is e.g. 65537 and the IC was
+stored at generation 1, both produce ushort 1 and the IC appears valid. A stale `prop_idx`
+is then used to read/write the wrong slot in `prop_values[]`.
+
+**Fix**: Widen `VarICEntry.generation` back to `uint`. The field is 2 bytes inside a
+struct that also has `ushort prop_idx` — widening costs 2 bytes of padding per entry, a
+negligible regression against the plan 029 wins.
+
+### Bug B — Shape ID 65535 aliases SHAPE_ID_NONE (heap.c3:648)
+
+`alloc_shape_slot()` returns `uint` with no cap below 65535. When `shape_count` reaches
+65535 organically, the returned id passes the `SHAPE_NONE` (0xFFFF_FFFF) guard and is cast
+to `(ushort)65535 == SHAPE_ID_NONE`. The shape is stored in `shapes[65535]` but the
+object's `shape_id` is set to the sentinel value. Any lookup-transition return of this ID
+is treated as "no transition found", breaking shape sharing and IC for that object. At
+65536+ shapes the ushort wraps to 0, 1, … aliasing live shapes and corrupting
+`prop_values[]` accesses.
+
+**Fix**: One line in `alloc_shape_slot` before returning: `if (id >= 0xFFFE) return SHAPE_NONE;`
+(cap valid IDs at 65534). 65535 shapes is far beyond any real workload, so this is safe.
+
+---
+
 ## Recommended Implementation Order
 
 | # | Item | Est. savings | C3 help | Effort | Risk |
 |---|---|---|---|---|---|
+| A | **Fix IC generation wrap** (`VarICEntry.generation` → `uint`) | 0 KB | — | Trivial | None |
+| B | **Cap shape IDs at 65534** in `alloc_shape_slot` | 0 KB | — | Trivial | None |
 | 1 | **Pool allocator via `mem_mempool`** | ~250 KB | `std::core::mem_mempool` | Low | Low |
 | 2 | Drop `shape` pointer | ~100 KB | — | Low | Low |
 | 3 | Use `inline` struct subtyping for HObject/HObjectBase | 0 KB (code quality) | `inline` keyword | Low | Very low |
 | 4 | Compute `clen` lazily | ~60 KB | — | Low | Very low |
 | 5 | Inline small prop tables | ~300 KB | — | Medium | Medium |
+
+**Items A & B** must go first — they are correctness fixes for plan 029 regressions.
+Item 2 (drop `shape` pointer) relies on `_active_heap` being correct; shipping that on
+top of a broken IC generation check would make failures harder to diagnose.
 
 **Item 3** is a no-brainer refactor — eliminates duplicate field definitions, makes the
 struct relationship self-documenting, and ensures HObject*/HObjectBase*/HeapHeader* casts
