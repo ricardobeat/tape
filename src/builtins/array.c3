@@ -1734,7 +1734,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
     HString* len_key = builtin_intern_string(heap, "length");
     uint len = 0;
     if (is_string_prim) {
-        len = str_val.clen;
+        len = str_val.char_length();
     } else if (len_key != null) {
         TVal? len_opt = array_like.get_prop_proto(len_key);
         if (try lv = len_opt) {
@@ -1867,7 +1867,7 @@ fn HObject*? arr_to_object(TVal val, Heap* heap) {
             (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
             HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
             TVal len_tv;
-            len_tv.set_fastint((long)prim_str.clen);
+            len_tv.set_fastint((long)prim_str.char_length());
             obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
             // Indexed character properties are served lazily via the exotic_stringobj flag;
             // no per-character own properties are materialised at construction time.

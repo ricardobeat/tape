@@ -58,7 +58,7 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
-        len_tv.set_fastint((long)prim_str.clen);
+        len_tv.set_fastint((long)prim_str.char_length());
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
         // Indexed character properties are served lazily via the exotic_stringobj flag;
         // no per-character own properties are materialised at construction time.
@@ -166,7 +166,7 @@ fn void builtin_object(BuiltinContext* ctx) {
         // Set .length own property (ES5 §15.5.5.1)
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
         TVal len_tv;
-        len_tv.set_fastint((long)prim_str.clen);
+        len_tv.set_fastint((long)prim_str.char_length());
         obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
         // Indexed character properties are served lazily via the exotic_stringobj flag;
         // no per-character own properties are materialised at construction time.
@@ -224,7 +224,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null) {
-            for (uint i = 0; i < prim.clen; i++) {
+            for (uint i = 0; i < prim.char_length(); i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
                 if (k == null) { ctx.result.set_undefined(); return; }
                 TVal key_tv;
@@ -253,7 +253,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
                     if (obj.prop_key_at(i) != null) {
                         HString* key = (HString*)obj.prop_key_at(i);
                         if (key.is_arridx()) {
-                            sort_buf[p * 2] = key.arridx;
+                            sort_buf[p * 2] = key.array_index();
                             sort_buf[p * 2 + 1] = i;
                             p++;
                         }
@@ -401,7 +401,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null) {
-            for (uint i = 0; i < prim.clen; i++) {
+            for (uint i = 0; i < prim.char_length(); i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
                 if (k == null) { ctx.result.set_undefined(); return; }
                 TVal key_tv;
@@ -429,7 +429,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                     if (obj.prop_key_at(i) != null) {
                         HString* key = (HString*)obj.prop_key_at(i);
                         if (key.is_arridx()) {
-                            sort_buf[p * 2] = key.arridx;
+                            sort_buf[p * 2] = key.array_index();
                             sort_buf[p * 2 + 1] = i;
                             p++;
                         }
@@ -825,7 +825,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
             (*obj.extra_ptr()).prim.primitive_value.is_string() &&
             is_numeric && kd.len > 0 && kd.len <= 10) {
             HString* prim_str = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-            if (arr_idx < (ulong)prim_str.clen) {
+            if (arr_idx < (ulong)prim_str.char_length()) {
                 uint cp = prim_str.char_at((uint)arr_idx);
                 char[4] cbuf;
                 uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
@@ -2599,7 +2599,7 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     // STRING exotic: integer indices [0, clen) are own properties served lazily.
     if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
+        ctx.result.set_boolean(prim != null && key.array_index() < prim.char_length());
         return;
     }
     ctx.result.set_boolean(false);
@@ -2639,7 +2639,7 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         // Indices in [0, clen) are enumerable per ES5 §15.5.5.1
-        ctx.result.set_boolean(prim != null && key.arridx < prim.clen);
+        ctx.result.set_boolean(prim != null && key.array_index() < prim.char_length());
         return;
     }
     ctx.result.set_boolean(false);
