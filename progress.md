@@ -1,36 +1,36 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 153 (lightfunc virtual property deletion tracking — .name/.length/.prototype)
+**Last Updated:** Session 154 (defineProperty §8.12.9 fixes — empty descriptor short-circuit, generic descriptor path, string exotic configurable)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 153, 2026-06-12)
+## Summary (after Session 154, 2026-06-12)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~11,328 |
-| Currently failing (phases 0-8) | ~9,233 |
-| Pass rate (phases 0-8 only) | ~55.0% |
-| Overall pass rate | ~54.3% |
+| Currently passing (phases 0-8) | ~11,542 |
+| Currently failing (phases 0-8) | ~9,061 |
+| Pass rate (phases 0-8 only) | ~55.9% |
+| Overall pass rate | ~55.3% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 559 | 329 | 1,297 |
-| 1: Calling Convention | 426 | 40 | 48 | 338 |
+| 0-1: Core VM | 2,185 | 558 | 330 | 1,297 |
+| 1: Calling Convention | 426 | 54 | 34 | 338 |
 | 2: Basic Operators | 1,969 | 914 | 230 | 825 |
-| 3: Object System | 7,766 | 3,298 | 2,501 | 1,967 |
-| 4: Error Handling | 402 | 100 | 101 | 201 |
-| 5: Built-in Constructors | 8,615 | 3,934 | 3,156 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,731 | 2,046 | 936 |
-| 7: ES5 Features | 1,240 | 176 | 117 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 739 | 545 | 1,463 |
-| 11: Arrow/Templates | 427 | 58 | 45 | 324 |
+| 3: Object System | 7,766 | 3,276 | 2,523 | 1,967 |
+| 4: Error Handling | 402 | 115 | 86 | 201 |
+| 5: Built-in Constructors | 8,615 | 3,908 | 3,182 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,757 | 2,020 | 936 |
+| 7: ES5 Features | 1,240 | 185 | 108 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 797 | 487 | 1,463 |
+| 11: Arrow/Templates | 427 | 61 | 42 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 4 | 28 | 719 |
-| 15: Classes | 8,520 | 64 | 198 | 8,258 |
+| 14: for-of | 751 | 10 | 22 | 719 |
+| 15: Classes | 8,520 | 62 | 200 | 8,258 |
 | 17-20: Map/Set/Symbol/Promise | 1,614 | 273 | 367 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |
 | 153 | Lightfunc virtual property deletion tracking (.name/.length/.prototype); DELPROP marks deletions in bitset; GETPROP/hasOwn/getOwnPropertyDescriptor/getOwnPropertyNames respect deletions | +206 |
 | 152 | Catch variable forced through environment (GETVAR/PUTVAR) via is_captured flag; fixes evaluation-order + symbol-to-prim tests | +15 |
 | 151 | Fix arr_throw_type_error error propagation; sloppy-mode PUTPROP silent discard; Array.prototype callback .length metadata; Object.seal/freeze non-objects; global `this` binding | +142 |

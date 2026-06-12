@@ -732,7 +732,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 if (char_str != null) {
                     TVal char_tv; char_tv.set_string(char_str);
                     HObject* desc;
-                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, true, true, false);
+                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, true, true, true);
                     if (desc != null) {
                         ctx.result.set_object(desc);
                         return;
@@ -807,7 +807,8 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 /// Returns true on success, sets ctx.should_throw on error.
 fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
                                hobject::PropFlags* out_flags,
-                               TVal* out_value, bool* is_accessor_out) {
+                               TVal* out_value, bool* is_accessor_out,
+                               bool* is_generic_out, bool* has_any_out) {
     // Check the five possible descriptor fields.
     HString* enum_key   = builtin_intern_string(ctx.heap, "enumerable");
     HString* conf_key   = builtin_intern_string(ctx.heap, "configurable");
@@ -977,6 +978,12 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
 
     out_flags[0] = flags;
     is_accessor_out[0] = is_accessor;
+    if (is_generic_out != null) {
+        is_generic_out[0] = !is_accessor && !has_value && !has_writable;
+    }
+    if (has_any_out != null) {
+        has_any_out[0] = has_enumerable || has_configurable || has_value || has_writable || has_get || has_set;
+    }
     return true;
 }
 
@@ -1048,13 +1055,20 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     hobject::PropFlags desc_flags;
     TVal[2] desc_vals;  // [0]=value/getter, [1]=setter (unused for data)
     bool is_accessor;
-    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor)) {
+    bool is_generic = false;
+    bool has_any_field = false;
+    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, &is_generic, &has_any_field)) {
         if (ctx.should_throw) return;
         ctx.result.set_undefined();
         return;
     }
 
     // Step 5: [[DefineOwnProperty]]
+    // ES5 §8.12.9 step 1: If every field in Desc is absent, return true.
+    if (!has_any_field) {
+        ctx.result.set_object(obj);
+        return;
+    }
     // Check if property already exists
     int existing_idx = obj.find_prop_idx(key);
     if (existing_idx < 0) {
@@ -1132,7 +1146,11 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         }
 
         // Update the property
-        if (is_accessor != cur_flags.is_accessor) {
+        // ES5 §8.12.9: Only reject type changes when the descriptor explicitly
+        // declares a different type. Generic descriptors (no value/writable/get/set)
+        // should NOT trigger a type change — they only update enumerable/configurable.
+        bool explicit_type_change = is_accessor != cur_flags.is_accessor && !is_generic;
+        if (explicit_type_change) {
             // Changing from data to accessor or vice versa on non-configurable
             if (!cur_flags.configurable) {
                 HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -1155,7 +1173,17 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             // Type change allowed only if configurable
         }
 
-        if (is_accessor) {
+        if (is_generic) {
+            // ES5 §8.12.9: Generic descriptor — only update enumerable/configurable.
+            // Do NOT change value, writable, is_accessor, getter, or setter.
+            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
+            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
+            bool has_enum_in_desc = (enum_k != null) && desc_obj.find_prop_idx(enum_k) >= 0;
+            bool has_conf_in_desc = (conf_k != null) && desc_obj.find_prop_idx(conf_k) >= 0;
+            if (has_enum_in_desc) cur_flags.enumerable   = desc_flags.enumerable;
+            if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
+            obj.set_prop_flags((uint)existing_idx, cur_flags);
+        } else if (is_accessor) {
             // Update accessor fields
             bool has_get_in_desc = false;
             bool has_set_in_desc = false;
@@ -1377,7 +1405,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             hobject::PropFlags desc_flags;
             TVal[2] desc_vals;
             bool is_accessor;
-            if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor)) {
+            if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null, null)) {
                 if (ctx.should_throw) return;
                 ctx.result.set_undefined();
                 return;
@@ -1611,7 +1639,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                         hobject::PropFlags desc_flags;
                         TVal[2] desc_vals;
                         bool is_accessor;
-                        if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor)) {
+                        if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null, null)) {
                             if (ctx.should_throw) return;
                             ctx.result.set_undefined();
                             return;
