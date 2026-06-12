@@ -32,3 +32,19 @@ Tags are full 16-bit values: `TAG_FASTINT=0xFFF1`, `TAG_UNDEFINED=0xFFF3`, etc. 
 2. **Small tag scheme collision**: An earlier scheme used 4-bit tags (0-8) shifted into bits 51-48 with `NANBOX_BASE = 0xFFF8000000000000`. This collided because NANBOX_BASE already has bits 51-48 = 0x8, making `nanbox_get_tag(UNDEFINED)` return 8 instead of 0. Fixed by switching to Duktape's 16-bit tag scheme.
 
 3. **Negative NaN collision**: A scheme with `NANBOX_BASE = 0xFFF0000000000000` and 4-bit tags in bits 51-48 worked for positive values but negative NaN doubles (0xFFF8...) had bits 51-48 = 0x8, colliding with tags. Fixed by NaN normalization in `set_number()`.
+
+## Compiler / VM Gotchas
+
+### PUTVAR clears the source register (vm.c3)
+
+After syncing a register value to the environment, `PUTVAR` (line ~6156) decrefs the register and sets it to `undefined`. This prevents reference leaks but means **any variable that's both register-cached and written via PUTVAR will lose its register value**. This broke `for (var k in obj)` in functions: NEXTFOR wrote the key to a register, PUTVAR synced it to the env, then zeroed the register. The body read the register directly (via `resolve_var`) and got `undefined`.
+
+**Fix**: for-in uses a temp register for NEXTFOR output, not a `declare_var`-cached register. The body reads via GETVAR from the environment. **Any future variable-binding work must consider whether PUTVAR will clobber the register.**
+
+### Sliding-window register init must skip argument slots (vm.c3)
+
+When calling a function with zero formal parameters but actual arguments (e.g. `function f() { return arguments[0]; } f(42)`), the register initialization memset starts at `undef_limit = formals = 0`, which overwrites the sliding-window argument slots at `new_regs[0..nargs-1]`. Fix: start the memset at `max(undef_limit, nargs)`.
+
+### Rosetta Code tests as a debugging tool
+
+The 43 rosetta tests cover 22+ JS language features and proved highly effective at finding real engine bugs. The pattern: minimize the failing test to a single-line repro, check if the issue is in the compiler (compile failed) or VM (VM_ERROR / wrong value), then trace through the bytecode. For VM issues, adding `io::printfn` debug prints to the relevant opcode handler was the fastest way to pinpoint the problem.
