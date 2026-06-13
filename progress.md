@@ -1,30 +1,30 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 156 (re-benchmark after Session 155)
+**Last Updated:** Session 157 (Object.assign ToObject)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 156, 2026-06-12)
+## Summary (after Session 157, 2026-06-13)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 11,919 |
-| Currently failing (phases 0-8) | 8,645 |
-| Pass rate (phases 0-8 only) | 58.0% |
-| Overall pass rate | 57.1% |
+| Currently passing (phases 0-8) | 12,355 |
+| Currently failing (phases 0-8) | 8,209 |
+| Pass rate (phases 0-8 only) | 60.1% |
+| Overall pass rate | ~58.2% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 560 | 328 | 1,297 |
+| 0-1: Core VM | 2,185 | 563 | 325 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 914 | 230 | 825 |
-| 3: Object System | 7,766 | 3,400 | 2,399 | 1,967 |
+| 3: Object System | 7,766 | 3,502 | 2,297 | 1,967 |
 | 4: Error Handling | 402 | 120 | 81 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,029 | 3,061 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,753 | 2,024 | 936 |
+| 5: Built-in Constructors | 8,615 | 4,221 | 2,869 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,892 | 1,885 | 936 |
 | 7: ES5 Features | 1,240 | 185 | 108 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 900 | 384 | 1,463 |
 | 11: Arrow/Templates | 427 | 64 | 39 | 324 |
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 157 | Object.assign ToObject: proper String/Number/Boolean exotic wrapping for target + primitive source ToObject per ES2015 §19.1.2.1-2 | +436 |
 | 156 | Re-benchmark (no code changes) | +297 (cumulative since last benchmark) |
 | 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |
 | 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |

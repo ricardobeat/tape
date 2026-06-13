@@ -2091,23 +2091,67 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         ctx.throw_value.set_object(err);
         return;
     }
-    // ToObject on downstream
+    // ES2015 §19.1.2.1 step 1: ToObject(target)
     HObject* downstream;
     if (downstream_val.is_object()) {
         downstream = (HObject*)downstream_val.get_heapptr();
+    } else if (downstream_val.is_string()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
+        if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+        downstream = obj_raw;
+        downstream.flags.exotic_stringobj = true;
+        downstream.prototype = ctx.heap.string_proto;
+        HString* prim_str = (HString*)downstream_val.get_heapptr();
+        (*downstream.extra_ptr()).prim.primitive_value.set_string(prim_str);
+        HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        TVal len_tv;
+        len_tv.set_fastint((long)prim_str.char_length());
+        downstream.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+    } else if (downstream_val.is_number() || downstream_val.is_fastint()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.NUMBER);
+        if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+        downstream = obj_raw;
+        downstream.prototype = ctx.heap.number_proto;
+        (*downstream.extra_ptr()).prim.primitive_value = downstream_val;
+    } else if (downstream_val.is_boolean()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.BOOLEAN);
+        if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+        downstream = obj_raw;
+        downstream.prototype = ctx.heap.bool_proto;
+        (*downstream.extra_ptr()).prim.primitive_value.set_boolean(downstream_val.get_boolean());
     } else {
-        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
-        downstream = wrapped;
+        // Symbol, BigInt, etc.
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+        downstream = obj_raw;
         downstream.prototype = ctx.heap.object_proto;
     }
     // Copy properties from each source (args 1..N)
     for (uint s = 1; s < ctx.argc; s++) {
         TVal source = ctx.regs[ctx.base_reg + s];
-        // Skip null, undefined, and non-objects
+        // ES2015 §19.1.2.2 step 2: skip undefined/null, ToObject everything else
         if (source.is_null() || source.is_undefined()) continue;
-        if (!source.is_object()) continue;
-        HObject* src_obj = (HObject*)source.get_heapptr();
+        // ES2015 §19.1.2.2 step 2: Let from be ToObject(source)
+        HObject* src_obj;
+        if (source.is_object()) {
+            src_obj = (HObject*)source.get_heapptr();
+        } else if (source.is_string()) {
+            // Create String exotic object for string sources
+            HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
+            if (catch err3 = obj_raw) continue;
+            src_obj = obj_raw;
+            src_obj.flags.exotic_stringobj = true;
+            src_obj.prototype = ctx.heap.string_proto;
+            HString* prim_str = (HString*)source.get_heapptr();
+            (*src_obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+            HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+            TVal len_tv;
+            len_tv.set_fastint((long)prim_str.char_length());
+            src_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        } else {
+            // Number, Boolean, Symbol, BigInt — no enumerable own properties
+            continue;
+        }
         // Copy enumerable own named properties via [[Set]] per ES2015 §19.1.2.2
         for (uint i = 0; i < src_obj.prop_count; i++) {
             if (src_obj.get_prop_flags(i).enumerable && src_obj.prop_key_at(i) != null) {
@@ -2152,6 +2196,43 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
                                 if (!acc.found && downstream.flags.extensible) {
                                     downstream.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC);
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // STRING exotic: copy lazy character indices [[Set]] per ES5 §15.5.5.1
+        if (src_obj.flags.exotic_stringobj && (*src_obj.extra_ptr()).prim.primitive_value.is_string()) {
+            HString* prim = (HString*)(*src_obj.extra_ptr()).prim.primitive_value.get_heapptr();
+            if (prim != null) {
+                for (uint ci = 0; ci < prim.char_length(); ci++) {
+                    HString* ik = ctx.heap.int_to_hstring((long)ci);
+                    if (ik == null) continue;
+                    // Character properties are always writable, enumerable, configurable
+                    int down_idx = downstream.find_prop_idx((void*)ik);
+                    if (down_idx >= 0) {
+                        hobject::PropFlags f = downstream.get_prop_flags((uint)down_idx);
+                        if (!f.is_accessor && f.writable) {
+                            uint cp = prim.char_at(ci);
+                            char[4] cbuf;
+                            uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                            HString* ch_str = ctx.heap.str_intern(cbuf[:cblen]);
+                            if (ch_str != null) {
+                                TVal ch_tv; ch_tv.set_string(ch_str);
+                                downstream.put_prop((void*)ik, ch_tv, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                    } else {
+                        hobject::AccessorResult acc = downstream.find_accessor_proto((void*)ik, false);
+                        if (!acc.found && downstream.flags.extensible) {
+                            uint cp = prim.char_at(ci);
+                            char[4] cbuf;
+                            uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                            HString* ch_str = ctx.heap.str_intern(cbuf[:cblen]);
+                            if (ch_str != null) {
+                                TVal ch_tv; ch_tv.set_string(ch_str);
+                                downstream.put_prop((void*)ik, ch_tv, hobject::PROP_FLAGS_WEC);
                             }
                         }
                     }
