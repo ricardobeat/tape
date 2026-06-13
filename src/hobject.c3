@@ -147,6 +147,8 @@ enum ObjClass : char {
     STRING_ITERATOR,
     MAP_ITERATOR,
     SET_ITERATOR,
+    /// Internal GC cell for boxed accessor pairs (getter + setter).
+    GETTER_SETTER,
 }
 
 /// Discriminator for a callable object's invocation kind.
@@ -301,26 +303,70 @@ struct AccessorResult {
 }
 
 // ============================================================================
-// PropValue — per-object property value storage (QuickJS-style)
+// PropValue — per-object property value storage
 // ============================================================================
 
-/// A property value slot in the object's prop_values array.
-///
-/// Property names and flags live in the Shape (shared across objects).
-/// Objects only store values.  For accessor properties, both getter and
-/// setter are stored; for data properties, only `value` is meaningful.
-union PropData {
-    /// Data property: single value.
-    TVal      value;
-    /// Accessor property: getter at index 0, setter at next TVal.
-    /// Stored as getter; the setter follows at (&getter + 1) in memory.
-    TVal      getter;
+/// Each property slot is a single TVal (8 bytes nanboxed).
+/// For data properties the TVal holds the value directly.
+/// For accessor properties the TVal stores a TAG_OBJECT pointer to a
+/// GetterSetter HObject (ObjClass.GETTER_SETTER).
+/// The Shape.PropFlags.is_accessor flag tells readers how to interpret
+/// the slot.
+alias PropValue = TVal;
+
+// ---------------------------------------------------------------------------
+// Boxed accessor pair helpers
+// ---------------------------------------------------------------------------
+
+/// Allocate a GetterSetter GC cell and return it as a TAG_OBJECT TVal.
+/// The getter and setter are increffed by the caller's tval_copy_ref.
+fn TVal hobject_create_accessors(heap::Heap* h, TVal getter, TVal setter) {
+    HObject*? gs_obj = h.alloc_object(ObjClass.GETTER_SETTER);
+    if (try gs = gs_obj) {
+        (*gs.extra_ptr()).gs.getter = getter;
+        (*gs.extra_ptr()).gs.setter = setter;
+        // incref the getter and setter since the GS cell now holds references
+        if (getter.is_heap_allocated() && getter.get_heapptr() != null) {
+            ((types::HeapHeader*)getter.get_heapptr()).incref();
+        }
+        if (setter.is_heap_allocated() && setter.get_heapptr() != null) {
+            ((types::HeapHeader*)setter.get_heapptr()).incref();
+        }
+        return types::make_object(gs);
+    }
+    return types::make_undefined();
 }
-struct PropValue {
-    PropData  data;
-    /// For accessor properties, the setter lives here.
-    /// For data properties, this is unused.
-    TVal      setter;
+
+/// Extract the getter from a boxed accessor slot.
+fn TVal hobject_access_getter(TVal slot) {
+    HObject* gs = (HObject*)slot.get_heapptr();
+    return (*gs.extra_ptr()).gs.getter;
+}
+
+/// Extract the setter from a boxed accessor slot.
+fn TVal hobject_access_setter(TVal slot) {
+    HObject* gs = (HObject*)slot.get_heapptr();
+    return (*gs.extra_ptr()).gs.setter;
+}
+
+/// Update the getter inside an existing GetterSetter cell (refcounted).
+fn void hobject_set_access_getter(TVal slot, TVal new_getter, heap::Heap* h) {
+    HObject* gs = (HObject*)slot.get_heapptr();
+    h.decref_tval(&(*gs.extra_ptr()).gs.getter);
+    (*gs.extra_ptr()).gs.getter = new_getter;
+    if (new_getter.is_heap_allocated() && new_getter.get_heapptr() != null) {
+        ((types::HeapHeader*)new_getter.get_heapptr()).incref();
+    }
+}
+
+/// Update the setter inside an existing GetterSetter cell (refcounted).
+fn void hobject_set_access_setter(TVal slot, TVal new_setter, heap::Heap* h) {
+    HObject* gs = (HObject*)slot.get_heapptr();
+    h.decref_tval(&(*gs.extra_ptr()).gs.setter);
+    (*gs.extra_ptr()).gs.setter = new_setter;
+    if (new_setter.is_heap_allocated() && new_setter.get_heapptr() != null) {
+        ((types::HeapHeader*)new_setter.get_heapptr()).incref();
+    }
 }
 
 // ============================================================================
@@ -385,14 +431,23 @@ struct HObjectIterator {
     uint              kind;     /// 0=values, 1=keys, 2=entries.
 }
 
+/// Boxed accessor pair (getter + setter) stored in a GC-managed HObject
+/// with ObjClass.GETTER_SETTER.  Referenced from prop_values[] slots
+/// when PropFlags.is_accessor is true.
+struct HObjectGetterSetter {
+    TVal getter;
+    TVal setter;
+}
+
 /// Tagged union of subtype-specific fields.
 /// Discriminator is flags.obj_class (in the common header).
 union HObjectExtra {
-    HObjectFunction  func;
-    HObjectPrimitive prim;
-    HObjectRegExp    regexp;
-    HObjectGenerator gen;
-    HObjectIterator  iter;
+    HObjectFunction      func;
+    HObjectPrimitive     prim;
+    HObjectRegExp        regexp;
+    HObjectGenerator     gen;
+    HObjectIterator      iter;
+    HObjectGetterSetter  gs;
 }
 
 /// The core ECMAScript object representation.
@@ -457,6 +512,7 @@ const usz INLINE_EXTRA = INLINE_PROPS * PropValue::size;
 const usz OBJ_SIZE_PLAIN = HObjectBase::size + INLINE_EXTRA;                            // OBJECT, ERROR, ARGUMENTS, PROXY
 const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8 + INLINE_EXTRA;                        // ARRAY
 const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // FUNCTION, REGEXP, etc.
+const usz OBJ_SIZE_GS    = HObjectBase::size + HObjectGetterSetter::size;                // GETTER_SETTER (no inline props)
 
 /// Allocation size for each object class.
 /// Includes INLINE_PROPS slots at the tail for small objects (0-4 properties),
@@ -473,6 +529,8 @@ fn usz alloc_size_for_class(ObjClass cls) @inline {
             return OBJ_SIZE_PLAIN;
         case ObjClass.ARRAY:
             return OBJ_SIZE_ARRAY;
+        case ObjClass.GETTER_SETTER:
+            return OBJ_SIZE_GS;
         default:
             return OBJ_SIZE_FUNC;
     }
@@ -508,6 +566,8 @@ fn void* pool_for_class(void* heap_ptr, ObjClass cls) @inline {
             return &h.obj_pool_plain;
         case ObjClass.ARRAY:
             return &h.obj_pool_array;
+        case ObjClass.GETTER_SETTER:
+            return &h.obj_pool_func;
         default:
             return &h.obj_pool_func;
     }
@@ -897,7 +957,7 @@ fn TVal? HObject.get_prop(&self, void* key) {
     if (idx < 0) {
         return PROP_NOT_FOUND~;
     }
-    return self.prop_values()[idx].data.value;
+    return self.prop_values()[idx];
 }
 
 /// Check whether the object has an own property with the given key.
@@ -924,10 +984,10 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
         PropValue* pv = &self.prop_values()[idx];
-        if (_active_heap != null && pv.data.value.is_string()) {
-            ((heap::Heap*)_active_heap).decref_tval(&pv.data.value);
+        if (_active_heap != null && pv.is_string()) {
+            ((heap::Heap*)_active_heap).decref_tval(pv);
         }
-        pv.data.value = val;
+        *pv = val;
         if (_active_heap != null && val.is_string()) {
             void* ptr = val.get_heapptr();
             if (ptr != null) {
@@ -975,7 +1035,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     // --- Append new value at the next slot ---
     uint new_idx = self.prop_count;
     libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
-    self.prop_values()[new_idx].data.value = val;
+    self.prop_values()[new_idx] = val;
     if (_active_heap != null && val.is_string()) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
@@ -1400,6 +1460,8 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         obj.flags.exotic_arguments = true;
     } else if (cls == ObjClass.PROXY) {
         obj.flags.exotic_proxyobj = true;
+    } else if (cls == ObjClass.GETTER_SETTER) {
+        obj.prop_capacity = 0;  // no inline props for GS cells
     }
 
     obj.shape_id = 0;
@@ -1430,6 +1492,13 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         libc::free(obj.prop_hash);
     }
 
+    // Decref getter/setter inside GetterSetter cells.
+    if (obj.flags.obj_class == ObjClass.GETTER_SETTER && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        h.decref_tval(&(*obj.extra_ptr()).gs.getter);
+        h.decref_tval(&(*obj.extra_ptr()).gs.setter);
+    }
+
     // Decref string values held in property slots and array elements.
     // Only strings are RC-freed here — objects still use M&S and can form cycles;
     // decref-freeing objects from within another object's teardown would corrupt the
@@ -1438,8 +1507,8 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         heap::Heap* h = (heap::Heap*)_active_heap;
         PropValue* pvs = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (pvs[i].data.value.is_string()) {
-                h.decref_tval(&pvs[i].data.value);
+            if (pvs[i].is_string()) {
+                h.decref_tval(&pvs[i]);
             }
         }
         TVal* arr = obj.array_part();
@@ -1513,7 +1582,7 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
-            return cur.prop_values()[idx].data.value;
+            return cur.prop_values()[idx];
         }
         cur = cur.prototype;
         depth++;
@@ -1535,7 +1604,8 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
             if (cur.get_prop_flags((uint)idx).is_accessor) {
-                TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
+                TVal gs_slot = cur.prop_values()[idx];
+                TVal accessor_fn = want_getter ? hobject_access_getter(gs_slot) : hobject_access_setter(gs_slot);
                 if (accessor_fn.is_object() && accessor_fn.get_heapptr() != null) {
                     return { .accessor_fn = accessor_fn, .this_obj = self, .found = true };
                 }
@@ -1691,7 +1761,7 @@ struct ICEntry {
     void*  key;
     /// Cached pointer to the resolved PropValue for direct access.
     /// Invalidated when prop_alloc is reallocated (prop_alloc comparison).
-    PropValue* prop_value_ptr;
+    TVal* prop_value_ptr;
     /// Snapshot of the owner's prop_alloc pointer at population time.
     /// IC hit requires this == owner.prop_alloc (single pointer comparison
     /// replaces the old generation-dereference chain).
@@ -1730,7 +1800,8 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
             if (cur.get_prop_flags((uint)idx).is_accessor) {
-                TVal accessor_fn = want_getter ? cur.prop_values()[idx].data.getter : cur.prop_values()[idx].setter;
+                TVal gs_slot = cur.prop_values()[idx];
+            TVal accessor_fn = want_getter ? hobject_access_getter(gs_slot) : hobject_access_setter(gs_slot);
                 return {
                     .kind = PropLookupKind.PROP_ACCESSOR,
                     .acc = {
@@ -1742,7 +1813,7 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
             }
             return {
                 .kind = PropLookupKind.PROP_DATA,
-                .data_val = cur.prop_values()[idx].data.value,
+                .data_val = cur.prop_values()[idx],
                 .owner = cur
             };
         }

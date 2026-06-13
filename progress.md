@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 160 (ToString ES5 §9.8.1 decimal notation + exponent formatting)
+**Last Updated:** Session 161 (Boxed accessor pairs — PropValue 16→8 bytes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 160, 2026-06-13)
+## Summary (after Session 161, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,170 |
-| Currently failing (phases 0-8) | 8,465 |
-| Pass rate (phases 0-8 only) | 58.9% |
-| Overall pass rate | 58.0% |
+| Currently passing (phases 0-8) | 12,181 |
+| Currently failing (phases 0-8) | 8,454 |
+| Pass rate (phases 0-8 only) | 59.0% |
+| Overall pass rate | 58.1% |
 
 ## Per-Phase Status
 
@@ -45,15 +45,15 @@ See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
 
 ### Memory Benchmarks (`just bench-memory`)
 
-Current peak RSS (2026-06-13):
+Current peak RSS (2026-06-14):
 
 | Engine | `memory_test.js` | `bench_memory_heavy.js` |
 |---|---|---|
-| duktape_c3 | **6,656 KB** (1.0× QJS) | **45,616 KB** (1.4× QJS) |
-| duktape_orig | 6,384 KB (1.0× QJS) | 39,264 KB (1.2× QJS) |
+| duktape_c3 | **6,320 KB** (1.0× QJS) | **40,976 KB** (1.2× QJS) |
+| duktape_orig | 6,384 KB (1.0× QJS) | 38,864 KB (1.2× QJS) |
 | qjs (QuickJS) | 6,112 KB | 31,808 KB |
 
-The light workload (`memory_test.js`) is now on par with both engines after plans 029–032. The heavy workload still has a ~43% gap vs QuickJS; remaining work is tracked in `plans/033-memory-next-steps.md`.
+The light workload (`memory_test.js`) is now on par with both engines. The heavy workload dropped from 45.6 MB to 41.0 MB via boxed accessor pairs (Session 161). Remaining gap to QuickJS is ~9 MB, tracked in `plans/033-memory-next-steps.md`.
 
 ## Resolved Root Causes
 
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 161 | Boxed accessor pairs: PropValue 16→8 bytes (GetterSetter GC cell per accessor); inline props shrink 32→16 bytes per object | +11 (net) |
 | 160 | ToString ES5 §9.8.1: decimal notation for 10^-6 ≤ |x| < 10^21 (was using C `%g` threshold of 10^-4); remove leading zero in exponential exponent (e-07 → e-7); applied in both vm_number_to_string and builtin_to_string | +92 |
 | 159 | ToPropertyDescriptor §8.10.5 getter invocation via desc_get; defineProperty dense array promotion for array-indexed properties; ToString integer notation §9.8.1 (|val| < 10^21 decimal) | +81 |
 | 158 | ToString(-0)→"0" in vm_number_to_string + getOwnPropertyDescriptor string exotic flags (false,true,false) per ES5 §15.5.5.1 | +391 |

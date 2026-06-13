@@ -1484,15 +1484,13 @@ fn void Heap.drain_gray(&self) {
         }
 
         // --- Named properties ---
-        PropValue* pv = obj.prop_values();
+        TVal* pv = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key != null) {
                 ((HeapHeader*)key).set_reachable();
             }
-            self.mark_tval(&pv[i].data.value);
-            self.mark_tval(&pv[i].data.getter);
-            self.mark_tval(&pv[i].setter);
+            self.mark_tval(&pv[i]);
         }
 
         // --- Array part ---
@@ -1539,6 +1537,10 @@ fn void Heap.drain_gray(&self) {
                 break;
             case ObjClass.STRING_ITERATOR:
                 self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
+                break;
+            case ObjClass.GETTER_SETTER:
+                self.mark_tval(&(*obj.extra_ptr()).gs.getter);
+                self.mark_tval(&(*obj.extra_ptr()).gs.setter);
                 break;
             default:
                 break;

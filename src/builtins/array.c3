@@ -427,7 +427,7 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
             if (idx >= 0) {
                 TVal tv;
                 tv.set_fastint((long)len_val);
-                obj.prop_values()[idx].data.value = tv;
+                obj.prop_values()[idx] = tv;
                 return;
             }
         }
@@ -441,7 +441,7 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
             if (idx >= 0) {
                 TVal tv;
                 tv.set_fastint((long)len_val);
-                obj.prop_values()[idx].data.value = tv;
+                obj.prop_values()[idx] = tv;
                 return;
             }
         }

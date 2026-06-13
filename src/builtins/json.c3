@@ -879,7 +879,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             if (pi < obj.prop_count && obj.prop_key_at(pi) == key_hstr) {
                 if (obj.get_prop_flags(pi).is_accessor) {
                     // Invoke the getter to get the property value
-                    TVal getter_fn = obj.prop_values()[pi].data.getter;
+                    TVal getter_fn = hobject::hobject_access_getter(obj.prop_values()[pi]);
                     if (getter_fn.is_undefined() || getter_fn.is_null()) {
                         val.set_undefined();
                     } else if (jctx.heap.call_fn != null && jctx.vm != null) {
@@ -891,7 +891,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
                         continue;
                     }
                 } else {
-                    val = obj.prop_values()[pi].data.value;
+                    val = obj.prop_values()[pi];
                 }
             } else {
                 // Property was deleted (e.g., by a getter) — treat as undefined

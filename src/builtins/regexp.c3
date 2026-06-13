@@ -635,12 +635,7 @@ fn bool register_proto_accessor(HObject* proto, Heap* heap, char[] name, uint ge
     acc_flags.enumerable = false;
     acc_flags.configurable = true;
     acc_flags.is_accessor = true;
-    proto.put_prop(key, undef, acc_flags);
-    int idx = proto.find_prop_idx(key);
-    if (idx >= 0) {
-        proto.prop_values()[idx].data.getter = getter_tv;
-        proto.prop_values()[idx].setter = undef;
-    }
+    proto.put_prop(key, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
     return true;
 }
 

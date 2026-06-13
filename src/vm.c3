@@ -2321,23 +2321,23 @@ fn TVal? Vm.run(Vm* vm) {
                     HObject* b = (HObject*)vic.bindings;
                     if (b.shape_id == vic.shape_id
                         && vm.heap.shapes[b.shape_id].generation == vic.generation) {
-                        TVal old_val = b.prop_values()[vic.prop_idx].data.value;
+                        TVal old_val = b.prop_values()[vic.prop_idx];
                         if (!env::is_tdz_sentinel(&old_val)
                             && b.get_prop_flags(vic.prop_idx).writable) {
                             if (old_val.is_fastint()) {
                                 long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
                                 if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
-                                    b.prop_values()[vic.prop_idx].data.value.set_fastint(v);
+                                    b.prop_values()[vic.prop_idx].set_fastint(v);
                                     ra.set_fastint(v);
                                 } else {
-                                    b.prop_values()[vic.prop_idx].data.value.set_number((double)v);
+                                    b.prop_values()[vic.prop_idx].set_number((double)v);
                                     ra.set_number((double)v);
                                 }
                             } else {
                                 double d = vm_to_number(vm,&old_val);
                                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                                 double new_d = d + (is_inc ? 1.0 : -1.0);
-                                b.prop_values()[vic.prop_idx].data.value.set_number(new_d);
+                                b.prop_values()[vic.prop_idx].set_number(new_d);
                                 ra.set_number(new_d);
                             }
                             break;
@@ -2357,7 +2357,7 @@ fn TVal? Vm.run(Vm* vm) {
             while (cur != null) {
                 int idx = cur.bindings.find_prop_idx(key);
                 if (idx >= 0) {
-                    TVal old_val = cur.bindings.prop_values()[idx].data.value;
+                    TVal old_val = cur.bindings.prop_values()[idx];
                     if (env::is_tdz_sentinel(&old_val)) {
                         HString* name_hstr = (HString*)key;
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -2412,17 +2412,17 @@ fn TVal? Vm.run(Vm* vm) {
                     if (old_val.is_fastint()) {
                         long v = old_val.get_fastint() + (is_inc ? 1L : -1L);
                         if (v >= types::FASTINT_MIN && v <= types::FASTINT_MAX) {
-                            cur.bindings.prop_values()[idx].data.value.set_fastint(v);
+                            cur.bindings.prop_values()[idx].set_fastint(v);
                             ra.set_fastint(v);
                         } else {
-                            cur.bindings.prop_values()[idx].data.value.set_number((double)v);
+                            cur.bindings.prop_values()[idx].set_number((double)v);
                             ra.set_number((double)v);
                         }
                     } else {
                         double d = vm_to_number(vm,&old_val);
                         if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                         double new_d = d + (is_inc ? 1.0 : -1.0);
-                        cur.bindings.prop_values()[idx].data.value.set_number(new_d);
+                        cur.bindings.prop_values()[idx].set_number(new_d);
                         ra.set_number(new_d);
                     }
                     found = true;
@@ -3112,7 +3112,7 @@ fn TVal? Vm.run(Vm* vm) {
                             // Ultra-fast path: when the IC value is not a heap
                             // pointer (common for fastint/number results), skip
                             // decref/incref/track_heap_store entirely.
-                            TVal ic_val = ic.prop_value_ptr.data.value;
+                            TVal ic_val = *ic.prop_value_ptr;
                             if (!ic_val.is_heap_allocated()) {
                                 *ra = ic_val;
                             } else {
@@ -3430,7 +3430,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.key == (void*)key_hstr && ic.shape_id == hobj.shape_id) {
                             HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
                             if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
-                                TVal ic_val = ic.prop_value_ptr.data.value;
+                                TVal ic_val = *ic.prop_value_ptr;
                                 if (!ic_val.is_heap_allocated()) {
                                     *ra = ic_val;
                                 } else {
@@ -3689,7 +3689,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (ic.cached_prop_alloc == hobj.prop_alloc
                             && !ic.prop_flags.is_accessor
                             && ic.prop_flags.writable) {
-                            vm.heap.tval_copy_ref(&ic.prop_value_ptr.data.value, rc);
+                            vm.heap.tval_copy_ref(ic.prop_value_ptr, rc);
                             break;
                         }
                     }
@@ -3710,8 +3710,8 @@ fn TVal? Vm.run(Vm* vm) {
                     if (len_slot >= 0) {
                         TVal new_len_tv;
                         new_len_tv.set_fastint((long)new_len);
-                        hobject::PropValue* props = hobj.prop_values();
-                        vm.heap.tval_copy_ref(&props[len_slot].data.value, &new_len_tv);
+                        TVal* props = hobj.prop_values();
+                        vm.heap.tval_copy_ref(&props[len_slot], &new_len_tv);
                     }
                     break;
                 }
@@ -3724,11 +3724,11 @@ fn TVal? Vm.run(Vm* vm) {
                     // Single find_prop_idx call for both existence check and accessor check
                     int exist_idx = hobj.find_prop_idx(key);
                     if (exist_idx >= 0) {
-                        hobject::PropValue* entry = &hobj.prop_values()[exist_idx];
+                        TVal* entry = &hobj.prop_values()[exist_idx];
                         hobject::PropFlags exist_flags = hobj.get_prop_flags((uint)exist_idx);
                         if (exist_flags.is_accessor) {
                             // Accessor property — invoke setter
-                            TVal setter_fn = entry.setter;
+                            TVal setter_fn = hobject::hobject_access_setter(*entry);
                             if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
                                 HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
                                 if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
@@ -3812,7 +3812,7 @@ fn TVal? Vm.run(Vm* vm) {
                             break;
                         } else {
                             // Update value, preserve existing flags
-                            vm.heap.tval_copy_ref(&entry.data.value, &put_val);
+                            vm.heap.tval_copy_ref(entry, &put_val);
                         }
                     } else {
                         // Property doesn't exist: check prototype for accessors
@@ -6084,7 +6084,7 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
-                                TVal v = b.prop_values()[vic.prop_idx].data.value;
+                                TVal v = b.prop_values()[vic.prop_idx];
                                 if (!env::is_tdz_sentinel(&v)) {
                                     vm.heap.tval_copy_ref(ra, &v);
                                     track_heap_store(act, ra, (uint)insn.a);
@@ -6106,7 +6106,7 @@ fn TVal? Vm.run(Vm* vm) {
                     while (cur != null) {
                         int idx = cur.bindings.find_prop_idx(key);
                         if (idx >= 0) {
-                            TVal v = cur.bindings.prop_values()[idx].data.value;
+                            TVal v = cur.bindings.prop_values()[idx];
                             if (env::is_tdz_sentinel(&v)) {
                                 HString* name_hstr = (HString*)key;
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -6220,7 +6220,7 @@ fn TVal? Vm.run(Vm* vm) {
                             HObject* b = (HObject*)vic.bindings;
                             if (b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
-                                TVal v = b.prop_values()[vic.prop_idx].data.value;
+                                TVal v = b.prop_values()[vic.prop_idx];
                                 if (!env::is_tdz_sentinel(&v)) {
                                     HString* ts = typeof_string(vm, &v);
                                     vm.heap.set_reg_string(ra, ts);
@@ -6242,7 +6242,7 @@ fn TVal? Vm.run(Vm* vm) {
                     while (cur != null) {
                         int idx = cur.bindings.find_prop_idx(key);
                         if (idx >= 0) {
-                            TVal v = cur.bindings.prop_values()[idx].data.value;
+                            TVal v = cur.bindings.prop_values()[idx];
                             if (env::is_tdz_sentinel(&v)) {
                                 // TDZ: throw ReferenceError (ES6 behavior)
                                 HString* name_hstr = (HString*)key;
@@ -6381,11 +6381,11 @@ fn TVal? Vm.run(Vm* vm) {
                             if (b != null && b.shape_id == vic.shape_id
                                 && vm.heap.shapes[b.shape_id].generation == vic.generation) {
                                 // Direct write — skip find_prop_idx + put_prop overhead
-                                PropValue* pv = &b.prop_values()[vic.prop_idx];
-                                if (hobject::_active_heap != null && pv.data.value.is_string()) {
-                                    ((heap::Heap*)hobject::_active_heap).decref_tval(&pv.data.value);
+                                TVal* pv = &b.prop_values()[vic.prop_idx];
+                                if (hobject::_active_heap != null && pv.is_string()) {
+                                    ((heap::Heap*)hobject::_active_heap).decref_tval(pv);
                                 }
-                                pv.data.value = *ra;
+                                *pv = *ra;
                                 if (hobject::_active_heap != null && ra.is_string()) {
                                     void* ptr = ra.get_heapptr();
                                     if (ptr != null) ((types::HeapHeader*)ptr).incref();
@@ -6843,22 +6843,15 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    hobject::PropValue* initget_props = hobj.prop_values();
+                    TVal* initget_props = hobj.prop_values();
                     if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's getter
-                        vm.heap.tval_copy_ref(&initget_props[idx].data.getter, &getter_val);
+                        hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
                     } else {
                         // Create new accessor property
                         TVal undef;
                         undef.set_undefined();
-                        hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
-                        // Find it again (put_prop may have grown the array)
-                        int new_idx = hobj.find_prop_idx(key);
-                        if (new_idx >= 0) {
-                            hobject::PropValue* initget_new_props = hobj.prop_values();
-                            vm.heap.tval_copy_ref(&initget_new_props[new_idx].data.getter, &getter_val);
-                            vm.heap.tval_copy_ref(&initget_new_props[new_idx].setter, &undef);
-                        }
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), hobject::PROP_FLAGS_ACCESSOR);
                     }
                 }
             }
@@ -6875,22 +6868,15 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
-                    hobject::PropValue* initset_props = hobj.prop_values();
+                    TVal* initset_props = hobj.prop_values();
                     if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's setter
-                        vm.heap.tval_copy_ref(&initset_props[idx].setter, &setter_val);
+                        hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
                     } else {
                         // Create new accessor property
                         TVal undef;
                         undef.set_undefined();
-                        hobj.put_prop(key, undef, hobject::PROP_FLAGS_ACCESSOR);
-                        // Find it again (put_prop may have grown the array)
-                        int new_idx = hobj.find_prop_idx(key);
-                        if (new_idx >= 0) {
-                            hobject::PropValue* initset_new_props = hobj.prop_values();
-                            vm.heap.tval_copy_ref(&initset_new_props[new_idx].data.getter, &undef);
-                            vm.heap.tval_copy_ref(&initset_new_props[new_idx].setter, &setter_val);
-                        }
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), hobject::PROP_FLAGS_ACCESSOR);
                     }
                 }
             }

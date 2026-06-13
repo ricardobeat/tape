@@ -1725,7 +1725,7 @@ fn void builtin_reset_globals(BuiltinContext* ctx) {
                 heap.checkpoint_cap = new_cap;
             }
             heap.checkpoint_keys[count] = key;
-            heap.checkpoint_vals[count] = globals.prop_values()[i].data.value;
+            heap.checkpoint_vals[count] = globals.prop_values()[i];
             count++;
         }
         heap.checkpoint_count = count;
