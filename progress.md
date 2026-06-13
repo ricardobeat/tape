@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 156 (re-benchmark after Session 155)
+**Last Updated:** Session 157 (benchmark & correctness fixes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 156, 2026-06-12)
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 157 | Three correctness fixes: (1) grow_array clamp for arrays >32768 elements (ushort overflow); (2) delete_prop root-shape reuse to prevent shape slot exhaustion; (3) GETPROPC peephole guard — only fuse LDCONST+GETPROP when constant is a string. Also merged GC safepoints from main. | TBD |
 | 156 | Re-benchmark (no code changes) | +297 (cumulative since last benchmark) |
 | 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |
 | 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |

@@ -340,8 +340,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             if (self.code[i].op == Opcode.LDCONST && self.code[i + 1].op == Opcode.GETPROP) {
                 uint rK = (uint)self.code[i].a;
                 uint idx = self.code[i].get_bc();
-                // rK must be the key operand of GETPROP, and idx must fit in 8 bits
-                if ((uint)self.code[i + 1].c == rK && idx <= 255) {
+                // rK must be the key operand of GETPROP, idx must fit in 8 bits,
+                // and the constant must be a string (GETPROPC assumes string keys).
+                if ((uint)self.code[i + 1].c == rK && idx <= 255 && self.constants[idx].is_string()) {
                     // Safety: rK must not be used by any later instruction.
                     // In LHS (assignment) mode the compiler keeps rK alive for the
                     // PUTPROP/DELPROP that follows (possibly with intervening instructions

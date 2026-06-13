@@ -1084,49 +1084,62 @@ fn bool HObject.delete_prop(&self, void* key) {
     libc::memset(&self.prop_values()[new_count], 0, PropValue::size);
     self.prop_count = new_count;
 
-    // Build a new private shape from the surviving properties.
-    // We do NOT insert it into the transition table — it's object-specific.
-    // Create a flat shape (own_count = all surviving props, offset = 0).
-    Shape* ns = shape_create(new_count, 0, 0xFFFF_FFFF, null);
-    if (ns != null) {
-        // Collect surviving property names by walking the old shape chain
-        if (self.get_shape() != null) {
-            ShapeProperty* new_sp = ns.props();
-            uint ni = 0;
-            // Walk the old shape chain to get all properties
-            Shape* walk = self.get_shape();
-            while (walk != null) {
-                ShapeProperty* old_sp = walk.props();
-                for (uint j = 0; j < walk.own_count; j++) {
-                    uint old_idx = walk.offset + j;
-                    if (old_idx != ui) {
-                        new_sp[ni].key   = old_sp[j].key;
-                        new_sp[ni].flags = old_sp[j].flags;
-                        ni++;
-                    }
-                }
-                walk = walk.parent_shape;
-            }
-        }
-
-        // Register with heap and attach to this object.
+    // When all properties are removed, reuse the root shape (slot 0).
+    // This avoids allocating a new private shape on every delete cycle,
+    // which would exhaust the shape slot table (ushort limit = 65534).
+    if (new_count == 0) {
         if (_active_heap != null) {
             heap::Heap* h = (heap::Heap*)_active_heap;
-            uint slot = h.alloc_shape_slot();
-            if (slot != heap::SHAPE_NONE) {
-                h.shapes[slot] = ns;
-                self.shape_id = (ushort)slot;
-                self.set_shape(ns);
-            } else {
-                shape_free(ns, _active_heap);
-                self.set_shape(null);
-            }
+            self.shape_id = 0;
+            self.set_shape(h.shapes[0]);
         } else {
-            shape_free(ns, null);
             self.set_shape(null);
         }
     } else {
-        self.set_shape(null);
+        // Build a new private shape from the surviving properties.
+        // We do NOT insert it into the transition table — it's object-specific.
+        // Create a flat shape (own_count = all surviving props, offset = 0).
+        Shape* ns = shape_create(new_count, 0, 0xFFFF_FFFF, null);
+        if (ns != null) {
+            // Collect surviving property names by walking the old shape chain
+            if (self.get_shape() != null) {
+                ShapeProperty* new_sp = ns.props();
+                uint ni = 0;
+                // Walk the old shape chain to get all properties
+                Shape* walk = self.get_shape();
+                while (walk != null) {
+                    ShapeProperty* old_sp = walk.props();
+                    for (uint j = 0; j < walk.own_count; j++) {
+                        uint old_idx = walk.offset + j;
+                        if (old_idx != ui) {
+                            new_sp[ni].key   = old_sp[j].key;
+                            new_sp[ni].flags = old_sp[j].flags;
+                            ni++;
+                        }
+                    }
+                    walk = walk.parent_shape;
+                }
+            }
+
+            // Register with heap and attach to this object.
+            if (_active_heap != null) {
+                heap::Heap* h = (heap::Heap*)_active_heap;
+                uint slot = h.alloc_shape_slot();
+                if (slot != heap::SHAPE_NONE) {
+                    h.shapes[slot] = ns;
+                    self.shape_id = (ushort)slot;
+                    self.set_shape(ns);
+                } else {
+                    shape_free(ns, _active_heap);
+                    self.set_shape(null);
+                }
+            } else {
+                shape_free(ns, null);
+                self.set_shape(null);
+            }
+        } else {
+            self.set_shape(null);
+        }
     }
 
     // Indexes after the deleted slot shifted down by one, so rebuild the
@@ -1278,8 +1291,8 @@ fn void HObject.grow_props(&self) {
 /// and copies inline prop values to it.
 fn void HObject.grow_array(&self, uint new_size) {
     if (new_size <= self.array_size) return;
-    // Dense arrays with >65535 elements would overflow ushort. Bail.
-    if (new_size > 65535) return;
+    // Dense arrays with >65535 elements would overflow ushort. Clamp.
+    if (new_size > 65535) new_size = 65535;
 
     usz new_bytes = (usz)self.prop_capacity * PropValue::size + (usz)new_size * TVal::size;
 
