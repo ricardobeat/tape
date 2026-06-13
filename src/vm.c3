@@ -3676,7 +3676,14 @@ fn TVal? Vm.run(Vm* vm) {
                                 if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
                                     CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
 
-                                    uint callee_reg = (uint)insn.a + 1;
+                                    // Stage the call frame above the caller's live registers:
+                                    // PUTPROP's A/B/C are arbitrary live locals, so A+1.. cannot
+                                    // be used as scratch (unlike GETPROP where A is a fresh temp).
+                                    // Note: vm.valstack_top is not reliable here (builtin calls
+                                    // may leave it below bottom + num_regs), so use num_regs.
+                                    uint callee_reg = act.func != null
+                                        ? ((CompiledFunction*)act.func).num_regs
+                                        : (uint)(vm.valstack_top - act.bottom);
                                     uint frame_start = callee_reg + 2;
                                     TVal* new_bottom = act.bottom + frame_start;
                                     uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
@@ -3685,11 +3692,13 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_bottom = act.bottom + frame_start;
                                         TVal* caller_regs = act.bottom;
 
-                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg], &setter_fn);
+                                        // Raw stores: these slots are above the initialized frame,
+                                        // so tval_copy_ref would decref stale garbage. The setter fn
+                                        // and object are kept alive by the property entry and ra.
+                                        caller_regs[callee_reg] = setter_fn;
                                         TVal obj_tv;
                                         obj_tv.set_object(hobj);
-                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
-                                        vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
+                                        caller_regs[callee_reg + 1] = obj_tv;
 
                                         Activation* new_act = &vm.activations[vm.activation_count];
                                         vm.activation_count++;
@@ -3705,7 +3714,7 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_act.cat = null;
                                         new_act.curr_pc = target.code;
                                         new_act.bottom = new_bottom;
-                                        new_act.retval = act.bottom + (uint)insn.a;
+                                        new_act.retval = null;  // setter return value is discarded
                                         new_act.flags = ACT_FLAG_STRICT;
                                         vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
@@ -3756,7 +3765,11 @@ fn TVal? Vm.run(Vm* vm) {
                             if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
                                 CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
 
-                                uint callee_reg = (uint)insn.a + 1;
+                                // Stage the call frame above the caller's live registers
+                                // (see own-property setter path above).
+                                uint callee_reg = act.func != null
+                                    ? ((CompiledFunction*)act.func).num_regs
+                                    : (uint)(vm.valstack_top - act.bottom);
                                 uint frame_start = callee_reg + 2;
                                 TVal* new_bottom = act.bottom + frame_start;
                                 uint needed = (uint)(new_bottom - vm.valstack) + target.num_regs;
@@ -3765,11 +3778,10 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_bottom = act.bottom + frame_start;
                                     TVal* caller_regs = act.bottom;
 
-                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg], &acc.accessor_fn);
+                                    caller_regs[callee_reg] = acc.accessor_fn;
                                     TVal obj_tv;
                                     obj_tv.set_object(acc.this_obj);
-                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], &obj_tv);
-                                    vm.heap.tval_copy_ref(&caller_regs[callee_reg + 2], &put_val);
+                                    caller_regs[callee_reg + 1] = obj_tv;
 
                                     Activation* new_act = &vm.activations[vm.activation_count];
                                     vm.activation_count++;
@@ -3785,7 +3797,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_act.cat = null;
                                     new_act.curr_pc = target.code;
                                     new_act.bottom = new_bottom;
-                                    new_act.retval = act.bottom + (uint)insn.a;
+                                    new_act.retval = null;  // setter return value is discarded
                                     new_act.flags = ACT_FLAG_STRICT;
                                     vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
