@@ -40,7 +40,7 @@ Object headers are no longer the problem: `HObjectBase` is 64 bytes for plain ob
 
 ## Root Causes on `bench_memory_heavy.js`
 
-### 1. `PropValue` is 16 bytes for mostly data properties (largest remaining item)
+### 1. Boxed accessor pairs — `PropValue` 16→8 bytes (largest remaining item)
 
 `PropValue` currently stores `TVal value` + `TVal setter`. Data properties — the overwhelming majority — waste 8 bytes per slot.
 
@@ -52,13 +52,32 @@ The heavy benchmark has roughly:
 
 ≈ **380k data-property slots**. Halving each slot saves **~3 MB**.
 
-**Fix:** Boxed accessor pairs (SpiderMonkey/JSC-style). Each slot becomes a single 8-byte `TVal`. Accessor properties store a pointer to a rare `GetterSetter` GC cell.
+**Design:** SpiderMonkey/JSC-style boxed accessor pairs.
+- Each `prop_values[]` slot shrinks to a single `TVal` (8 bytes).
+- Data properties: slot stores the value directly (unchanged semantics).
+- Accessor properties: slot stores a tagged pointer to a `GetterSetter` GC cell.
+- `Shape.PropFlags.is_accessor` flag tells readers how to interpret the slot.
 
-- See plan 030 §2 for the detailed design.
-- Cross-cutting: `prop_values[]` layout, ICs, `prop_idx`, property transitions, GC tracing.
+**New infrastructure needed:**
+- `GetterSetter` struct: `HeapHeader` + `TVal getter` + `TVal setter`
+- GC allocation + tracing for `GetterSetter` cells
+
+**Blast radius (scoped during implementation attempt):**
+
+| Category | Sites | Files |
+|---|---|---|
+| `.data.value` → direct TVal | ~55 | 7 files |
+| `.data.getter`/`.setter` → GetterSetter indirection | ~28 | 6 files |
+| `PropValue::size` → `TVal::size` | ~18 | hobject.c3 |
+| IC `prop_value_ptr` type | 5 | vm.c3, hobject.c3 |
+| GC tracing | 3 lines | heap.c3 |
+| Pool size constants | 3 | hobject.c3 |
+| **Total** | **~110** | **8 files** |
+
+**Key gotcha (discovered during implementation):** C3 auto-derefs pointers, so `pv.data.value` on a `TVal*` auto-derefs to `(*pv).data.value`. When removing `.data.value`, pointer-based access (`pv.data.value`) needs `*pv` not just `pv`. Array-indexed access (`prop_values()[idx].data.value`) can just drop `.data.value`. This context-dependence prevents bulk sed — each site needs individual handling.
 
 **Estimated impact:** 3–5 MB RSS on `bench_memory_heavy.js`.
-**Effort:** High.
+**Effort:** High (dedicated session needed).
 **Risk:** Medium — touches indexing assumptions across hobject/vm/builtins.
 
 ---
@@ -75,19 +94,15 @@ Plan 032 defers GC to CALL/RET/RETUNDEF safe points. The heavy benchmark allocat
 
 ---
 
-### 3. Default-prototype pointer (plan 029 item 2)
+### 3. ~~Default-prototype pointer (plan 029 item 2)~~ ⏭ SKIPPED
 
 Most objects inherit from `Object.prototype`. Storing that pointer explicitly costs 8 bytes per object.
 
-**Fix:** Treat `Object.prototype` as an implicit default. Only store non-default prototypes. This was deferred in plan 029 because it must be combined with removing `prototype` from `HObjectBase` to realize the savings.
-
-**Estimated impact:** ~1 MB on the heavy benchmark (~120k live objects).
-**Effort:** Medium.
-**Risk:** Low-Medium — ~67 call sites across 16 files.
+**Why skipped:** Removing the `prototype` field from `HObjectBase` saves ~1 MB (120k objects × 8 bytes) but requires touching 200+ write sites across 16 files. Additionally, `null` already means "end of chain" (for `Object.create(null)`, `Object.prototype.__proto__`), so a naive sentinel doesn't work — every prototype chain walk (7 hot loops) would need an extra indirection. ROI is poor vs. item 1.
 
 ---
 
-### 4. Per-array `prop_alloc` malloc overhead
+### 4. ~~Per-array `prop_alloc` malloc overhead~~ ⏭ SKIPPED
 
 Every array object allocates its own `prop_alloc` block for the dense array part. The heavy benchmark creates:
 - 1 array of 100k numbers
@@ -95,23 +110,13 @@ Every array object allocates its own `prop_alloc` block for the dense array part
 
 Each block carries allocator metadata and fragmentation.
 
-**Fix:** A dedicated slab/pool for array data blocks, or a generational bump allocator for array parts that are grown during initialization. Lower priority than #1–3 because the array data itself is already stored as 8-byte `TVal` values.
-
-**Estimated impact:** <1 MB.
-**Effort:** Medium.
-**Risk:** Low.
+**Why skipped:** Actual malloc metadata overhead is ~10 KB (600 arrays × 16 bytes). A slab pool for variable-size blocks would likely *increase* memory from internal fragmentation. Not worth the effort.
 
 ---
 
-### 5. `HString` header bloat
+### 5. ~~`HString` header bloat~~ ✅ ALREADY DONE
 
-`HString` is 32 bytes vs QuickJS's ~12 bytes. Fields `clen` and `arridx` can be computed lazily for most strings.
-
-**Fix:** Remove `clen`/`arridx` from the hot path; cache only when needed. See plan 030 §3.
-
-**Estimated impact:** ~1 MB on the heavy benchmark (~60k unique strings including `String(i)` temporaries that survive).
-**Effort:** Low-Medium.
-**Risk:** Low.
+`HString` is 24 bytes in the C3 port. The plan's target fields (`clen`, `arridx`) were never added to the C3 port — they existed only in original Duktape's 32-byte HString. No work needed.
 
 ---
 
