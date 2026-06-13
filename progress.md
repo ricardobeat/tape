@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 159 (Property descriptor getter invocation + dense array promotion + ToString integer notation)
+**Last Updated:** Session 160 (ToString ES5 §9.8.1 decimal notation + exponent formatting)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 159, 2026-06-13)
+## Summary (after Session 160, 2026-06-13)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,443 |
-| Currently failing (phases 0-8) | 8,121 |
-| Pass rate (phases 0-8 only) | 60.5% |
-| Overall pass rate | ~59.5% |
+| Currently passing (phases 0-8) | 12,170 |
+| Currently failing (phases 0-8) | 8,465 |
+| Pass rate (phases 0-8 only) | 58.9% |
+| Overall pass rate | 58.0% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 563 | 325 | 1,297 |
-| 1: Calling Convention | 426 | 56 | 32 | 338 |
+| 0-1: Core VM | 2,185 | 560 | 328 | 1,297 |
+| 1: Calling Convention | 426 | 57 | 31 | 338 |
 | 2: Basic Operators | 1,969 | 915 | 229 | 825 |
-| 3: Object System | 7,766 | 3,538 | 2,261 | 1,967 |
-| 4: Error Handling | 402 | 112 | 89 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,303 | 2,787 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,898 | 1,879 | 936 |
-| 7: ES5 Features | 1,240 | 187 | 106 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 871 | 413 | 1,463 |
-| 11: Arrow/Templates | 427 | 62 | 41 | 324 |
+| 3: Object System | 7,766 | 3,436 | 2,363 | 1,967 |
+| 4: Error Handling | 402 | 111 | 90 | 201 |
+| 5: Built-in Constructors | 8,615 | 4,191 | 2,899 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,850 | 1,927 | 936 |
+| 7: ES5 Features | 1,240 | 186 | 107 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 864 | 420 | 1,463 |
+| 11: Arrow/Templates | 427 | 60 | 43 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
-| 15: Classes | 8,520 | 65 | 197 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 254 | 386 | 974 |
+| 15: Classes | 8,520 | 62 | 200 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 240 | 400 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Benchmark Summary
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 160 | ToString ES5 §9.8.1: decimal notation for 10^-6 ≤ |x| < 10^21 (was using C `%g` threshold of 10^-4); remove leading zero in exponential exponent (e-07 → e-7); applied in both vm_number_to_string and builtin_to_string | +92 |
 | 159 | ToPropertyDescriptor §8.10.5 getter invocation via desc_get; defineProperty dense array promotion for array-indexed properties; ToString integer notation §9.8.1 (|val| < 10^21 decimal) | +81 |
 | 158 | ToString(-0)→"0" in vm_number_to_string + getOwnPropertyDescriptor string exotic flags (false,true,false) per ES5 §15.5.5.1 | +391 |
 | 157a | Object.assign ToObject: proper String/Number/Boolean exotic wrapping for target + primitive source ToObject per ES2015 §19.1.2.1-2 | +436 |

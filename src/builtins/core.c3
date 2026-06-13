@@ -694,8 +694,35 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
                     return builtin_intern_string(heap, ibuf[:ilen]);
                 }
             }
+            // ES5 §9.8.1: non-integer numbers — compute base-10 exponent
+            double abs_d = d < 0.0 ? -d : d;
+            int exp10 = (int)math::floor(math_log10(abs_d));
             char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%.17g", d);
+            int len;
+            if (exp10 >= -6 && exp10 < 21) {
+                // ES5 §9.8.1 step 5: decimal notation
+                int k = exp10 + 1;
+                if (k < 1) k = 1;
+                int nfrac = 17 - k;
+                if (nfrac < 0) nfrac = 0;
+                len = libc::snprintf(&buf, 64, "%.*f", nfrac, d);
+                // Trim trailing zeros after decimal point
+                while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
+                if (len > 1 && buf[len - 1] == '.') len--;
+            } else {
+                // ES5 §9.8.1 step 6: exponential notation
+                len = libc::snprintf(&buf, 64, "%.15e", d);
+                // Trim trailing zeros after decimal point
+                while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
+                if (len > 1 && buf[len - 1] == '.') len--;
+                // Remove leading zero in exponent: e-07 → e-7, e+07 → e+7
+                int ei = len - 1;
+                while (ei > 0 && buf[ei] != 'e' && buf[ei] != 'E') ei--;
+                if (ei > 0 && ei + 3 < len && buf[ei + 2] == '0') {
+                    for (int j = ei + 3; j < len; j++) buf[j - 1] = buf[j];
+                    len--;
+                }
+            }
             if (len < 0 || len >= 64) return null;
             return builtin_intern_string(heap, buf[:len]);
         }

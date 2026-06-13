@@ -499,6 +499,19 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
 
 // int_to_buf is defined in duktape::hstring and available via the module import.
 
+/// Remove leading zero from exponent in %g/%e output: e-07 → e-7, e+07 → e+7.
+/// Returns possibly shortened length.
+fn int es5_fix_exponent(char[] buf, int len) {
+    if (len <= 0) return len;
+    int ei = len - 1;
+    while (ei > 0 && buf[ei] != 'e' && buf[ei] != 'E') ei--;
+    if (ei > 0 && ei + 3 < len && buf[ei + 2] == '0') {
+        for (int j = ei + 3; j < len; j++) buf[j - 1] = buf[j];
+        len--;
+    }
+    return len;
+}
+
 /// Convert a double to an interned HString* using shortest round-trip formatting.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
     // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
@@ -528,11 +541,35 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
     char[64] buf;
     ulong val_bits = bitcast(val, ulong);
 
+    // ES5 §9.8.1: compute base-10 exponent for decimal/exponential decision
+    double abs_d = val < 0.0 ? -val : val;
+    int exp10 = (int)math::floor(builtins::math_log10(abs_d));
+
+    if (exp10 >= -6 && exp10 < 21) {
+        // ES5 §9.8.1 step 5: decimal notation — format with %.*f
+        int k = exp10 + 1;
+        if (k < 1) k = 1;
+        int nfrac = 17 - k;
+        if (nfrac < 0) nfrac = 0;
+        int len = libc::snprintf(&buf, 64, "%.*f", nfrac, val);
+        // Trim trailing zeros after decimal point
+        while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
+        if (len > 1 && buf[len - 1] == '.') len--;
+        if (len >= 0 && len < 64) {
+            double parsed = libc::strtod(&buf, null);
+            if (bitcast(parsed, ulong) == val_bits) {
+                return vm.heap.str_intern(buf[:len]);
+            }
+        }
+    }
+
     // Try %.15g first — shortest common case
     int len = libc::snprintf(&buf, 64, "%.15g", val);
     if (len >= 0 && len < 64) {
         double parsed = libc::strtod(&buf, null);
         if (bitcast(parsed, ulong) == val_bits) {
+            // ES5 §9.8.1: remove leading zero in exponent (e-07 → e-7)
+            len = es5_fix_exponent(&buf, len);
             return vm.heap.str_intern(buf[:len]);
         }
     }
@@ -542,6 +579,7 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
     if (len >= 0 && len < 64) {
         double parsed = libc::strtod(&buf, null);
         if (bitcast(parsed, ulong) == val_bits) {
+            len = es5_fix_exponent(&buf, len);
             return vm.heap.str_intern(buf[:len]);
         }
     }
@@ -551,6 +589,7 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
     if (len < 0 || len >= 64) {
         return null;
     }
+    len = es5_fix_exponent(&buf, len);
     return vm.heap.str_intern(buf[:len]);
 }
 
