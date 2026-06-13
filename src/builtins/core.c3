@@ -682,6 +682,10 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
                     ? (HString*)heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
                     : (HString*)heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY];
             }
+            // ES5 §9.8.1: ToString(number) — -0 must produce "0", not "-0"
+            if (d == 0.0) {
+                return builtin_intern_string(heap, "0");
+            }
             char[64] buf;
             int len = libc::snprintf(&buf, 64, "%.17g", d);
             if (len < 0 || len >= 64) return null;

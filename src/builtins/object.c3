@@ -786,8 +786,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         }
 
         // String exotic fallback — ES5 §15.5.5.1 step 3-4:
-        // If default lookup returned undefined and P is a string index,
-        // synthesize a character descriptor with writable:true, enumerable:true, configurable:true.
+        // String indexed properties are non-writable, enumerable, non-configurable.
         if (obj.get_class() == hobject::ObjClass.STRING &&
             (*obj.extra_ptr()).prim.primitive_value.is_string() &&
             is_numeric && kd.len > 0 && kd.len <= 10) {
@@ -800,7 +799,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 if (char_str != null) {
                     TVal char_tv; char_tv.set_string(char_str);
                     HObject* desc;
-                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, true, true, true);
+                    builtin_build_data_descriptor(ctx.heap, &desc, char_tv, false, true, false);
                     if (desc != null) {
                         ctx.result.set_object(desc);
                         return;

@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 157 (Object.assign ToObject)
+**Last Updated:** Session 158 (ToString(-0) + GOPD string exotic)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 157, 2026-06-13)
+## Summary (after Session 158, 2026-06-13)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,355 |
-| Currently failing (phases 0-8) | 8,209 |
+| Currently passing (phases 0-8) | 12,362 |
+| Currently failing (phases 0-8) | 8,202 |
 | Pass rate (phases 0-8 only) | 60.1% |
-| Overall pass rate | ~58.2% |
+| Overall pass rate | ~59.0% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
 | 0-1: Core VM | 2,185 | 563 | 325 | 1,297 |
-| 1: Calling Convention | 426 | 58 | 30 | 338 |
-| 2: Basic Operators | 1,969 | 914 | 230 | 825 |
-| 3: Object System | 7,766 | 3,502 | 2,297 | 1,967 |
-| 4: Error Handling | 402 | 120 | 81 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,221 | 2,869 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,892 | 1,885 | 936 |
-| 7: ES5 Features | 1,240 | 185 | 108 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 900 | 384 | 1,463 |
-| 11: Arrow/Templates | 427 | 64 | 39 | 324 |
+| 1: Calling Convention | 426 | 56 | 32 | 338 |
+| 2: Basic Operators | 1,969 | 915 | 229 | 825 |
+| 3: Object System | 7,766 | 3,497 | 2,302 | 1,967 |
+| 4: Error Handling | 402 | 114 | 87 | 201 |
+| 5: Built-in Constructors | 8,615 | 4,278 | 2,812 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,886 | 1,891 | 936 |
+| 7: ES5 Features | 1,240 | 187 | 106 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 866 | 418 | 1,463 |
+| 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 10 | 22 | 719 |
-| 15: Classes | 8,520 | 68 | 194 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 283 | 357 | 974 |
+| 14: for-of | 751 | 3 | 29 | 719 |
+| 15: Classes | 8,520 | 65 | 197 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 254 | 386 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Benchmark Summary
@@ -92,6 +92,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 158 | ToString(-0)→"0" in vm_number_to_string + getOwnPropertyDescriptor string exotic flags (false,true,false) per ES5 §15.5.5.1 | +391 |
 | 157 | Object.assign ToObject: proper String/Number/Boolean exotic wrapping for target + primitive source ToObject per ES2015 §19.1.2.1-2 | +436 |
 | 156 | Re-benchmark (no code changes) | +297 (cumulative since last benchmark) |
 | 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |

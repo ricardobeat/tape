@@ -511,6 +511,11 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
             : vm.heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY]);
     }
 
+    // ES5 §9.8.1: ToString(number) — -0 must produce "0", not "-0"
+    if (val == 0.0) {
+        return vm.heap.str_intern("0");
+    }
+
     char[64] buf;
     ulong val_bits = bitcast(val, ulong);
 
