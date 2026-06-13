@@ -28,3 +28,5 @@
 | 028-test262-conformance | ✅ DONE | arr_throw_type_error propagation; sloppy-mode PUTPROP; Array.prototype metadata; Object.seal/freeze non-objects; global `this` (Session 151) |
 | [029-memory-low-hanging-fruit.md](029-memory-low-hanging-fruit.md) | 🔶 PARTIAL | Items 3, 4, 1 done (per-class allocation). Items 2 (default proto), 5 (sparse IC) remain |
 | [030-memory-profiling.md](030-memory-profiling.md) | 📋 PENDING | Profiling: 21k malloc calls, per-object prop_alloc blocks dominate. HObject header (64B) matches Duktape. Proposed: inline props, pool alloc, drop shape ptr |
+| [031-string-intern-bloat.md](031-string-intern-bloat.md) | ✅ DONE | Skip-interning for ADD concat + lazy intern in get_prop_key; memory 15,776→6,688 KB. Fix 2 (GC in alloc_no_gc) retracted post-completion — caused double-frees and the ~1s shape bench regression |
+| [032-gc-safepoints.md](032-gc-safepoints.md) | 📋 PENDING | Defer periodic GC to dispatch-loop safe points (CALL/RET); wire up unused temproot flag to protect in-flight objects from emergency OOM GC; re-enables safe string sweeping |
