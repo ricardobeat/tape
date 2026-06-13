@@ -563,22 +563,9 @@ fn void builtin_object_isExtensible(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES5 §15.2.3.13: non-object arguments return true (always extensible)
     if (!arg.is_object()) {
-        // Throw TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err1 = err_raw) {
-            ctx.result.set_undefined();
-            return;
-        }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.isExtensible called on non-object");
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
+        ctx.result.set_boolean(true);
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -592,40 +579,13 @@ fn void builtin_object_isExtensible(BuiltinContext* ctx) {
 /// Returns the object itself. Throws TypeError if argument is not an object.
 fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        // Throw TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err1 = err_raw) {
-            ctx.result.set_undefined();
-            return;
-        }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions requires a value");
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
+        ctx.result.set_undefined();
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES5 §15.2.3.10: non-object arguments are returned unchanged
     if (!arg.is_object()) {
-        // Throw TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err2 = err_raw) {
-            ctx.result.set_undefined();
-            return;
-        }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.preventExtensions called on non-object");
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
+        ctx.result[0] = arg;
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -1863,19 +1823,9 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES5 §15.2.3.11: non-object arguments return false
     if (!arg.is_object()) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.isSealed called on non-object");
-        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
+        ctx.result.set_boolean(false);
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -1914,19 +1864,9 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES5 §15.2.3.12: non-object arguments return false
     if (!arg.is_object()) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Object.isFrozen called on non-object");
-        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
+        ctx.result.set_boolean(false);
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -2802,144 +2742,145 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
     // Add static methods to Object constructor
+    // ES5 §15.2.3.x: builtin methods have [[Writable]]:true, [[Enumerable]]:false, [[Configurable]]:true
     HString* keys_key = builtin_intern_string(heap, "keys");
     if (keys_key == null) return false;
     TVal keys_tv;
     keys_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_KEYS);
-    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(keys_key, keys_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getPrototypeOf — ES5 §15.2.3.2
     HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
     if (getproto_key == null) return false;
     TVal getproto_tv;
     getproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETPROTOTYPEOF);
-    obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isExtensible — ES5 §15.2.3.13
     HString* isext_key = builtin_intern_string(heap, "isExtensible");
     if (isext_key == null) return false;
     TVal isext_tv;
     isext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISEXTENSIBLE);
-    obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_WC);
 
     // Object.preventExtensions — ES5 §15.2.3.10
     HString* prevext_key = builtin_intern_string(heap, "preventExtensions");
     if (prevext_key == null) return false;
     TVal prevext_tv;
     prevext_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_PREVENTEXTENSIONS);
-    obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(prevext_key, prevext_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getOwnPropertyDescriptor — ES5 §15.2.3.3
     HString* getownpropdesc_key = builtin_intern_string(heap, "getOwnPropertyDescriptor");
     if (getownpropdesc_key == null) return false;
     TVal getownpropdesc_tv;
     getownpropdesc_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR);
-    obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperty — ES5 §15.2.3.6
     HString* defineprop_key = builtin_intern_string(heap, "defineProperty");
     if (defineprop_key == null) return false;
     TVal defineprop_tv;
     defineprop_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTY);
-    obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(defineprop_key, defineprop_tv, hobject::PROP_FLAGS_WC);
 
     // Object.getOwnPropertyNames — ES5 §15.2.3.4
     HString* getownpropnames_key = builtin_intern_string(heap, "getOwnPropertyNames");
     if (getownpropnames_key == null) return false;
     TVal getownpropnames_tv;
     getownpropnames_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYNAMES);
-    obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperties — ES5 §15.2.3.7
     HString* defineprops_key = builtin_intern_string(heap, "defineProperties");
     if (defineprops_key == null) return false;
     TVal defineprops_tv;
     defineprops_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_DEFINEPROPERTIES);
-    obj.put_prop(defineprops_key, defineprops_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(defineprops_key, defineprops_tv, hobject::PROP_FLAGS_WC);
 
     // Object.create — ES5 §15.2.3.5
     HString* create_key = builtin_intern_string(heap, "create");
     if (create_key == null) return false;
     TVal create_tv;
     create_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_CREATE);
-    obj.put_prop(create_key, create_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(create_key, create_tv, hobject::PROP_FLAGS_WC);
 
     // Object.seal — ES5 §15.2.3.8
     HString* seal_key = builtin_intern_string(heap, "seal");
     if (seal_key == null) return false;
     TVal seal_tv;
     seal_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SEAL);
-    obj.put_prop(seal_key, seal_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(seal_key, seal_tv, hobject::PROP_FLAGS_WC);
 
     // Object.freeze — ES5 §15.2.3.9
     HString* freeze_key = builtin_intern_string(heap, "freeze");
     if (freeze_key == null) return false;
     TVal freeze_tv;
     freeze_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FREEZE);
-    obj.put_prop(freeze_key, freeze_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(freeze_key, freeze_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isSealed — ES5 §15.2.3.11
     HString* issealed_key = builtin_intern_string(heap, "isSealed");
     if (issealed_key == null) return false;
     TVal issealed_tv;
     issealed_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISSEALED);
-    obj.put_prop(issealed_key, issealed_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(issealed_key, issealed_tv, hobject::PROP_FLAGS_WC);
 
     // Object.isFrozen — ES5 §15.2.3.12
     HString* isfrozen_key = builtin_intern_string(heap, "isFrozen");
     if (isfrozen_key == null) return false;
     TVal isfrozen_tv;
     isfrozen_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ISFROZEN);
-    obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(isfrozen_key, isfrozen_tv, hobject::PROP_FLAGS_WC);
 
     // Object.entries — ES2017 §19.1.2.21
     HString* entries_key = builtin_intern_string(heap, "entries");
     if (entries_key == null) return false;
     TVal entries_tv;
     entries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ENTRIES);
-    obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(entries_key, entries_tv, hobject::PROP_FLAGS_WC);
 
     // Object.values — ES2017 §19.1.2.22
     HString* values_key = builtin_intern_string(heap, "values");
     if (values_key == null) return false;
     TVal values_tv;
     values_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_VALUES);
-    obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(values_key, values_tv, hobject::PROP_FLAGS_WC);
 
     // Object.assign — ES2015 §19.1.2.2
     HString* assign_key = builtin_intern_string(heap, "assign");
     if (assign_key == null) return false;
     TVal assign_tv;
     assign_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_ASSIGN);
-    obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(assign_key, assign_tv, hobject::PROP_FLAGS_WC);
 
     // Object.is — ES6 §19.1.2.10
     HString* is_key = builtin_intern_string(heap, "is");
     if (is_key == null) return false;
     TVal is_tv;
     is_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_IS);
-    obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(is_key, is_tv, hobject::PROP_FLAGS_WC);
 
     // Object.hasOwn — ES2022 §19.1.2.10
     HString* hasown_static_key = builtin_intern_string(heap, "hasOwn");
     if (hasown_static_key == null) return false;
     TVal hasown_static_tv;
     hasown_static_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_HASOWN);
-    obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(hasown_static_key, hasown_static_tv, hobject::PROP_FLAGS_WC);
 
     // Object.setPrototypeOf — ES2015 §19.1.2.19
     HString* setproto_key = builtin_intern_string(heap, "setPrototypeOf");
     if (setproto_key == null) return false;
     TVal setproto_tv;
     setproto_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_SETPROTOTYPEOF);
-    obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
 
     // Object.fromEntries — ES2019 §19.1.2.5
     HString* fromentries_key = builtin_intern_string(heap, "fromEntries");
     if (fromentries_key == null) return false;
     TVal fromentries_tv;
     fromentries_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_FROMENTRIES);
-    obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_NWC);
+    obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");

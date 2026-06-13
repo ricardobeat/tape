@@ -26,6 +26,7 @@ fn void print_tval_ctx(BuiltinContext* ctx, TVal* val) {
             if (try method_val = obj.get_prop_proto(tostr_key)) {
                 if (method_val.is_object() || method_val.is_lightfunc()) {
                     TVal str_result = ctx.heap.call_fn(ctx.vm, method_val, null, 0, *val);
+                    if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
                     if (str_result.is_string()) {
                         HString* s = (HString*)str_result.get_heapptr();
                         if (s != null) {

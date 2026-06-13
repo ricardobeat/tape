@@ -1296,7 +1296,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                     }
                                     if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                                         TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
-                                        if (ctx.heap.has_error) { /* propagate later via ctx */ }
+                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
                                         else if (res.is_string()) {
                                             str_key = (HString*)res.get_heapptr();
                                         }
@@ -1321,7 +1321,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                     }
                                     if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                                         TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
-                                        if (ctx.heap.has_error) { /* propagate later via ctx */ }
+                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
                                         else if (res.is_string()) {
                                             str_key = (HString*)res.get_heapptr();
                                         } else if (res.is_fastint() || res.is_number()) {
@@ -1398,7 +1398,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         }
                         if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                             TVal res = ctx.heap.call_fn(ctx.vm, vo_fn, null, 0, space_arg);
-                            if (ctx.heap.has_error) { /* propagate later */ }
+                            if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
                             else { space_arg = res; }
                         }
                     }
@@ -1420,7 +1420,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         }
                         if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                             TVal res = ctx.heap.call_fn(ctx.vm, ts_fn, null, 0, space_arg);
-                            if (ctx.heap.has_error) { /* propagate later */ }
+                            if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
                             else { space_arg = res; }
                         }
                     }

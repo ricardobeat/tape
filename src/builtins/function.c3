@@ -229,6 +229,10 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
             ctx.regs[ctx.base_reg + i] = builtin_arg(ctx, i + 1);
         }
         builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        if (inner_ctx.should_throw) {
+            ctx.should_throw = true;
+            ctx.throw_value = inner_ctx.throw_value;
+        }
         return;
     }
 
@@ -257,6 +261,10 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
             // Also set the this slot in registers for builtins that read ctx.regs[ctx.base_reg - 1]
             ctx.regs[ctx.base_reg - 1] = new_this;
             builtins::dispatch_builtin((uint)(*hobj.extra_ptr()).func.builtin_fn_index, &inner_ctx);
+            if (inner_ctx.should_throw) {
+                ctx.should_throw = true;
+                ctx.throw_value = inner_ctx.throw_value;
+            }
             return;
         }
         // Fallback: re-dispatch for compiled functions and bound functions
@@ -332,6 +340,10 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             inner_ctx.re_nargs = 0;
             inner_ctx.should_throw = false;
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
+            if (inner_ctx.should_throw) {
+                ctx.should_throw = true;
+                ctx.throw_value = inner_ctx.throw_value;
+            }
             return;
         }
         if (downstream.is_object()) {
@@ -428,6 +440,10 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
 
         if (extracted_args != null) libc::free(extracted_args);
         builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        if (inner_ctx.should_throw) {
+            ctx.should_throw = true;
+            ctx.throw_value = inner_ctx.throw_value;
+        }
         return;
     }
 
@@ -704,6 +720,10 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
             ctx.regs[ctx.base_reg + i] = all_args[i];
         }
         builtins::dispatch_builtin(fn_idx, &inner_ctx);
+        if (inner_ctx.should_throw) {
+            ctx.should_throw = true;
+            ctx.throw_value = inner_ctx.throw_value;
+        }
         return;
     }
 
