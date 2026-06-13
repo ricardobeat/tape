@@ -94,7 +94,8 @@ These were major failure categories, now fixed:
 |---|---|---|
 | 159 | ToPropertyDescriptor §8.10.5 getter invocation via desc_get; defineProperty dense array promotion for array-indexed properties; ToString integer notation §9.8.1 (|val| < 10^21 decimal) | +81 |
 | 158 | ToString(-0)→"0" in vm_number_to_string + getOwnPropertyDescriptor string exotic flags (false,true,false) per ES5 §15.5.5.1 | +391 |
-| 157 | Object.assign ToObject: proper String/Number/Boolean exotic wrapping for target + primitive source ToObject per ES2015 §19.1.2.1-2 | +436 |
+| 157a | Object.assign ToObject: proper String/Number/Boolean exotic wrapping for target + primitive source ToObject per ES2015 §19.1.2.1-2 | +436 |
+| 157 | Three correctness fixes: (1) grow_array clamp for arrays >32768 elements (ushort overflow); (2) delete_prop root-shape reuse to prevent shape slot exhaustion; (3) GETPROPC peephole guard — only fuse LDCONST+GETPROP when constant is a string. Also merged GC safepoints from main. | TBD |
 | 156 | Re-benchmark (no code changes) | +297 (cumulative since last benchmark) |
 | 155 | [[OwnPropertyKeys]] enumeration order: integer indices ascending first per ES2020 §10.1.12; fixed Object.keys, getOwnPropertyNames, for-in (insertion-sort on is_arridx named props) | +80 |
 | 154 | defineProperty §8.12.9: empty-descriptor short-circuit, generic descriptor path (only update enum/conf), string exotic GOPD configurable=true | +214 |
