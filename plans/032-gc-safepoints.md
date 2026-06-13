@@ -1,6 +1,6 @@
 # Plan 032: GC safe points — eliminate in-flight object frees
 
-**Status:** 📋 PENDING
+**Status:** ✅ IMPLEMENTED
 **Created:** 2026-06-13 (Session: PUTPROP setter fix / fix-2 retraction)
 **Depends on:** plan 031 post-completion correction (fix 2 retracted, `string_sweep_safe` infrastructure)
 

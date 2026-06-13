@@ -4261,6 +4261,8 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.CALL:
         case Opcode.CALL_S: {
+            // Safe point: run deferred GC before entering callee
+            if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
             // Compiler convention: A=result_reg, B=callee_reg, C=nargs (or nargs_reg for CALL_S)
             uint result_reg = insn.a;
             uint callee_reg = insn.b;
@@ -5773,6 +5775,8 @@ fn TVal? Vm.run(Vm* vm) {
         // === RETURNS ===
 
         case Opcode.RET: {
+            // Safe point: run deferred GC before returning to caller
+            if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
             // Check for active finally catchers: if we're returning through
             // a try-finally, save the return value and jump to the finally
             // handler.  After ENDFINALLY, the saved value will be used.
@@ -5858,6 +5862,8 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.RETUNDEF: {
+            // Safe point: run deferred GC before returning to caller
+            if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
             // Check for active finally catchers (same as RET)
             Catcher* ret2_cat = (Catcher*)act.cat;
             if (ret2_cat != null && ret2_cat.finally_pc != null) {
