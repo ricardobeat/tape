@@ -686,6 +686,14 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             if (d == 0.0) {
                 return builtin_intern_string(heap, "0");
             }
+            // ES5 §9.8.1 steps 5-7: integers with |val| < 10^21 use decimal notation
+            if (d == math::trunc(d) && d > -1e21 && d < 1e21) {
+                char[64] ibuf;
+                int ilen = libc::snprintf(&ibuf, 64, "%.0f", d);
+                if (ilen >= 0 && ilen < 64) {
+                    return builtin_intern_string(heap, ibuf[:ilen]);
+                }
+            }
             char[64] buf;
             int len = libc::snprintf(&buf, 64, "%.17g", d);
             if (len < 0 || len >= 64) return null;

@@ -865,6 +865,37 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     ctx.result.set_object(desc);
 }
 
+/// ES5 [[Get]] for descriptor field extraction — invokes getters per §8.10.5.
+/// Returns true if the property exists, setting `out` to the result value.
+fn bool desc_get(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal* out) {
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(key, true);
+    if (res.kind == hobject::PropLookupKind.PROP_NOT_FOUND) {
+        return false;
+    }
+    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        TVal getter = res.acc.accessor_fn;
+        if (getter.is_undefined() || getter.is_null()) {
+            out.set_undefined();
+            return true;
+        }
+        if (ctx.heap.call_fn == null) {
+            out.set_undefined();
+            return true;
+        }
+        TVal this_tv;
+        this_tv.set_object(obj);
+        *out = ctx.heap.call_fn(ctx.vm, getter, null, 0, this_tv);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            return false;
+        }
+        return true;
+    }
+    // PROP_DATA
+    *out = res.data_val;
+    return true;
+}
+
 /// ToPropertyDescriptor — ES5 §8.10.5
 ///
 /// Parses a descriptor object into PropFlags + value (or getter/setter).
@@ -892,23 +923,23 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
     if (set_key    == null) return false;
 
     TVal enum_val;   bool has_enumerable   = false;
-    if (try v = desc_obj.get_prop_proto(enum_key)) {
-        enum_val = v; has_enumerable = true; }
+    if (desc_get(ctx, desc_obj, enum_key, &enum_val)) {
+        has_enumerable = true; }
     TVal conf_val;   bool has_configurable = false;
-    if (try v = desc_obj.get_prop_proto(conf_key)) {
-        conf_val = v; has_configurable = true; }
+    if (desc_get(ctx, desc_obj, conf_key, &conf_val)) {
+        has_configurable = true; }
     TVal value_val;  bool has_value        = false;
-    if (try v = desc_obj.get_prop_proto(value_key)) {
-        value_val = v; has_value = true; }
+    if (desc_get(ctx, desc_obj, value_key, &value_val)) {
+        has_value = true; }
     TVal writ_val;   bool has_writable     = false;
-    if (try v = desc_obj.get_prop_proto(writ_key)) {
-        writ_val = v; has_writable = true; }
+    if (desc_get(ctx, desc_obj, writ_key, &writ_val)) {
+        has_writable = true; }
     TVal get_val;    bool has_get          = false;
-    if (try v = desc_obj.get_prop_proto(get_key)) {
-        get_val = v; has_get = true; }
+    if (desc_get(ctx, desc_obj, get_key, &get_val)) {
+        has_get = true; }
     TVal set_val;    bool has_set          = false;
-    if (try v = desc_obj.get_prop_proto(set_key)) {
-        set_val = v; has_set = true; }
+    if (desc_get(ctx, desc_obj, set_key, &set_val)) {
+        has_set = true; }
 
     // Step 16: If both data and accessor fields present, throw TypeError
     if ((has_value || has_writable) && (has_get || has_set)) {
@@ -1133,6 +1164,22 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     // Step 5: [[DefineOwnProperty]]
     // Check if property already exists
     int existing_idx = obj.find_prop_idx(key);
+
+    // Dense array promotion: if the key is a valid array index and the element
+    // exists in the dense array part but not in named props, promote it with
+    // WEC flags so the normal [[DefineOwnProperty]] update path handles it.
+    if (existing_idx < 0 && ((HString*)key).is_arridx()) {
+        uint arr_idx = ((HString*)key).array_index();
+        TVal* ap = obj.array_part();
+        if (ap != null && arr_idx < obj.array_size) {
+            TVal arr_val = ap[arr_idx];
+            if (!arr_val.is_undefined()) {
+                obj.put_prop((void*)key, arr_val, hobject::PROP_FLAGS_WEC);
+                existing_idx = obj.find_prop_idx(key);
+            }
+        }
+    }
+
     // ES5 §8.12.9 step 1: If every field in Desc is absent, return true.
     // This short-circuit only applies when the property already exists;
     // for a new property we must still create it (with all-false defaults).

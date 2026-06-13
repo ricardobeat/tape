@@ -516,6 +516,15 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
         return vm.heap.str_intern("0");
     }
 
+    // ES5 §9.8.1 steps 5-7: integers with |val| < 10^21 use decimal notation
+    if (val == math::trunc(val) && val > -1e21 && val < 1e21) {
+        char[64] ibuf;
+        int ilen = libc::snprintf(&ibuf, 64, "%.0f", val);
+        if (ilen >= 0 && ilen < 64) {
+            return vm.heap.str_intern(ibuf[:ilen]);
+        }
+    }
+
     char[64] buf;
     ulong val_bits = bitcast(val, ulong);
 
