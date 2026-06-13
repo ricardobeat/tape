@@ -221,3 +221,36 @@ Compile-time string literals:
   - No regression from interning changes
   - Note: ~1s runtime is pre-existing gap vs reference engines (10-17ms for same code), tracked separately; caused by shape transition cost with 10k unique properties, not by plan 031
 - **bench_memory_heavy.js, bench_object.js**: VM_ERROR (pre-existing at fa27a7c, unrelated to this plan)
+
+---
+
+## Post-completion correction (2026-06-13): fix 2 retracted
+
+**Fix 2** (periodic GC trigger in `alloc_no_gc` every 512 string allocations, commit e6e7337) has been **removed** from main (after commit 614eca0). Two critical reasons:
+
+### Crash bug: GC-from-inside-allocation corrupts refcount
+
+A mark-and-sweep firing from within an allocation can free in-flight objects/strings held only in C3 locals and invisible to any GC root. Example: between `alloc_object` and the `put_prop` that anchors it, or between `str_intern` and `put_prop` for a number-to-string property key. The subsequent refcount decref double-frees the block and corrupts the FixedBlockPool free list. Reproduced reliably by running test262 `defineProperty` number-key tests (15.2.3.6-2-20/21/22) in one worker process — the worker segfaulted a few tests later. This explains why batch test262 worker runs were silently dying.
+
+### Performance: full mark phase every 512 allocs killed shape benchmarks
+
+The GC trigger ran a complete mark phase every 512 string allocations, making `bench_shape_no_call.js` and `bench_shape_stress.js` (10k unique properties) take ~1.0s. After removal they run in ~0.02s, matching original Duktape (~17ms) and QuickJS (~14ms). The earlier note claiming a "pre-existing ~100× shape gap" was incorrect — only commits that already contained fix 2 had been measured.
+
+### Additional hardening retained
+
+Sweep logic in `src/heap.c3` has been hardened and kept:
+- `sweep_strings` now requires both the mark phase's **reachable bit** and `refcount==1`. Property tables and IC entries hold key strings without incrementing refcount, so `refcount==1` alone does not prove a string is dead — the old logic freed RegExp.prototype's 'ignoreCase' key prematurely.
+- Sweep only runs when `Heap.string_sweep_safe` is set; no current caller enables it. `Heap.reset()` already frees all interned strings between scripts.
+- Interned strings have their reachable bits cleared during mark phase 1.
+
+### Updated final results (fix 2 removed)
+
+| Metric | Value | Target | Notes |
+|--------|-------|--------|-------|
+| memory_test.js RSS | 6,688 KB | < 7,000 KB | Fix 1's skip-interning provides the memory win; periodic GC was not needed |
+| Rosetta | 43/43 | 43/43 | Passing |
+| test262 defineProperty | 1131/1131 | — | One worker, no segfaults (previously died after ~20); 898 passing |
+
+### Related fix (same session, separate commit): PUTPROP accessor setter register corruption
+
+PUTPROP accessor-setter calls staged their call frame at `registers A+1..A+3` and wrote the setter return value over `register A`, corrupting live caller locals. This broke test262 `propertyHelper.verifyWritable()` on every accessor property. Frames are now staged above caller `num_regs` with return value discarded.
