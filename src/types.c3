@@ -101,7 +101,7 @@ const long FASTINT_MAX =  140737488355327L;  //  2^47 - 1
 /// Toggle for NaN-boxing representation. When true, TVal is an 8-byte
 /// NaN-boxed ulong. When false, TVal is the 16-byte tagged union.
 /// Default is true. Pass `-D NONANBOX` to c3c to disable.
-const bool USE_NANBOX = !$defined(NONANBOX);
+const bool USE_NANBOX = !$feature(NONANBOX);
 
 /// Maximum length of a formatted error-message string (160 bytes).
 const int ERROR_MSG_BUF = 160;
@@ -185,6 +185,31 @@ $if USE_NANBOX:
     }
 $else
     return self.tag;
+$endif
+}
+
+// ---------------------------------------------------------------------------
+// TVal — raw bits (for hashing / constant-pool dedup)
+// ---------------------------------------------------------------------------
+
+/// Returns a 64-bit representation of the TVal suitable for hashing.
+/// In NaN-box mode this is the raw bits field. In tagged-union mode we
+/// pack the tag into the high byte and reinterpret the payload as ulong.
+macro ulong TVal.get_raw_bits(&self) {
+$if USE_NANBOX:
+    return self.bits;
+$else
+    // Pack tag in the high byte, payload in the low 56 bits.
+    // For doubles, bitcast to ulong; for pointers/fastints, reinterpret.
+    TValTag t = self.tag;
+    switch (t) {
+        case NUMBER:
+            return ((ulong)t << 56) | (ulong)(bitcast(self.number, ulong));
+        case FASTINT:
+            return ((ulong)t << 56) | ((ulong)(self.fastint) & 0x00FFFFFFFFFFFFFF);
+        default:
+            return ((ulong)t << 56) | (ulong)(self.pointer);
+    }
 $endif
 }
 

@@ -59,7 +59,7 @@ fn void CompilerContext.insert_constant_hash(&self, ulong val_bits, uint idx) {
 
 /// Add a TVal to the constant pool and return its index.
 fn uint CompilerContext.add_constant(&self, TVal val) {
-    ulong val_bits = val.bits;
+    ulong val_bits = val.get_raw_bits();
     TValTag tag = val.get_tag();
 
     // Only deduplicate numbers and fastints via hash table;
@@ -112,7 +112,7 @@ fn uint CompilerContext.add_string_constant(&self, char[] str) {
         tv.set_string(null);
     }
 
-    ulong val_bits = tv.bits;
+    ulong val_bits = tv.get_raw_bits();
 
     // Check if this string (by pointer) is already in the constant pool
     uint found_idx = self.lookup_constant_hash(val_bits);

@@ -59,7 +59,7 @@ fn void hobject_clear_active_heap() {
 void* builtin_length_key = null;
 
 /// Default is false. Pass `-D NOSHAPECACHE` to drop the 8-byte shape pointer cache.
-const bool USE_SHAPE_CACHE = !$defined(NOSHAPECACHE);
+const bool USE_SHAPE_CACHE = !$feature(NOSHAPECACHE);
 
 /// Number of PropValue slots embedded inline in the object allocation.
 /// Objects with 0-4 named properties (the common case) avoid a separate
@@ -1300,9 +1300,8 @@ fn void HObject.grow_array(&self, uint new_size) {
     self.array_size = (ushort)new_size;
 
     usz added = (usz)(new_size - old_array_size);
-    ulong undef_bits = (ulong)(types::TAG_UNDEFINED) << 48;
     for (usz i = 0; i < added; i++) {
-        self.array_part()[old_array_size + i].bits = undef_bits;
+        self.array_part()[old_array_size + i].set_undefined();
     }
 }
 
