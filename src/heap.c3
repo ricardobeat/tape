@@ -155,6 +155,11 @@ struct Heap {
     // Periodic GC trigger for alloc_no_gc (sweeps dead refcount-1 strings)
     uint  string_alloc_count;
 
+    // String-table sweeping is only safe when no raw HString* pointers are
+    // held in C3 locals (see mark_and_sweep phase 3b).  Off by default;
+    // callers at a true safe point may set it around a GC.
+    bool  string_sweep_safe;
+
     // Gray set for iterative mark — dynamic array of HObject* pointers.
     // Avoids C-stack overflow on deep object graphs.
     void** gray_objects;
@@ -1164,11 +1169,10 @@ fn void*? Heap.alloc_no_gc(&self, usz size) {
             return HEAP_ALLOC_FAULT~;
         }
     }
-    self.string_alloc_count++;
-    if (self.string_alloc_count >= 512) {
-        self.string_alloc_count = 0;
-        self.trigger_gc();
-    }
+    // Note: no periodic GC trigger here.  A mark-and-sweep from inside an
+    // allocation can free in-flight objects/strings that a C3 local still
+    // points to but no GC root can see (e.g. between alloc_object and the
+    // put_prop that anchors it), corrupting the pool via double-free.
     return ptr;
 }
 
@@ -1723,7 +1727,12 @@ fn void Heap.sweep_strings(&self) {
     for (uint i = 0; i < self.str_table_size; i++) {
         HString* entry = self.str_table[i];
         if (entry == null || entry == STR_TABLE_TOMBSTONE) { continue; }
-        if (entry.refcount == 1) {
+        // refcount == 1 alone does not prove the string is dead: property
+        // tables and IC entries hold keys without a reference, relying on
+        // the string table to keep them alive.  Only free strings the mark
+        // phase did not reach (keys of live objects are marked by drain_gray).
+        if (entry.refcount == 1 && !((HeapHeader*)entry).is_reachable()) {
+            libc::fprintf(libc::stderr(), "DBG sweep free: '%.*s'\n", (int)(entry.blen > 40 ? 40 : entry.blen), entry.get_cstr());
             self.str_table[i] = STR_TABLE_TOMBSTONE;
             if (self.str_table_used > 0) { self.str_table_used--; }
             self.free_string(entry);
@@ -1758,6 +1767,14 @@ fn void Heap.mark_and_sweep(&self) {
             cur.clear_reachable();
             cur = cur.next;
         }
+        // Interned strings are not on the heap_allocated list; clear their
+        // marks via the string table so sweep_strings sees fresh bits.
+        for (uint i = 0; i < self.str_table_size; i++) {
+            HString* s = self.str_table[i];
+            if (s != null && s != STR_TABLE_TOMBSTONE) {
+                ((HeapHeader*)s).clear_reachable();
+            }
+        }
     }
 
     // --- Phase 2: Mark from roots ---
@@ -1766,8 +1783,16 @@ fn void Heap.mark_and_sweep(&self) {
     // --- Phase 3: Sweep objects ---
     self.sweep();
 
-    // --- Phase 3b: Sweep unreachable strings ---
-    self.sweep_strings();
+    // --- Phase 3b: Sweep unreachable strings (safe points only) ---
+    // GC can trigger from any allocation, including while builtin init or
+    // VM opcode code holds a freshly interned HString* in a C3 local that
+    // is anchored nowhere the mark phase can see (e.g. between str_intern
+    // and put_prop).  Sweeping the string table at such a moment frees the
+    // in-flight string.  Only sweep when the caller guarantees no raw
+    // interned-string pointers are live (heap reset between scripts).
+    if (self.string_sweep_safe) {
+        self.sweep_strings();
+    }
 
     // --- Phase 4: Reset trigger counter (scales with live heap) ---
     long new_trigger = (long)self.live_obj_count * GC_TRIGGER_GROW_FACTOR;
