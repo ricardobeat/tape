@@ -12,7 +12,7 @@
 | [008-ic-crash-gc-roots.md](008-ic-crash-gc-roots.md) | ✅ DONE | IC crash fixes, GC root marking, iterator support all applied |
 | [009-hobject-subtype-split.md](009-hobject-subtype-split.md) | ✅ DONE | `HObjectExtra` tagged union exists; derived pointers are methods |
 | [010-VM-GC-issues.md](010-VM-GC-issues.md) | ✅ DONE | Bug 1 (IC base) + Bug 2 (delete_prop) fixed; Bug 3 resolved by refcounting |
-| [011-memory-optimization.md](011-memory-optimization.md) | 🔶 STALLED | Register pressure (8-bit field truncation); fix attempted but regressed tests |
+| [011-memory-optimization.md](011-memory-optimization.md) | 🔶 STALLED | Superseded by plans 029–033; kept for historical context |
 | [012-speed-optimization.md](012-speed-optimization.md) | ✅ DONE | All items completed across Sessions 114–123 |
 | [013-speed-optimization-2.md](013-speed-optimization-2.md) | ✅ DONE | All items done: RC, RET restart, valstack_top cache |
 | [014-test262-review.md](014-test262-review.md) | ✅ DONE | Status snapshot; remaining gaps tracked in progress.md |
@@ -26,7 +26,8 @@
 | [023-missing-prototype-methods.md](023-missing-prototype-methods.md) | 🔶 PARTIAL | Date.toDateString/toTimeString, String.replaceAll/matchAll/normalize added (Session 150); remaining methods TBD |
 | 027-declvar-ic | ✅ DONE | DECLVAR inline cache: skip find_prop_idx on repeat calls (Session 150) |
 | 028-test262-conformance | ✅ DONE | arr_throw_type_error propagation; sloppy-mode PUTPROP; Array.prototype metadata; Object.seal/freeze non-objects; global `this` (Session 151) |
-| [029-memory-low-hanging-fruit.md](029-memory-low-hanging-fruit.md) | 🔶 PARTIAL | Items 3, 4, 1 done (per-class allocation). Items 2 (default proto), 5 (sparse IC) remain |
-| [030-memory-profiling.md](030-memory-profiling.md) | 📋 PENDING | Profiling: 21k malloc calls, per-object prop_alloc blocks dominate. HObject header (64B) matches Duktape. Proposed: inline props, pool alloc, drop shape ptr |
+| [029-memory-low-hanging-fruit.md](029-memory-low-hanging-fruit.md) | 🔶 PARTIAL | Items 1, 3, 4 done. Items 2 (default proto), 5 (sparse IC) remain; see plan 033 |
+| [030-memory-profiling.md](030-memory-profiling.md) | ✅ DONE | Inline props, unified prop_alloc, and FixedBlockPool object pools implemented. Boxed accessor pairs deferred to plan 033 |
 | [031-string-intern-bloat.md](031-string-intern-bloat.md) | ✅ DONE | Skip-interning for ADD concat + lazy intern in get_prop_key; memory 15,776→6,688 KB. Fix 2 (GC in alloc_no_gc) retracted post-completion — caused double-frees and the ~1s shape bench regression |
-| [032-gc-safepoints.md](032-gc-safepoints.md) | 📋 PENDING | Defer periodic GC to dispatch-loop safe points (CALL/RET); wire up unused temproot flag to protect in-flight objects from emergency OOM GC; re-enables safe string sweeping |
+| [032-gc-safepoints.md](032-gc-safepoints.md) | ✅ DONE | `gc_pending`, `safepoint_gc()`, and `temproot` protection implemented in heap.c3/vm.c3 |
+| [033-memory-next-steps.md](033-memory-next-steps.md) | 📋 PENDING | Close remaining `bench_memory_heavy.js` RSS gap: boxed accessors, GC on backward jumps, default-prototype elision |

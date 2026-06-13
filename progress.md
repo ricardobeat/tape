@@ -43,6 +43,18 @@ See `benchmarks/results.txt`. C3 vs Duktape v2.7.0 ratios (lower is better):
 - bench_string was 2.5× before string-table-reference fix (Session 148)
 - bench_shape went from 73× to 0.8× via GC-skip for RC strings (Session 147)
 
+### Memory Benchmarks (`just bench-memory`)
+
+Current peak RSS (2026-06-13):
+
+| Engine | `memory_test.js` | `bench_memory_heavy.js` |
+|---|---|---|
+| duktape_c3 | **6,656 KB** (1.0× QJS) | **45,616 KB** (1.4× QJS) |
+| duktape_orig | 6,384 KB (1.0× QJS) | 39,264 KB (1.2× QJS) |
+| qjs (QuickJS) | 6,112 KB | 31,808 KB |
+
+The light workload (`memory_test.js`) is now on par with both engines after plans 029–032. The heavy workload still has a ~43% gap vs QuickJS; remaining work is tracked in `plans/033-memory-next-steps.md`.
+
 ## Resolved Root Causes
 
 These were major failure categories, now fixed:

@@ -1,7 +1,7 @@
 # Plan 030 — Memory Profiling & Gap Analysis
 
 **Date**: June 12, 2026
-**Status**: Implemented
+**Status**: ✅ DONE — `memory_test.js` now ~6,656 KB (1.0× QuickJS)
 **Goal**: Close the 2.6× RSS gap vs original Duktape (16 MB → ~6 MB on `memory_test.js`)
 
 ---
@@ -410,3 +410,7 @@ pool allocations. Re-run profiling after to reassess the remaining gap.
 just build
 just bench-memory   # compare before/after RSS
 ```
+
+## See Also
+
+- [033-memory-next-steps.md](033-memory-next-steps.md) — next priorities after the fixes in this plan landed

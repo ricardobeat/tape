@@ -94,9 +94,10 @@ in HObject/HString/buffer bitstructs) — wire it up as a newborn bit:
 - defineProperty worker: 5 consecutive full runs, all 1131/1131 complete,
   identical pass counts (884 at merge fdfe295 baseline).
 - The 929a836-era flake reproducer: full-directory runs must be stable.
-- `benchmarks/memory_test.js` ≤ 7,000 KB RSS; `mem_strpool.js` /
-  `mem_strings.js` not ballooning (string sweep at safe points should help
-  long-running scripts).
+- `benchmarks/memory_test.js` ≤ 7,000 KB RSS (current: 6,656 KB);
+  `mem_strpool.js` / `mem_strings.js` not ballooning.
+- `bench_memory_heavy.js` still defers GC in call-free loops; see plan 033
+  for the backward-jump safe-point follow-up.
 - `bench_shape_no_call.js` / `bench_shape_stress.js` stay ~0.02s (no GC
   inside the 10k-property loop; safepoint checks must not regress dispatch).
 - `just bench-fast` overall within noise vs main.
@@ -114,3 +115,7 @@ in HObject/HString/buffer bitstructs) — wire it up as a newborn bit:
   object sweep is the only concern).
 - One-cycle-late collection of short-lived objects (temproot) slightly raises
   peak RSS between safe points; expected to be negligible.
+
+## See Also
+
+- [033-memory-next-steps.md](033-memory-next-steps.md) — closes the remaining `bench_memory_heavy.js` gap

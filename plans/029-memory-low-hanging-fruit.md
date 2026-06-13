@@ -1,7 +1,7 @@
 # Plan 029 — Memory Optimization: Low-Hanging Fruit
 
 **Date**: June 12, 2026
-**Status**: 🔶 PARTIAL — Items 3 & 4 done; Item 1 in progress
+**Status**: 🔶 PARTIAL — Items 1, 3 & 4 done; Items 2 & 5 remain
 **Goal**: Reduce peak RSS by 8–9 MB (50 MB → 21 MB) on `bench_memory_heavy.js`
 
 ---
@@ -119,7 +119,7 @@ pay for `HObjectExtra` (32b) + `array_length` (4b + 4 pad = 8b) they never use.
 **Effort**: Medium  
 **Risk**: Medium (GC marking correctness, property accessor pointer arithmetic)
 
-**Status**: IN PROGRESS
+**Status**: ✅ DONE — per-class allocation, pool routing, and trailing-data accessors all landed
 
 ---
 
@@ -140,7 +140,7 @@ Deferred — saves ~50 KB on the benchmark. Medium effort, medium risk.
 
 | Item | Savings | Effort | Risk | Status |
 |------|---------|--------|------|--------|
-| 1. Per-class allocation | ~4.4 MB | Medium | Medium | IN PROGRESS |
+| 1. Per-class allocation | ~4.4 MB | Medium | Medium | ✅ DONE |
 | 2. Default prototype | ~0.88 MB | Low | Low | DEFERRED |
 | 3. Remove heap_ptr | ~0.96 MB | Low | Very low | ✅ DONE |
 | 4. Compress uints | ~1.45 MB | Low | Low-Medium | ✅ DONE |
@@ -155,3 +155,7 @@ just build-nonanbox test_vm
 just test262        # no regressions
 just bench-memory   # compare before/after RSS
 ```
+
+## See Also
+
+- [033-memory-next-steps.md](033-memory-next-steps.md) — remaining heavy-workload gap analysis and next priorities

@@ -3,13 +3,22 @@
 **Date:** 2026-05-25
 **Scope:** All implemented ES features up to Phase 20 (Promise)
 
+> **Update (2026-06-13):** This report describes the state as of late May 2026. Several issues flagged below have since been addressed:
+>
+> - **TVal encoding:** NaN-boxing is now the default (`-D NONANBOX` uses the explicit 16-byte union).
+> - **Object model:** Per-class allocation sizes, inline property storage, unified `prop_alloc` blocks, and `FixedBlockPool` object pools are implemented (plans 029–030). Plain-object headers are now 64 bytes, matching original Duktape.
+> - **GC:** Full reference counting + mark-and-sweep GC with safe points is implemented (plan 032).
+> - **Memory:** `memory_test.js` RSS is now on par with Duktape/QuickJS. Remaining heavy-workload gaps are tracked in `plans/033-memory-next-steps.md`.
+>
+> Sections 1–3 retain their original text for historical context but should be read with the above in mind.
+
 ---
 
 ## 1. Value Representation (TVal) — Deliberate Simplification
 
 | Aspect | Duktape | C3 Port |
 |--------|---------|---------|
-| Encoding | NaN-boxing (8 bytes, packed into IEEE 754 double) | Explicit tag + union (16+ bytes) |
+| Encoding | NaN-boxing (8 bytes, packed into IEEE 754 double) | NaN-boxing by default; explicit tag + union (16+ bytes) with `-D NONANBOX` |
 | Null/Undefined | Tag embedded in high 16 bits of double | Separate enum tags |
 | Access | Macro-heavy (`DUK_TVAL_SET_*`, `DUK_TVAL_GET_*`) | Methods on `TVal` struct (`.set_undefined()`, `.get_number()`) |
 | Portability | Compile-time endianness checks, 64-vs-32-bit code paths | Platform-neutral (C3 handles padding) |
@@ -19,7 +28,7 @@
 
 **C3 approach rationale:** The explicit tag+union is clearer and leverages C3's tagged union semantics. The memory overhead is acceptable for a port where clarity is preferred over byte-level optimization.
 
-**Verdict:** Acceptable tradeoff. Not worth "correcting."
+**Verdict:** Acceptable tradeoff. The default NaN-boxing build recovers the 8-byte value size; the `-D NONANBOX` 16-byte path remains available for portability.
 
 ---
 
@@ -54,12 +63,12 @@ That's ~60 bytes of overhead per object. For arrays, strings, booleans, and othe
 
 | Aspect | Duktape | C3 Port |
 |--------|---------|---------|
-| Memory layout | **Single allocation**: `[entry_keys][entry_values][entry_flags][array_part][hash_table]` contiguously | **Three allocations**: `props[]`, `hash_table[]`, `array_part[]` separately malloc'd |
-| Alloc count per object | 1 allocation for all property parts | Up to 3 allocations |
-| Cache locality | Excellent (all parts within cache line distance) | Poor (indirections through separate pointers) |
-| Resize cost | Single `realloc` for everything | Up to 3 separate alloc/free cycles |
+| Memory layout | **Single allocation**: `[entry_keys][entry_values][entry_flags][array_part][hash_table]` contiguously | Unified `prop_alloc` block holds property values + array part; hash table separate; inline props avoid the block entirely for 0–4 property objects |
+| Alloc count per object | 1 allocation for all property parts | 0 (inline props) to 2 (prop_alloc + hash table) |
+| Cache locality | Excellent (all parts within cache line distance) | Good for values/array part; hash table is a separate pointer hop |
+| Resize cost | Single `realloc` for everything | Single `realloc` for prop_alloc; hash table rebuilt separately |
 | Layout variants | 3 configurable layouts (LAYOUT_1/2/3) for cache optimization | Single layout |
-| Array-to-entry migration | When array becomes sparse, copies to entry part and frees array part | Same approach but separate arrays |
+| Array-to-entry migration | When array becomes sparse, copies to entry part and frees array part | Same approach within the unified block |
 | Hash table threshold | Built when props > 8 entries | Same (`HASH_MIN_PROPS = 8`) |
 
 **Why Duktape does it this way:** The single-allocation approach means:
@@ -68,42 +77,36 @@ That's ~60 bytes of overhead per object. For arrays, strings, booleans, and othe
 3. Better memory accounting and less fragmentation
 4. Layout variants allow tuning for different access patterns
 
-**C3 impact:** The 3-part separate allocation is simpler to implement but:
-- Triples allocator pressure during property table operations
-- Destroys cache locality for property access (chasing `obj->props[i]`, then `obj->hash_table[i]`, then `obj->array_part[i]` all in different cache lines)
-- Harder to resize atomically
+**C3 impact (original):** The 3-part separate allocation tripled allocator pressure and hurt cache locality.
+
+**Current state:** Property values and the dense array part now live in one `prop_alloc` block; small objects store up to 4 property values inline inside the object allocation. This matches Duktape's single-prop-block approach for the common case and removes the separate `array_part` malloc. The hash table remains a separate allocation for objects with more than 8 properties.
 
 ### 2.3 Array Exotic Behavior
 
-Duktape's `duk_harray` stores `.length` as a plain integer field, not as a property table entry. This means `.length` access is O(1) pointer dereference instead of O(log n) property lookup. The C3 port handles array .length via the property table (regular property lookup), which is slower.
+Duktape's `duk_harray` stores `.length` as a plain integer field, not as a property table entry. The C3 port originally handled `.length` via the property table; it now stores `array_length` as trailing data after `HObjectBase` for array objects only, so `.length` access is O(1).
 
-**Verdict:** The unified HObject approach is the single biggest performance divergence. Should be corrected when performance matters.
+**Verdict:** The unified HObject approach was the single biggest performance divergence. Per-class allocation and inline property storage (plans 029–030) have closed most of the gap. The remaining heavy-workload memory differences are tracked in `plans/033-memory-next-steps.md`.
 
 ---
 
-## 3. Garbage Collection — Critical Gap
+## 3. Garbage Collection — Implemented
 
 | Aspect | Duktape | C3 Port |
 |--------|---------|---------|
-| Primary GC | **Reference counting** (immediate free on refcount=0) | None (stub) |
-| Backup GC | Mark-and-sweep with generational trigger | Stub that only resets trigger counter (lines 400-412 of heap.c3) |
-| Refzero worklist | Circular linked list to bound C stack depth | Not implemented |
+| Primary GC | **Reference counting** (immediate free on refcount=0) | Reference counting + immediate free on refcount=0 |
+| Backup GC | Mark-and-sweep with generational trigger | Mark-and-sweep with allocation-count trigger |
+| Deferred collection | Inline GC during allocation | GC deferred to VM safe points (CALL/RET/RETUNDEF) via `gc_pending` |
+| In-flight protection | Refzero worklist | `temproot` flag protects objects allocated since the last safe point |
+| String table GC | Weak references cleared during M&S | String sweeping at safe points; selective skip-interning reduces table pressure |
 | Finalizer support | Full (finalize_list, rescue logic, NORESCUE) | Not implemented |
-| String table GC | Weak references cleared during M&S | Not implemented |
 | GC torture mode | `DUK_GC_TORTURE` — runs GC after every alloc | Not present |
-| Mark-and-sweep flags | `MS_FLAG_EMERGENCY`, `POSTPONE_RESCUE`, `NO_COMPACTION` | Not present |
-| Recursion limit | Multi-pass marking when C stack limit reached | Not present |
+| Mark-and-sweep flags | `MS_FLAG_EMERGENCY`, `POSTPONE_RESCUE`, `NO_COMPACTION` | Emergency-only; no compaction/rescue yet |
 
-**Impact:** The C3 port has **no working GC**. The `trigger_gc()` function (heap.c3:404-412) is explicitly marked as a stub:
-```
-// TODO: implement full mark-and-sweep.
-// For now simply reset the counter based on the live object count.
-```
-Every allocation permanently leaks. The `incref`/`decref` methods on HObject exist but are never called. No string table entries are ever freed. For any non-trivial workload, memory will grow without bound until exhaustion.
+**Current state:** The engine now runs non-trivial programs without leaking. Reference counting reclaims acyclic garbage immediately; mark-and-sweep handles cycles and bulk cleanup. GC is deferred to VM safe points (plan 032) to avoid freeing in-flight objects held only in C3 locals.
 
-**Duktape's approach:** Reference counting as primary GC gives deterministic frees. Temporary objects during operations (string concatenation, array operations, property access) are freed immediately when their last reference disappears. Mark-and-sweep acts as a backup for cycles and detached coroutines. Duktape also has a voluntary GC trigger based on allocation count (`ms_trigger_counter`).
+**Remaining gaps:** Finalizers, generational collection, and compaction are not implemented. Call-free allocation loops can still defer GC until the loop exits; see `plans/033-memory-next-steps.md` for the backward-jump safe-point follow-up.
 
-**Verdict:** **Highest priority fix.** Without a working GC the engine cannot run non-trivial programs. Either implement refcounting (closer to Duktape) or a full mark-and-sweep pass. The refcounting infrastructure (incref/decref, header fields) is already partially in place — wiring it would be the most Duktape-compatible approach.
+**Verdict:** No longer a blocking issue. The current GC is sufficient for the implemented feature set.
 
 ---
 
@@ -153,8 +156,10 @@ ctor.put_prop("length", 1, WEC);
 | `.finally()` | Not present | Implemented |
 | `.resolve()` | Stub | Implemented |
 | `.reject()` | Stub | Implemented |
-| `.all()` | Stub | Stub (basic implementation) |
-| `.race()` | Stub | Stub (basic implementation) |
+| `.all()` | Stub | Implemented |
+| `.race()` | Stub | Implemented |
+| `.allSettled()` | Not present | Implemented |
+| `.any()` | Not present | Implemented |
 | State storage | N/A | `array_part[0]` = state enum, `array_part[1]` = result, `array_part[2+]` = capabilities |
 | Microtask scheduling | N/A | Deferred |
 
@@ -176,13 +181,13 @@ ctor.put_prop("length", 1, WEC);
 | `Symbol().toString()` | Produces `"Symbol(desc)"` format | Produces `"Symbol(desc)"` via `builtin_symbol_proto_toString` |
 | Global registry | Heap-level key→symbol mapping | Same approach (`symbol_registry_keys/syms` arrays) |
 | Prototype dispatch | `Symbol.prototype` objects have class `SYMBOL`; auto-unbox via `duk__auto_unbox_symbol` | Symbol STRING TVal's prototype routed via `get_builtin_prototype()` checking 0xFF prefix |
-| Well-known symbols | `Symbol.iterator`, `Symbol.toStringTag`, etc. | Not present (well-known symbol table) |
+| Well-known symbols | `Symbol.iterator`, `Symbol.toStringTag`, etc. | `Symbol.iterator`, `Symbol.toStringTag`, and other commonly used well-known symbols registered |
 
 **Key difference:** Duktape stores symbols as **buffer objects** (not strings) with a complex prefix encoding. The C3 port stores symbols as **HStrings** with a 0xFF prefix byte, which is simpler and reuses the existing string machinery. However, this means symbol strings pass through the string interning table, which may interact unexpectedly.
 
 **Missing feature:** Duktape has **hidden symbols** (flag `DUK_HSTRING_FLAG_HIDDEN`) — symbols that don't appear in enumeration or `Object.keys()`. These are used for internal properties. The C3 port lacks this, which may matter for implementing internal metadata properties (e.g., Promise state hidden from user code).
 
-**Verdict:** Acceptable for now. Well-known symbols and hidden symbols can be added when needed by specific features (iterators, for-of protocol, etc.).
+**Verdict:** Acceptable for now. Well-known symbols needed by implemented features (iterators, for-of, toStringTag) are present. Hidden symbols are still missing and may be needed for internal metadata properties.
 
 ---
 
