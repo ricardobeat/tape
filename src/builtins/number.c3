@@ -97,10 +97,55 @@ fn void builtin_number(BuiltinContext* ctx) {
 /// Number.prototype.toString(radix) — ES5 §15.7.4.2
 /// Returns string representation in the given radix (2-36), default 10.
 fn void builtin_number_proto_toString(BuiltinContext* ctx) {
-    double d = number_proto_get_this(ctx);
-    if (math::is_nan(d) && !is_neg_zero(d)) {
-        HString* s = builtin_intern_string(ctx.heap, "NaN");
-        ctx.result.set_string(s);
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    double d;
+
+    // ES5 §15.7.4.2: throw TypeError if this is not a Number or Number object
+    if (this_val.is_number()) {
+        d = this_val.get_number();
+    } else if (this_val.is_fastint()) {
+        d = (double)this_val.get_fastint();
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.get_class() == hobject::ObjClass.NUMBER &&
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            d = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+        } else {
+            // Not a Number wrapper — throw TypeError
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_str = builtin_intern_string(ctx.heap, "Number.prototype.toString called on incompatible value");
+                if (msg_str != null) {
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                }
+                TVal err_tv;
+                err_tv.set_object(err);
+                ctx.throw_value = err_tv;
+            }
+            ctx.should_throw = true;
+            return;
+        }
+    } else {
+        // Not a number or Number wrapper — throw TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Number.prototype.toString called on incompatible value");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            TVal err_tv;
+            err_tv.set_object(err);
+            ctx.throw_value = err_tv;
+        }
+        ctx.should_throw = true;
         return;
     }
 
@@ -116,8 +161,22 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
             radix = 10;
         }
         if (radix < 2 || radix > 36) {
-            // RangeError
-            ctx.result.set_undefined();
+            // RangeError per ES5 §15.7.4.2
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.range_err_proto;
+                HString* msg_str = builtin_intern_string(ctx.heap, "radix must be an integer between 2 and 36");
+                if (msg_str != null) {
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+                }
+                TVal err_tv;
+                err_tv.set_object(err);
+                ctx.throw_value = err_tv;
+            }
+            ctx.should_throw = true;
             return;
         }
     }

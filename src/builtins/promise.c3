@@ -407,6 +407,7 @@ fn void builtin_promise(BuiltinContext* ctx) {
     exec_args[1] = reject_tv;
     if (heap.call_fn != null && ctx.vm != null) {
         heap.call_fn(ctx.vm, executor, &exec_args[0], 2, ctx.this_val);
+        if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
     }
 
     // Pop from resolve stack

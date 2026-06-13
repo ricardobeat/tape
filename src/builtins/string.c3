@@ -225,21 +225,26 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
             return (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         }
     }
-    // TypeError: String.prototype method called on incompatible value
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
-        TVal msg_val;
-        msg_val.set_string(msg_str);
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        TVal err_tv;
-        err_tv.set_object(err);
-        ctx.throw_value = err_tv;
+    // ES5 §15.5.4: CheckObjectCoercible (throws for undefined/null),
+    // then ToString (works for any other value).
+    if (this_val.is_undefined() || this_val.is_null()) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            TVal err_tv;
+            err_tv.set_object(err);
+            ctx.throw_value = err_tv;
+        }
+        ctx.should_throw = true;
+        return null;
     }
-    ctx.should_throw = true;
-    return null;
+    // Coerce to string via ToString for booleans, numbers, objects, etc.
+    return builtin_to_string(ctx.heap, &this_val);
 }
 
 /// String.prototype.charAt(pos) — ES5 §15.5.4.4

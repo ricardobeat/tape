@@ -4107,6 +4107,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Call @@iterator() with this = source
             TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
+            if (vm_check_call_fn_error(vm)) return VM_ERROR~;
             if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
 
             // Loop: next() → {value, done}
@@ -4125,6 +4126,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!callable) { break; }
 
                 TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
+                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
                 if (!result.is_object() || result.get_heapptr() == null) { break; }
 
                 HObject* result_obj = (HObject*)result.get_heapptr();
@@ -4206,6 +4208,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Call @@iterator() with this = source
             TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
+            if (vm_check_call_fn_error(vm)) return VM_ERROR~;
             if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
 
             uint dest_start = insn.a;
@@ -4227,6 +4230,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!callable) { break; }
 
                 TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
+                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
                 if (!result.is_object() || result.get_heapptr() == null) { break; }
 
                 HObject* result_obj = (HObject*)result.get_heapptr();

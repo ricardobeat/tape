@@ -1614,6 +1614,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
                 }
                 if (callable && heap.call_fn != null && ctx.vm != null) {
                     iterator = heap.call_fn(ctx.vm, iter_method, null, 0, items);
+                    if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
                     use_iter = true;
                 }
             }
@@ -1651,6 +1652,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             if (!callable) break;
 
             TVal result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+            if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
             if (!result.is_object() || result.get_heapptr() == null) break;
 
             HObject* result_obj = (HObject*)result.get_heapptr();
@@ -1675,9 +1677,8 @@ fn void builtin_array_from(BuiltinContext* ctx) {
                 TVal k_tv; k_tv.set_fastint((long)k);
                 map_args[1] = k_tv;
                 final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
+                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
             }
-
-            // arr[k] = final_value
             HString* pk = heap.int_to_hstring((long)k);
             if (pk != null) {
                 arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
@@ -1788,6 +1789,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             map_args[1] = k_tv;
             if (heap.call_fn != null && ctx.vm != null) {
                 final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
+                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
             }
         }
 

@@ -1097,7 +1097,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
             func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
         }
     }
-    // Register on prototype
+    // Register on prototype — writable:true, enumerable:false, configurable:true (ES5 §15.3.5.1)
     TVal tv;
     tv.set_object(func_obj);
     proto.put_prop(key, tv, hobject::PROP_FLAGS_WC);
@@ -1790,6 +1790,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Object constructor FIRST — creates Object.prototype (root of all chains)
     if (!register_object_constructor(global_env, heap)) return false;
 
+    // Register Function constructor and prototype (call, apply, bind)
+    // MUST be before all other constructors so that prototype methods created
+    // by register_string_proto_method / register_array_proto_method / etc.
+    // get [[Prototype]] = Function.prototype (heap.function_proto is set here).
+    if (!register_function_constructor(global_env, heap)) return false;
+
     // Register Number constructor (with prototype and static properties)
     if (!register_number_constructor(global_env, heap)) return false;
 
@@ -1807,10 +1813,6 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register String constructor
     if (!register_string_constructor(global_env, heap)) return false;
-
-    // Register Function constructor and prototype (call, apply, bind)
-    // Must be before Array so that builtins inherit .call/.apply/.bind from Function.prototype
-    if (!register_function_constructor(global_env, heap)) return false;
 
     // Register Array constructor
     if (!register_array_constructor(global_env, heap)) return false;
