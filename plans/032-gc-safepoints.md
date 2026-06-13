@@ -96,8 +96,8 @@ in HObject/HString/buffer bitstructs) — wire it up as a newborn bit:
 - The 929a836-era flake reproducer: full-directory runs must be stable.
 - `benchmarks/memory_test.js` ≤ 7,000 KB RSS (current: 6,656 KB);
   `mem_strpool.js` / `mem_strings.js` not ballooning.
-- `bench_memory_heavy.js` still defers GC in call-free loops; see plan 033
-  for the backward-jump safe-point follow-up.
+- `bench_memory_heavy.js` still defers GC in call-free loops; backward-jump
+  safe point now added (plan 033 item 2) with budget-based throttle.
 - `bench_shape_no_call.js` / `bench_shape_stress.js` stay ~0.02s (no GC
   inside the 10k-property loop; safepoint checks must not regress dispatch).
 - `just bench-fast` overall within noise vs main.
@@ -106,9 +106,8 @@ in HObject/HString/buffer bitstructs) — wire it up as a newborn bit:
 
 - CALL/RET are hot: the `gc_pending` check must be a single predictable
   branch. If bench-fast regresses, fold the check into an existing slow path.
-- Call-free allocation loops defer GC indefinitely → temporary memory growth
-  until the next call/return. Bounded by what the loop itself allocates;
-  backward-jump safe point is the escape hatch.
+- Call-free allocation loops: ~~defer GC indefinitely~~ → now handled by
+  backward-jump safe points with `BWD_GC_INTERVAL = 1024` budget throttle.
 - Generator/coroutine frames: `mark_roots` scans the valstack via
   `valstack_top_ptr` — verify suspended generator frames are covered before
   enabling string sweep at safe points (their strings are refcounted, so

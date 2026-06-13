@@ -30,4 +30,4 @@
 | [030-memory-profiling.md](030-memory-profiling.md) | ✅ DONE | Inline props, unified prop_alloc, and FixedBlockPool object pools implemented. Boxed accessor pairs deferred to plan 033 |
 | [031-string-intern-bloat.md](031-string-intern-bloat.md) | ✅ DONE | Skip-interning for ADD concat + lazy intern in get_prop_key; memory 15,776→6,688 KB. Fix 2 (GC in alloc_no_gc) retracted post-completion — caused double-frees and the ~1s shape bench regression |
 | [032-gc-safepoints.md](032-gc-safepoints.md) | ✅ DONE | `gc_pending`, `safepoint_gc()`, and `temproot` protection implemented in heap.c3/vm.c3 |
-| [033-memory-next-steps.md](033-memory-next-steps.md) | 📋 PENDING | Close remaining `bench_memory_heavy.js` RSS gap: boxed accessors, GC on backward jumps, default-prototype elision |
+| [033-memory-next-steps.md](033-memory-next-steps.md) | 🔄 IN PROGRESS | GC on backward jumps (item 2) done. Remaining: boxed accessors, default-prototype elision |

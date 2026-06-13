@@ -1,7 +1,7 @@
 # Plan 033 — Memory: Remaining Work After Plans 029–032
 
 **Date:** 2026-06-13
-**Status:** 📋 PENDING
+**Status:** 🔄 IN PROGRESS (item 2 done)
 **Goal:** Close the remaining RSS gap on `bench_memory_heavy.js` (45.6 MB vs QuickJS 31.8 MB)
 
 ---
@@ -63,15 +63,15 @@ The heavy benchmark has roughly:
 
 ---
 
-### 2. GC still cannot collect inside call-free allocation loops
+### 2. ~~GC still cannot collect inside call-free allocation loops~~ ✅ DONE
 
 Plan 032 defers GC to CALL/RET/RETUNDEF safe points. The heavy benchmark allocates large arrays and many temporaries in tight loops that contain no calls. Dead objects and dead interned strings accumulate until the loop exits.
 
-**Fix:** Add a second safe point on backward jumps (JMP family). A cheap per-iteration allocation budget or counter can trigger `safepoint_gc()` without regressing hot loops.
+**Fix:** Added backward-jump GC safe points with a budget-based throttle (`BWD_GC_INTERVAL = 1024`). On every backward jump (JUMP, IF_TRUE, IF_FALSE, JMP_LT/LE/GT/GE, JMP_NLT/NLE/NGT/NGE), a countdown counter is decremented. When it hits 0, `gc_pending` is checked and `safepoint_gc()` runs if set. This prevents GC thrashing while catching call-free allocation loops.
 
-**Estimated impact:** 2–6 MB peak-RSS reduction on allocation-heavy, call-free loops.
-**Effort:** Medium.
-**Risk:** Medium — must not regress `bench_shape_no_call` / `bench_shape_stress`.
+**Measured:** No RSS change on `bench_memory_heavy.js` (that benchmark has calls in its loops). Correctness benefit: call-free loops like `while (i < n) { a[i] = {v:i}; i++; }` now trigger mid-loop GC instead of accumulating all dead objects until the loop exits.
+
+**Effort:** Medium.  **Risk:** Low (budget throttle prevents thrashing; 43/43 Rosetta + test262 + bench-fast all pass).
 
 ---
 

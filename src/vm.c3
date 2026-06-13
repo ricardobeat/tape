@@ -2764,7 +2764,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jnlt_b < jnlt_c;
             }
-            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2782,7 +2782,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jnle_b <= jnle_c;
             }
-            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2800,7 +2800,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jngt_b > jngt_c;
             }
-            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2818,7 +2818,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jnge_b >= jnge_c;
             }
-            if (!jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2836,7 +2836,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jlt_b < jlt_c;
             }
-            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2854,7 +2854,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jle_b <= jle_c;
             }
-            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2872,7 +2872,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jgt_b > jgt_c;
             }
-            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -2890,7 +2890,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
                 jmp_result = jge_b >= jge_c;
             }
-            if (jmp_result) curr_pc += (int)(ichar)insn.a;
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } curr_pc += (int)(ichar)insn.a; }
             break;
         }
 
@@ -3071,6 +3071,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.JUMP: {
             int sabc = insn.get_sabc();
             int target = (int)((long)(curr_pc - code_base) + (long)sabc);
+            if (target < (curr_pc - code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
             curr_pc = code_base + target;
             break;
         }
@@ -3079,6 +3080,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (is_truthy(ra)) {
                 int sbx = insn.get_sbc();
                 int target = (int)((long)(curr_pc - code_base) + (long)sbx);
+                if (target < (curr_pc - code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
                 curr_pc = code_base + target;
             }
             break;
@@ -3087,6 +3089,7 @@ fn TVal? Vm.run(Vm* vm) {
             if (!is_truthy(ra)) {
                 int sbx = insn.get_sbc();
                 int target = (int)((long)(curr_pc - code_base) + (long)sbx);
+                if (target < (curr_pc - code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
                 curr_pc = code_base + target;
             }
             break;

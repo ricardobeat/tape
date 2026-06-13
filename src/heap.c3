@@ -51,6 +51,7 @@ const uint  STRING_PINNED_REFCOUNT  = 0x7FFF_FFFF;
 const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
 const uint  GC_MAX_ROOTS            = 16;
+const uint  BWD_GC_INTERVAL        = 1024;  /// Backward-jump GC check interval (prevents thrashing)
 
 // Lightfunc deleted-property bitset sizing.
 // Each builtin index occupies 3 bits (name/length/prototype deleted flags).
@@ -150,6 +151,7 @@ struct Heap {
     // GC state
     long  gc_trigger_counter;
     bool  gc_pending;              /// Deferred GC requested by alloc/realloc
+    uint  bwd_gc_budget;            /// Countdown for backward-jump GC safepoint
     uint  live_obj_count;
     uint  peak_live_obj_count;   /// High-water mark for live objects
 
@@ -459,6 +461,7 @@ fn Heap*? create(
     // GC tunables
     h.gc_trigger_counter    = GC_INITIAL_TRIGGER;
     h.gc_pending            = false;
+    h.bwd_gc_budget         = BWD_GC_INTERVAL;
 
     // Allocate gray object stack
     void* gray_raw = afn(udata, void*::size * GRAY_STACK_INITIAL_CAP);
@@ -1028,6 +1031,7 @@ fn void Heap.reset(&self) {
     self.gc_running       = false;
     self.gc_trigger_counter = GC_INITIAL_TRIGGER;
     self.gc_pending       = false;
+    self.bwd_gc_budget    = BWD_GC_INTERVAL;
     self.gray_count       = 0;
 
     // Clear builtin prototype pointers
