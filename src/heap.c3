@@ -149,6 +149,7 @@ struct Heap {
 
     // GC state
     long  gc_trigger_counter;
+    bool  gc_pending;              /// Deferred GC requested by alloc/realloc
     uint  live_obj_count;
     uint  peak_live_obj_count;   /// High-water mark for live objects
 
@@ -457,6 +458,7 @@ fn Heap*? create(
 
     // GC tunables
     h.gc_trigger_counter    = GC_INITIAL_TRIGGER;
+    h.gc_pending            = false;
 
     // Allocate gray object stack
     void* gray_raw = afn(udata, void*::size * GRAY_STACK_INITIAL_CAP);
@@ -1025,6 +1027,7 @@ fn void Heap.reset(&self) {
     self.gc_root_count    = 0;
     self.gc_running       = false;
     self.gc_trigger_counter = GC_INITIAL_TRIGGER;
+    self.gc_pending       = false;
     self.gray_count       = 0;
 
     // Clear builtin prototype pointers
@@ -1137,12 +1140,12 @@ fn void Heap.track_compiled_func(&self, void* cf) {
 
 /**
  * Allocate `size` bytes through the heap's allocator.  Decrements the GC
- * trigger counter and fires a collection when it reaches zero.
+ * trigger counter and flags a deferred collection when it reaches zero.
  */
 fn void*? Heap.alloc(&self, usz size) {
     self.gc_trigger_counter--;
     if (self.gc_trigger_counter <= 0) {
-        self.trigger_gc();
+        self.gc_pending = true;
     }
 
     void* ptr = self.alloc_func(self.heap_udata, size);
@@ -1191,6 +1194,9 @@ fn HObject*? Heap.alloc_object(&self, hobject::ObjClass cls) {
         // Insert into the heap_allocated linked list (preserving flags
         // already set by hobject_alloc).
         self.insert_into_heap_allocated_preserve_flags((HeapHeader*)obj);
+        // Mark as temporary root so emergency (non-safepoint) GC never frees
+        // an in-flight object whose only reference is a C3 local.
+        ((HeapHeader*)obj).set_temproot();
         self.live_obj_count++;
         if (self.live_obj_count > self.peak_live_obj_count) {
             self.peak_live_obj_count = self.live_obj_count;
@@ -1205,7 +1211,7 @@ fn HObject*? Heap.alloc_object(&self, hobject::ObjClass cls) {
 fn void*? Heap.realloc(&self, void* ptr, usz new_size) {
     self.gc_trigger_counter--;
     if (self.gc_trigger_counter <= 0) {
-        self.trigger_gc();
+        self.gc_pending = true;
     }
 
     void* new_ptr = self.realloc_func(self.heap_udata, ptr, new_size);
@@ -1685,26 +1691,34 @@ fn void Heap.sweep(&self) {
     while (cur != null) {
         HeapHeader* next = cur.next;
         if (!cur.is_reachable()) {
-            // Unlink from list
-            if (prev != null) {
-                prev.next = next;
+            // Temproot: newly allocated, not yet anchored — keep for this cycle
+            if (cur.is_temproot()) {
+                cur.clear_reachable();
+                prev = cur;
+                kept++;
             } else {
-                self.heap_allocated = next;
-            }
-            if (next != null) {
-                next.prev = prev;
-            }
-            // Free
-            if (cur.is_object()) {
-                hobject::hobject_free((HObject*)cur, (void*)self);
-            } else if (cur.is_string()) {
-                libc::free(cur);
-            } else {
-                self.free_func(self.heap_udata, cur);
+                // Unlink from list
+                if (prev != null) {
+                    prev.next = next;
+                } else {
+                    self.heap_allocated = next;
+                }
+                if (next != null) {
+                    next.prev = prev;
+                }
+                // Free
+                if (cur.is_object()) {
+                    hobject::hobject_free((HObject*)cur, (void*)self);
+                } else if (cur.is_string()) {
+                    libc::free(cur);
+                } else {
+                    self.free_func(self.heap_udata, cur);
+                }
             }
         } else {
-            // Keep — clear mark bit for next cycle
+            // Reachable — clear mark bit and temproot for next cycle
             cur.clear_reachable();
+            cur.clear_temproot();
             prev = cur;
             kept++;
         }
@@ -1755,16 +1769,24 @@ fn void Heap.sweep_strings(&self) {
  * 4. Reset the GC trigger counter based on the new live-object count.
  *
  * Re-entrancy is prevented by the gc_running guard.
+ *
+ * When `safepoint` is true, Phase 1 also clears all temproot flags so that
+ * newly allocated objects become eligible for collection (at a safe point
+ * nothing is in flight).  Emergency (non-safepoint) GC preserves temproots
+ * so in-flight allocations survive it.
  */
-fn void Heap.mark_and_sweep(&self) {
+fn void Heap.mark_and_sweep(&self, bool safepoint) {
     if (self.gc_running) { return; }
     self.gc_running = true;
 
-    // --- Phase 1: Clear all reachable flags ---
+    // --- Phase 1: Clear all reachable (and optionally temproot) flags ---
     {
         HeapHeader* cur = self.heap_allocated;
         while (cur != null) {
             cur.clear_reachable();
+            if (safepoint) {
+                cur.clear_temproot();
+            }
             cur = cur.next;
         }
         // Interned strings are not on the heap_allocated list; clear their
@@ -1804,11 +1826,23 @@ fn void Heap.mark_and_sweep(&self) {
 }
 
 /**
- * Trigger a mark-and-sweep GC pass.  Called automatically when the
- * allocation counter reaches zero.
+ * Trigger a mark-and-sweep GC pass (emergency / non-safepoint).
+ * Temproot objects are preserved — in-flight allocations survive.
  */
 fn void Heap.trigger_gc(&self) {
-    self.mark_and_sweep();
+    self.mark_and_sweep(false);
+}
+
+/**
+ * Run a GC at a VM safe point.  Every live value is anchored in registers,
+ * environments, or object graphs — no raw C3 locals in flight.  Clears
+ * temproot flags and enables string-table sweeping.
+ */
+fn void Heap.safepoint_gc(&self) {
+    self.string_sweep_safe = true;
+    self.mark_and_sweep(true);
+    self.string_sweep_safe = false;
+    self.gc_pending = false;
 }
 
 // ============================================================================
