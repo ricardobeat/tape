@@ -36,6 +36,34 @@ ratio() {
     echo "scale=1; $a / $b" | bc 2>/dev/null || echo "?"
 }
 
+print_table() {
+    local sname="$1" c3_rss="$2" duk_rss="$3" qjs_rss="$4"
+
+    local c3_ratio=$(ratio "$c3_rss" "$qjs_rss")
+    local duk_ratio=$(ratio "$duk_rss" "$qjs_rss")
+    local qjs_ratio="1.0"
+
+    local c3_label="$c3_rss KB"
+    local duk_label="$duk_rss KB"
+    local qjs_label="$qjs_rss KB"
+    [ "$c3_rss" = "N/A" ] && c3_label="N/A"
+    [ "$duk_rss" = "N/A" ] && duk_label="N/A"
+    [ "$qjs_rss" = "N/A" ] && qjs_label="N/A"
+
+    local header="Engine ($sname)"
+    local col1=${#header}
+    [ $col1 -lt 24 ] && col1=24
+
+    local hbar=$(printf '%*s' "$col1" '' | tr ' ' '-')
+
+    printf "  %-${col1}s   %-9s   %-8s\n" "$header" "Peak RSS" "vs QJS"
+    echo "  ${hbar}---${hbar:0:11}---${hbar:0:10}"
+    printf "  %-${col1}s   %9s   %7sx\n" "duktape_c3 (C3 port)" "$c3_label" "$c3_ratio"
+    printf "  %-${col1}s   %9s   %7sx\n" "duktape_orig (Duktape)" "$duk_label" "$duk_ratio"
+    printf "  %-${col1}s   %9s   %7sx\n" "qjs (QuickJS)" "$qjs_label" "$qjs_ratio"
+    echo ""
+}
+
 # ── Scripts to test ──────────────────────────────────────────────────────────
 
 SCRIPTS=(
@@ -53,30 +81,12 @@ echo ""
 
 for script in "${SCRIPTS[@]}"; do
     sname=$(basename "$script")
-    echo "┌──────────────────────────┬───────────┬──────────┐"
-    printf "│ %-24s │ %9s │ %8s │\n" "Engine ($sname)" "Peak RSS" "vs QJS"
-    echo "├──────────────────────────┼───────────┼──────────┤"
 
     c3_rss=$(measure_rss_kb "$C3_RUNNER" "$script")
     duk_rss=$(measure_rss_kb "$DUKTAPE" "$script")
     qjs_rss=$(measure_rss_kb "$QJS" "$script")
 
-    c3_ratio=$(ratio "$c3_rss" "$qjs_rss")
-    duk_ratio=$(ratio "$duk_rss" "$qjs_rss")
-    qjs_ratio="1.0"
-
-    c3_label="$c3_rss KB"
-    duk_label="$duk_rss KB"
-    qjs_label="$qjs_rss KB"
-    [ "$c3_rss" = "N/A" ] && c3_label="N/A"
-    [ "$duk_rss" = "N/A" ] && duk_label="N/A"
-    [ "$qjs_rss" = "N/A" ] && qjs_label="N/A"
-
-    printf "│ %-24s │ %9s │ %7sx │\n" "duktape_c3 (C3 port)" "$c3_label" "$c3_ratio"
-    printf "│ %-24s │ %9s │ %7sx │\n" "duktape_orig (Duktape)" "$duk_label" "$duk_ratio"
-    printf "│ %-24s │ %9s │ %7sx │\n" "qjs (QuickJS)" "$qjs_label" "$qjs_ratio"
-    echo "└──────────────────────────┴───────────┴──────────┘"
-    echo ""
+    print_table "$sname" "$c3_rss" "$duk_rss" "$qjs_rss"
 done
 
 echo "============================================================"

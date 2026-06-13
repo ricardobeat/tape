@@ -4,6 +4,8 @@
 # Usage: ./scripts/run_benchmarks.sh [iterations]
 #
 # Runs all benchmarks on all engines and prints a comparison table.
+# Results for duktape_orig and qjs are cached in out/bench_cache_*.txt
+# and reused across runs. Delete those files to force a re-run.
 
 set -euo pipefail
 
@@ -13,6 +15,9 @@ C3_RUNNER="$PROJ_DIR/out/duktape_c3"
 DUKTAPE="$PROJ_DIR/out/duktape_orig"
 QJS="$PROJ_DIR/out/qjs"
 ITERATIONS="${1:-3}"
+CACHE_DIR="$PROJ_DIR/out"
+CACHE_DUK="$CACHE_DIR/bench_cache_duktape.txt"
+CACHE_QJS="$CACHE_DIR/bench_cache_qjs.txt"
 
 TMPDIR_BENCH=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_BENCH"' EXIT
@@ -33,6 +38,37 @@ QJS_AVAILABLE=false
 if [ -f "$QJS" ]; then
     QJS_AVAILABLE=true
 fi
+
+# ── Cache helpers ───────────────────────────────────────────────────────────
+
+cache_get() {
+    local file="$1" key="$2"
+    if [ -f "$file" ]; then
+        grep "^${key}=" "$file" 2>/dev/null | cut -d= -f2
+    fi
+}
+
+cache_set() {
+    local file="$1" key="$2" val="$3"
+    if [ -f "$file" ]; then
+        # remove old entry if present
+        grep -v "^${key}=" "$file" > "${file}.tmp" 2>/dev/null || true
+        mv "${file}.tmp" "$file"
+    fi
+    echo "${key}=${val}" >> "$file"
+}
+
+# Check if all benchmarks are cached for a given cache file
+all_cached() {
+    local file="$1"
+    if [ ! -f "$file" ]; then return 1; fi
+    for f in "$BENCH_DIR"/bench_*.js; do
+        local name=$(basename "$f" .js)
+        local val=$(cache_get "$file" "$name")
+        if [ -z "$val" ]; then return 1; fi
+    done
+    return 0
+}
 
 echo "============================================================"
 echo "  Duktape C3 Port — Benchmark Comparison"
@@ -81,40 +117,62 @@ echo ""
 echo "------------------------------------------------------------"
 echo "  2. Original Duktape v2.7.0 (compile + execute)"
 echo "------------------------------------------------------------"
-for f in "$BENCH_DIR"/bench_*.js; do
-    name=$(basename "$f" .js)
-    echo -n "  $name ... "
-    total=0
-    count=0
-    for ((i=0; i<ITERATIONS; i++)); do
-        ms=$(time_ms "$DUKTAPE" "$f")
-        total=$((total + ms))
-        count=$((count + 1))
+if all_cached "$CACHE_DUK"; then
+    echo "  (using cached results — delete $CACHE_DUK to re-run)"
+    for f in "$BENCH_DIR"/bench_*.js; do
+        name=$(basename "$f" .js)
+        val=$(cache_get "$CACHE_DUK" "$name")
+        echo "$val" > "$TMPDIR_BENCH/duk_$name"
+        echo "  $name ... ${val}ms (cached)"
     done
-    avg=$((total / count))
-    echo "$avg" > "$TMPDIR_BENCH/duk_$name"
-    echo "${avg}ms"
-done
-
-if [ "$QJS_AVAILABLE" = true ]; then
-    echo ""
-    echo "------------------------------------------------------------"
-    echo "  3. QuickJS (compile + execute)"
-    echo "------------------------------------------------------------"
+else
     for f in "$BENCH_DIR"/bench_*.js; do
         name=$(basename "$f" .js)
         echo -n "  $name ... "
         total=0
         count=0
         for ((i=0; i<ITERATIONS; i++)); do
-            ms=$(time_ms "$QJS" "$f")
+            ms=$(time_ms "$DUKTAPE" "$f")
             total=$((total + ms))
             count=$((count + 1))
         done
         avg=$((total / count))
-        echo "$avg" > "$TMPDIR_BENCH/qjs_$name"
+        echo "$avg" > "$TMPDIR_BENCH/duk_$name"
+        cache_set "$CACHE_DUK" "$name" "$avg"
         echo "${avg}ms"
     done
+fi
+
+if [ "$QJS_AVAILABLE" = true ]; then
+    echo ""
+    echo "------------------------------------------------------------"
+    echo "  3. QuickJS (compile + execute)"
+    echo "------------------------------------------------------------"
+    if all_cached "$CACHE_QJS"; then
+        echo "  (using cached results — delete $CACHE_QJS to re-run)"
+        for f in "$BENCH_DIR"/bench_*.js; do
+            name=$(basename "$f" .js)
+            val=$(cache_get "$CACHE_QJS" "$name")
+            echo "$val" > "$TMPDIR_BENCH/qjs_$name"
+            echo "  $name ... ${val}ms (cached)"
+        done
+    else
+        for f in "$BENCH_DIR"/bench_*.js; do
+            name=$(basename "$f" .js)
+            echo -n "  $name ... "
+            total=0
+            count=0
+            for ((i=0; i<ITERATIONS; i++)); do
+                ms=$(time_ms "$QJS" "$f")
+                total=$((total + ms))
+                count=$((count + 1))
+            done
+            avg=$((total / count))
+            echo "$avg" > "$TMPDIR_BENCH/qjs_$name"
+            cache_set "$CACHE_QJS" "$name" "$avg"
+            echo "${avg}ms"
+        done
+    fi
 fi
 
 echo ""

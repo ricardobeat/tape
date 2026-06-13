@@ -25,11 +25,13 @@ build-bench:
 # Build original Duktape v2.7.0 for comparison benchmarks
 build-orig-duktape:
     @cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.
+    @rm -f out/bench_cache_duktape.txt
 
 # Build QuickJS CLI for comparison benchmarks
 build-quickjs:
     make -C quickjs qjs
     cp quickjs/qjs out/
+    @rm -f out/bench_cache_qjs.txt
 
 # Build with shape pointer cache disabled (`-D NOSHAPECACHE`)
 build-noshape t="test_vm":
@@ -82,15 +84,15 @@ test262-phase phase="0":
 # Run all benchmarks without rebuilding (default: 3 iterations)
 bench n="3":
 	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
-	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
+	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/ && rm -f out/bench_cache_qjs.txt; }
 	bash scripts/run_benchmarks.sh {{n}}
 
 # Rebuild duktape_c3 and run all benchmarks
 bench-rebuild n="3":
 	c3c build duktape_c3
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
-	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
+	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/ && rm -f out/bench_cache_qjs.txt; }
 	bash scripts/run_benchmarks.sh {{n}}
 
 # Quick single-engine benchmark (no comparison, skips deep recursion)
