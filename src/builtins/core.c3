@@ -712,9 +712,28 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             } else {
                 // ES5 §9.8.1 step 6: exponential notation
                 len = libc::snprintf(&buf, 64, "%.15e", d);
-                // Trim trailing zeros after decimal point
-                while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
-                if (len > 1 && buf[len - 1] == '.') len--;
+                // Trim trailing zeros AFTER the decimal point but BEFORE 'e'.
+                // e.g. "1.000000000000000e+21" → "1e+21"
+                // Find the decimal point
+                int dot_pos = -1;
+                int e_pos = len;
+                for (int j = 0; j < len; j++) {
+                    if (buf[j] == '.') dot_pos = j;
+                    if (buf[j] == 'e' || buf[j] == 'E') { e_pos = j; break; }
+                }
+                if (dot_pos >= 0) {
+                    // Trim zeros between dot and 'e'
+                    int trim = e_pos;
+                    while (trim > dot_pos + 1 && buf[trim - 1] == '0') trim--;
+                    // If only the dot remains between mantissa digits and 'e', remove it too
+                    if (trim == dot_pos + 1) trim = dot_pos;
+                    // Shift everything after trim left
+                    int shift = e_pos - trim;
+                    if (shift > 0) {
+                        for (int j = trim; j + shift < len; j++) buf[j] = buf[j + shift];
+                        len -= shift;
+                    }
+                }
                 // Remove leading zero in exponent: e-07 → e-7, e+07 → e+7
                 int ei = len - 1;
                 while (ei > 0 && buf[ei] != 'e' && buf[ei] != 'E') ei--;

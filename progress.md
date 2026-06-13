@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 161 (Boxed accessor pairs — PropValue 16→8 bytes)
+**Last Updated:** Session 162 (ToString exponential notation fix — builtin_to_string)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 161, 2026-06-14)
+## Summary (after Session 162, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,181 |
-| Currently failing (phases 0-8) | 8,454 |
-| Pass rate (phases 0-8 only) | 59.0% |
-| Overall pass rate | 58.1% |
+| Currently passing (phases 0-8) | 12,248 |
+| Currently failing (phases 0-8) | 8,387 |
+| Pass rate (phases 0-8 only) | 59.4% |
+| Overall pass rate | 58.4% |
 
 ## Per-Phase Status
 
@@ -21,9 +21,9 @@
 | 0-1: Core VM | 2,185 | 560 | 328 | 1,297 |
 | 1: Calling Convention | 426 | 57 | 31 | 338 |
 | 2: Basic Operators | 1,969 | 915 | 229 | 825 |
-| 3: Object System | 7,766 | 3,436 | 2,363 | 1,967 |
+| 3: Object System | 7,766 | 3,476 | 2,323 | 1,967 |
 | 4: Error Handling | 402 | 111 | 90 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,191 | 2,899 | 1,525 |
+| 5: Built-in Constructors | 8,615 | 4,212 | 2,878 | 1,525 |
 | 6: Prototype Methods | 4,713 | 1,850 | 1,927 | 936 |
 | 7: ES5 Features | 1,240 | 186 | 107 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 864 | 420 | 1,463 |
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 162 | ToString exponential notation fix: trim trailing zeros before 'e' in builtin_to_string (e.g. 1e21 → "1e+21" not "1.000000000000000e+21"); fixes defineProperty numeric key coercion | +67 (net) |
 | 161 | Boxed accessor pairs: PropValue 16→8 bytes (GetterSetter GC cell per accessor); inline props shrink 32→16 bytes per object | +11 (net) |
 | 160 | ToString ES5 §9.8.1: decimal notation for 10^-6 ≤ |x| < 10^21 (was using C `%g` threshold of 10^-4); remove leading zero in exponential exponent (e-07 → e-7); applied in both vm_number_to_string and builtin_to_string | +92 |
 | 159 | ToPropertyDescriptor §8.10.5 getter invocation via desc_get; defineProperty dense array promotion for array-indexed properties; ToString integer notation §9.8.1 (|val| < 10^21 decimal) | +81 |
