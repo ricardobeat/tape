@@ -3666,12 +3666,14 @@ fn TVal? Vm.run(Vm* vm) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
                         uint idx = (uint)idx_long;
-                        hobj.set_array_idx(idx, *rc);
-                        // Update .length fast: use array_length field directly (ARRAY only)
-                        if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= *hobj.array_len_ptr()) {
-                            *hobj.array_len_ptr() = idx + 1;
+                        if (hobj.set_array_idx(idx, *rc)) {
+                            // Update .length fast: use array_length field directly (ARRAY only)
+                            if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= *hobj.array_len_ptr()) {
+                                *hobj.array_len_ptr() = idx + 1;
+                            }
+                            break;
                         }
-                        break;
+                        // Dense write failed (index beyond capacity cap) — fall through to put_prop.
                     }
                 }
 

@@ -953,7 +953,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
             HString* ks = (HString*)key;
             if (ks.is_arridx()) {
                 uint ks_idx = ks.array_index();
-                self.set_array_idx(ks_idx, val);
+                if (ks_idx < self.array_size) {
+                    self.set_array_idx(ks_idx, val);
+                }
                 if (ks_idx >= *self.array_len_ptr()) {
                     *self.array_len_ptr() = ks_idx + 1;
                 }
@@ -997,7 +999,9 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         HString* ks = (HString*)key;
         if (ks.is_arridx()) {
             uint ks_idx = ks.array_index();
-            self.set_array_idx(ks_idx, val);
+            if (ks_idx < self.array_size) {
+                self.set_array_idx(ks_idx, val);
+            }
             if (ks_idx >= *self.array_len_ptr()) {
                 *self.array_len_ptr() = ks_idx + 1;
             }
@@ -1175,7 +1179,10 @@ fn TVal? HObject.get_array_idx(&self, uint idx) {
 }
 
 /// Set a value in the dense array part.  Grows the array if necessary.
-fn void HObject.set_array_idx(&self, uint idx, TVal val) {
+/// Returns true on success, false when the index cannot be stored in the
+/// dense part (overflow or grow failure) — callers should fall through to
+/// the slow put_prop path in that case.
+fn bool HObject.set_array_idx(&self, uint idx, TVal val) {
     // Grow if needed.
     if (idx >= self.array_size) {
         uint new_size = self.array_size;
@@ -1184,13 +1191,13 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
         }
         // Overflow-safe doubling: bail if we'd overflow uint on next multiply
         while (new_size <= idx) {
-            if (new_size >= 0x80000000) { return; }
+            if (new_size >= 0x80000000) { return false; }
             new_size *= 2;
         }
         self.grow_array(new_size);
         // If grow failed (array_size unchanged), bail out.
         if (idx >= self.array_size) {
-            return;
+            return false;
         }
     }
 
@@ -1214,6 +1221,7 @@ fn void HObject.set_array_idx(&self, uint idx, TVal val) {
             ((types::HeapHeader*)ptr).incref();
         }
     }
+    return true;
 }
 
 // ============================================================================

@@ -478,8 +478,15 @@ fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
 
 /// Set array element at numeric index.
 /// Uses the dense array part for numeric indices (O(1) push/append).
+/// Falls back to put_prop (via property table) when the dense array cannot
+/// accommodate the index (e.g. index beyond the ushort capacity cap).
 fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
-    obj.set_array_idx(idx, val);
+    if (!obj.set_array_idx(idx, val)) {
+        HString* key = heap.int_to_hstring((long)idx);
+        if (key != null) {
+            obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+        }
+    }
 }
 
 /// Delete array element at numeric index (set to undefined in dense part).
