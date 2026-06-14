@@ -8,6 +8,7 @@ import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
+import duktape::vm;
 
 // ============================================================================
 // Additional Array.prototype methods
@@ -905,19 +906,13 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Array.prototype.sort (ES5 §15.4.4.11) — with comparefn support
+// Array.prototype.sort (ES2022 §23.1.3.30) — with comparefn support
 // ============================================================================
 fn void builtin_array_proto_sort(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    uint len = array_get_length(obj, ctx.heap);
-    if (len <= 1) {
-        ctx.result.set_object(obj);
-        return;
-    }
-
-    // Check comparefn argument
+    // ES2022 step 1: check comparefn BEFORE accessing length
     bool has_comparefn = false;
     TVal comparefn;
     comparefn.set_undefined();
@@ -949,21 +944,38 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
         }
     }
 
-    // Compact defined elements to the front
-    uint def_count = 0;
+    // ES2022 step 3-4: get length
+    uint len = array_get_length(obj, ctx.heap);
+    if (len <= 1) {
+        ctx.result.set_object(obj);
+        return;
+    }
+
+    // ES2022: collect elements into temp buffer via [[Get]]
+    uint max_buf = len > 4096 ? 4096 : len;
+    TVal[4096] stack_buf;
+    TVal[] buf;
+    bool use_heap = len > 4096;
+    if (use_heap) {
+        buf = mem::temp_array(TVal, len);
+    } else {
+        buf = stack_buf[0:max_buf];
+    }
+
+    uint new_len = 0;
     for (uint i = 0; i < len; i++) {
         TVal elem = array_get_elem(obj, i, ctx.heap);
         if (!elem.is_undefined()) {
-            array_set_elem(obj, def_count, elem, ctx.heap);
-            def_count++;
+            buf[new_len] = elem;
+            new_len++;
         }
     }
 
-    // Bubble-sort
-    for (uint i = 0; i < def_count; i++) {
-        for (uint j = 0; j < def_count - 1 - i; j++) {
-            TVal a = array_get_elem(obj, j, ctx.heap);
-            TVal b = array_get_elem(obj, j + 1, ctx.heap);
+    // Bubble-sort the collected elements
+    for (uint i = 0; i < new_len; i++) {
+        for (uint j = 0; j < new_len - 1 - i; j++) {
+            TVal a = buf[j];
+            TVal b = buf[j + 1];
             int cmp = 0;
 
             if (has_comparefn && ctx.heap.call_fn != null && ctx.vm != null) {
@@ -991,28 +1003,32 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
                     cmp = v < 0 ? -1 : (v > 0 ? 1 : 0);
                 }
             } else {
-                HString* a_str = builtin_to_string(ctx.heap, &a);
-                HString* b_str = builtin_to_string(ctx.heap, &b);
-                if (a_str != null && b_str != null) {
-                    cmp = hstring::hstring_compare(a_str, b_str);
-                } else if (a_str == null && b_str == null) {
-                    cmp = 0;
-                } else if (a_str == null) {
-                    cmp = 1;
-                } else {
-                    cmp = -1;
-                }
+                // ES5 SortCompare: use ToString (calls toString on objects)
+                HString*? a_str_raw = vm::vm_to_string(ctx.vm, &a);
+                HString* a_str = a_str_raw ?? builtin_to_string(ctx.heap, &a);
+                HString*? b_str_raw = vm::vm_to_string(ctx.vm, &b);
+                HString* b_str = b_str_raw ?? builtin_to_string(ctx.heap, &b);
+                cmp = hstring::hstring_compare(a_str, b_str);
             }
             if (cmp > 0) {
-                array_set_elem(obj, j, b, ctx.heap);
-                array_set_elem(obj, j + 1, a, ctx.heap);
+                TVal tmp = buf[j];
+                buf[j] = buf[j + 1];
+                buf[j + 1] = tmp;
             }
         }
     }
 
-    // Delete remaining elements (holes/undefined go to end)
-    for (uint i = def_count; i < len; i++) {
+    // ES2022: write sorted elements back, delete extras
+    for (uint i = 0; i < new_len; i++) {
+        array_set_elem(obj, i, buf[i], ctx.heap);
+    }
+    for (uint i = new_len; i < len; i++) {
         array_delete_elem(obj, i, ctx.heap);
+        // Also remove named property to prevent stale fallback in array_get_elem
+        HString* del_key = ctx.heap.int_to_hstring((long)i);
+        if (del_key != null) {
+            obj.delete_prop(del_key);
+        }
     }
 
     ctx.result.set_object(obj);

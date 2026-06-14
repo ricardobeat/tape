@@ -1,16 +1,16 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 168 (Object static method non-object TypeError — keys/getOwnPropertyNames)
+**Last Updated:** Session 169 (Array.prototype.sort — ES2022 spec compliance)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 168, 2026-06-14)
+## Summary (after Session 169, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,335 |
-| Currently failing (phases 0-8) | ~8,229 |
+| Currently passing (phases 0-8) | ~12,326 |
+| Currently failing (phases 0-8) | ~8,238 |
 | Pass rate (phases 0-8 only) | ~60.0% |
 | Overall pass rate | ~59.7% |
 
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 169 | Array.prototype.sort ES2022 compliance: comparefn TypeError check before length access; temp buffer collect+sort+writeback replacing in-place compact; vm_to_string for default comparison (calls toString on objects); scoped delete_prop to clear named properties. | +8 (Phase 6 sort: 9→17) |
 | 168 | Object static method non-object TypeError: Object.keys and Object.getOwnPropertyNames now throw TypeError for null/undefined (was returning undefined silently). Audit of all Object static methods confirmed seal/freeze/preventExtensions correctly return arg per ES2015 §19.1.2.x; isExtensible/isSealed/isFrozen correctly return boolean per ES5. Fixed incorrect docstring on isExtensible. | +2 (phases 3) |
 | 167 | defineProperties non-configurable validation: presence-aware checks for enumerable/configurable (ES5 §8.12.9 step 8), data↔accessor type-change rejection, writable false→true rejection, accessor SameValue rejection on non-configurable properties. Fixes spurious TypeError when descriptor omits fields on non-configurable properties. | +16 (phases 3,5,6) |
 | 166 | Array.prototype length validation: proper ToUint32 (ES5 §9.6) for array_get_length, eliminating UB for Infinity/NaN lengths. Added array_to_length_checked with SameValue validation that throws RangeError per ES5 §15.4.4.x. Updated forEach/map/filter/every/some/reduce/reduceRight/indexOf/lastIndexOf. | TBD |
