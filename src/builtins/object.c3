@@ -193,16 +193,25 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // TypeError if argument is null or undefined
+    // ES5 §15.2.3.14 / ES2015 §19.1.2.16: throw TypeError for null/undefined,
+    // use ToObject wrapper for primitives
     if (arg.is_null() || arg.is_undefined()) {
-        ctx.result.set_undefined();
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_k = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.keys called on non-object");
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject* obj;
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives — use proper exotic class
+        // ToObject wrapper for primitives
         if (!builtin_to_object(ctx, arg)) {
             ctx.result.set_undefined();
             return;
@@ -339,9 +348,18 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // TypeError if argument is null or undefined
+    // ES5 §15.2.3.2 / ES2015: throw TypeError for null/undefined,
+    // use ToObject wrapper for primitives
     if (arg.is_null() || arg.is_undefined()) {
-        ctx.result.set_undefined();
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_gpn = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertyNames called on non-object");
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
@@ -556,7 +574,7 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
 // Object.isExtensible — ES5 §15.2.3.13
 // ============================================================================
 /// Returns true if the object is extensible (can have new properties added).
-/// Throws TypeError if argument is not an object.
+/// Non-object arguments return true per ES5 §15.2.3.13.
 fn void builtin_object_isExtensible(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
         ctx.result.set_boolean(false);
@@ -583,7 +601,7 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // ES5 §15.2.3.10: non-object arguments are returned unchanged
+    // ES2015 §19.1.2.13: if Type(O) is not Object, return O.
     if (!arg.is_object()) {
         ctx.result[0] = arg;
         return;
@@ -692,7 +710,8 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     }
 
     if (!arg0.is_object()) {
-        // ToObject: wrap primitives into proper exotic wrapper objects (ES5 §15.2.3.3)
+        // ES5 §15.2.3.3: throw TypeError for null/undefined,
+        // use ToObject wrapper for primitives (ES2015+)
         if (arg0.is_null() || arg0.is_undefined()) {
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
             if (catch err1 = err_raw) { ctx.result.set_undefined(); return; }
@@ -1865,6 +1884,7 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES2015 §19.1.2.18: if Type(O) is not Object, return O.
     if (!arg.is_object()) {
         ctx.result[0] = arg;
         return;
@@ -1884,6 +1904,7 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
+    // ES2015 §19.1.2.7: if Type(O) is not Object, return O.
     if (!arg.is_object()) {
         ctx.result[0] = arg;
         return;

@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 167 (defineProperties non-configurable validation — ES5 §8.12.9)
+**Last Updated:** Session 168 (Object static method non-object TypeError — keys/getOwnPropertyNames)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 167, 2026-06-14)
+## Summary (after Session 168, 2026-06-14)
 
 | Metric | Value |
 |---|---|
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 168 | Object static method non-object TypeError: Object.keys and Object.getOwnPropertyNames now throw TypeError for null/undefined (was returning undefined silently). Audit of all Object static methods confirmed seal/freeze/preventExtensions correctly return arg per ES2015 §19.1.2.x; isExtensible/isSealed/isFrozen correctly return boolean per ES5. Fixed incorrect docstring on isExtensible. | +2 (phases 3) |
 | 167 | defineProperties non-configurable validation: presence-aware checks for enumerable/configurable (ES5 §8.12.9 step 8), data↔accessor type-change rejection, writable false→true rejection, accessor SameValue rejection on non-configurable properties. Fixes spurious TypeError when descriptor omits fields on non-configurable properties. | +16 (phases 3,5,6) |
 | 166 | Array.prototype length validation: proper ToUint32 (ES5 §9.6) for array_get_length, eliminating UB for Infinity/NaN lengths. Added array_to_length_checked with SameValue validation that throws RangeError per ES5 §15.4.4.x. Updated forEach/map/filter/every/some/reduce/reduceRight/indexOf/lastIndexOf. | TBD |
 | 165 | Assignment expression eval order fix: PUTVAR clears source register, so expression-assignment results (x=1, x+=1, x||=1, etc.) were returning undefined. Fixed by saving value to temp before PUTVAR clobber in compiler/expressions.c3. Also added Reflect global object. | +45 (phases 0-1,2,7) |
