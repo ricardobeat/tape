@@ -1597,9 +1597,46 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 // Property exists — validate changes
                 hobject::PropValue* current = &obj.prop_values()[existing_idx];
                 hobject::PropFlags cur_flags = obj.get_prop_flags((uint)existing_idx);
+                // ES5 §8.12.9 step 8: Reject changes to non-configurable property
                 if (!cur_flags.configurable) {
-                    if (desc_flags.configurable != cur_flags.configurable ||
-                        desc_flags.enumerable != cur_flags.enumerable) {
+                    bool reject = false;
+                    bool desc_has_conf = has_configurable_in_desc_helper(ctx.heap, desc_obj);
+                    bool desc_has_enum = has_enumerable_in_desc_helper(ctx.heap, desc_obj);
+                    if (desc_has_conf && desc_flags.configurable != cur_flags.configurable) reject = true;
+                    if (desc_has_enum && desc_flags.enumerable != cur_flags.enumerable) reject = true;
+
+                    // ES5 §8.12.9 step 12: Reject type changes on non-configurable
+                    bool has_any_data = has_value_in_desc_helper(ctx.heap, desc_obj) || has_writable_in_desc_helper(ctx.heap, desc_obj);
+                    bool has_any_access = has_get_in_desc_helper(ctx.heap, desc_obj) || has_set_in_desc_helper(ctx.heap, desc_obj);
+                    bool is_generic_desc = !has_any_data && !has_any_access;
+                    if (!is_generic_desc) {
+                        bool new_is_accessor = has_any_access;
+                        if (new_is_accessor != cur_flags.is_accessor) reject = true;
+                    }
+
+                    // ES5 §8.12.9 step 13.a: Reject writable false→true on non-configurable
+                    if (!has_any_access && !cur_flags.writable) {
+                        if (has_writable_in_desc_helper(ctx.heap, desc_obj) && desc_flags.writable) reject = true;
+                    }
+
+                    // ES5 §8.12.9 step 13.a.ii: Reject value change on non-configurable+non-writable
+                    if (!has_any_access && !cur_flags.configurable && !cur_flags.writable) {
+                        if (has_value_in_desc_helper(ctx.heap, desc_obj) && !same_value(*current, desc_vals[0])) reject = true;
+                    }
+
+                    // ES5 §8.12.9 step 13.b: Reject accessor get/set change on non-configurable
+                    if (has_any_access && cur_flags.is_accessor) {
+                        if (has_get_in_desc_helper(ctx.heap, desc_obj)) {
+                            TVal cur_get = hobject::hobject_access_getter(*current);
+                            if (!same_value(cur_get, desc_vals[0])) reject = true;
+                        }
+                        if (has_set_in_desc_helper(ctx.heap, desc_obj)) {
+                            TVal cur_set = hobject::hobject_access_setter(*current);
+                            if (!same_value(cur_set, desc_vals[1])) reject = true;
+                        }
+                    }
+
+                    if (reject) {
                         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                         if (catch err4 = err_raw) { ctx.result.set_undefined(); return; }
                         HObject* err = err_raw;

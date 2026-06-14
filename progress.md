@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 166 (Array.prototype length validation — ToUint32 + RangeError)
+**Last Updated:** Session 167 (defineProperties non-configurable validation — ES5 §8.12.9)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 166, 2026-06-14)
+## Summary (after Session 167, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,319 |
-| Currently failing (phases 0-8) | ~8,245 |
-| Pass rate (phases 0-8 only) | ~59.9% |
-| Overall pass rate | ~59.6% |
+| Currently passing (phases 0-8) | ~12,335 |
+| Currently failing (phases 0-8) | ~8,229 |
+| Pass rate (phases 0-8 only) | ~60.0% |
+| Overall pass rate | ~59.7% |
 
 ## Per-Phase Status
 
@@ -21,10 +21,10 @@
 | 0-1: Core VM | 2,185 | 565 | 323 | 1,297 |
 | 1: Calling Convention | 426 | 59 | 29 | 338 |
 | 2: Basic Operators | 1,969 | 967 | 177 | 825 |
-| 3: Object System | 7,766 | 3,549 | 2,250 | 1,967 |
+| 3: Object System | 7,766 | 3,464 | 2,244 | 1,967 |
 | 4: Error Handling | 402 | 110 | 91 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,336 | 2,754 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,876 | 1,901 | 936 |
+| 5: Built-in Constructors | 8,615 | 4,338 | 2,752 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,884 | 1,893 | 936 |
 | 7: ES5 Features | 1,240 | 190 | 103 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 879 | 405 | 1,463 |
 | 11: Arrow/Templates | 427 | 60 | 43 | 324 |
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 167 | defineProperties non-configurable validation: presence-aware checks for enumerable/configurable (ES5 §8.12.9 step 8), data↔accessor type-change rejection, writable false→true rejection, accessor SameValue rejection on non-configurable properties. Fixes spurious TypeError when descriptor omits fields on non-configurable properties. | +16 (phases 3,5,6) |
 | 166 | Array.prototype length validation: proper ToUint32 (ES5 §9.6) for array_get_length, eliminating UB for Infinity/NaN lengths. Added array_to_length_checked with SameValue validation that throws RangeError per ES5 §15.4.4.x. Updated forEach/map/filter/every/some/reduce/reduceRight/indexOf/lastIndexOf. | TBD |
 | 165 | Assignment expression eval order fix: PUTVAR clears source register, so expression-assignment results (x=1, x+=1, x||=1, etc.) were returning undefined. Fixed by saving value to temp before PUTVAR clobber in compiler/expressions.c3. Also added Reflect global object. | +45 (phases 0-1,2,7) |
 | 164 | ToString decimal precision fix: progressively trim trailing digits in decimal notation path (vm_number_to_string, builtin_to_string, Number.prototype.toString) to produce shortest round-trip representation; e.g. 123.1234567→"123.1234567" not "123.12345670000001" | +46 (phases 3,5,8) |
