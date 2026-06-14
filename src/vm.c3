@@ -5258,6 +5258,37 @@ fn TVal? Vm.run(Vm* vm) {
             // Handle lightfunc built-in constructors (Error, TypeError, etc.)
             if (func_val.is_lightfunc()) {
                 uint fn_idx = (uint)(usz)func_val.get_heapptr();
+
+                // Check if this lightfunc is actually constructable.
+                // lightfunc_get_proto returns null for non-constructors
+                // (e.g. Object.seal, Object.freeze, Math.max, etc.)
+                HObject* ctor_proto = lightfunc_get_proto(vm, fn_idx);
+                if (ctor_proto == null) {
+                    HString* type_str = typeof_string(vm, &func_val);
+                    HObject*? err_raw_nc = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err_nc = err_raw_nc) {
+                        err_nc.prototype = vm.heap.type_err_proto;
+                        char[types::ERROR_MSG_BUF] buf;
+                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
+                                                 type_str.get_cstr());
+                        if (len > 0 && len < types::ERROR_MSG_BUF) {
+                            HString* msg_str = intern_string(vm, buf[:len]);
+                            TVal msg_val;
+                            msg_val.set_string(msg_str);
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            err_nc.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                        }
+                        TVal err_val_nc;
+                        err_val_nc.set_object(err_nc);
+                        if (!vm_throw_value(vm, err_val_nc, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                    break;
+                }
+
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
