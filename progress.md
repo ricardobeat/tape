@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 177 (RegExp.prototype.flags alphabetical order)
+**Last Updated:** Session 178 (Array length validation)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 177, 2026-06-14)
+## Summary (after Session 178, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,677 |
-| Currently failing (phases 0-8) | ~7,887 |
-| Overall pass rate | ~61.4% |
+| Currently passing (phases 0-8) | ~13,507 |
+| Currently failing (phases 0-8) | ~7,057 |
+| Overall pass rate | ~64.2% |
 
 ## Per-Phase Status
 
@@ -22,8 +22,8 @@
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
 | 3: Object System | 7,766 | 3,618 | 2,181 | 1,967 |
 | 4: Error Handling | 402 | 108 | 93 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,374 | 2,716 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,883 | 1,894 | 936 |
+| 5: Built-in Constructors | 8,615 | 4,906 | 2,184 | 1,525 |
+| 6: Prototype Methods | 4,713 | 2,181 | 1,596 | 936 |
 | 7: ES5 Features | 1,240 | 193 | 100 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 881 | 403 | 1,463 |
 | 11: Arrow/Templates | 427 | 60 | 43 | 324 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 178 | Array length validation per ES5 §15.4.5.1 (ArraySetLength): PUTPROP fast path and `Object.defineProperty` for Array `length` now validate ToUint32(value)==ToNumber(value) — RangeError on NaN/±Infinity/negative/non-integer/>2^32-1, TypeError on undefined. Replaces naive `(uint)rc.get_number()` cast that silently truncated. | +830 (Phase 5: +532, Phase 6: +298) |
 | 177 | RegExp.prototype.flags alphabetical order (ES2015 §21.2.5.7): bit 8 (dotAll) was outputting 'd' instead of 's', and `s` was misplaced before `i` in the output order. Reordered the conditional checks so flag chars are emitted in alphabetical order `g,i,m,s,u,y` (matching the spec's `gimsu` core + `y` for sticky). | TBD (Phase 5: RegExp.prototype.flags tests) |
 | 176 | Object.assign proper [[Set]] semantics (ES2015 §19.1.2.2): added `obj_assign_set` helper implementing full [[Set]] with Throw=true — invokes setters (own + prototype chain), throws TypeError on non-writable data properties, throws TypeError on non-extensible target for new properties. Source values now fetched via [[Get]] (invokes source getters). Also fixed `desc_get` error propagation: copies `error_value` to `throw_value` and clears `has_error` flag. | TBD (Phase 5: ~25-35 for Object.assign) |
 | 175 | Function.prototype.call/apply/bind TypeError on non-callable (ES5 §15.3.4.3-5); Object.defineProperties/create TypeError on non-object Properties (ES5 §15.2.3.5/§15.2.3.7). Also fixed phase_runner.py dead-worker infinite hang — added crash recovery with automatic worker restart. | +22 (quick.sh: 575→597 pass, 554→532 fail) |

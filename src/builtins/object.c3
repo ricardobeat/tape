@@ -2,6 +2,7 @@
 module duktape::builtins;
 import duktape::types;
 import duktape::env;
+import std::math;
 import libc;
 
 import duktape::heap;
@@ -1275,6 +1276,77 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         if (ctx.should_throw) return;
         ctx.result.set_undefined();
         return;
+    }
+
+    // ES5 §15.4.5.1 step 3 (ArraySetLength): if defining 'length' on an Array with a
+    // value field, validate the value per ToUint32. Reject with RangeError if the
+    // value is not a valid uint32 (NaN, ±Infinity, negative, non-integer, > 2^32-1).
+    // Reject with TypeError if the value is undefined.
+    if (obj.get_class() == hobject::ObjClass.ARRAY
+        && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) {
+        HString* val_k = builtin_intern_string(ctx.heap, "value");
+        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
+        if (has_value_in_desc) {
+            TVal new_len_val = desc_vals[0];
+            if (new_len_val.is_undefined()) {
+                // ES5 §15.4.5.1 step 2a: undefined value throws TypeError
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (catch err_lenu = err_raw) { ctx.result.set_undefined(); return; }
+                HObject* err = err_raw;
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length: undefined");
+                if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                TVal msg_tv; msg_tv.set_string(msg_str);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                ctx.should_throw = true;
+                ctx.throw_value.set_object(err);
+                return;
+            }
+            // Validate per ToUint32 / ToNumber
+            double number_len;
+            if (new_len_val.is_fastint()) {
+                long v = new_len_val.get_fastint();
+                if (v < 0L || v > 0xFFFFFFFFL) {
+                    // RangeError
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err_lenr = err_raw) { ctx.result.set_undefined(); return; }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.range_err_proto;
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
+                    if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv; msg_tv.set_string(msg_str);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+            } else if (new_len_val.is_number()) {
+                double raw = new_len_val.get_number();
+                // ToUint32: NaN, ±Infinity, negative, non-integer, > 2^32-1 all invalid
+                if (raw != raw || raw < 0.0 || raw > 4294967295.0 || raw != math::floor(raw)) {
+                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (catch err_lenr2 = err_raw) { ctx.result.set_undefined(); return; }
+                    HObject* err = err_raw;
+                    err.prototype = ctx.heap.range_err_proto;
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
+                    if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                    TVal msg_tv; msg_tv.set_string(msg_str);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                    return;
+                }
+            }
+            // For non-numeric values (objects, strings, etc.), let the existing
+            // machinery handle coercion via desc_vals[0]. The result might still
+            // be wrong for exotic values, but the spec says ToUint32(ToNumber(v))
+            // must equal ToNumber(v), which we can't easily verify without
+            // re-implementing the coercion here. This is the same compromise
+            // that Duktape makes for the slow path.
+        }
     }
 
     // Step 5: [[DefineOwnProperty]]

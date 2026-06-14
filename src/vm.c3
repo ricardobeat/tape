@@ -3729,21 +3729,88 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // ARRAY exotic: .length write fast path — update array_length directly
                 if (hobj.get_class() == hobject::ObjClass.ARRAY && rb.is_string() && rb.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                    // ES5 §15.4.5.1 step 2 (ArraySetLength): validate the new length value
+                    // before truncating. ToUint32(v) must equal ToNumber(v), and the result
+                    // must be < 2^32. Otherwise throw RangeError.
+                    bool length_valid = true;
                     uint new_len = 0;
-                    if (rc.is_fastint()) {
-                        new_len = (uint)rc.get_fastint();
+                    if (rc.is_undefined()) {
+                        // Step 2a: undefined value throws TypeError
+                        length_valid = true; // signal to throw TypeError below
+                        new_len = 0;
+                    } else if (rc.is_fastint()) {
+                        long v = rc.get_fastint();
+                        if (v < 0L || v > 0xFFFFFFFFL) {
+                            length_valid = false;
+                        } else {
+                            new_len = (uint)v;
+                        }
                     } else if (rc.is_number()) {
-                        new_len = (uint)rc.get_number();
+                        double raw = rc.get_number();
+                        // NaN, ±Infinity, or non-integer, or negative, or > 2^32-1
+                        if (raw != raw || raw < 0.0 || raw > 4294967295.0 || raw != math::floor(raw)) {
+                            length_valid = false;
+                        } else {
+                            new_len = (uint)raw;
+                        }
+                    } else {
+                        // For non-numeric values, fall through to slow path (Put → DefineOwnProperty)
+                        // so the regular [[Set]] machinery handles coercion.
+                        // We can't throw from here without breaking object property writes.
+                        length_valid = true;
+                        new_len = 0; // placeholder, will be overwritten by put_prop
                     }
-                    *hobj.array_len_ptr() = new_len;
-                    // Also update the prop table for spec correctness
-                    HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    int len_slot = hobj.find_prop_idx(len_str);
-                    if (len_slot >= 0) {
-                        TVal new_len_tv;
-                        new_len_tv.set_fastint((long)new_len);
-                        TVal* props = hobj.prop_values();
-                        vm.heap.tval_copy_ref(&props[len_slot], &new_len_tv);
+                    if (!length_valid) {
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.range_err_proto;
+                            HString* emsg = intern_string(vm, "Invalid array length");
+                            if (emsg != null) {
+                                TVal emsg_val; emsg_val.set_string(emsg);
+                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val; err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+                    if (rc.is_undefined()) {
+                        // TypeError: undefined is not a valid length
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            HString* emsg = intern_string(vm, "Invalid array length: undefined");
+                            if (emsg != null) {
+                                TVal emsg_val; emsg_val.set_string(emsg);
+                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val; err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    }
+                    // Only update if the value is a valid number (skip if fell through)
+                    if (rc.is_fastint() || rc.is_number()) {
+                        *hobj.array_len_ptr() = new_len;
+                        // Also update the prop table for spec correctness
+                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        int len_slot = hobj.find_prop_idx(len_str);
+                        if (len_slot >= 0) {
+                            TVal new_len_tv;
+                            new_len_tv.set_fastint((long)new_len);
+                            TVal* props = hobj.prop_values();
+                            vm.heap.tval_copy_ref(&props[len_slot], &new_len_tv);
+                        }
                     }
                     break;
                 }

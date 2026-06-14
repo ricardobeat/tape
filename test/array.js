@@ -363,4 +363,51 @@ var arr_ac2 = new Array(3);
 arr_ac2.push(42);
 if (arr_ac2.length === 4 && arr_ac2[3] === 42) { pass = pass + 1; } else { print("FAIL: push on Array(3)"); fail = fail + 1; }
 
+// ============================================================================
+// Array length validation per ES5 §15.4.5.1 (ArraySetLength)
+// ============================================================================
+
+// [].length = 4294967296 (overflow) → RangeError
+try { var aov = []; aov.length = 4294967296; print("FAIL: [].length = 4294967296 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: overflow threw wrong error: " + e); fail = fail + 1; } }
+
+// [].length = -1 → RangeError (no-op for the assignment semantics)
+try { var an = []; an.length = -1; print("FAIL: [].length = -1 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: -1 threw wrong error: " + e); fail = fail + 1; } }
+
+// [].length = 1.5 → RangeError
+try { var af = []; af.length = 1.5; print("FAIL: [].length = 1.5 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: 1.5 threw wrong error: " + e); fail = fail + 1; } }
+
+// [].length = NaN → RangeError
+try { var an2 = []; an2.length = NaN; print("FAIL: [].length = NaN did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: NaN threw wrong error: " + e); fail = fail + 1; } }
+
+// [].length = Infinity → RangeError
+try { var ai = []; ai.length = Infinity; print("FAIL: [].length = Infinity did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: Infinity threw wrong error: " + e); fail = fail + 1; } }
+
+// Object.defineProperty([], 'length', { value: -1 }) → RangeError
+try { Object.defineProperty([], 'length', { value: -1, configurable: true }); print("FAIL: defineProperty -1 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: defineProperty -1 threw wrong error: " + e); fail = fail + 1; } }
+
+// Object.defineProperty([], 'length', { value: 1.5 }) → RangeError
+try { Object.defineProperty([], 'length', { value: 1.5, configurable: true }); print("FAIL: defineProperty 1.5 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: defineProperty 1.5 threw wrong error: " + e); fail = fail + 1; } }
+
+// Object.defineProperty([], 'length', { value: 4294967296 }) → RangeError
+try { Object.defineProperty([], 'length', { value: 4294967296, configurable: true }); print("FAIL: defineProperty 4294967296 did not throw"); fail = fail + 1; }
+catch (e) { if (e instanceof RangeError) { pass = pass + 1; } else { print("FAIL: defineProperty 4294967296 threw wrong error: " + e); fail = fail + 1; } }
+
+// Valid lengths still work
+var av = [1, 2, 3, 4, 5];
+av.length = 3;
+if (av.length === 3) { pass = pass + 1; } else { print("FAIL: av.length = 3"); fail = fail + 1; }
+
+av.length = 100;
+if (av.length === 100) { pass = pass + 1; } else { print("FAIL: av.length = 100"); fail = fail + 1; }
+
+av.length = 0;
+if (av.length === 0) { pass = pass + 1; } else { print("FAIL: av.length = 0"); fail = fail + 1; }
+
 print("pass: " + pass + " fail: " + fail);
