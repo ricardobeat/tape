@@ -1,32 +1,32 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 163 (lightfunc NEW_OBJ constructable check)
+**Last Updated:** Session 164 (ToString decimal precision fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 163, 2026-06-14)
+## Summary (after Session 164, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,440 |
-| Currently failing (phases 0-8) | 8,124 |
-| Pass rate (phases 0-8 only) | 60.5% |
-| Overall pass rate | 59.3% |
+| Currently passing (phases 0-8) | 12,486 |
+| Currently failing (phases 0-8) | 8,078 |
+| Pass rate (phases 0-8 only) | 60.7% |
+| Overall pass rate | 59.4% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 560 | 328 | 1,297 |
+| 0-1: Core VM | 2,185 | 563 | 325 | 1,297 |
 | 1: Calling Convention | 426 | 57 | 31 | 338 |
-| 2: Basic Operators | 1,969 | 915 | 229 | 825 |
-| 3: Object System | 7,766 | 3,547 | 2,252 | 1,967 |
-| 4: Error Handling | 402 | 111 | 90 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,318 | 2,772 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,882 | 1,895 | 936 |
-| 7: ES5 Features | 1,240 | 186 | 107 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 864 | 420 | 1,463 |
+| 2: Basic Operators | 1,969 | 914 | 230 | 825 |
+| 3: Object System | 7,766 | 3,557 | 2,242 | 1,967 |
+| 4: Error Handling | 402 | 110 | 91 | 201 |
+| 5: Built-in Constructors | 8,615 | 4,343 | 2,747 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,876 | 1,901 | 936 |
+| 7: ES5 Features | 1,240 | 187 | 106 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 881 | 403 | 1,463 |
 | 11: Arrow/Templates | 427 | 60 | 43 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 164 | ToString decimal precision fix: progressively trim trailing digits in decimal notation path (vm_number_to_string, builtin_to_string, Number.prototype.toString) to produce shortest round-trip representation; e.g. 123.1234567→"123.1234567" not "123.12345670000001" | +46 (phases 3,5,8) |
 | 163 | NEW_OBJ lightfunc constructable check: non-constructor builtins (Object.seal/freeze/keys/etc.) now throw TypeError on `new` via `lightfunc_get_proto()` null check | +170 (phases 3,5,6) |
 | 162 | ToString exponential notation fix: trim trailing zeros before 'e' in builtin_to_string (e.g. 1e21 → "1e+21" not "1.000000000000000e+21"); fixes defineProperty numeric key coercion | +67 (net) |
 | 161 | Boxed accessor pairs: PropValue 16→8 bytes (GetterSetter GC cell per accessor); inline props shrink 32→16 bytes per object | +11 (net) |

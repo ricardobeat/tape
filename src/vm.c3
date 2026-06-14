@@ -555,11 +555,24 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
         // Trim trailing zeros after decimal point
         while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
         if (len > 1 && buf[len - 1] == '.') len--;
-        if (len >= 0 && len < 64) {
+        // Progressively trim trailing digits while round-trip still holds,
+        // producing the shortest decimal representation (e.g. 123.1234567
+        // instead of 123.12345670000001).
+        buf[len] = 0;
+        while (len > 0) {
+            char last = buf[len - 1];
+            if (last == '.' || last == '-') break;
+            buf[len - 1] = 0;
             double parsed = libc::strtod(&buf, null);
             if (bitcast(parsed, ulong) == val_bits) {
-                return vm.heap.str_intern(buf[:len]);
+                len--;
+            } else {
+                buf[len - 1] = last;
+                break;
             }
+        }
+        if (len >= 0 && len < 64) {
+            return vm.heap.str_intern(buf[:len]);
         }
     }
 

@@ -699,6 +699,7 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             int exp10 = (int)math::floor(math_log10(abs_d));
             char[64] buf;
             int len;
+            ulong val_bits = bitcast(d, ulong);
             if (exp10 >= -6 && exp10 < 21) {
                 // ES5 §9.8.1 step 5: decimal notation
                 int k = exp10 + 1;
@@ -709,6 +710,20 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
                 // Trim trailing zeros after decimal point
                 while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
                 if (len > 1 && buf[len - 1] == '.') len--;
+                // Progressively trim trailing digits while round-trip holds
+                buf[len] = 0;
+                while (len > 0) {
+                    char last = buf[len - 1];
+                    if (last == '.' || last == '-') break;
+                    buf[len - 1] = 0;
+                    double parsed = libc::strtod(&buf, null);
+                    if (bitcast(parsed, ulong) == val_bits) {
+                        len--;
+                    } else {
+                        buf[len - 1] = last;
+                        break;
+                    }
+                }
             } else {
                 // ES5 §9.8.1 step 6: exponential notation
                 len = libc::snprintf(&buf, 64, "%.15e", d);
