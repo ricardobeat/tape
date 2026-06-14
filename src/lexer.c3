@@ -698,8 +698,12 @@ fn Token? Lexer.scan_number(&self) {
 
     // Fractional part
     if (!self.at_end() && self.peek_char() == '.') {
-        // Ensure it's not ... (ellipsis)
-        if (self.peek_char_at(1) != '.') {
+        // Only skip if this is truly ... (ellipsis): three consecutive dots
+        // 0..toString is valid: 0. is the number, .toString is property access
+        char next1 = self.peek_char_at(1);
+        char next2 = self.peek_char_at(2);
+        bool is_ellipsis = (next1 == '.' && next2 == '.');
+        if (!is_ellipsis) {
             self.pos++;
             self.col++;
             bool frac_prev_was_digit = false;
@@ -717,7 +721,7 @@ fn Token? Lexer.scan_number(&self) {
                 self.col++;
                 frac_prev_was_digit = true;
             }
-            if (!frac_prev_was_digit) return LEX_ERROR~;
+            // Fraction digits optional: "0." is a valid numeric literal (ES5 §7.8.3)
         }
     }
 

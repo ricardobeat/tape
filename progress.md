@@ -1,30 +1,30 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 169 (Array.prototype.sort — ES2022 spec compliance)
+**Last Updated:** Session 170 (Lexer numeric literal dot-property access fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 169, 2026-06-14)
+## Summary (after Session 170, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,326 |
-| Currently failing (phases 0-8) | ~8,238 |
-| Pass rate (phases 0-8 only) | ~60.0% |
-| Overall pass rate | ~59.7% |
+| Currently passing (phases 0-8) | ~12,375 |
+| Currently failing (phases 0-8) | ~8,189 |
+| Pass rate (phases 0-8 only) | ~60.2% |
+| Overall pass rate | ~59.9% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 565 | 323 | 1,297 |
+| 0-1: Core VM | 2,185 | 574 | 314 | 1,297 |
 | 1: Calling Convention | 426 | 59 | 29 | 338 |
 | 2: Basic Operators | 1,969 | 967 | 177 | 825 |
 | 3: Object System | 7,766 | 3,464 | 2,244 | 1,967 |
 | 4: Error Handling | 402 | 110 | 91 | 201 |
 | 5: Built-in Constructors | 8,615 | 4,338 | 2,752 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,884 | 1,893 | 936 |
+| 6: Prototype Methods | 4,713 | 1,879 | 1,898 | 936 |
 | 7: ES5 Features | 1,240 | 190 | 103 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 879 | 405 | 1,463 |
 | 11: Arrow/Templates | 427 | 60 | 43 | 324 |
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 170 | Lexer dot-property access: fix fractional-part parsing to distinguish `0..x` (number + property access) from `0...x` (ellipsis) by checking three-dot prefix; make fraction digits optional per ES5 §7.8.3 (`0.` is valid). Fixes 38 radix toString tests + 11 other dot-property tests. | +49 (Phase 0-1: +9, Phase 6: +40) |
 | 169 | Array.prototype.sort ES2022 compliance: comparefn TypeError check before length access; temp buffer collect+sort+writeback replacing in-place compact; vm_to_string for default comparison (calls toString on objects); scoped delete_prop to clear named properties. | +8 (Phase 6 sort: 9→17) |
 | 168 | Object static method non-object TypeError: Object.keys and Object.getOwnPropertyNames now throw TypeError for null/undefined (was returning undefined silently). Audit of all Object static methods confirmed seal/freeze/preventExtensions correctly return arg per ES2015 §19.1.2.x; isExtensible/isSealed/isFrozen correctly return boolean per ES5. Fixed incorrect docstring on isExtensible. | +2 (phases 3) |
 | 167 | defineProperties non-configurable validation: presence-aware checks for enumerable/configurable (ES5 §8.12.9 step 8), data↔accessor type-change rejection, writable false→true rejection, accessor SameValue rejection on non-configurable properties. Fixes spurious TypeError when descriptor omits fields on non-configurable properties. | +16 (phases 3,5,6) |
