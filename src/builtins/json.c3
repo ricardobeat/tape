@@ -364,7 +364,7 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
 }
 
 /// Walk helper for reviver (ES5 §15.12.2, step 4 — internalize properties).
-fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
+fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name) {
     TVal val;
     if (holder.is_object() && holder.get_heapptr() != null) {
         HObject* obj = (HObject*)holder.get_heapptr();
@@ -378,6 +378,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
         val.set_undefined();
     }
 
+    // ES5 §15.12.2 step 4.b: if value is an object, walk its properties recursively
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == ObjClass.ARRAY) {
@@ -390,7 +391,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
             for (uint i = 0; i < len; i++) {
                 HString* idx_key = heap.int_to_hstring((long)i);
                 if (idx_key == null) continue;
-                TVal new_elem = json_walk(heap, reviver, val, idx_key);
+                TVal new_elem = json_walk(vm, heap, reviver, val, idx_key);
                 if (new_elem.is_undefined()) {
                     obj.delete_prop(idx_key);
                 } else {
@@ -402,7 +403,7 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
             for (uint i = 0; i < obj.prop_count; i++) {
                 HString* key_str = obj.prop_key_at(i);
                 if (key_str != null) {
-                    TVal new_val = json_walk(heap, reviver, val, key_str);
+                    TVal new_val = json_walk(vm, heap, reviver, val, key_str);
                     if (new_val.is_undefined()) {
                         obj.delete_prop(key_str);
                     } else {
@@ -413,15 +414,25 @@ fn TVal json_walk(Heap* heap, TVal reviver, TVal holder, HString* name) {
         }
     }
 
-    // Call reviver(this=holder, name, val)
+    // ES5 §15.12.2 step 4.c: Call reviver(this=holder, name, val)
     TVal name_str;
     name_str.set_string(name);
 
-    // For the reviver call, we need to invoke it via the calling convention
-    // Since we're in a builtin context, we need to set up the stack
-    // and re-dispatch. However, since JSON.parse is called as a LIGHTFUNC,
-    // we don't have a VM activation. We need to signal re-dispatch.
-    // For now, skip reviver and just return val
+    if (heap.call_fn != null && vm != null) {
+        bool callable = false;
+        if (reviver.is_object() && reviver.get_heapptr() != null) {
+            callable = ((HObject*)reviver.get_heapptr()).is_callable();
+        } else if (reviver.is_lightfunc()) {
+            callable = true;
+        }
+        if (callable) {
+            TVal[2] rev_args;
+            rev_args[0] = name_str;
+            rev_args[1] = val;
+            val = heap.call_fn(vm, reviver, &rev_args[0], 2, holder);
+        }
+    }
+
     return val;
 }
 
@@ -515,9 +526,9 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
                 TVal holder_tv;
                 holder_tv.set_object(holder);
 
-                // For now, skip the full walk and just return result without reviver
-                // Full reviver support requires VM re-dispatch which is complex
-                *ctx.result = result;
+                // ES5 §15.12.2 step 4: walk the root value through the reviver
+                TVal walked = json_walk(ctx.vm, ctx.heap, *reviver_arg, holder_tv, empty_key);
+                *ctx.result = walked;
             } else {
                 *ctx.result = result;
             }

@@ -32,7 +32,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
 - [ ] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
 - [ ] Fix `Object.defineProperties` to apply descriptors atomically: validate all before writing any
-- [ ] Verify `Object.create(null)` produces a truly prototype-less object that passes `Object.getPrototypeOf(o) === null`
+- [x] Verify `Object.create(null)` produces a truly prototype-less object that passes `Object.getPrototypeOf(o) === null`
 
 ---
 
@@ -50,7 +50,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Implement `Error.prototype.toString` to return `name + ": " + message` per ES5 §15.11.4.4 (currently uses default Object.toString)
 - [ ] Fix sort comparator throws being swallowed in `Array.prototype.sort` (plan 025, `src/builtins/array.c3`)
 - [ ] Fix JSON replacer throws being swallowed in `JSON.stringify` (plan 025, `src/builtins/json.c3`)
-- [ ] Fix `String.prototype.lastIndexOf` unsigned underflow: add early-return `if search_len > len` guard (plan 026 #7, `src/builtins/string.c3:1821`)
+- [x] Fix `String.prototype.lastIndexOf` unsigned underflow: add early-return `if search_len > len` guard (plan 026 #7, `src/builtins/string.c3:1821`)
 
 ---
 
@@ -72,7 +72,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `JSON.stringify` `replacer` array: only include listed keys in output per ES5 §15.12.3
 - [ ] Fix `JSON.stringify` `space` argument: honor numeric space > 10 clamped to 10 per ES5 §15.12.3
 - [ ] Fix `JSON.stringify` with `toJSON()` method on values: call it before serializing
-- [ ] Fix `JSON.parse` `reviver` function not being called on the root value (only on children)
+- [x] Fix `JSON.parse` `reviver` function not being called on the root value (only on children)
 - [ ] Fix `JSON.stringify` to throw `TypeError` on circular references instead of crashing
 
 ---
@@ -92,9 +92,9 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Symbol & Well-Known Symbols
 
-- [ ] Implement `Symbol.toPrimitive` lookup in `ToPrimitive`/`to_primitive_value` per ES6 §7.1.1
-- [ ] Implement `Symbol.toStringTag` lookup in `Object.prototype.toString` per ES6 §19.1.3.6
-- [ ] Implement `Symbol.hasInstance` lookup in `instanceof` operator per ES6 §12.10.4
+- [x] Implement `Symbol.toPrimitive` lookup in `ToPrimitive`/`to_primitive_value` per ES6 §7.1.1
+- [x] Implement `Symbol.toStringTag` lookup in `Object.prototype.toString` per ES6 §19.1.3.6
+- [x] Implement `Symbol.hasInstance` lookup in `instanceof` operator per ES6 §12.10.4
 - [x] Implement `Symbol.isConcatSpreadable` check in `Array.prototype.concat` per ES6 §22.1.3.1
 - [ ] Fix `Symbol.prototype.toString` to return `"Symbol(description)"` format per ES6 §19.4.3.2
 - [ ] Fix `Symbol.prototype[Symbol.toPrimitive]` to return the symbol itself per ES6 §19.4.3.5
@@ -115,12 +115,12 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Map, Set, WeakMap, WeakSet
 
-- [ ] Fix `Map.prototype.forEach` callback to receive `(value, key, map)` in that order per ES6 §23.1.3.5
-- [ ] Fix `Set.prototype.forEach` callback to receive `(value, value, set)` per ES6 §23.2.3.6
-- [ ] Implement `Map.prototype.keys` / `.values` / `.entries` returning iterators
-- [ ] Implement `Set.prototype.keys` / `.values` / `.entries` returning iterators
-- [ ] Implement `Map` constructor accepting an iterable of `[key, value]` pairs
-- [ ] Implement `Set` constructor accepting an iterable of values
+- [x] Fix `Map.prototype.forEach` callback to receive `(value, key, map)` in that order per ES6 §23.1.3.5
+- [x] Fix `Set.prototype.forEach` callback to receive `(value, value, set)` per ES6 §23.2.3.6
+- [x] Implement `Map.prototype.keys` / `.values` / `.entries` returning iterators
+- [x] Implement `Set.prototype.keys` / `.values` / `.entries` returning iterators
+- [x] Implement `Map` constructor accepting an iterable of `[key, value]` pairs
+- [x] Implement `Set` constructor accepting an iterable of values
 
 ---
 
@@ -137,12 +137,12 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Operators & Expressions
 
-- [ ] Fix `typeof` on undeclared variables to return `"undefined"` without throwing (currently throws VM_ERROR)
-- [ ] Fix `==` abstract equality: coerce objects via `ToPrimitive` before comparing with primitives per ES5 §11.9.3
+- [x] Fix `typeof` on undeclared variables to return `"undefined"` without throwing (currently throws VM_ERROR)
+- [x] Fix `==` abstract equality: coerce objects via `ToPrimitive` before comparing with primitives per ES5 §11.9.3
 - [ ] Fix `+` operator: when one operand is an object, call `ToPrimitive` with no hint (not number hint) per ES5 §11.6.1
-- [ ] Implement `**` (exponentiation) operator as `Math.pow` per ES2016 §12.6.3
-- [ ] Fix optional chaining `?.` to short-circuit correctly on `null` and `undefined` (currently parsed but behavior uncertain)
-- [ ] Fix logical assignment `||=`, `&&=`, `??=` to not assign when short-circuit condition is met per ES2021
+- [x] Implement `**` (exponentiation) operator as `Math.pow` per ES2016 §12.6.3
+- [x] Fix optional chaining `?.` to short-circuit correctly on `null` and `undefined` (currently parsed but behavior uncertain)
+- [x] Fix logical assignment `||=`, `&&=`, `??=` to not assign when short-circuit condition is met per ES2021
 - [ ] Fix comma operator in `for` init/update to evaluate all expressions and return the last value
 
 ---
@@ -151,13 +151,13 @@ Tasks are grouped by area but are otherwise independent.
 
 - [x] Implement `Object.getOwnPropertySymbols` per ES6 §19.1.2.7
 - [x] Implement `Reflect.ownKeys` returning string keys + symbol keys per ES6 §26.1.11
-- [ ] Implement `Object.entries` per ES2017 §19.1.2.5 (returns `[[key,value], ...]` array)
-- [ ] Implement `Object.fromEntries` per ES2019
-- [ ] Fix `Function.prototype.toString` to return `"function name() { [native code] }"` for builtins per ES2019
-- [ ] Implement `globalThis` global binding per ES2020 §18.1
-- [ ] Fix `with` statement to throw `SyntaxError` in strict mode per ES5 §12.10
+- [x] Implement `Object.entries` per ES2017 §19.1.2.5 (returns `[[key,value], ...]` array)
+- [x] Implement `Object.fromEntries` per ES2019
+- [x] Fix `Function.prototype.toString` to return `"function name() { [native code] }"` for builtins per ES2019
+- [x] Implement `globalThis` global binding per ES2020 §18.1
+- [x] Fix `with` statement to throw `SyntaxError` in strict mode per ES5 §12.10
 - [x] Implement `Array.prototype.copyWithin` per ES6 §22.1.3.3
-- [ ] Implement `Array.prototype.fill` per ES6 §22.1.3.6
+- [x] Implement `Array.prototype.fill` per ES6 §22.1.3.6
 - [ ] Implement `Array.prototype.keys` / `.values` / `.entries` per ES6 (array iterator methods)
 - [ ] Fix `String.prototype.padStart` / `padEnd` for fillString length > 1 character (currently may truncate incorrectly)
 - [x] Implement `String.prototype.trimStart` / `trimEnd` per ES2019 (`trimLeft`/`trimRight` aliases too)

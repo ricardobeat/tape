@@ -2989,6 +2989,24 @@ fn TVal? Vm.run(Vm* vm) {
                 break;
             }
 
+            // ES6 §12.10.4: Check Symbol.hasInstance on the constructor
+            if (vm.heap.hasinstance_symbol != null) {
+                HString* hasinst_key = vm.heap.hasinstance_symbol;
+                TVal? hasinst_val = rfunc.get_prop_proto(hasinst_key);
+                if (try hasinst_fn = hasinst_val) {
+                    bool hasinst_callable = hasinst_fn.is_lightfunc() ||
+                        (hasinst_fn.is_object() && hasinst_fn.get_heapptr() != null &&
+                         ((HObject*)hasinst_fn.get_heapptr()).is_callable());
+                    if (hasinst_callable) {
+                        // Call @@hasInstance with this=rval, arg=lval
+                        TVal result = vm.heap.call_fn(vm, hasinst_fn, &lval, 1, rval);
+                        if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                        ra.set_boolean(builtins::builtin_to_boolean(&result));
+                        break;
+                    }
+                }
+            }
+
             // §15.3.5.3 step 1: If Type(lval) is not Object → false
             if (!lval.is_object()) {
                 break;

@@ -272,6 +272,9 @@ struct Heap {
     // Cached Symbol.isConcatSpreadable (lazily created, rooted via this field).
     HString*            concatspreadable_symbol;
 
+    // Cached Symbol.hasInstance (lazily created, rooted via this field).
+    HString*            hasinstance_symbol;
+
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
 
@@ -1108,6 +1111,7 @@ fn void Heap.reset(&self) {
     self.iterator_symbol = null;
     self.toprimitive_symbol = null;
     self.concatspreadable_symbol = null;
+    self.hasinstance_symbol = null;
 
     // Reset shape system — free all shapes and transition table, then reinit
     if (self.trans_table != null) {
@@ -1698,6 +1702,11 @@ fn void Heap.mark_roots(&self) {
     // Mark the cached Symbol.isConcatSpreadable (may not be in strs[] or symbol registry)
     if (self.concatspreadable_symbol != null) {
         ((HeapHeader*)self.concatspreadable_symbol).set_reachable();
+    }
+
+    // Mark the cached Symbol.hasInstance (may not be in strs[] or symbol registry)
+    if (self.hasinstance_symbol != null) {
+        ((HeapHeader*)self.hasinstance_symbol).set_reachable();
     }
 
     // Mark global checkpoint keys

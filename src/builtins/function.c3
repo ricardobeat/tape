@@ -657,6 +657,101 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     ctx.result.set_object(bound_obj);
 }
 
+/// Function.prototype.toString()
+///
+/// Returns a string representation of the function.
+/// ES2019 §19.2.3.5
+fn void builtin_function_proto_toString(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    
+    if (this_val.is_lightfunc()) {
+        // Built-in function: "function name() { [native code] }"
+        uint fn_idx = (uint)(usz)this_val.get_heapptr();
+        BuiltinMeta meta = builtin_get_metadata(fn_idx);
+        
+        // Use the name from metadata, or "anonymous" if empty
+        char[] name = meta.name;
+        if (name.len == 0) {
+            name = "anonymous";
+        }
+        
+        // Build "function name() { [native code] }"
+        char[256] buf;
+        int len = libc::snprintf(&buf, 256, "function %s() { [native code] }", name.ptr);
+        if (len > 0 && len < 256) {
+            HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+            ctx.result.set_string(result);
+        } else {
+            ctx.result.set_undefined();
+        }
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.is_callable()) {
+            // For function objects, try to get the name from the function's .name property
+            HString* name_key = builtin_intern_string(ctx.heap, "name");
+            char* name_ptr = "anonymous";
+            usz name_len = 9;
+            
+            TVal? name_val = obj.get_prop_proto(name_key);
+            if (try nv = name_val) {
+                if (nv.is_string() && nv.get_heapptr() != null) {
+                    HString* name_str = (HString*)nv.get_heapptr();
+                    name_ptr = name_str.get_cstr();
+                    name_len = name_str.blen;
+                }
+            }
+            
+            // For compiled functions, check if we have source info
+            // Currently return "function name() { [native code] }" as placeholder
+            char[256] buf;
+            // Build "function name() { [native code] }"
+            buf[0] = 'f'; buf[1] = 'u'; buf[2] = 'n'; buf[3] = 'c'; buf[4] = 't'; buf[5] = 'i'; buf[6] = 'o'; buf[7] = 'n';
+            buf[8] = ' ';
+            int pos = 9;
+            for (usz i = 0; i < name_len && pos < 250; i++) {
+                buf[pos++] = name_ptr[i];
+            }
+            // Add "() { [native code] }"
+            char[] suffix = "() { [native code] }";
+            for (usz i = 0; i < suffix.len && pos < 255; i++) {
+                buf[pos++] = suffix[i];
+            }
+            buf[pos] = 0;
+            
+            HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
+            ctx.result.set_string(result);
+        } else {
+            // TypeError
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err_tostr = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.toString called on non-callable");
+            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+        }
+    } else {
+        // TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_tostr = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.toString called on non-function");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
+}
+
 /// Bound function [[Call]] handler.
 /// When a bound function is called, this handler unwraps the bound data,
 /// prepends bound args to the call args, and re-dispatches.
@@ -820,6 +915,12 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     TVal bind_tv;
     bind_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_BIND);
     proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WC);
+
+    // Add .toString method
+    HString* tostring_key = builtin_intern_string(heap, "toString");
+    TVal tostring_tv;
+    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_TOSTRING);
+    proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Set .constructor to the Function constructor object itself
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];

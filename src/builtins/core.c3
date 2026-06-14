@@ -196,7 +196,8 @@ const uint BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE = 299;
 const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
 const uint BUILTIN_ARRAY_PROTO_FINDLAST           = 307;
 const uint BUILTIN_ARRAY_PROTO_FINDLASTINDEX      = 308;
-const uint BUILTIN_COUNT                         = 312;
+const uint BUILTIN_FUNCTION_PROTO_TOSTRING       = 312;
+const uint BUILTIN_COUNT                         = 313;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1132,6 +1133,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 295: return { "some", 1 };
         case 296: return { "reduce", 1 };
         case 297: return { "reduceRight", 1 };
+        case 312: return { "toString", 0 };
         default: return { "", -1 };
     }
 }
@@ -1531,6 +1533,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_FUNCTION_PROTO_APPLY] = &builtin_function_proto_apply,
     [BUILTIN_FUNCTION_PROTO_BIND] = &builtin_function_proto_bind,
     [BUILTIN_FUNCTION_PROTO_CALL] = &builtin_function_proto_call,
+    [BUILTIN_FUNCTION_PROTO_TOSTRING] = &builtin_function_proto_toString,
     [BUILTIN_GENERATOR_FUNCTION] = &builtin_generator_function,
     [BUILTIN_GENERATOR_PROTO_NEXT] = &builtin_generator_proto_next,
     [BUILTIN_GENERATOR_PROTO_RETURN] = &builtin_generator_proto_return,

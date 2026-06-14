@@ -211,6 +211,25 @@ fn HString* ensure_concatspreadable_symbol(Heap* heap) {
     return sym;
 }
 
+/// Ensure the well-known @@hasInstance symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_hasinstance_symbol(Heap* heap) {
+    if (heap.hasinstance_symbol != null) return heap.hasinstance_symbol;
+    char[] desc = "hasInstance";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.hasinstance_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.hasinstance_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -538,6 +557,18 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             concat_flags.configurable = false;
             concat_flags.is_accessor = false;
             ctor.put_prop(concat_key, concat_val, concat_flags);
+        }
+    }
+
+    // Register Symbol.hasInstance as a well-known symbol property
+    // Per ES6 §19.4.2.5: non-writable, non-enumerable, non-configurable
+    HString* hasinst_sym = ensure_hasinstance_symbol(heap);
+    if (hasinst_sym != null) {
+        HString* hasinst_key = builtin_intern_string(heap, "hasInstance");
+        if (hasinst_key != null) {
+            TVal hasinst_val;
+            hasinst_val.set_string(hasinst_sym);
+            ctor.put_prop(hasinst_key, hasinst_val, hobject::PROP_FLAGS_NWC);
         }
     }
 
