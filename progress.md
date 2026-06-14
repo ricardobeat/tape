@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 165 (assignment expression eval order fix + Reflect global)
+**Last Updated:** Session 166 (Array.prototype length validation — ToUint32 + RangeError)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 165, 2026-06-14)
+## Summary (after Session 166, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | 12,531 |
-| Currently failing (phases 0-8) | 8,033 |
-| Pass rate (phases 0-8 only) | 60.9% |
-| Overall pass rate | 59.6% |
+| Currently passing (phases 0-8) | ~12,319 |
+| Currently failing (phases 0-8) | ~8,245 |
+| Pass rate (phases 0-8 only) | ~59.9% |
+| Overall pass rate | ~59.6% |
 
 ## Per-Phase Status
 
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 166 | Array.prototype length validation: proper ToUint32 (ES5 §9.6) for array_get_length, eliminating UB for Infinity/NaN lengths. Added array_to_length_checked with SameValue validation that throws RangeError per ES5 §15.4.4.x. Updated forEach/map/filter/every/some/reduce/reduceRight/indexOf/lastIndexOf. | TBD |
 | 165 | Assignment expression eval order fix: PUTVAR clears source register, so expression-assignment results (x=1, x+=1, x||=1, etc.) were returning undefined. Fixed by saving value to temp before PUTVAR clobber in compiler/expressions.c3. Also added Reflect global object. | +45 (phases 0-1,2,7) |
 | 164 | ToString decimal precision fix: progressively trim trailing digits in decimal notation path (vm_number_to_string, builtin_to_string, Number.prototype.toString) to produce shortest round-trip representation; e.g. 123.1234567→"123.1234567" not "123.12345670000001" | +46 (phases 3,5,8) |
 | 163 | NEW_OBJ lightfunc constructable check: non-constructor builtins (Object.seal/freeze/keys/etc.) now throw TypeError on `new` via `lightfunc_get_proto()` null check | +170 (phases 3,5,6) |

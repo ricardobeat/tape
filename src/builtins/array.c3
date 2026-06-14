@@ -353,10 +353,6 @@ fn void builtin_array(BuiltinContext* ctx) {
     ctx.result.set_object(arr);
 }
 
-// ============================================================================
-// Array.prototype helpers
-// ============================================================================
-
 /// Helper: get the 'this' value as an object for Array.prototype methods.
 fn HObject* array_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -383,26 +379,72 @@ fn HObject* array_proto_get_this(BuiltinContext* ctx) {
     return null;
 }
 
-/// Get the 'length' property of an array-like object as a uint.
-fn uint array_get_length(HObject* obj, Heap* heap) {
-    // Fast path: ARRAY uses cached array_length field (no prop table walk).
-    if (obj.get_class() == ARRAY) {
-        return *obj.array_len_ptr();
+// ============================================================================
+// Array.prototype helpers
+// ============================================================================
+
+/// ES5 §9.6 ToUint32 — convert a double to uint32 per the spec algorithm.
+/// NaN, ±Infinity, ±0 → 0. Otherwise floor(abs(x)) mod 2^32.
+fn uint to_uint32(double val) {
+    // NaN: NaN != NaN is true in IEEE 754
+    if (val != val) return 0;
+    // ±Infinity
+    if (val == 1.0 / 0.0 || val == -1.0 / 0.0) return 0;
+    // Fast path: value fits in int32 without conversion issues
+    if (val >= 0.0 && val < 4294967296.0 && val == math::floor(val)) {
+        return (uint)val;
     }
-    // ARGUMENTS and other array-likes: read from prop table.
+    // General case: val mod 2^32 using floor-based modulo (ES5 §9.6 step 4)
+    double two32 = 4294967296.0;
+    double n = val - math::floor(val / two32) * two32;
+    if (n < 0.0) n += two32;
+    return (uint)n;
+}
+
+/// Check if a raw double length value is a valid array length per ES5 §15.4.4.x.
+/// Returns false for NaN, ±Infinity, negative, non-integer, > 2^32-1, or -0.
+fn bool is_valid_array_length(double raw) {
+    if (raw != raw) return false;                                      // NaN
+    if (raw < 0.0) return false;                                       // negative
+    if (raw == 0.0 && 1.0 / raw < 0.0) return false;                  // -0
+    if (raw > 4294967295.0) return false;                              // > 2^32-1 or Infinity
+    return raw == math::floor(raw);                                     // must be integer
+}
+
+/// Throw a RangeError with the given message.
+fn void arr_throw_range_error(BuiltinContext* ctx, char[] msg) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.range_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
+}
+
+/// Read the raw 'length' property as a double from an array-like object.
+fn double array_get_length_raw(HObject* obj, Heap* heap) {
+    if (obj.get_class() == ARRAY) {
+        return (double)*obj.array_len_ptr();
+    }
     if (obj.get_class() == ARGUMENTS) {
         HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (len_key == null) return 0;
         TVal? len_val = obj.get_prop(len_key);
         if (try v = len_val) {
-            if (v.is_fastint()) return (uint)(long)v.get_fastint();
-            if (v.is_number()) return (uint)(long)v.get_number();
+            if (v.is_fastint()) return (double)v.get_fastint();
+            if (v.is_number()) return v.get_number();
         }
-        // Fallback: might be inherited
         len_val = obj.get_prop_proto(len_key);
         if (try v = len_val) {
-            if (v.is_fastint()) return (uint)(long)v.get_fastint();
-            if (v.is_number()) return (uint)(long)v.get_number();
+            if (v.is_fastint()) return (double)v.get_fastint();
+            if (v.is_number()) return v.get_number();
         }
         return 0;
     }
@@ -410,10 +452,35 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
     if (len_key == null) return 0;
     TVal? len_val = obj.get_prop_proto(len_key);
     if (try v = len_val) {
-        if (v.is_fastint()) return (uint)(long)v.get_fastint();
-        if (v.is_number()) return (uint)(long)v.get_number();
+        if (v.is_fastint()) return (double)v.get_fastint();
+        if (v.is_number()) return v.get_number();
     }
     return 0;
+}
+
+/// ES5 §15.4.4.x: Read length, apply ToUint32, validate via SameValue.
+/// Returns true on success (out_len set). Returns false and sets
+/// ctx.should_throw + RangeError if the length is invalid.
+fn bool array_to_length_checked(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out_len) {
+    double raw = array_get_length_raw(obj, heap);
+    uint len = to_uint32(raw);
+    if (!is_valid_array_length(raw)) {
+        arr_throw_range_error(ctx, "Invalid array length");
+        return false;
+    }
+    *out_len = len;
+    return true;
+}
+
+/// Get the 'length' property of an array-like object as a uint.
+/// Uses proper ToUint32 conversion (safe for Infinity, NaN, etc.).
+fn uint array_get_length(HObject* obj, Heap* heap) {
+    // Fast path: ARRAY uses cached array_length field (no prop table walk).
+    if (obj.get_class() == ARRAY) {
+        return *obj.array_len_ptr();
+    }
+    // For non-array objects, read raw and apply ToUint32.
+    return to_uint32(array_get_length_raw(obj, heap));
 }
 
 /// Set the 'length' property of an array-like object.
@@ -1393,7 +1460,8 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    uint len = array_get_length(obj, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
     if (ctx.argc == 0) {
         ctx.result.set_fastint(-1);
@@ -1439,7 +1507,8 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    uint len = array_get_length(obj, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
     if (ctx.argc == 0) {
         ctx.result.set_fastint(-1);
@@ -1978,7 +2047,8 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2006,7 +2076,8 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2047,7 +2118,8 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2160,7 +2232,8 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2192,7 +2265,8 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2222,7 +2296,8 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
         return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     uint k = 0;
     TVal acc;
     bool has_acc;
@@ -2278,7 +2353,8 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         return;
     }
     TVal callback = ctx.regs[ctx.base_reg];
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     if (len == 0 && ctx.argc < 2) {
         arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
         return;
