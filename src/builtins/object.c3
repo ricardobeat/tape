@@ -1471,7 +1471,8 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
 
             // ES5 §8.12.9 step 11: non-configurable accessor — reject if get/set changes
-            if (!cur_flags.configurable) {
+            // Only valid when the existing property is already an accessor.
+            if (!cur_flags.configurable && cur_flags.is_accessor) {
                 if (has_get_in_desc && !same_value(hobject::hobject_access_getter(*current), desc_vals[0])) {
                     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                     if (catch err8a = err_raw) {
@@ -1510,8 +1511,19 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 }
             }
 
-            if (has_get_in_desc) hobject::hobject_set_access_getter(*current, desc_vals[0], ctx.heap);
-            if (has_set_in_desc) hobject::hobject_set_access_setter(*current, desc_vals[1], ctx.heap);
+            if (!cur_flags.is_accessor) {
+                // Data → accessor conversion: create a new GetterSetter cell.
+                // *current holds a data value (number, string, etc.) — calling
+                // hobject_set_access_getter on it would crash on slot.get_heapptr().
+                // Decref the old data value (may be a heap pointer like a string)
+                // and replace with a fresh GS cell.
+                ctx.heap.decref_tval(current);
+                *current = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
+            } else {
+                // Update existing accessor: modify the GS cell in-place.
+                if (has_get_in_desc) hobject::hobject_set_access_getter(*current, desc_vals[0], ctx.heap);
+                if (has_set_in_desc) hobject::hobject_set_access_setter(*current, desc_vals[1], ctx.heap);
+            }
 
             // Update flags — only overwrite fields present in descriptor
             cur_flags.is_accessor = true;

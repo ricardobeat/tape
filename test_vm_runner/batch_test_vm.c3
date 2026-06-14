@@ -43,7 +43,6 @@ fn int run_manifest_loop(char[] mpath) {
     Vm*? v_opt = vm::vm_create(hp);
     if (catch err = v_opt) { return 1; }
     Vm* v = v_opt;
-    defer vm::vm_destroy(v);
 
     io::printfn("=== Batch test262 runner ===");
     int pass = 0;
@@ -60,14 +59,16 @@ fn int run_manifest_loop(char[] mpath) {
 
             bool report = (total % 100 == 0);
 
-            // Reset heap+VM — reuses existing backing allocations
+            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs
             hp.reset();
-            if (!vm::vm_reset(v, hp)) {
+            vm::vm_destroy(v);
+            Vm*? v2 = vm::vm_create(hp);
+            if (catch err = v2) {
                 fail++;
-                if (report) { io::printfn("FAIL  %s", (String)buf[:len]); }
                 total++;
                 continue;
             }
+            v = v2;
 
             char[] path = buf[:len];
             int rc = run_one_test(v, hp, path, assert_src, ph_src);
@@ -83,6 +84,7 @@ fn int run_manifest_loop(char[] mpath) {
         };
     }
 
+    vm::vm_destroy(v);
     io::printfn("---");
     io::printfn("Total: %d  Pass: %d  Fail: %d", total, pass, fail);
     return 0;
@@ -95,8 +97,12 @@ fn int run_manifest_loop(char[] mpath) {
 fn int exec_js(Vm* v, Heap* hp, char[] src) {
     Lexer lx = lexer::lexer_init(src, hp);
     CompiledFunction*? f = compiler::compile(&lx, hp);
-    if (catch err = f) { return 1; }
-    if (catch err = v.execute(f)) { return 1; }
+    if (catch err = f) {
+        return 1;
+    }
+    if (catch err = v.execute(f)) {
+        return 1;
+    }
     return 0;
 }
 
@@ -160,7 +166,6 @@ fn int run_worker_loop() {
     Vm*? v_opt = vm::vm_create(hp);
     if (catch err = v_opt) { return 1; }
     Vm* v = v_opt;
-    defer vm::vm_destroy(v);
 
     char[4096] buf;
     while (libc::fgets(&buf[0], 4096, libc::stdin()) != null) {
@@ -170,13 +175,16 @@ fn int run_worker_loop() {
             buf[len] = 0;
             if (len == 0) { continue; }
 
-            // Reset heap+VM state — no malloc/free of the structs themselves
+            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs
             hp.reset();
-            if (!vm::vm_reset(v, hp)) {
+            vm::vm_destroy(v);
+            Vm*? v2 = vm::vm_create(hp);
+            if (catch err = v2) {
                 io::printfn("FAIL %s", (String)buf[:len]);
                 libc::fflush(libc::stdout());
                 continue;
             }
+            v = v2;
 
             char[] path = buf[:len];
             int rc = run_one_test(v, hp, path, assert_src, ph_src);
@@ -189,6 +197,7 @@ fn int run_worker_loop() {
             libc::fflush(libc::stdout());
         };
     }
+    vm::vm_destroy(v);
     return 0;
 }
 

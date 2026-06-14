@@ -1567,12 +1567,31 @@ fn void vm_destroy(Vm* vm) {
 fn bool vm_reset(Vm* vm, Heap* heap) {
     if (vm == null || heap == null) { return false; }
 
-    // Rewind the value stack — no free/realloc needed
+    // Rewind the value stack and clear stale TVal refs — after heap.reset(),
+    // all HObject*/HString* are freed, so any lingering TVal heap pointer
+    // would cause use-after-free when overwritten.
+    for (uint i = 0; i < vm.valstack_size; i++) {
+        vm.valstack[i].set_undefined();
+    }
     vm.valstack_top    = vm.valstack;
     vm.valstack_bottom = vm.valstack;
+
+    // Clear stale TVal/pointer refs in activations — all heap objects from the
+    // previous run are freed, so this_binding, tv_func, etc. are dangling.
+    for (uint i = 0; i < vm.activation_count; i++) {
+        vm.activations[i].this_binding.set_undefined();
+        vm.activations[i].tv_func.set_undefined();
+        vm.activations[i].func = null;
+        vm.activations[i].parent = null;
+        vm.activations[i].var_env = null;
+        vm.activations[i].lex_env = null;
+        vm.activations[i].cat = null;
+        vm.activations[i].new_target = null;
+    }
     vm.activation_count = 0;
     vm.has_error        = false;
     vm.throw_pending    = false;
+    vm.throw_value.set_undefined();
     vm.current_func     = null;
     vm.curr_pc          = null;
     vm.return_val.set_undefined();

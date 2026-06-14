@@ -1002,6 +1002,20 @@ fn void Heap.reset(&self) {
     self.symbol_registry_count = 0;
     self.symbol_registry_cap   = 0;
 
+    // Free env pool blocks and clear freelist — env nodes hold TVal bindings
+    // that point into the (now-freed) heap, so reusing a stale freelist node
+    // in the next run would cause use-after-free on tval_copy_ref decref.
+    {
+        void* b = self.env_pool_blocks;
+        while (b != null) {
+            void* next = *(void**)b;
+            self.free_func(self.heap_udata, b);
+            b = next;
+        }
+        self.env_pool_blocks = null;
+    }
+    self.env_freelist = null;
+
     // Free checkpoint state
     if (self.checkpoint_keys != null) {
         libc::free(self.checkpoint_keys);
@@ -1077,6 +1091,19 @@ fn void Heap.reset(&self) {
     // Clear longjmp state
     self.lj.lj_type = LjType.UNKNOWN;
     self.lj.iserror = false;
+    self.lj.value1.set_undefined();
+    self.lj.value2.set_undefined();
+
+    // Clear cached TVal fields that may hold heap pointers
+    self.error_value.set_undefined();
+    self.yield_value.set_undefined();
+    self.has_error = false;
+
+    // Clear cached symbol pointers — these point into the (now-freed)
+    // string table and must not be reused after reset.  They are
+    // re-populated lazily by ensure_iterator_symbol / ensure_toprimitive_symbol.
+    self.iterator_symbol = null;
+    self.toprimitive_symbol = null;
 
     // Reset shape system — free all shapes and transition table, then reinit
     if (self.trans_table != null) {
@@ -1752,7 +1779,6 @@ fn void Heap.sweep_strings(&self) {
         // the string table to keep them alive.  Only free strings the mark
         // phase did not reach (keys of live objects are marked by drain_gray).
         if (entry.refcount == 1 && !((HeapHeader*)entry).is_reachable()) {
-            libc::fprintf(libc::stderr(), "DBG sweep free: '%.*s'\n", (int)(entry.blen > 40 ? 40 : entry.blen), entry.get_cstr());
             self.str_table[i] = STR_TABLE_TOMBSTONE;
             if (self.str_table_used > 0) { self.str_table_used--; }
             self.free_string(entry);
