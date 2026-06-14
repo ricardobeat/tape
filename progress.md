@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 179 (Object.defineProperties data→accessor)
+**Last Updated:** Session 180 (Five backlog items batch)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 179, 2026-06-14)
+## Summary (after Session 180, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~13,507 |
-| Currently failing (phases 0-8) | ~7,057 |
-| Overall pass rate | ~64.2% |
+| Currently passing (phases 0-8) | ~14,425 |
+| Currently failing (phases 0-8) | ~7,178 |
+| Overall pass rate | ~66.8% |
 
 ## Per-Phase Status
 
@@ -20,17 +20,17 @@
 | 0-1: Core VM | 2,185 | 593 | 295 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 3,618 | 2,181 | 1,967 |
-| 4: Error Handling | 402 | 108 | 93 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,906 | 2,184 | 1,525 |
+| 3: Object System | 7,766 | 4,064 | 1,735 | 1,967 |
+| 4: Error Handling | 402 | 120 | 81 | 201 |
+| 5: Built-in Constructors | 8,615 | 4,912 | 2,178 | 1,525 |
 | 6: Prototype Methods | 4,713 | 2,181 | 1,596 | 936 |
 | 7: ES5 Features | 1,240 | 193 | 100 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 881 | 403 | 1,463 |
-| 11: Arrow/Templates | 427 | 60 | 43 | 324 |
+| 8: ES5 Built-in Objects | 2,747 | 917 | 367 | 1,463 |
+| 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
-| 15: Classes | 8,520 | 62 | 200 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 240 | 400 | 974 |
+| 15: Classes | 8,520 | 67 | 195 | 8,258 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 286 | 354 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Deferred Items
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 180 | Five backlog items implemented: Object.getOwnPropertySymbols, Reflect.ownKeys, Error.captureStackTrace (stub), Array.prototype.findLast/findLastIndex, Symbol.isConcatSpreadable in Array.prototype.concat. All 43 Rosetta tests pass. | +918 (Phase 3: +446, Phase 4: +12, Phase 5: +6, Phase 8: +36) |
 | 179 | Object.defineProperties data→accessor conversion fix: when a property was data (number/string/etc.) and the descriptor specified an accessor, the old code passed the data TVal to `hobject_set_access_getter` which crashed on `slot.get_heapptr()`. Now detects data→accessor transition, decrefs the old data value, and creates a fresh GetterSetter cell via `hobject_create_accessors`. | Regression fix (no test262 delta) |
 | 178 | Array length validation per ES5 §15.4.5.1 (ArraySetLength): PUTPROP fast path and `Object.defineProperty` for Array `length` now validate ToUint32(value)==ToNumber(value) — RangeError on NaN/±Infinity/negative/non-integer/>2^32-1, TypeError on undefined. Replaces naive `(uint)rc.get_number()` cast that silently truncated. | +830 (Phase 5: +532, Phase 6: +298) |
 | 177 | RegExp.prototype.flags alphabetical order (ES2015 §21.2.5.7): bit 8 (dotAll) was outputting 'd' instead of 's', and `s` was misplaced before `i` in the output order. Reordered the conditional checks so flag chars are emitted in alphabetical order `g,i,m,s,u,y` (matching the spec's `gimsu` core + `y` for sticky). | TBD (Phase 5: RegExp.prototype.flags tests) |

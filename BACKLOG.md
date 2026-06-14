@@ -41,13 +41,13 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Implement `String.prototype.normalize(form)` — NFC/NFD/NFKC/NFKD normalization per ES6 §21.1.3.12 (~30 test262 tests)
 - [ ] Fix `Array.prototype.find` / `findIndex` to accept a `thisArg` second argument and call callback correctly per ES6 §22.1.3.8 (`src/builtins/array.c3`)
 - [ ] Implement `Array.prototype.flat` and `Array.prototype.flatMap` per ES2019 (~20 tests, phase 6)
-- [ ] Implement `Array.prototype.at` per ES2022 (~10 tests)
-- [ ] Implement `String.prototype.at` per ES2022 (~10 tests)
-- [ ] Implement `Array.prototype.findLast` / `findLastIndex` per ES2023 (~10 tests)
+- [x] Implement `Array.prototype.at` per ES2022 (~10 tests)
+- [x] Implement `String.prototype.at` per ES2022 (~10 tests)
+- [x] Implement `Array.prototype.findLast` / `findLastIndex` per ES2023 (~10 tests)
 - [ ] Fix `Number.prototype.toFixed` for large values and negative fractionDigits edge cases per ES5 §15.7.4.5
 - [ ] Fix `Number.prototype.toExponential` edge cases (negative fractionDigits, NaN, Infinity) per ES5 §15.7.4.6
 - [ ] Fix `Number.prototype.toPrecision` edge cases (precision=undefined falls back to toString, range checks) per ES5 §15.7.4.7
-- [ ] Implement `Error.prototype.toString` to return `name + ": " + message` per ES5 §15.11.4.4 (currently uses default Object.toString)
+- [x] Implement `Error.prototype.toString` to return `name + ": " + message` per ES5 §15.11.4.4 (currently uses default Object.toString)
 - [ ] Fix sort comparator throws being swallowed in `Array.prototype.sort` (plan 025, `src/builtins/array.c3`)
 - [ ] Fix JSON replacer throws being swallowed in `JSON.stringify` (plan 025, `src/builtins/json.c3`)
 - [ ] Fix `String.prototype.lastIndexOf` unsigned underflow: add early-return `if search_len > len` guard (plan 026 #7, `src/builtins/string.c3:1821`)
@@ -95,7 +95,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Implement `Symbol.toPrimitive` lookup in `ToPrimitive`/`to_primitive_value` per ES6 §7.1.1
 - [ ] Implement `Symbol.toStringTag` lookup in `Object.prototype.toString` per ES6 §19.1.3.6
 - [ ] Implement `Symbol.hasInstance` lookup in `instanceof` operator per ES6 §12.10.4
-- [ ] Implement `Symbol.isConcatSpreadable` check in `Array.prototype.concat` per ES6 §22.1.3.1
+- [x] Implement `Symbol.isConcatSpreadable` check in `Array.prototype.concat` per ES6 §22.1.3.1
 - [ ] Fix `Symbol.prototype.toString` to return `"Symbol(description)"` format per ES6 §19.4.3.2
 - [ ] Fix `Symbol.prototype[Symbol.toPrimitive]` to return the symbol itself per ES6 §19.4.3.5
 
@@ -130,7 +130,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `RangeError` for `Array` constructor with invalid length (non-integer or > 2^32-1)
 - [ ] Fix `SyntaxError` from `eval()` to propagate as a catchable exception
 - [ ] Fix `try/catch/finally` with `break`/`continue` inside: finally must still run and value must be correct
-- [ ] Implement `Error.captureStackTrace` stub (returns undefined) so Node.js-style code doesn't crash
+- [x] Implement `Error.captureStackTrace` stub (returns undefined) so Node.js-style code doesn't crash
 - [ ] Fix error `stack` property to be a string (currently missing or undefined on thrown errors)
 
 ---
@@ -149,18 +149,18 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Miscellaneous ES5/ES6
 
-- [ ] Implement `Object.getOwnPropertySymbols` per ES6 §19.1.2.7
-- [ ] Implement `Reflect.ownKeys` returning string keys + symbol keys per ES6 §26.1.11
+- [x] Implement `Object.getOwnPropertySymbols` per ES6 §19.1.2.7
+- [x] Implement `Reflect.ownKeys` returning string keys + symbol keys per ES6 §26.1.11
 - [ ] Implement `Object.entries` per ES2017 §19.1.2.5 (returns `[[key,value], ...]` array)
 - [ ] Implement `Object.fromEntries` per ES2019
 - [ ] Fix `Function.prototype.toString` to return `"function name() { [native code] }"` for builtins per ES2019
 - [ ] Implement `globalThis` global binding per ES2020 §18.1
 - [ ] Fix `with` statement to throw `SyntaxError` in strict mode per ES5 §12.10
-- [ ] Implement `Array.prototype.copyWithin` per ES6 §22.1.3.3
+- [x] Implement `Array.prototype.copyWithin` per ES6 §22.1.3.3
 - [ ] Implement `Array.prototype.fill` per ES6 §22.1.3.6
 - [ ] Implement `Array.prototype.keys` / `.values` / `.entries` per ES6 (array iterator methods)
 - [ ] Fix `String.prototype.padStart` / `padEnd` for fillString length > 1 character (currently may truncate incorrectly)
-- [ ] Implement `String.prototype.trimStart` / `trimEnd` per ES2019 (`trimLeft`/`trimRight` aliases too)
+- [x] Implement `String.prototype.trimStart` / `trimEnd` per ES2019 (`trimLeft`/`trimRight` aliases too)
 
 ---
 

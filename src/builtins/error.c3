@@ -180,6 +180,39 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
     }
 }
 // ============================================================================
+// Error.captureStackTrace — V8/SpiderMonkey extension (ES6 §19.5.2.1 stub)
+// ============================================================================
+
+fn void builtin_error_captureStackTrace(BuiltinContext* ctx) {
+    // Error.captureStackTrace(targetObject [, constructorOpt])
+    if (ctx.argc < 1 || !ctx.regs[ctx.base_reg].is_object()) {
+        // Throw TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Error.captureStackTrace requires an object argument");
+            if (msg_str != null) {
+                TVal msg_val;
+                msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+        }
+        return;
+    }
+    HObject* target = (HObject*)ctx.regs[ctx.base_reg].get_heapptr();
+    // Set target.stack = "" (empty string stub)
+    HString* stack_key = builtin_intern_string(ctx.heap, "stack");
+    HString* empty = builtin_intern_string(ctx.heap, "");
+    TVal stack_tv;
+    stack_tv.set_string(empty);
+    target.put_prop(stack_key, stack_tv, hobject::PROP_FLAGS_WC);
+    ctx.result.set_undefined();
+}
+
+// ============================================================================
 // Error built-in registration
 // ============================================================================
 
@@ -289,8 +322,58 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     uri_err_constr.set_lightfunc((void*)(usz)BUILTIN_URI_ERROR);
     uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WC);
 
-    // --- Register Error global constructor ---
-    if (!register_simple_builtin(global_env, heap, "Error", BUILTIN_ERROR)) return false;
+    // --- Register Error global constructor as HObject (for static methods like captureStackTrace) ---
+    {
+        HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (catch err = ctor_raw) return false;
+        HObject* err_ctor = ctor_raw;
+        (*err_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ERROR;
+
+        // Wire prototype.constructor → err_ctor
+        TVal ctor_tv;
+        ctor_tv.set_object(err_ctor);
+        err_proto.put_prop(constructor_key, ctor_tv, hobject::PROP_FLAGS_WC);
+
+        // Wire err_ctor.prototype → err_proto
+        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal proto_tv;
+        proto_tv.set_object(err_proto);
+        PropFlags proto_pflags;
+        proto_pflags.writable = false;
+        proto_pflags.enumerable = false;
+        proto_pflags.configurable = false;
+        proto_pflags.is_accessor = false;
+        err_ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+        // Error.length = 1
+        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal length_tv;
+        length_tv.set_fastint(1);
+        err_ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+
+        // Register static method: Error.captureStackTrace
+        HString* capture_key = builtin_intern_string(heap, "captureStackTrace");
+        TVal capture_tv;
+        capture_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_CAPTURE_STACK_TRACE);
+        err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WEC);
+
+        // Register in global environment
+        uint hash = heap.hash_string("Error");
+        HString* existing = heap.str_table_lookup("Error", hash);
+        HString* err_key;
+        if (existing != null) {
+            err_key = existing;
+        } else {
+            HString*? new_key = hstring::hstring_alloc(heap, "Error", hash);
+            if (catch e = new_key) return false;
+            heap.str_table_insert(new_key);
+            err_key = new_key;
+        }
+        TVal err_val;
+        err_val.set_object(err_ctor);
+        set_func_ctor_name_length(err_ctor, heap, "Error", 1);
+        env::env_declare_nonenum(global_env, err_key, err_val);
+    }
 
     // --- Register TypeError ---
     if (!register_simple_builtin(global_env, heap, "TypeError", BUILTIN_TYPE_ERROR)) return false;

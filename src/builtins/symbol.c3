@@ -192,6 +192,25 @@ fn HString* ensure_toprimitive_symbol(Heap* heap) {
     return sym;
 }
 
+/// Ensure the well-known @@isConcatSpreadable symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_concatspreadable_symbol(Heap* heap) {
+    if (heap.concatspreadable_symbol != null) return heap.concatspreadable_symbol;
+    char[] desc = "isConcatSpreadable";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.concatspreadable_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.concatspreadable_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -502,6 +521,23 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             TVal toprim_val;
             toprim_val.set_string(toprim_sym);
             ctor.put_prop(toprim_key, toprim_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.isConcatSpreadable as a well-known symbol property
+    // Per ES6 §19.4.2.3: writable=true, enumerable=false, configurable=false
+    HString* concat_sym = ensure_concatspreadable_symbol(heap);
+    if (concat_sym != null) {
+        HString* concat_key = builtin_intern_string(heap, "isConcatSpreadable");
+        if (concat_key != null) {
+            TVal concat_val;
+            concat_val.set_string(concat_sym);
+            hobject::PropFlags concat_flags;
+            concat_flags.writable = true;
+            concat_flags.enumerable = false;
+            concat_flags.configurable = false;
+            concat_flags.is_accessor = false;
+            ctor.put_prop(concat_key, concat_val, concat_flags);
         }
     }
 

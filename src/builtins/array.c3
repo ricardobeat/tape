@@ -1564,7 +1564,7 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Array.prototype.concat (ES5 §15.4.4.4)
+// Array.prototype.concat (ES6 §22.1.3.1 — with Symbol.isConcatSpreadable)
 // ============================================================================
 fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
@@ -1589,21 +1589,50 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
         n++;
     }
 
-    // Then process each argument
+    // Get the @@isConcatSpreadable symbol key (cached on heap)
+    HString* concat_sym = ensure_concatspreadable_symbol(ctx.heap);
+
+    // Then process each argument (ES6 §22.1.3.1.2)
     for (ushort arg_i = 0; arg_i < ctx.argc; arg_i++) {
         TVal arg = ctx.regs[ctx.base_reg + arg_i];
 
-        if (arg.is_object() && ((HObject*)arg.get_heapptr()).get_class() == hobject::ObjClass.ARRAY) {
-            // If argument is an Array, copy its elements
-            HObject* arg_arr = (HObject*)arg.get_heapptr();
-            uint arg_len = array_get_length(arg_arr, ctx.heap);
-            for (uint i = 0; i < arg_len; i++) {
-                TVal elem = array_get_elem(arg_arr, i, ctx.heap);
-                array_set_elem(result, n, elem, ctx.heap);
+        // Default: spread if Array, otherwise add as element
+        bool spread = false;
+
+        if (arg.is_object() && arg.get_heapptr() != null) {
+            HObject* arg_obj = (HObject*)arg.get_heapptr();
+            bool is_array = arg_obj.get_class() == hobject::ObjClass.ARRAY;
+
+            if (concat_sym != null) {
+                // Look up @@isConcatSpreadable on the argument
+                TVal? spreadable_val = arg_obj.get_prop_proto(concat_sym);
+                if (try spreadable = spreadable_val) {
+                    // Symbol property found — use its truthiness to decide
+                    spread = builtin_to_boolean(&spreadable);
+                } else {
+                    // Symbol property absent — fall back to default
+                    spread = is_array;
+                }
+            } else {
+                // Symbol not available — fall back to default
+                spread = is_array;
+            }
+
+            if (spread) {
+                // Spread elements from the argument
+                uint arg_len = array_get_length(arg_obj, ctx.heap);
+                for (uint i = 0; i < arg_len; i++) {
+                    TVal elem = array_get_elem(arg_obj, i, ctx.heap);
+                    array_set_elem(result, n, elem, ctx.heap);
+                    n++;
+                }
+            } else {
+                // Add as single element
+                array_set_elem(result, n, arg, ctx.heap);
                 n++;
             }
         } else {
-            // Otherwise, add the argument itself
+            // Primitive — add as single element
             array_set_elem(result, n, arg, ctx.heap);
             n++;
         }
@@ -2197,6 +2226,76 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
     ctx.result.set_undefined();
 }
 
+/// Array.prototype.findLast(callbackfn[, thisArg]) — ES2023 §22.1.3.9
+/// Returns the last element for which callbackfn returns truthy,
+/// or undefined if none.
+fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
+    }
+    HObject* o = o_raw;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
+    }
+    TVal callback = ctx.regs[ctx.base_reg];
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+    uint len = array_get_length(o, ctx.heap);
+    for (long k = (long)len - 1; k >= 0; k--) {
+        if (arr_has_prop(o, (uint)k, ctx.heap)) {
+            TVal v;
+            if (arr_get_elem(o, (uint)k, ctx.heap, &v)) {
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, (uint)k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (builtin_to_boolean(&test)) {
+                    (*ctx.result) = v;
+                    return;
+                }
+            }
+        }
+    }
+    ctx.result.set_undefined();
+}
+
+/// Array.prototype.findLastIndex(callbackfn[, thisArg]) — ES2023 §22.1.3.10
+/// Returns the last index for which callbackfn returns truthy,
+/// or -1 if none.
+fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
+    if (catch err = o_raw) {
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
+        return;
+    }
+    HObject* o = o_raw;
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
+    }
+    TVal callback = ctx.regs[ctx.base_reg];
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+    uint len = array_get_length(o, ctx.heap);
+    for (long k = (long)len - 1; k >= 0; k--) {
+        if (arr_has_prop(o, (uint)k, ctx.heap)) {
+            TVal v;
+            if (arr_get_elem(o, (uint)k, ctx.heap, &v)) {
+                TVal test = arr_call_callback(ctx, callback, thisArg, v, (uint)k, o);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (builtin_to_boolean(&test)) {
+                    TVal k_tv; k_tv.set_fastint(k);
+                    (*ctx.result) = k_tv;
+                    return;
+                }
+            }
+        }
+    }
+    TVal neg; neg.set_fastint(-1);
+    (*ctx.result) = neg;
+}
+
 /// Array.prototype.findIndex(callbackfn[, thisArg]) — ES6 §22.1.3.9
 /// Returns the index of the first element for which callbackfn returns truthy,
 /// or -1 if none.
@@ -2469,6 +2568,8 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
     if (!register_array_proto_method(proto, heap, "find",       BUILTIN_ARRAY_PROTO_FIND))       return false;
     if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX))  return false;
+    if (!register_array_proto_method(proto, heap, "findLast",      BUILTIN_ARRAY_PROTO_FINDLAST))      return false;
+    if (!register_array_proto_method(proto, heap, "findLastIndex", BUILTIN_ARRAY_PROTO_FINDLASTINDEX)) return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
     if (!register_compiled_proto_method(proto, heap, global_env, "flatMap",
         "(callback,thisArg){var O=Object(this);var len=O.length;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;while(j<mapped.length){A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;

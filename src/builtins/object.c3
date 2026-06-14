@@ -520,6 +520,219 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Object.getOwnPropertySymbols — ES6 §19.1.2.7
+// ============================================================================
+/// Returns an array of all symbol-keyed own properties of the given object.
+fn void builtin_object_getOwnPropertySymbols(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // ES6 §19.1.2.7: throw TypeError for null/undefined,
+    // use ToObject wrapper for primitives
+    if (arg.is_null() || arg.is_undefined()) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_gpn = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.getOwnPropertySymbols called on non-object");
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
+
+    HObject* obj;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
+    } else {
+        // ToObject wrapper for primitives
+        if (!builtin_to_object(ctx, arg)) {
+            ctx.result.set_undefined();
+            return;
+        }
+        obj = (HObject*)ctx.result.get_heapptr();
+    }
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    uint idx = 0;
+
+    // Collect only symbol-keyed own properties
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
+            if (key.is_symbol()) {
+                TVal key_tv;
+                key_tv.set_string(key);
+                array_set_elem(arr, idx, key_tv, ctx.heap);
+                idx++;
+            }
+        }
+    }
+
+    // Set .length
+    TVal len_tv;
+    len_tv.set_fastint((long)idx);
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.set_object(arr);
+}
+
+// ============================================================================
+// Reflect.ownKeys — ES6 §26.1.11
+// ============================================================================
+/// Returns an array of the target object's own property keys (strings and symbols).
+/// Unlike Object.keys, does NOT filter by enumerable — returns ALL own keys.
+/// Order: integer indices ascending, then string keys in insertion order, then symbol keys.
+fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // ES6 §26.1.11: throw TypeError for null/undefined,
+    // use ToObject wrapper for primitives
+    if (arg.is_null() || arg.is_undefined()) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_rak = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Reflect.ownKeys called on non-object");
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
+
+    HObject* obj;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
+    } else {
+        // ToObject wrapper for primitives
+        if (!builtin_to_object(ctx, arg)) {
+            ctx.result.set_undefined();
+            return;
+        }
+        obj = (HObject*)ctx.result.get_heapptr();
+    }
+
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    uint idx = 0;
+
+    // STRING exotic: integer indices [0, clen) are own properties
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            for (uint i = 0; i < prim.char_length(); i++) {
+                HString* k = ctx.heap.int_to_hstring((long)i);
+                if (k == null) { ctx.result.set_undefined(); return; }
+                TVal key_tv;
+                key_tv.set_string(k);
+                array_set_elem(arr, idx, key_tv, ctx.heap);
+                idx++;
+            }
+        }
+    }
+
+    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    {
+        uint int_count = 0;
+        for (uint i = 0; i < obj.prop_count; i++) {
+            if (obj.prop_key_at(i) != null) {
+                HString* key = (HString*)obj.prop_key_at(i);
+                if (key.is_arridx() && !key.is_symbol()) {
+                    int_count++;
+                }
+            }
+        }
+        if (int_count > 0) {
+            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            if (sort_buf != null) {
+                uint p = 0;
+                for (uint i = 0; i < obj.prop_count; i++) {
+                    if (obj.prop_key_at(i) != null) {
+                        HString* key = (HString*)obj.prop_key_at(i);
+                        if (key.is_arridx() && !key.is_symbol()) {
+                            sort_buf[p * 2] = key.array_index();
+                            sort_buf[p * 2 + 1] = i;
+                            p++;
+                        }
+                    }
+                }
+                // Insertion sort by arridx
+                for (uint i = 1; i < int_count; i++) {
+                    uint t0 = sort_buf[i * 2];
+                    uint t1 = sort_buf[i * 2 + 1];
+                    uint j = i;
+                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
+                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
+                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                        j--;
+                    }
+                    sort_buf[j * 2] = t0;
+                    sort_buf[j * 2 + 1] = t1;
+                }
+                for (uint i = 0; i < int_count; i++) {
+                    uint si = sort_buf[i * 2 + 1];
+                    HString* key = (HString*)obj.prop_key_at(si);
+                    TVal key_tv;
+                    key_tv.set_string(key);
+                    array_set_elem(arr, idx, key_tv, ctx.heap);
+                    idx++;
+                }
+                libc::free(sort_buf);
+            }
+        }
+    }
+    // Phase 2: non-index string properties (insertion order)
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
+            if (key.is_arridx() || key.is_symbol()) continue;
+            TVal key_tv;
+            key_tv.set_string(key);
+            array_set_elem(arr, idx, key_tv, ctx.heap);
+            idx++;
+        }
+    }
+    // Phase 3: symbol properties (insertion order)
+    for (uint i = 0; i < obj.prop_count; i++) {
+        if (obj.prop_key_at(i) != null) {
+            HString* key = (HString*)obj.prop_key_at(i);
+            if (key.is_symbol()) {
+                TVal key_tv;
+                key_tv.set_string(key);
+                array_set_elem(arr, idx, key_tv, ctx.heap);
+                idx++;
+            }
+        }
+    }
+
+    // Set .length
+    TVal len_tv;
+    len_tv.set_fastint((long)idx);
+    HString* length_key = builtin_intern_string(ctx.heap, "length");
+    arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.set_object(arr);
+}
+
+// ============================================================================
 // Object.getPrototypeOf — ES5 §15.2.3.2
 // ============================================================================
 /// Returns the [[Prototype]] of an object. Throws TypeError if argument is
@@ -3168,6 +3381,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     TVal getownpropnames_tv;
     getownpropnames_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYNAMES);
     obj.put_prop(getownpropnames_key, getownpropnames_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.getOwnPropertySymbols — ES6 §19.1.2.7
+    HString* getownpropsymbols_key = builtin_intern_string(heap, "getOwnPropertySymbols");
+    if (getownpropsymbols_key == null) return false;
+    TVal getownpropsymbols_tv;
+    getownpropsymbols_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYSYMBOLS);
+    obj.put_prop(getownpropsymbols_key, getownpropsymbols_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperties — ES5 §15.2.3.7
     HString* defineprops_key = builtin_intern_string(heap, "defineProperties");

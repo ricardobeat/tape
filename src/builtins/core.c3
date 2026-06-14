@@ -194,7 +194,9 @@ const uint BUILTIN_ARRAY_PROTO_REDUCERIGHT = 297;
 const uint BUILTIN_STRING_PROTO_TOLOCALELOWERCASE = 298;
 const uint BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE = 299;
 const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
-const uint BUILTIN_COUNT                         = 306;
+const uint BUILTIN_ARRAY_PROTO_FINDLAST           = 307;
+const uint BUILTIN_ARRAY_PROTO_FINDLASTINDEX      = 308;
+const uint BUILTIN_COUNT                         = 312;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -259,6 +261,7 @@ const uint BUILTIN_OBJECT_PREVENTEXTENSIONS  = 160;
 const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR = 161;
 const uint BUILTIN_OBJECT_DEFINEPROPERTY           = 162;
 const uint BUILTIN_OBJECT_GETOWNPROPERTYNAMES      = 163;
+const uint BUILTIN_OBJECT_GETOWNPROPERTYSYMBOLS    = 306;
 const uint BUILTIN_OBJECT_DEFINEPROPERTIES        = 164;
 const uint BUILTIN_OBJECT_CREATE                  = 165;
 const uint BUILTIN_OBJECT_SEAL                    = 166;
@@ -364,6 +367,8 @@ const uint BUILTIN_DATE_PROTO_TOTIMESTRING   = 302;
 const uint BUILTIN_STRING_PROTO_REPLACEALL    = 303;
 const uint BUILTIN_STRING_PROTO_MATCHALL      = 304;
 const uint BUILTIN_STRING_PROTO_NORMALIZE     = 305;
+const uint BUILTIN_REFLECT_OWNKEYS            = 310;
+const uint BUILTIN_ERROR_CAPTURE_STACK_TRACE    = 311;
 
 // ============================================================================
 // BuiltinContext — passed to every builtin handler
@@ -1107,9 +1112,14 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 303: return { "replaceAll", 2 };
         case 304: return { "matchAll", 1 };
         case 305: return { "normalize", 0 };
+        case 306: return { "getOwnPropertySymbols", 1 };
+        case 307: return { "findLast", 1 };
+        case 308: return { "findLastIndex", 1 };
+        case 310: return { "ownKeys", 1 };
         case 266: return { "allSettled", 1 };
         case 267: return { "any", 1 };
         case 268: return { "AggregateError", 2 };
+        case 311: return { "captureStackTrace", 2 };
         case 269: return { "next", 0 };
         case 270: return { "next", 0 };
         case 271: return { "[Symbol.iterator]", 0 };
@@ -1426,6 +1436,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_ARRAY_PROTO_FILTER] = &builtin_array_proto_filter,
     [BUILTIN_ARRAY_PROTO_FIND] = &builtin_array_proto_find,
     [BUILTIN_ARRAY_PROTO_FINDINDEX] = &builtin_array_proto_findIndex,
+    [BUILTIN_ARRAY_PROTO_FINDLAST] = &builtin_array_proto_findLast,
+    [BUILTIN_ARRAY_PROTO_FINDLASTINDEX] = &builtin_array_proto_findLastIndex,
     [BUILTIN_ARRAY_PROTO_FLAT] = &builtin_array_proto_flat,
     [BUILTIN_ARRAY_PROTO_FLATMAP] = &builtin_array_proto_flatMap,
     [BUILTIN_ARRAY_PROTO_FOREACH] = &builtin_array_proto_forEach,
@@ -1511,6 +1523,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_ENCODE_URI] = &builtin_encode_uri,
     [BUILTIN_ENCODE_URI_COMPONENT] = &builtin_encode_uri_component,
     [BUILTIN_ERROR] = &builtin_error,
+    [BUILTIN_ERROR_CAPTURE_STACK_TRACE] = &builtin_error_captureStackTrace,
     [BUILTIN_ERROR_PROTO_TOSTRING] = &builtin_error_prototype_to_string,
     [BUILTIN_EVAL] = &builtin_eval,
     [BUILTIN_EVAL_ERROR] = &builtin_eval_error,
@@ -1594,6 +1607,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_OBJECT_FROMENTRIES] = &builtin_object_fromEntries,
     [BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR] = &builtin_object_getOwnPropertyDescriptor,
     [BUILTIN_OBJECT_GETOWNPROPERTYNAMES] = &builtin_object_getOwnPropertyNames,
+    [BUILTIN_OBJECT_GETOWNPROPERTYSYMBOLS] = &builtin_object_getOwnPropertySymbols,
     [BUILTIN_OBJECT_GETPROTOTYPEOF] = &builtin_object_getPrototypeOf,
     [BUILTIN_OBJECT_HASOWN] = &builtin_object_hasOwn,
     [BUILTIN_OBJECT_IS] = &builtin_object_is,
@@ -1640,6 +1654,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REGEXP_PROTO_GET_UNICODE] = &builtin_regexp_proto_get_unicode,
     [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
     [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
+    [BUILTIN_REFLECT_OWNKEYS] = &builtin_reflect_ownKeys,
     [BUILTIN_RESET_GLOBALS] = &builtin_reset_globals,
     [BUILTIN_SET] = &builtin_set,
     [BUILTIN_SET_ITERATOR_NEXT] = &builtin_set_iterator_next,
@@ -1887,6 +1902,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         reflect_tv.set_fastint(0);
         reflect_tv.set_object(reflect_raw);
         if (!register_named_value(global_env, heap, "Reflect", reflect_tv)) return false;
+
+        // Register Reflect.ownKeys
+        HString* ownkeys_key = builtin_intern_string(heap, "ownKeys");
+        TVal ownkeys_tv;
+        ownkeys_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_OWNKEYS);
+        reflect_raw.put_prop(ownkeys_key, ownkeys_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
