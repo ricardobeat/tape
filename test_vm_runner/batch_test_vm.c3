@@ -18,34 +18,74 @@ import std::io;
 import libc;
 
 // ============================================================================
-// Test manifest reader
+// Manifest mode: read test paths from a file, run tests
 // ============================================================================
 
-struct TestEntry {
-    char[4096] path;
-    uint       len;
-}
+fn int run_manifest_loop(char[] mpath) {
+    char[]? assert_src_opt = file::load_temp((String)"test262/harness/assert.js");
+    char[] assert_src;
+    if (try a = assert_src_opt) { assert_src = a; }
 
-fn int read_manifest(char[] mpath, TestEntry* entries, uint max_entries) {
-    char[]? content = file::load_temp((String)mpath);
-    if (catch err = content) { return -1; }
-    char[] data = content;
-    uint count = 0;
-    usz pos = 0;
-    while (pos < data.len && count < max_entries) {
-        usz start = pos;
-        while (pos < data.len && data[pos] != '\n' && data[pos] != '\r') { pos++; }
-        usz line_len = pos - start;
-        while (pos < data.len && (data[pos] == '\n' || data[pos] == '\r')) { pos++; }
-        if (line_len > 0) {
-            usz copy = line_len < 4096 ? line_len : 4095;
-            libc::memcpy(&entries[count].path[0], &data[start], copy);
-            entries[count].path[copy] = 0;
-            entries[count].len = (uint)copy;
-            count++;
-        }
+    char[]? ph_src_opt = file::load_temp((String)"test262/harness/propertyHelper.js");
+    char[] ph_src;
+    if (try p = ph_src_opt) { ph_src = p; }
+
+    libc::CFile fp = libc::fopen((ZString)mpath.ptr, "r");
+    if (fp == null) { io::eprintfn("Failed to open: %s", mpath); return 1; }
+    defer libc::fclose(fp);
+
+    // Allocate the long-lived heap and VM once
+    Heap*? hp_opt = heap::create(null, null, null, null, null);
+    if (catch h = hp_opt) { return 1; }
+    Heap* hp = hp_opt;
+    defer hp.destroy();
+
+    Vm*? v_opt = vm::vm_create(hp);
+    if (catch err = v_opt) { return 1; }
+    Vm* v = v_opt;
+    defer vm::vm_destroy(v);
+
+    io::printfn("=== Batch test262 runner ===");
+    int pass = 0;
+    int fail = 0;
+    int total = 0;
+    char[4096] buf;
+
+    while (libc::fgets(&buf[0], 4096, fp) != null) {
+        @pool() {
+            usz len = libc::strlen((ZString)&buf[0]);
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) { len--; }
+            buf[len] = 0;
+            if (len == 0) { continue; }
+
+            bool report = (total % 100 == 0);
+
+            // Reset heap+VM — reuses existing backing allocations
+            hp.reset();
+            if (!vm::vm_reset(v, hp)) {
+                fail++;
+                if (report) { io::printfn("FAIL  %s", (String)buf[:len]); }
+                total++;
+                continue;
+            }
+
+            char[] path = buf[:len];
+            int rc = run_one_test(v, hp, path, assert_src, ph_src);
+            if (rc == 0) { pass++; } else { fail++; }
+            total++;
+
+            if (report) {
+                io::printfn("%s  %s", rc == 0 ? "PASS" : "FAIL", (String)path);
+            }
+            if (total % 500 == 0) {
+                io::eprintfn("[%d] pass=%d fail=%d", total, pass, fail);
+            }
+        };
     }
-    return (int)count;
+
+    io::printfn("---");
+    io::printfn("Total: %d  Pass: %d  Fail: %d", total, pass, fail);
+    return 0;
 }
 
 // ============================================================================
@@ -165,58 +205,5 @@ fn int main(String[] args) {
         io::eprintfn("       batch_test_vm --worker  (stdin-driven worker mode)");
         return 1;
     }
-
-    const uint MAX_TESTS = 100000;
-    usz eb = TestEntry::size * MAX_TESTS;
-    TestEntry* entries = (TestEntry*)libc::malloc(eb);
-    if (entries == null) { io::eprintfn("OOM"); return 1; }
-    defer libc::free(entries);
-
-    int num = read_manifest(args[1], entries, MAX_TESTS);
-    if (num < 0) { io::eprintfn("Failed to read: %s", args[1]); return 1; }
-    if (num == 0) { io::printfn("No tests."); return 0; }
-
-    // Allocate the long-lived heap and VM once
-    Heap*? hp_opt = heap::create(null, null, null, null, null);
-    if (catch h = hp_opt) { return 1; }
-    Heap* hp = hp_opt;
-    defer hp.destroy();
-
-    Vm*? v_opt = vm::vm_create(hp);
-    if (catch err = v_opt) { return 1; }
-    Vm* v = v_opt;
-    defer vm::vm_destroy(v);
-
-    io::printfn("=== Batch test262 runner ===");
-    int pass = 0;
-    int fail = 0;
-
-    for (int i = 0; i < num; i++) {
-        @pool() {
-            char[] tp = entries[i].path[:entries[i].len];
-            bool report = (num <= 20) || (i % 100 == 0) || (i == num - 1);
-
-            // Reset heap+VM — reuses existing backing allocations
-            hp.reset();
-            if (!vm::vm_reset(v, hp)) {
-                fail++;
-                if (report) { io::printfn("FAIL  %s", (String)tp); }
-                continue;
-            }
-
-            int rc = run_one_test(v, hp, tp, (char[]){}, (char[]){});
-            if (rc == 0) { pass++; } else { fail++; }
-
-            if (report) {
-                io::printfn("%s  %s", rc == 0 ? "PASS" : "FAIL", (String)tp);
-            }
-            if ((i + 1) % 500 == 0 || i == num - 1) {
-                io::eprintfn("[%d/%d] pass=%d fail=%d", i + 1, num, pass, fail);
-            }
-        };
-    }
-
-    io::printfn("---");
-    io::printfn("Total: %d  Pass: %d  Fail: %d", pass + fail, pass, fail);
-    return 0;
+    return run_manifest_loop(args[1]);
 }
