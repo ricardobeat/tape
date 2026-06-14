@@ -531,9 +531,9 @@ fn void builtin_regexp_proto_get_flags(BuiltinContext* ctx) {
     char[8] buf;
     int pos = 0;
     if ((jsf & 1) != 0)  buf[pos++] = 'g';   // global
-    if ((jsf & 8) != 0)  buf[pos++] = 'd';   // dotAll
     if ((jsf & 2) != 0)  buf[pos++] = 'i';   // ignoreCase
     if ((jsf & 4) != 0)  buf[pos++] = 'm';   // multiline
+    if ((jsf & 8) != 0)  buf[pos++] = 's';   // dotAll
     if ((jsf & 16) != 0) buf[pos++] = 'u';   // unicode
     if ((jsf & 32) != 0) buf[pos++] = 'y';   // sticky
     HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
