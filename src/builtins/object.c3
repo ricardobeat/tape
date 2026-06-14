@@ -1871,8 +1871,18 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 }
 
                 if (is_accessor) {
-                    if (has_get_in_desc_helper(ctx.heap, desc_obj)) hobject::hobject_set_access_getter(*current, desc_vals[0], ctx.heap);
-                    if (has_set_in_desc_helper(ctx.heap, desc_obj)) hobject::hobject_set_access_setter(*current, desc_vals[1], ctx.heap);
+                    if (!cur_flags.is_accessor) {
+                        // Data → accessor conversion: create a new GetterSetter cell.
+                        // *current holds a data value (number, string, etc.) — calling
+                        // hobject_set_access_getter on it would crash on slot.get_heapptr().
+                        // Decref the old data value and replace with a fresh GS cell.
+                        ctx.heap.decref_tval(current);
+                        *current = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
+                    } else {
+                        // Update existing accessor: modify the GS cell in-place.
+                        if (has_get_in_desc_helper(ctx.heap, desc_obj)) hobject::hobject_set_access_getter(*current, desc_vals[0], ctx.heap);
+                        if (has_set_in_desc_helper(ctx.heap, desc_obj)) hobject::hobject_set_access_setter(*current, desc_vals[1], ctx.heap);
+                    }
                     cur_flags.is_accessor = true;
                     if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.enumerable = desc_flags.enumerable;
                     if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.configurable = desc_flags.configurable;

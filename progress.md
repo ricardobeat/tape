@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 178 (Array length validation)
+**Last Updated:** Session 179 (Object.defineProperties data→accessor)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 178, 2026-06-14)
+## Summary (after Session 179, 2026-06-14)
 
 | Metric | Value |
 |---|---|
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 179 | Object.defineProperties data→accessor conversion fix: when a property was data (number/string/etc.) and the descriptor specified an accessor, the old code passed the data TVal to `hobject_set_access_getter` which crashed on `slot.get_heapptr()`. Now detects data→accessor transition, decrefs the old data value, and creates a fresh GetterSetter cell via `hobject_create_accessors`. | Regression fix (no test262 delta) |
 | 178 | Array length validation per ES5 §15.4.5.1 (ArraySetLength): PUTPROP fast path and `Object.defineProperty` for Array `length` now validate ToUint32(value)==ToNumber(value) — RangeError on NaN/±Infinity/negative/non-integer/>2^32-1, TypeError on undefined. Replaces naive `(uint)rc.get_number()` cast that silently truncated. | +830 (Phase 5: +532, Phase 6: +298) |
 | 177 | RegExp.prototype.flags alphabetical order (ES2015 §21.2.5.7): bit 8 (dotAll) was outputting 'd' instead of 's', and `s` was misplaced before `i` in the output order. Reordered the conditional checks so flag chars are emitted in alphabetical order `g,i,m,s,u,y` (matching the spec's `gimsu` core + `y` for sticky). | TBD (Phase 5: RegExp.prototype.flags tests) |
 | 176 | Object.assign proper [[Set]] semantics (ES2015 §19.1.2.2): added `obj_assign_set` helper implementing full [[Set]] with Throw=true — invokes setters (own + prototype chain), throws TypeError on non-writable data properties, throws TypeError on non-extensible target for new properties. Source values now fetched via [[Get]] (invokes source getters). Also fixed `desc_get` error propagation: copies `error_value` to `throw_value` and clears `has_error` flag. | TBD (Phase 5: ~25-35 for Object.assign) |
