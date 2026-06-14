@@ -1,16 +1,16 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 181 (Symbol.hasInstance, Function.toString, JSON reviver)
+**Last Updated:** Session 182 (for-in order, delete strict, RangeError stack overflow)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 181, 2026-06-15)
+## Summary (after Session 182, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~14,430 |
-| Currently failing (phases 0-8) | ~7,173 |
+| Currently passing (phases 0-8) | ~14,435 |
+| Currently failing (phases 0-8) | ~7,168 |
 | Overall pass rate | ~66.8% |
 
 ## Per-Phase Status
@@ -24,7 +24,7 @@
 | 4: Error Handling | 402 | 120 | 81 | 201 |
 | 5: Built-in Constructors | 8,615 | 4,916 | 2,174 | 1,525 |
 | 6: Prototype Methods | 4,713 | 2,184 | 1,593 | 936 |
-| 7: ES5 Features | 1,240 | 193 | 100 | 947 |
+| 7: ES5 Features | 1,240 | 198 | 95 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 914 | 370 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 182 | For-in enumeration order fix: integer indices ascending first, then string keys, then symbol keys (ES2020 §13.7.5.15). Delete on non-configurable properties now throws TypeError in strict mode (ES5 §11.4.1). Stack overflow now throws RangeError "Maximum call stack size exceeded" at all 7 check sites. Verified GOPD and isSealed/isFrozen already correct for dense arrays. | +5 (Phase 7: +5) |
 | 181 | Symbol.hasInstance lookup in instanceof operator (ES6 §12.10.4); Function.prototype.toString returning "function name() { [native code] }" for builtins (ES2019 §19.2.3.5); JSON.parse reviver now applied to root value per ES5 §15.12.2. Verified String.lastIndexOf underflow and Object.create(null) already correct. | +5 (Phase 3: +1, Phase 5: +4, Phase 6: +3, Phase 8: -3) |
 | 180 | Five backlog items implemented: Object.getOwnPropertySymbols, Reflect.ownKeys, Error.captureStackTrace (stub), Array.prototype.findLast/findLastIndex, Symbol.isConcatSpreadable in Array.prototype.concat. All 43 Rosetta tests pass. | +918 (Phase 3: +446, Phase 4: +12, Phase 5: +6, Phase 8: +36) |
 | 179 | Object.defineProperties data→accessor conversion fix: when a property was data (number/string/etc.) and the descriptor specified an accessor, the old code passed the data TVal to `hobject_set_access_getter` which crashed on `slot.get_heapptr()`. Now detects data→accessor transition, decrefs the old data value, and creates a fresh GetterSetter cell via `hobject_create_accessors`. | Regression fix (no test262 delta) |

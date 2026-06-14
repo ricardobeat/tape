@@ -11,12 +11,12 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `for (let/const x in obj)` binding: restore `declare_var` call with correct `is_const`/`is_lexical` flags, or push a scope-stack entry after `alloc_reg` (plan 026 #6, `src/compiler/statements.c3:708`)
 - [ ] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
 - [ ] Fix stale `call_prop_obj_reg` after `new X()[a.b].method()`: save/restore around `self.expression()` in the LBRACKET branch of trailing-access loop (plan 026 #8, `src/compiler/expressions.c3:1171`)
-- [ ] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
+- [x] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
 - [ ] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
 - [ ] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
 - [ ] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
 - [ ] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
-- [ ] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
+- [x] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
 - [ ] Implement `eval()` as indirect/direct call distinction: direct `eval()` should share the current scope; indirect `eval()` runs in the global scope
 
 ---
@@ -29,7 +29,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
 - [ ] Fix `defineProperty` validation order for combined data+accessor descriptor (should throw TypeError before making any change)
 - [ ] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
-- [ ] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
+- [x] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
 - [ ] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
 - [ ] Fix `Object.defineProperties` to apply descriptors atomically: validate all before writing any
 - [x] Verify `Object.create(null)` produces a truly prototype-less object that passes `Object.getPrototypeOf(o) === null`

@@ -985,6 +985,19 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             }
         }
 
+        // Own dense array part indices — integer keys from dense storage (before named props).
+        for (uint i = 0; i < cur.array_size; i++) {
+            if (!cur.array_part()[i].is_undefined()) {
+                HString* k = vm.heap.int_to_hstring((long)i);
+                if (k == null) continue;
+                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    libc::free(keys);
+                    libc::free(seen);
+                    return null;
+                }
+            }
+        }
+
         // Own named properties — integer indices ascending, then strings in insertion order.
         // Phase 1: integer-indexed named properties (sorted by numeric index)
         {
@@ -1035,11 +1048,12 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 }
             }
         }
-        // Phase 2: non-index named properties (insertion order)
+        // Phase 2: non-index string named properties (insertion order, enumerable only)
         for (uint i = 0; i < cur.prop_count; i++) {
             if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
                 if (k.is_arridx()) continue;
+                if (k.is_symbol()) continue;
                 if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
@@ -1048,12 +1062,11 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 }
             }
         }
-
-        // Own dense array part indices
-        for (uint i = 0; i < cur.array_size; i++) {
-            if (!cur.array_part()[i].is_undefined()) {
-                HString* k = vm.heap.int_to_hstring((long)i);
-                if (k == null) continue;
+        // Phase 3: symbol-keyed properties (insertion order, enumerable only)
+        for (uint i = 0; i < cur.prop_count; i++) {
+            if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
+                HString* k = (HString*)cur.prop_key_at(i);
+                if (!k.is_symbol()) continue;
                 if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
                     libc::free(keys);
                     libc::free(seen);
@@ -1237,6 +1250,17 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
 
     // Allocate new activation
     if (vm.activation_count >= MAX_CALLS) {
+        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = vm.heap.range_err_proto;
+            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+            HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+            TVal msg_tv; msg_tv.set_string(msg_val);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            TVal err_val; err_val.set_object(err);
+            vm.heap.tval_copy_ref(&vm.throw_value, &err_val);
+        }
+        vm.throw_pending = true;
         return false;
     }
     Activation* new_act = &vm.activations[vm.activation_count];
@@ -1355,7 +1379,22 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     vm.heap.tval_copy_ref(&caller_regs[callee_reg + 1], this_val);
 
     if (vm.activation_count >= MAX_CALLS) {
-        caller_regs[result_reg].set_undefined();
+        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = vm.heap.range_err_proto;
+            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+            HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+            TVal msg_tv; msg_tv.set_string(msg_val);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+            TVal err_val; err_val.set_object(err);
+            if (!vm_throw_value(vm, err_val, act, curr_pc, needs_restart)) {
+                caller_regs[result_reg].set_undefined();
+                return false;
+            }
+        } else {
+            caller_regs[result_reg].set_undefined();
+            return false;
+        }
         return false;
     }
 
@@ -4059,7 +4098,29 @@ fn TVal? Vm.run(Vm* vm) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    ra.set_boolean(hobj.es_delete_prop(key));
+                    if (!hobj.es_delete_prop(key)) {
+                        ra.set_boolean(false);
+                        if (act.flags & ACT_FLAG_STRICT) {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Delete failed: property is non-configurable");
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val;
+                                err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                        }
+                    } else {
+                        ra.set_boolean(true);
+                    }
                 }
             } else if (rb.is_lightfunc()) {
                 // Handle deletion of virtual properties (name, length, prototype).
@@ -4500,7 +4561,22 @@ fn TVal? Vm.run(Vm* vm) {
                     new_bottom = regs_base + frame_start;
 
                     if (vm.activation_count >= MAX_CALLS) {
-                        regs_base[result_reg].set_undefined();
+                        {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.range_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                                TVal msg_tv; msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val; err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                        }
                         break;
                     }
 
@@ -4885,7 +4961,22 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (vm.activation_count >= MAX_CALLS) {
                         gs.state = GEN_SUSPENDED_YIELD;
-                        regs_base[result_reg].set_undefined();
+                        {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.range_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                                TVal msg_tv; msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val; err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                        }
                         break;
                     }
 
@@ -5040,7 +5131,22 @@ fn TVal? Vm.run(Vm* vm) {
             new_bottom = regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
-                regs_base[result_reg].set_undefined();
+                {
+                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = vm.heap.range_err_proto;
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                        TVal msg_tv; msg_tv.set_string(msg_val);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        TVal err_val; err_val.set_object(err);
+                        if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                }
                 break;
             }
 
@@ -5292,7 +5398,22 @@ fn TVal? Vm.run(Vm* vm) {
             new_bottom = regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
-                ra.set_undefined();
+                {
+                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = vm.heap.range_err_proto;
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                        TVal msg_tv; msg_tv.set_string(msg_val);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        TVal err_val; err_val.set_object(err);
+                        if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                }
                 break;
             }
 
@@ -5657,7 +5778,22 @@ fn TVal? Vm.run(Vm* vm) {
             func_slot = regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
-                regs_base[result_reg].set_undefined();
+                {
+                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try err = err_raw) {
+                        err.prototype = vm.heap.range_err_proto;
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                        TVal msg_tv; msg_tv.set_string(msg_val);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                        TVal err_val; err_val.set_object(err);
+                        if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    } else {
+                        return VM_ERROR~;
+                    }
+                }
                 break;
             }
 
