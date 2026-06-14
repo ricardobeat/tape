@@ -415,20 +415,45 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
         return;
     }
 
-    // forEach with callback requires VM call mechanism (callback invocation).
-    // For now, we validate the callback exists but don't invoke it.
     TVal callback = ctx.regs[ctx.base_reg];
     if (!(callback.is_object() && callback.get_heapptr() != null && ((HObject*)callback.get_heapptr()).flags.callable)) {
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
+        if (catch err_k = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // ES6 §23.1.3.5 — forEach iterates all entries and calls callbackfn(value, key, map).
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+
+    uint count = map.array_used;
+    for (uint i = 0; i + 1 < count; i += 2) {
+        TVal key = map.array_part()[i];
+        TVal value = map.array_part()[i + 1];
+
+        TVal[3] args;
+        args[0] = value;
+        args[1] = key;
+        args[2].set_object((void*)map);
+        ctx.heap.call_fn(ctx.vm, callback, &args[0], 3, thisArg);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
         }
     }
 

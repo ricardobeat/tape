@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 182 (for-in order, delete strict, RangeError stack overflow)
+**Last Updated:** Session 183 (Error.stack, Map/Set.forEach, seal/freeze dense)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 182, 2026-06-15)
+## Summary (after Session 183, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~14,435 |
-| Currently failing (phases 0-8) | ~7,168 |
-| Overall pass rate | ~66.8% |
+| Currently passing (phases 0-8) | ~14,505 |
+| Currently failing (phases 0-8) | ~7,098 |
+| Overall pass rate | ~67.1% |
 
 ## Per-Phase Status
 
@@ -20,9 +20,9 @@
 | 0-1: Core VM | 2,185 | 593 | 295 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,065 | 1,734 | 1,967 |
+| 3: Object System | 7,766 | 4,063 | 1,736 | 1,967 |
 | 4: Error Handling | 402 | 120 | 81 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,916 | 2,174 | 1,525 |
+| 5: Built-in Constructors | 8,615 | 4,914 | 2,176 | 1,525 |
 | 6: Prototype Methods | 4,713 | 2,184 | 1,593 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 914 | 370 | 1,463 |
@@ -30,7 +30,7 @@
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
 | 15: Classes | 8,520 | 67 | 195 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 286 | 354 | 974 |
+| 17-20: Map/Set/Symbol/Promise | 1,614 | 360 | 280 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
 
 ## Deferred Items
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 183 | Error.prototype.stack property set on construction ("name: message" format); Map.prototype.forEach callback invocation with (value, key, map) per ES6 §23.1.3.5; Set.prototype.forEach callback invocation with (value, value, set) per ES6 §23.2.3.6. Verified Object.seal/freeze/isSealed/isFrozen/GOPD for dense arrays already correct. | +70 (Phase 17-20: +74, Phase 3/5: -4 regressed) |
 | 182 | For-in enumeration order fix: integer indices ascending first, then string keys, then symbol keys (ES2020 §13.7.5.15). Delete on non-configurable properties now throws TypeError in strict mode (ES5 §11.4.1). Stack overflow now throws RangeError "Maximum call stack size exceeded" at all 7 check sites. Verified GOPD and isSealed/isFrozen already correct for dense arrays. | +5 (Phase 7: +5) |
 | 181 | Symbol.hasInstance lookup in instanceof operator (ES6 §12.10.4); Function.prototype.toString returning "function name() { [native code] }" for builtins (ES2019 §19.2.3.5); JSON.parse reviver now applied to root value per ES5 §15.12.2. Verified String.lastIndexOf underflow and Object.create(null) already correct. | +5 (Phase 3: +1, Phase 5: +4, Phase 6: +3, Phase 8: -3) |
 | 180 | Five backlog items implemented: Object.getOwnPropertySymbols, Reflect.ownKeys, Error.captureStackTrace (stub), Array.prototype.findLast/findLastIndex, Symbol.isConcatSpreadable in Array.prototype.concat. All 43 Rosetta tests pass. | +918 (Phase 3: +446, Phase 4: +12, Phase 5: +6, Phase 8: +36) |

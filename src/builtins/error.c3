@@ -24,10 +24,11 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
     err.prototype = proto;
 
     // Set .message if first arg is provided and not undefined
+    HString* msg_str = null;
     if (ctx.argc > 0) {
         TVal* msg_arg = &ctx.regs[ctx.base_reg];
         if (!msg_arg.is_undefined()) {
-            HString* msg_str = builtin_to_string(ctx.heap, msg_arg);
+            msg_str = builtin_to_string(ctx.heap, msg_arg);
             if (msg_str != null) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
@@ -35,6 +36,49 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
         }
+    }
+
+    // Set .stack property (stub — "name: message" format for now)
+    {
+        HString* stack_key = (HString*)ctx.heap.strs[heap::BuiltinStr.STACK];
+
+        // Get the error name from the prototype's .name property
+        HString* name_str = builtin_intern_string(ctx.heap, "Error");
+        if (proto != null) {
+            HString* name_key = (HString*)ctx.heap.strs[heap::BuiltinStr.NAME];
+            TVal? name_prop = proto.get_prop_proto(name_key);
+            if (try nv = name_prop) {
+                if (!nv.is_undefined()) {
+                    HString* tmp = builtin_to_string(ctx.heap, &nv);
+                    if (tmp != null) name_str = tmp;
+                }
+            }
+        }
+
+        // Build stack string: "name: message"
+        char[512] stack_buf;
+        int pos = 0;
+
+        // Copy name
+        if (name_str.blen > 0) {
+            libc::memcpy(&stack_buf[pos], name_str.get_cstr(), name_str.blen);
+            pos += (int)name_str.blen;
+        }
+
+        // Add ": "
+        stack_buf[pos] = ':'; pos++;
+        stack_buf[pos] = ' '; pos++;
+
+        // Copy message (or empty string if no message)
+        if (msg_str != null && msg_str.blen > 0) {
+            libc::memcpy(&stack_buf[pos], msg_str.get_cstr(), msg_str.blen);
+            pos += (int)msg_str.blen;
+        }
+
+        HString* stack_str = builtin_intern_string(ctx.heap, stack_buf[:pos]);
+        TVal stack_tv;
+        stack_tv.set_string(stack_str);
+        err.put_prop(stack_key, stack_tv, hobject::PROP_FLAGS_WC);
     }
 
     ctx.result.set_object(null);
@@ -94,14 +138,44 @@ fn void builtin_aggregate_error(BuiltinContext* ctx) {
     err.prototype = ctx.heap.aggregate_err_proto;
 
     // Set .message if provided and not undefined
+    HString* msg_str = null;
     if (!msg_val.is_undefined()) {
-        HString* msg_str = builtin_to_string(ctx.heap, &msg_val);
+        msg_str = builtin_to_string(ctx.heap, &msg_val);
         if (msg_str != null) {
             TVal msg_prop;
             msg_prop.set_string(msg_str);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_prop, hobject::PROP_FLAGS_WC);
         }
+    }
+
+    // Set .stack property (stub — "AggregateError: message" format for now)
+    {
+        HString* stack_key = (HString*)ctx.heap.strs[heap::BuiltinStr.STACK];
+        char[512] stack_buf;
+        int pos = 0;
+
+        // Copy "AggregateError"
+        HString* name_str = builtin_intern_string(ctx.heap, "AggregateError");
+        if (name_str.blen > 0) {
+            libc::memcpy(&stack_buf[pos], name_str.get_cstr(), name_str.blen);
+            pos += (int)name_str.blen;
+        }
+
+        // Add ": "
+        stack_buf[pos] = ':'; pos++;
+        stack_buf[pos] = ' '; pos++;
+
+        // Copy message (or empty string if no message)
+        if (msg_str != null && msg_str.blen > 0) {
+            libc::memcpy(&stack_buf[pos], msg_str.get_cstr(), msg_str.blen);
+            pos += (int)msg_str.blen;
+        }
+
+        HString* stack_str = builtin_intern_string(ctx.heap, stack_buf[:pos]);
+        TVal stack_tv;
+        stack_tv.set_string(stack_str);
+        err.put_prop(stack_key, stack_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Set .errors array

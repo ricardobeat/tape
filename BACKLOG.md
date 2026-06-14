@@ -23,9 +23,9 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Property Descriptors (Plan 022 — highest impact)
 
-- [ ] Fix `Object.seal()` / `Object.freeze()` to iterate dense array elements and set their flags non-configurable / non-writable (`src/hobject.c3:495-514`)
-- [ ] Fix `Object.isSealed()` / `Object.isFrozen()` to check dense array element flags, not just named props (`src/builtins/object.c3:1667-1731`)
-- [ ] Fix `getOwnPropertyDescriptor` for dense array indices: read actual array-part flags instead of hardcoding `{w:true, e:true, c:true}` (`src/builtins/object.c3:658-697`)
+- [x] Fix `Object.seal()` / `Object.freeze()` to iterate dense array elements and set their flags non-configurable / non-writable (`src/hobject.c3:495-514`)
+- [x] Fix `Object.isSealed()` / `Object.isFrozen()` to check dense array element flags, not just named props (`src/builtins/object.c3:1667-1731`)
+- [x] Fix `getOwnPropertyDescriptor` for dense array indices: read actual array-part flags instead of hardcoding `{w:true, e:true, c:true}` (`src/builtins/object.c3:658-697`)
 - [ ] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
 - [ ] Fix `defineProperty` validation order for combined data+accessor descriptor (should throw TypeError before making any change)
 - [ ] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
@@ -131,7 +131,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `SyntaxError` from `eval()` to propagate as a catchable exception
 - [ ] Fix `try/catch/finally` with `break`/`continue` inside: finally must still run and value must be correct
 - [x] Implement `Error.captureStackTrace` stub (returns undefined) so Node.js-style code doesn't crash
-- [ ] Fix error `stack` property to be a string (currently missing or undefined on thrown errors)
+- [x] Fix error `stack` property to be a string (currently missing or undefined on thrown errors)
 
 ---
 
