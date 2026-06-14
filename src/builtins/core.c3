@@ -1878,6 +1878,17 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register JSON object (parse, stringify)
     if (!register_json_object(global_env, heap)) return false;
 
+    // Register Reflect object (empty — spec methods added later as needed)
+    {
+        HObject*? reflect_raw = heap.alloc_object(hobject::ObjClass.REFLECT);
+        if (catch err = reflect_raw) return false;
+        TVal reflect_tv;
+        reflect_tv.set_object(null);
+        reflect_tv.set_fastint(0);
+        reflect_tv.set_object(reflect_raw);
+        if (!register_named_value(global_env, heap, "Reflect", reflect_tv)) return false;
+    }
+
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
     if (!register_error_builtins(global_env, heap)) return false;
 

@@ -115,6 +115,7 @@ enum ObjClass : char {
     JSON,
     MATH,
     NUMBER,
+    REFLECT,
     REGEXP,
     STRING,
     GLOBAL,

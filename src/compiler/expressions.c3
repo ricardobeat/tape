@@ -283,9 +283,14 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             }
             self.free_reg(right);
-            // If LHS was resolved via GETVAR, write back to environment
             if (lhs_was_getvar) {
+                // PUTVAR clears the source register, so save the value
+                // in a temp before writing back to the environment.
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
                 self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                self.free_reg(left);
+                left = tmp;
             }
         }
         return left;
@@ -308,9 +313,15 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             self.emit_abc(Opcode.LDREG, (uint)left, (uint)result_reg, 0);
             self.free_reg(result_reg);
         }
-        // If LHS was resolved via GETVAR, write back to environment
+        // If LHS was resolved via GETVAR, write back to environment.
+        // PUTVAR clears the source register, so copy to a temp first
+        // so the result survives the clobber.
         if (lhs_was_getvar) {
+            ushort tmp = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
             self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+            self.free_reg(left);
+            left = tmp;
         }
         return left;
     }
