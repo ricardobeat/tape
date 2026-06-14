@@ -1,32 +1,32 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 172 (global `this` binding — non-strict mode default)
+**Last Updated:** Session 173 (PUTPROP strict-mode TypeError for non-extensible objects)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 172, 2026-06-14)
+## Summary (after Session 173, 2026-06-14)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~12,441 |
-| Currently failing (phases 0-8) | ~8,123 |
-| Pass rate (phases 0-8 only) | ~60.5% |
-| Overall pass rate | ~60.2% |
+| Currently passing (phases 0-8) | ~12,677 |
+| Currently failing (phases 0-8) | ~7,887 |
+| Pass rate (phases 0-8 only) | ~61.7% |
+| Overall pass rate | ~61.4% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 592 | 296 | 1,297 |
+| 0-1: Core VM | 2,185 | 593 | 295 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
-| 2: Basic Operators | 1,969 | 968 | 176 | 825 |
-| 3: Object System | 7,766 | 3,522 | 2,277 | 1,967 |
+| 2: Basic Operators | 1,969 | 969 | 175 | 825 |
+| 3: Object System | 7,766 | 3,618 | 2,181 | 1,967 |
 | 4: Error Handling | 402 | 108 | 93 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,330 | 2,760 | 1,525 |
-| 6: Prototype Methods | 4,713 | 1,873 | 1,904 | 936 |
-| 7: ES5 Features | 1,240 | 191 | 102 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 865 | 419 | 1,463 |
+| 5: Built-in Constructors | 8,615 | 4,374 | 2,716 | 1,525 |
+| 6: Prototype Methods | 4,713 | 1,883 | 1,894 | 936 |
+| 7: ES5 Features | 1,240 | 193 | 100 | 947 |
+| 8: ES5 Built-in Objects | 2,747 | 881 | 403 | 1,463 |
 | 11: Arrow/Templates | 427 | 60 | 43 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
@@ -104,6 +104,7 @@ These were major failure categories, now fixed:
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 173 | PUTPROP strict-mode TypeError for non-extensible objects (ES5 §9.1.2 step 5b): when property doesn't exist and object is not extensible, throw TypeError in strict mode. Previously silently ignored in all modes. | +236 (Phase 3: +96, Phase 5: +44, Phase 6: +10, Phase 7: +2, Phase 8: +16) |
 | 172 | CompilerContext defaults to non-strict mode (ES5 §10.4.1): `this` at global scope is now the global object, not undefined. Fixes GOPD on global built-ins, property descriptor tests, and `this` binding across phases. 43 Rosetta tests pass including `this_binding.js`. | +47 net (Phase 0-1: +18, Phase 3: +58) |
 | 171 | Math constant property flags: `set_num_prop_lookup` used `PROP_FLAGS_WC` (writable=true, configurable=true) for Math constants like E, PI, LN2, etc. Changed to `PROP_FLAGS_NNC` (writable=false, enumerable=false, configurable=false) per ES5 §15.8.1. Fixes 8 GOPD tests + ~11 Math prop-desc tests. | +19 (Phase 3: GOPD + Math) |
 || 170 | Lexer dot-property access: fix fractional-part parsing to distinguish `0..x` (number + property access) from `0...x` (ellipsis) by checking three-dot prefix; make fraction digits optional per ES5 §7.8.3 (`0.` is valid). Fixes 38 radix toString tests + 11 other dot-property tests. | +49 (Phase 0-1: +9, Phase 6: +40) |

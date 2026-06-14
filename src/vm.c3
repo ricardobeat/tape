@@ -3889,6 +3889,24 @@ fn TVal? Vm.run(Vm* vm) {
                             // No accessor: insert new property
                             if (hobj.flags.extensible) {
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
+                            } else if (act.flags & ACT_FLAG_STRICT) {
+                                // ES5 §9.1.2 step 5b: if O is not extensible, throw TypeError
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.type_err_proto;
+                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                    HString* msg_val = intern_string(vm, "Cannot add property to non-extensible object");
+                                    TVal msg_tv;
+                                    msg_tv.set_string(msg_val);
+                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
+                                } else {
+                                    return VM_ERROR~;
+                                }
                             }
                         }
                     }
