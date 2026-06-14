@@ -15,7 +15,7 @@ merging.
 Usage:
     python3 scripts/run_test262.py --phase 2    # single phase (preferred)
     python3 scripts/run_test262.py              # all phases (full validation only)
-    python3 scripts/run_test262.py --workers 8  # override worker count
+    python3 scripts/run_test262.py --workers 4  # override worker count
     python3 scripts/run_test262.py --es5        # ES5-only (skip tests with feature flags)
 """
 
