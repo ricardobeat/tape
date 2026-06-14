@@ -34,8 +34,11 @@ while q or any(w['pending'] for w in workers):
             t = q.pop(0)
             w['pending'] = t
             w['start'] = time.monotonic()
-            w['proc'].stdin.write((t + '\n').encode())
-            w['proc'].stdin.flush()
+            try:
+                w['proc'].stdin.write((t + '\n').encode())
+                w['proc'].stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass  # worker died; will be caught in dead-worker check below
 
     fds = [w['proc'].stdout.fileno() for w in workers
            if w['proc'].poll() is None and w['pending'] is not None]
@@ -64,8 +67,16 @@ while q or any(w['pending'] for w in workers):
 
     now = time.monotonic()
     for w in workers:
-        if w['proc'].poll() is None and w['pending'] is not None:
-            if now - w['start'] > args.timeout:
+        if w['pending'] is not None:
+            if w['proc'].poll() is not None:
+                # Worker crashed — record failure and restart
+                results.append(('FAIL', w['pending']))
+                w['proc'] = subprocess.Popen(
+                    [os.path.join(PROJECT_DIR, 'out/batch_test_vm'), '--worker'],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, bufsize=0)
+                w['pending'] = None
+            elif now - w['start'] > args.timeout:
                 results.append(('TIMEOUT', w['pending']))
                 w['proc'].kill()
                 w['proc'].wait()

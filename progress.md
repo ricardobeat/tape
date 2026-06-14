@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 173 (PUTPROP strict-mode TypeError for non-extensible objects)
+**Last Updated:** Session 175 (Function.prototype.call/apply/bind TypeError + Object.defineProperties/create TypeError + phase_runner dead-worker fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 173, 2026-06-14)
+## Summary (after Session 175, 2026-06-14)
 
 | Metric | Value |
 |---|---|
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 175 | Function.prototype.call/apply/bind TypeError on non-callable (ES5 §15.3.4.3-5); Object.defineProperties/create TypeError on non-object Properties (ES5 §15.2.3.5/§15.2.3.7). Also fixed phase_runner.py dead-worker infinite hang — added crash recovery with automatic worker restart. | +22 (quick.sh: 575→597 pass, 554→532 fail) |
 | 173 | PUTPROP strict-mode TypeError for non-extensible objects (ES5 §9.1.2 step 5b): when property doesn't exist and object is not extensible, throw TypeError in strict mode. Previously silently ignored in all modes. | +236 (Phase 3: +96, Phase 5: +44, Phase 6: +10, Phase 7: +2, Phase 8: +16) |
 | 172 | CompilerContext defaults to non-strict mode (ES5 §10.4.1): `this` at global scope is now the global object, not undefined. Fixes GOPD on global built-ins, property descriptor tests, and `this` binding across phases. 43 Rosetta tests pass including `this_binding.js`. | +47 net (Phase 0-1: +18, Phase 3: +58) |
 | 171 | Math constant property flags: `set_num_prop_lookup` used `PROP_FLAGS_WC` (writable=true, configurable=true) for Math constants like E, PI, LN2, etc. Changed to `PROP_FLAGS_NNC` (writable=false, enumerable=false, configurable=false) per ES5 §15.8.1. Fixes 8 GOPD tests + ~11 Math prop-desc tests. | +19 (Phase 3: GOPD + Math) |

@@ -1524,14 +1524,31 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     }
     HObject* obj = (HObject*)arg0.get_heapptr();
 
-    // Step 2: Check Properties argument is present and is an object
+    // Step 2: If Properties is undefined, return O; if not Object, throw TypeError.
     if (ctx.argc < 2) {
         ctx.result.set_object(obj);
         return;
     }
     TVal props_val = ctx.regs[ctx.base_reg + 1];
-    if (!props_val.is_object()) {
+    if (props_val.is_undefined()) {
+        // ES5 §15.2.3.7 step 1: undefined Properties is a no-op
         ctx.result.set_object(obj);
+        return;
+    }
+    if (!props_val.is_object()) {
+        // ES5 §15.2.3.7 step 2: Type(Properties) is not Object → TypeError
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_props = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Object.defineProperties called on non-object Properties");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
     HObject* props = (HObject*)props_val.get_heapptr();
@@ -1803,67 +1820,83 @@ fn void builtin_object_create(BuiltinContext* ctx) {
     }
     obj.flags.extensible = true;
 
-    // Step 4: If Properties is not undefined, call defineProperties
+    // Step 4: If Properties is not undefined, call defineProperties.
+    // Per ES5 §15.2.3.5 step 4: throw TypeError if Type(Properties) is not Object.
     if (ctx.argc >= 2) {
         TVal props_val = ctx.regs[ctx.base_reg + 1];
-        if (!props_val.is_undefined() && !props_val.is_null()) {
+        if (props_val.is_undefined()) {
+            // skip — no Properties
+        } else if (!props_val.is_object()) {
+            // TypeError: Type(Properties) is not Object (covers null, number, string, etc.)
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err4 = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "Object.create called with non-object Properties");
+            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+            return;
+        } else {
             // Create a mini-BuiltinContext for the defineProperties call
             // We reuse the same approach: inline defineProperties logic
-            if (props_val.is_object()) {
-                HObject* props = (HObject*)props_val.get_heapptr();
+            HObject* props = (HObject*)props_val.get_heapptr();
 
-                // Collect own property keys
-                HString*[256] keys_arr;
-                uint keys_count = 0;
-                for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-                    if (props.prop_key_at(i) != null) {
-                        keys_arr[keys_count] = (HString*)props.prop_key_at(i);
-                        keys_count++;
-                    }
+            // Collect own property keys
+            HString*[256] keys_arr;
+            uint keys_count = 0;
+            for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
+                if (props.prop_key_at(i) != null) {
+                    keys_arr[keys_count] = (HString*)props.prop_key_at(i);
+                    keys_count++;
                 }
+            }
 
-                for (uint k = 0; k < keys_count; k++) {
-                    HString* pk_key = keys_arr[k];
-                    PropValue*? prop_entry = props.find_prop(pk_key);
-                    if (try pe = prop_entry) {
-                        TVal desc_obj_val = *pe;
-                        if (!desc_obj_val.is_object()) {
-                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (catch err4 = err_raw) { ctx.result.set_undefined(); return; }
-                            HObject* err = err_raw;
-                            err.prototype = ctx.heap.type_err_proto;
-                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            char[128] msg_buf;
-                            int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object", pk_key.get_data());
-                            HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
-                            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-                            TVal msg_tv;
-                            msg_tv.set_string(msg_str);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                            ctx.should_throw = true;
-                            ctx.throw_value.set_object(err);
-                            return;
-                        }
-                        HObject* desc_obj = (HObject*)desc_obj_val.get_heapptr();
+            for (uint k = 0; k < keys_count; k++) {
+                HString* pk_key = keys_arr[k];
+                PropValue*? prop_entry = props.find_prop(pk_key);
+                if (try pe = prop_entry) {
+                    TVal desc_obj_val = *pe;
+                    if (!desc_obj_val.is_object()) {
+                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (catch err5 = err_raw) { ctx.result.set_undefined(); return; }
+                        HObject* err = err_raw;
+                        err.prototype = ctx.heap.type_err_proto;
+                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                        char[128] msg_buf;
+                        int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object", pk_key.get_data());
+                        HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
+                        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                        TVal msg_tv;
+                        msg_tv.set_string(msg_str);
+                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                        ctx.should_throw = true;
+                        ctx.throw_value.set_object(err);
+                        return;
+                    }
+                    HObject* desc_obj = (HObject*)desc_obj_val.get_heapptr();
 
-                        hobject::PropFlags desc_flags;
-                        TVal[2] desc_vals;
-                        bool is_accessor;
-                        if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null, null)) {
-                            if (ctx.should_throw) return;
-                            ctx.result.set_undefined();
-                            return;
-                        }
+                    hobject::PropFlags desc_flags;
+                    TVal[2] desc_vals;
+                    bool is_accessor;
+                    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null, null)) {
+                        if (ctx.should_throw) return;
+                        ctx.result.set_undefined();
+                        return;
+                    }
 
-                        if (is_accessor) {
-                            obj.put_prop(pk_key, desc_vals[0], desc_flags);
-                            int idx = obj.find_prop_idx(pk_key);
-                            if (idx >= 0) {
-                                obj.prop_values()[idx] = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
-                            }
-                        } else {
-                            obj.put_prop(pk_key, desc_vals[0], desc_flags);
+                    if (is_accessor) {
+                        obj.put_prop(pk_key, desc_vals[0], desc_flags);
+                        int idx = obj.find_prop_idx(pk_key);
+                        if (idx >= 0) {
+                            obj.prop_values()[idx] = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
                         }
+                    } else {
+                        obj.put_prop(pk_key, desc_vals[0], desc_flags);
                     }
                 }
             }

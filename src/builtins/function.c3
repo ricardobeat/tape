@@ -186,13 +186,19 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     }
 
     if (!callable) {
-        // Throw TypeError
+        // Throw TypeError (ES5 §15.3.4.4 step 2)
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            // Cannot easily throw from here — set needs_throw or similar
-        }
-        ctx.result.set_undefined();
+        if (catch err_call = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.call called on non-callable");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
@@ -289,7 +295,7 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
 fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     TVal downstream = ctx.this_val;
 
-    // Validate downstream is callable
+    // Validate downstream is callable (ES5 §15.3.4.3 step 2: throw TypeError)
     bool callable = false;
     if (downstream.is_lightfunc()) {
         callable = true;
@@ -301,7 +307,18 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     }
 
     if (!callable) {
-        ctx.result.set_undefined();
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_call = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.apply called on non-callable");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
@@ -357,10 +374,21 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         return;
     }
 
-    // argArray must be an object (array-like)
+    // argArray must be an object (array-like). Per ES5 §15.3.4.3 step 4
+    // (CreateListFromArrayLike step 2): throw TypeError if Type(argArray) is not Object.
     if (!arg_array.is_object() || arg_array.get_heapptr() == null) {
-        // TypeError
-        ctx.result.set_undefined();
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_arg = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "CreateListFromArrayLike called on non-object");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
@@ -486,7 +514,7 @@ fn void bound_get_data(HObject* bound_obj, TVal* downstream, TVal* bound_this,
 fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     TVal downstream = ctx.this_val;
 
-    // Validate downstream is callable
+    // Validate downstream is callable (ES5 §15.3.4.5 step 2: throw TypeError)
     bool callable = false;
     if (downstream.is_lightfunc()) {
         callable = true;
@@ -498,7 +526,18 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     }
 
     if (!callable) {
-        ctx.result.set_undefined();
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_bind = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.bind called on non-callable");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
