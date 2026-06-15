@@ -24,6 +24,7 @@ fn double date_now_ms() {
 }
 
 /// Helper: get the time value from a Date object, or NaN if not a Date.
+/// Kept for internal use (e.g. JSON serialization paths that don't need throw).
 fn double date_get_time_value(TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
@@ -33,6 +34,28 @@ fn double date_get_time_value(TVal* val) {
         }
     }
     return double::nan;
+}
+
+/// ES5 §15.9.1.1 thisTimeValue(value): throw TypeError if not a Date object.
+fn double date_this_time_value(BuiltinContext* ctx, TVal* val) {
+    if (val.is_object() && val.get_heapptr() != null) {
+        HObject* obj = (HObject*)val.get_heapptr();
+        if (obj.get_class() == hobject::ObjClass.DATE &&
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+        }
+    }
+    // Throw TypeError
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err_k = err_raw) { return double::nan; }
+    HObject* err = err_raw;
+    err.prototype = ctx.heap.type_err_proto;
+    HString* msg_str = builtin_intern_string(ctx.heap, "this is not a Date");
+    TVal msg_tv; msg_tv.set_string(msg_str);
+    err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+    ctx.should_throw = true;
+    ctx.throw_value.set_object(err);
+    return double::nan;  // caller should return after this
 }
 
 /// Helper: convert local time components to epoch ms using mktime.
@@ -737,7 +760,8 @@ fn void builtin_date_parse(BuiltinContext* ctx) {
 /// Date.prototype.toString() — ES5 §15.9.5.2
 fn void builtin_date_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     char[128] buf;
     usz len = date_format_to_string(time_val, &buf, 128);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
@@ -754,7 +778,8 @@ fn void builtin_date_proto_toLocaleString(BuiltinContext* ctx) {
 /// Returns the date portion only (YYYY-MM-DD style).
 fn void builtin_date_proto_toLocaleDateString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(time_val)) {
         HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
         ctx.result.set_string(inv);
@@ -772,7 +797,8 @@ fn void builtin_date_proto_toLocaleDateString(BuiltinContext* ctx) {
 /// Returns the time portion only (HH:MM:SS style).
 fn void builtin_date_proto_toLocaleTimeString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(time_val)) {
         HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
         ctx.result.set_string(inv);
@@ -790,7 +816,8 @@ fn void builtin_date_proto_toLocaleTimeString(BuiltinContext* ctx) {
 /// Returns the date portion: "Mon Jan 01 2024"
 fn void builtin_date_proto_toDateString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(time_val)) {
         HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
         ctx.result.set_string(inv);
@@ -836,7 +863,8 @@ fn void builtin_date_proto_toDateString(BuiltinContext* ctx) {
 /// Returns the time portion: "12:00:00 GMT+0000"
 fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(time_val)) {
         HString* inv = builtin_intern_string(ctx.heap, "Invalid Date");
         ctx.result.set_string(inv);
@@ -873,8 +901,38 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
 /// Date.prototype.toJSON(key) — ES5 §15.9.5.44
 fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
-    if (math::is_nan(time_val)) {
+    // ES5 §15.9.5.44: call ToObject(this), then ToPrimitive(O, "number")
+    // For Date objects, this returns the time value. For non-Date objects,
+    // ToPrimitive calls valueOf/toString to get a numeric value.
+    double time_val;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.get_class() == hobject::ObjClass.DATE &&
+            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
+            time_val = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+        } else {
+            // Non-Date object: call ToPrimitive via vm_to_number
+            Vm* v = (Vm*)ctx.vm;
+            time_val = vm::vm_to_number(v, &this_val);
+            if (v.throw_pending) {
+                ctx.should_throw = true;
+                ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                v.throw_pending = false;
+                return;
+            }
+        }
+    } else {
+        // Primitives: call ToPrimitive (vm_to_number handles this)
+        Vm* v = (Vm*)ctx.vm;
+        time_val = vm::vm_to_number(v, &this_val);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
+    if (math::is_nan(time_val) || !math::is_finite(time_val)) {
         ctx.result.set_null();
         return;
     }
@@ -887,14 +945,16 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
 /// Date.prototype.data.valueOf() — ES5 §15.9.5.8
 fn void builtin_date_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     ctx.result.set_number(time_val);
 }
 
 /// Date.prototype.getTime() — ES5 §15.9.5.9
 fn void builtin_date_proto_getTime(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double time_val = date_get_time_value(&this_val);
+    double time_val = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     ctx.result.set_number(time_val);
 }
 
@@ -920,7 +980,8 @@ fn void date_break_time(double time_val, long* year, long* month, long* day,
 /// Date.prototype.getFullYear() — ES5 §15.9.5.10
 fn void builtin_date_proto_getFullYear(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -930,7 +991,8 @@ fn void builtin_date_proto_getFullYear(BuiltinContext* ctx) {
 /// Date.prototype.getMonth() — ES5 §15.9.5.12
 fn void builtin_date_proto_getMonth(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -940,7 +1002,8 @@ fn void builtin_date_proto_getMonth(BuiltinContext* ctx) {
 /// Date.prototype.getDate() — ES5 §15.9.5.14
 fn void builtin_date_proto_getDate(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -950,7 +1013,8 @@ fn void builtin_date_proto_getDate(BuiltinContext* ctx) {
 /// Date.prototype.getDay() — ES5 §15.9.5.16
 fn void builtin_date_proto_getDay(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -960,7 +1024,8 @@ fn void builtin_date_proto_getDay(BuiltinContext* ctx) {
 /// Date.prototype.getHours() — ES5 §15.9.5.18
 fn void builtin_date_proto_getHours(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -970,7 +1035,8 @@ fn void builtin_date_proto_getHours(BuiltinContext* ctx) {
 /// Date.prototype.getMinutes() — ES5 §15.9.5.20
 fn void builtin_date_proto_getMinutes(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -980,7 +1046,8 @@ fn void builtin_date_proto_getMinutes(BuiltinContext* ctx) {
 /// Date.prototype.getSeconds() — ES5 §15.9.5.22
 fn void builtin_date_proto_getSeconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -990,7 +1057,8 @@ fn void builtin_date_proto_getSeconds(BuiltinContext* ctx) {
 /// Date.prototype.getMilliseconds() — ES5 §15.9.5.24
 fn void builtin_date_proto_getMilliseconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long ms = (long)tv % 1000;
     if (ms < 0) ms += 1000;
@@ -1047,7 +1115,8 @@ fn void date_set_ms(HObject* obj, double new_ms) {
 /// Date.prototype.getTimezoneOffset() — ES5 §15.9.5.26
 fn void builtin_date_proto_getTimezoneOffset(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     // local and UTC components
     long ly, lm, ld, lwday, lh, lmin, lsec;
@@ -1063,7 +1132,8 @@ fn void builtin_date_proto_getTimezoneOffset(BuiltinContext* ctx) {
 /// Date.prototype.getUTCFullYear() — ES5 §15.9.5.41
 fn void builtin_date_proto_getUTCFullYear(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1073,7 +1143,8 @@ fn void builtin_date_proto_getUTCFullYear(BuiltinContext* ctx) {
 /// Date.prototype.getUTCMonth() — ES5 §15.9.5.42
 fn void builtin_date_proto_getUTCMonth(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1083,7 +1154,8 @@ fn void builtin_date_proto_getUTCMonth(BuiltinContext* ctx) {
 /// Date.prototype.getUTCDate() — ES5 §15.9.5.43
 fn void builtin_date_proto_getUTCDate(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1093,7 +1165,8 @@ fn void builtin_date_proto_getUTCDate(BuiltinContext* ctx) {
 /// Date.prototype.getUTCDay() — ES5 §15.9.5.44
 fn void builtin_date_proto_getUTCDay(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1103,7 +1176,8 @@ fn void builtin_date_proto_getUTCDay(BuiltinContext* ctx) {
 /// Date.prototype.getUTCHours() — ES5 §15.9.5.45
 fn void builtin_date_proto_getUTCHours(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1113,7 +1187,8 @@ fn void builtin_date_proto_getUTCHours(BuiltinContext* ctx) {
 /// Date.prototype.getUTCMinutes() — ES5 §15.9.5.46
 fn void builtin_date_proto_getUTCMinutes(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1123,7 +1198,8 @@ fn void builtin_date_proto_getUTCMinutes(BuiltinContext* ctx) {
 /// Date.prototype.getUTCSeconds() — ES5 §15.9.5.47
 fn void builtin_date_proto_getUTCSeconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1133,7 +1209,8 @@ fn void builtin_date_proto_getUTCSeconds(BuiltinContext* ctx) {
 /// Date.prototype.getUTCMilliseconds() — ES5 §15.9.5.48
 fn void builtin_date_proto_getUTCMilliseconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
     long ms = (long)tv % 1000;
     if (ms < 0) ms += 1000;
@@ -1143,9 +1220,9 @@ fn void builtin_date_proto_getUTCMilliseconds(BuiltinContext* ctx) {
 /// Date.prototype.setTime(time) — ES5 §15.9.5.27
 fn void builtin_date_proto_setTime(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
     // ES5 §15.9.5.27: ToNumber on argument FIRST, before any NaN check
     Vm* v = (Vm*)ctx.vm;
     double t = double::nan;
@@ -1166,10 +1243,9 @@ fn void builtin_date_proto_setTime(BuiltinContext* ctx) {
 /// Date.prototype.setMilliseconds(ms) — ES5 §15.9.5.28
 fn void builtin_date_proto_setMilliseconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.28: ToNumber on argument BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double ms = double::nan;
@@ -1195,10 +1271,9 @@ fn void builtin_date_proto_setMilliseconds(BuiltinContext* ctx) {
 /// Date.prototype.setSeconds(sec[, ms]) — ES5 §15.9.5.29
 fn void builtin_date_proto_setSeconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.29: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double sec_arg = double::nan;
@@ -1222,8 +1297,10 @@ fn void builtin_date_proto_setSeconds(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current ms if not provided
-    if (math::is_nan(ms_arg)) { ms_arg = (double)((long)tv % 1000); if (ms_arg < 0) ms_arg += 1000; }
+    // Use current ms if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { ms_arg = (double)((long)tv % 1000); if (ms_arg < 0) ms_arg += 1000; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1236,10 +1313,9 @@ fn void builtin_date_proto_setSeconds(BuiltinContext* ctx) {
 /// Date.prototype.setMinutes(min[, sec[, ms]]) — ES5 §15.9.5.30
 fn void builtin_date_proto_setMinutes(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.30: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double min_arg = double::nan;
@@ -1273,11 +1349,14 @@ fn void builtin_date_proto_setMinutes(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current values if not provided
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
     long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
     long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
-    if (math::is_nan(sec_arg)) { sec_arg = (double)sec_cur; }
-    if (math::is_nan(ms_arg)) { ms_arg = (double)ms_cur; }
+    if (ctx.argc <= 1) { sec_arg = (double)sec_cur; }
+    if (ctx.argc <= 2) { ms_arg = (double)ms_cur; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1290,10 +1369,9 @@ fn void builtin_date_proto_setMinutes(BuiltinContext* ctx) {
 /// Date.prototype.setHours(hour[, min[, sec[, ms]]]) — ES5 §15.9.5.31
 fn void builtin_date_proto_setHours(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.31: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double hour_arg = double::nan;
@@ -1337,13 +1415,17 @@ fn void builtin_date_proto_setHours(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current values if not provided
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
     long min_cur = (long)tv / 60000 % 60; if (min_cur < 0) min_cur += 60;
     long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
     long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
-    if (math::is_nan(min_arg)) { min_arg = (double)min_cur; }
-    if (math::is_nan(sec_arg)) { sec_arg = (double)sec_cur; }
-    if (math::is_nan(ms_arg)) { ms_arg = (double)ms_cur; }
+    if (ctx.argc <= 1) { min_arg = (double)min_cur; }
+    if (ctx.argc <= 2) { sec_arg = (double)sec_cur; }
+    if (ctx.argc <= 3) { ms_arg = (double)ms_cur; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(hour_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1356,10 +1438,9 @@ fn void builtin_date_proto_setHours(BuiltinContext* ctx) {
 /// Date.prototype.setDate(date) — ES5 §15.9.5.32
 fn void builtin_date_proto_setDate(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.32: ToNumber on argument BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double date_arg = double::nan;
@@ -1385,10 +1466,9 @@ fn void builtin_date_proto_setDate(BuiltinContext* ctx) {
 /// Date.prototype.setMonth(month[, date]) — ES5 §15.9.5.33
 fn void builtin_date_proto_setMonth(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.33: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double month_arg = double::nan;
@@ -1415,8 +1495,10 @@ fn void builtin_date_proto_setMonth(BuiltinContext* ctx) {
     if (!math::is_nan(tv)) { date_break_time(tv, &year, &month, &day, &wday, &hour, &min, &sec); }
     else { year = 1970; month = 0; day = 1; hour = 0; min = 0; sec = 0; }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current date if not provided
-    if (math::is_nan(date_arg)) { date_arg = (double)day; }
+    // Use current date if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { date_arg = (double)day; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     double new_ms = date_local_to_ms(year, (long)month_arg, (long)date_arg, hour, min, sec, (long)tv % 1000);
     double clipped = date_time_clip(new_ms);
@@ -1427,10 +1509,9 @@ fn void builtin_date_proto_setMonth(BuiltinContext* ctx) {
 /// Date.prototype.setFullYear(year[, month[, date]]) — ES5 §15.9.5.40
 fn void builtin_date_proto_setFullYear(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.40: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double year_arg = double::nan;
@@ -1467,9 +1548,12 @@ fn void builtin_date_proto_setFullYear(BuiltinContext* ctx) {
     long y, m, d, wday, h, min, s;
     if (math::is_nan(tv)) { y = 1970; m = 0; d = 1; h = 0; min = 0; s = 0; }
     else { date_break_time(tv, &y, &m, &d, &wday, &h, &min, &s); }
-    // Use current values if not provided
-    if (math::is_nan(month_arg)) { month_arg = (double)m; }
-    if (math::is_nan(date_arg)) { date_arg = (double)d; }
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { month_arg = (double)m; }
+    if (ctx.argc <= 2) { date_arg = (double)d; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     double new_ms = date_local_to_ms((long)year_arg, (long)month_arg, (long)date_arg, h, min, s, math::is_nan(tv) ? 0 : (long)tv % 1000);
     double clipped = date_time_clip(new_ms);
     date_set_ms(obj, clipped);
@@ -1479,10 +1563,9 @@ fn void builtin_date_proto_setFullYear(BuiltinContext* ctx) {
 /// Date.prototype.setUTCMilliseconds(ms) — ES5 §15.9.5.49
 fn void builtin_date_proto_setUTCMilliseconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.49: ToNumber on argument BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double ms = double::nan;
@@ -1508,10 +1591,9 @@ fn void builtin_date_proto_setUTCMilliseconds(BuiltinContext* ctx) {
 /// Date.prototype.setUTCSeconds(sec[, ms]) — ES5 §15.9.5.50
 fn void builtin_date_proto_setUTCSeconds(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.50: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double sec_arg = double::nan;
@@ -1535,8 +1617,10 @@ fn void builtin_date_proto_setUTCSeconds(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current ms if not provided
-    if (math::is_nan(ms_arg)) { ms_arg = (double)((long)tv % 1000); if (ms_arg < 0) ms_arg += 1000; }
+    // Use current ms if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { ms_arg = (double)((long)tv % 1000); if (ms_arg < 0) ms_arg += 1000; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1549,10 +1633,9 @@ fn void builtin_date_proto_setUTCSeconds(BuiltinContext* ctx) {
 /// Date.prototype.setUTCMinutes(min[, sec[, ms]]) — ES5 §15.9.5.51
 fn void builtin_date_proto_setUTCMinutes(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.51: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double min_arg = double::nan;
@@ -1586,11 +1669,14 @@ fn void builtin_date_proto_setUTCMinutes(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current values if not provided
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
     long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
     long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
-    if (math::is_nan(sec_arg)) { sec_arg = (double)sec_cur; }
-    if (math::is_nan(ms_arg)) { ms_arg = (double)ms_cur; }
+    if (ctx.argc <= 1) { sec_arg = (double)sec_cur; }
+    if (ctx.argc <= 2) { ms_arg = (double)ms_cur; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1603,10 +1689,9 @@ fn void builtin_date_proto_setUTCMinutes(BuiltinContext* ctx) {
 /// Date.prototype.setUTCHours(hour[, min[, sec[, ms]]]) — ES5 §15.9.5.52
 fn void builtin_date_proto_setUTCHours(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.52: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double hour_arg = double::nan;
@@ -1650,13 +1735,17 @@ fn void builtin_date_proto_setUTCHours(BuiltinContext* ctx) {
         }
     }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current values if not provided
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
     long min_cur = (long)tv / 60000 % 60; if (min_cur < 0) min_cur += 60;
     long sec_cur = (long)tv / 1000 % 60; if (sec_cur < 0) sec_cur += 60;
     long ms_cur  = (long)tv % 1000; if (ms_cur < 0) ms_cur += 1000;
-    if (math::is_nan(min_arg)) { min_arg = (double)min_cur; }
-    if (math::is_nan(sec_arg)) { sec_arg = (double)sec_cur; }
-    if (math::is_nan(ms_arg)) { ms_arg = (double)ms_cur; }
+    if (ctx.argc <= 1) { min_arg = (double)min_cur; }
+    if (ctx.argc <= 2) { sec_arg = (double)sec_cur; }
+    if (ctx.argc <= 3) { ms_arg = (double)ms_cur; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(ms_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(sec_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(min_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(hour_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1669,10 +1758,9 @@ fn void builtin_date_proto_setUTCHours(BuiltinContext* ctx) {
 /// Date.prototype.setUTCDate(date) — ES5 §15.9.5.53
 fn void builtin_date_proto_setUTCDate(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.53: ToNumber on argument BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double date_arg = double::nan;
@@ -1698,10 +1786,9 @@ fn void builtin_date_proto_setUTCDate(BuiltinContext* ctx) {
 /// Date.prototype.setUTCMonth(month[, date]) — ES5 §15.9.5.54
 fn void builtin_date_proto_setUTCMonth(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.54: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double month_arg = double::nan;
@@ -1728,8 +1815,10 @@ fn void builtin_date_proto_setUTCMonth(BuiltinContext* ctx) {
     if (!math::is_nan(tv)) { date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec); }
     else { year = 1970; month = 0; day = 1; hour = 0; min = 0; sec = 0; }
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // Use current date if not provided
-    if (math::is_nan(date_arg)) { date_arg = (double)day; }
+    // Use current date if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { date_arg = (double)day; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     double new_ms = date_utc_to_ms(year, (long)month_arg, (long)date_arg, hour, min, sec, (long)tv % 1000);
     double clipped = date_time_clip(new_ms);
@@ -1740,10 +1829,9 @@ fn void builtin_date_proto_setUTCMonth(BuiltinContext* ctx) {
 /// Date.prototype.setUTCFullYear(year[, month[, date]]) — ES5 §15.9.5.55
 fn void builtin_date_proto_setUTCFullYear(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) { ctx.result.set_number(double::nan); return; }
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     HObject* obj = (HObject*)this_val.get_heapptr();
-    if (obj.get_class() != hobject::ObjClass.DATE) { ctx.result.set_number(double::nan); return; }
-    double tv = date_get_time_value(&this_val);
     // ES5 §15.9.5.55: ToNumber on ALL present arguments BEFORE NaN check on t
     Vm* v = (Vm*)ctx.vm;
     double year_arg = double::nan;
@@ -1780,9 +1868,12 @@ fn void builtin_date_proto_setUTCFullYear(BuiltinContext* ctx) {
     long y, m, d, wday, h, min, s;
     if (math::is_nan(tv)) { y = 1970; m = 0; d = 1; h = 0; min = 0; s = 0; }
     else { date_break_time_utc(tv, &y, &m, &d, &wday, &h, &min, &s); }
-    // Use current values if not provided
-    if (math::is_nan(month_arg)) { month_arg = (double)m; }
-    if (math::is_nan(date_arg)) { date_arg = (double)d; }
+    // Use current values if not provided (check argc, not NaN — NaN from ToNumber must be used)
+    if (ctx.argc <= 1) { month_arg = (double)m; }
+    if (ctx.argc <= 2) { date_arg = (double)d; }
+    // If a provided arg is NaN from ToNumber, result is NaN
+    if (math::is_nan(date_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
+    if (math::is_nan(month_arg)) { date_set_ms(obj, double::nan); ctx.result.set_number(double::nan); return; }
     double new_ms = date_utc_to_ms((long)year_arg, (long)month_arg, (long)date_arg, h, min, s, math::is_nan(tv) ? 0 : (long)tv % 1000);
     double clipped = date_time_clip(new_ms);
     date_set_ms(obj, clipped);
@@ -1808,7 +1899,8 @@ fn void date_pad4(char* buf, long val) {
 /// Throws RangeError if the date value is NaN.
 fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) {
         // Throw RangeError per ES5 §15.9.5.43
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
@@ -1911,7 +2003,8 @@ fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
 /// Date.prototype.toUTCString() — ES5 §15.9.5.44
 fn void builtin_date_proto_toUTCString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    double tv = date_get_time_value(&this_val);
+    double tv = date_this_time_value(ctx, &this_val);
+    if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_string(builtin_intern_string(ctx.heap, "Invalid Date")); return; }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
@@ -1947,6 +2040,10 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype
+    // Initialize primitive_value to NaN so Date.prototype is not treated as
+    // a valid Date instance by thisTimeValue (it has class DATE but no
+    // [[DateValue]] internal slot per ES2015 §20.4.3.1).
+    (*proto.extra_ptr()).prim.primitive_value.set_number(double::nan);
     heap.date_proto = proto;
 
     // Set .constructor to Date lightfunc
