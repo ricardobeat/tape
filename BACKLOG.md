@@ -139,7 +139,7 @@ Tasks are grouped by area but are otherwise independent.
 
 - [x] Fix `typeof` on undeclared variables to return `"undefined"` without throwing (currently throws VM_ERROR)
 - [x] Fix `==` abstract equality: coerce objects via `ToPrimitive` before comparing with primitives per ES5 §11.9.3
-- [ ] Fix `+` operator: when one operand is an object, call `ToPrimitive` with no hint (not number hint) per ES5 §11.6.1
+- [x] Fix `+` operator: when one operand is an object, call `ToPrimitive` with no hint (not number hint) per ES5 §11.6.1
 - [x] Implement `**` (exponentiation) operator as `Math.pow` per ES2016 §12.6.3
 - [x] Fix optional chaining `?.` to short-circuit correctly on `null` and `undefined` (currently parsed but behavior uncertain)
 - [x] Fix logical assignment `||=`, `&&=`, `??=` to not assign when short-circuit condition is met per ES2021
@@ -159,7 +159,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Implement `Array.prototype.copyWithin` per ES6 §22.1.3.3
 - [x] Implement `Array.prototype.fill` per ES6 §22.1.3.6
 - [ ] Implement `Array.prototype.keys` / `.values` / `.entries` per ES6 (array iterator methods)
-- [ ] Fix `String.prototype.padStart` / `padEnd` for fillString length > 1 character (currently may truncate incorrectly)
+- [x] Fix `String.prototype.padStart` / `padEnd` for fillString length > 1 character (currently may truncate incorrectly)
 - [x] Implement `String.prototype.trimStart` / `trimEnd` per ES2019 (`trimLeft`/`trimRight` aliases too)
 
 ---

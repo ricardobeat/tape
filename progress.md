@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 185 (Date fixes + JSON.stringify + arguments + String.match)
+**Last Updated:** Session 186 (Array iteration accessor/ToLength, + operator ToPrimitive, padStart/padEnd)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 185, 2026-06-15)
+## Summary (after Session 186, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~14,724 |
-| Currently failing (phases 0-8) | ~6,879 |
-| Overall pass rate | ~68.2% |
+| Currently passing (phases 0-8) | ~15,958 |
+| Currently failing (phases 0-8) | ~5,645 |
+| Overall pass rate | ~73.9% |
 
 ## Per-Phase Status
 
@@ -20,10 +20,10 @@
 | 0-1: Core VM | 2,185 | 606 | 282 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,083 | 1,716 | 1,967 |
+| 3: Object System | 7,766 | 4,445 | 1,354 | 1,967 |
 | 4: Error Handling | 402 | 120 | 81 | 201 |
-| 5: Built-in Constructors | 8,615 | 4,941 | 2,149 | 1,525 |
-| 6: Prototype Methods | 4,713 | 2,199 | 1,578 | 936 |
+| 5: Built-in Constructors | 8,615 | 5,379 | 1,711 | 1,525 |
+| 6: Prototype Methods | 4,713 | 2,637 | 1,140 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 1,058 | 226 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 186 | Array iteration accessor/ToLength fix (dense array elements now properly accessible via indexed access); + operator ToPrimitive with no hint (ES5 §11.6.1: object operand now uses `to_primitive_value` with no hint instead of default number hint); String.prototype.padStart/padEnd fix for fillString length > 1 character | +1234 (Phase 3: +362, Phase 5: +438, Phase 6: +438) |
 | 185 | Date constructor single-arg ToNumber coercion (valueOf throw propagation); Date constructor locale format fallback for toString/toUTCString strings; Date.prototype setter coercion order — ToNumber on all args before NaN check (15 setter methods); Date.prototype thisTimeValue TypeError for non-Date this (27 methods); Date.prototype.toJSON Invoke(O, "toISOString") per ES5 §15.9.5.44; Date.UTC NaN propagation fix; TimeClip -0 → +0 fix; JSON.stringify circular reference detection (TypeError); JSON.stringify replacer array support; JSON.stringify space argument clamping; JSON.stringify negative zero as "0"; arguments object: ES5 §10.6 callee, length, indexed access, strict mode TypeError; String.prototype.match capture groups for non-global regex | +209 (Phase 3: +20, Phase 5: +23, Phase 6: +11, Phase 8: +142) |
 | 184 | Date.parse ISO 8601 string parsing; Date.prototype.toISOString with RangeError for NaN; Number.prototype.toFixed/toExponential/toPrecision throw RangeError for out-of-range args; toExponential no-arg fix; toPrecision trailing zeros fix; negative zero normalization; sort comparator throw propagation verified working | +10 (Phase 5: +4, Phase 6: +4, Phase 8: +2) |
 | 183 | Error.prototype.stack property set on construction ("name: message" format); Map.prototype.forEach callback invocation with (value, key, map) per ES6 §23.1.3.5; Set.prototype.forEach callback invocation with (value, value, set) per ES6 §23.2.3.6. Verified Object.seal/freeze/isSealed/isFrozen/GOPD for dense arrays already correct. | +70 (Phase 17-20: +74, Phase 3/5: -4 regressed) |

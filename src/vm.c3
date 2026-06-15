@@ -2172,11 +2172,11 @@ fn TVal? Vm.run(Vm* vm) {
             }
             TVal prim_b = *rb;
             TVal prim_c = *rc;
-            // ES5 §11.6.1: + operator uses hint "string" for ToPrimitive
-            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, true); }
+            // ES5 §11.6.1: + operator uses ToPrimitive with no hint (default "number")
+            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, false); }
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             if (needs_restart) break;
-            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, true); }
+            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, false); }
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             if (needs_restart) break;
             TValTag pt_b = prim_b.get_tag();
