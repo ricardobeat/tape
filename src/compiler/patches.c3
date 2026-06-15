@@ -55,7 +55,7 @@ fn void CompilerContext.patch_continue_chain(&self, uint head, uint target) {
     while (current != NO_PATCH) {
         uint next = self.patches[current].next;
         int offset = (int)target - (int)self.patches[current].addr - 1;
-        self.code[self.patches[current].addr] = bytecode::make_sabc(Opcode.JUMP, offset);
+        self.code[self.patches[current].addr] = bytecode::make_sabc(Opcode.CONTINUE, offset);
         current = next;
     }
 }

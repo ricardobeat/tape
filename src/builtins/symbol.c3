@@ -363,8 +363,14 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
     } else if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
-            // Extract [[SymbolData]] — for now, check if there's a stored symbol
-            // We look for the "_symbol" property or just describe as "Symbol()"
+            // Extract [[SymbolData]] from primitive_value
+            TVal prim = (*obj.extra_ptr()).prim.primitive_value;
+            if (prim.is_string()) {
+                HString* s = (HString*)prim.get_heapptr();
+                if (s != null && s.is_symbol()) {
+                    sym = s;
+                }
+            }
         }
     }
 
@@ -425,15 +431,69 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     } else if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
-            // Return the [[SymbolData]] value
-            // For now just return undefined for wrapper objects
+            // Return the [[SymbolData]] value from primitive_value
+            TVal prim = (*obj.extra_ptr()).prim.primitive_value;
+            if (prim.is_string()) {
+                HString* s = (HString*)prim.get_heapptr();
+                if (s != null && s.is_symbol()) {
+                    *ctx.result = prim;
+                    return;
+                }
+            }
         }
     }
 
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
         err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.data.valueOf called on non-Symbol");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.throw_value.set_object(err);
+    } else {
+        ctx.throw_value.set_undefined();
+    }
+    ctx.should_throw = true;
+}
+
+// ============================================================================
+// Symbol.prototype[Symbol.toPrimitive](hint) — ES6 §19.4.3.5
+// ============================================================================
+fn void builtin_symbol_proto_toprimitive(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    // 1. Let s be the this value.
+    // 2. If Type(s) is Symbol, return s.
+    // 3. If Type(s) is Object and s has a [[SymbolData]] internal slot,
+    //    let s be s.[[SymbolData]].
+    // 4. Throw a TypeError exception.
+    if (this_val.is_string()) {
+        HString* s = (HString*)this_val.get_heapptr();
+        if (s != null && s.is_symbol()) {
+            *ctx.result = this_val;
+            return;
+        }
+    } else if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.flags.obj_class == hobject::ObjClass.SYMBOL) {
+            TVal prim = (*obj.extra_ptr()).prim.primitive_value;
+            if (prim.is_string()) {
+                HString* s = (HString*)prim.get_heapptr();
+                if (s != null && s.is_symbol()) {
+                    *ctx.result = prim;
+                    return;
+                }
+            }
+        }
+    }
+
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype[Symbol.toPrimitive] called on non-Symbol");
         if (msg_str != null) {
             TVal msg_val;
             msg_val.set_string(msg_str);
@@ -462,6 +522,17 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Register prototype methods
     if (!register_string_proto_method(proto, heap, "toString", BUILTIN_SYMBOL_PROTO_TOSTRING)) return false;
     if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_SYMBOL_PROTO_VALUEOF)) return false;
+
+    // Register Symbol.prototype[Symbol.toPrimitive] — ES6 §19.4.3.5
+    // This is a function that returns the this value (the symbol itself).
+    {
+        HString* toprim_key = ensure_toprimitive_symbol(heap);
+        if (toprim_key != null) {
+            TVal toprim_fn;
+            toprim_fn.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE);
+            proto.put_prop(toprim_key, toprim_fn, hobject::PROP_FLAGS_WEC);
+        }
+    }
 
     // Set @@toStringTag on prototype
     HString* tag_key = ensure_tostringtag_symbol(heap);

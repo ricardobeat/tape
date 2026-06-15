@@ -15,7 +15,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
 - [ ] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
 - [ ] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
-- [ ] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
+- [x] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
 - [x] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
 - [ ] Implement `eval()` as indirect/direct call distinction: direct `eval()` should share the current scope; indirect `eval()` runs in the global scope
 
@@ -69,18 +69,18 @@ Tasks are grouped by area but are otherwise independent.
 ## Conformance: JSON
 
 - [x] Fix `JSON.parse` to set `Array.prototype` on parsed arrays so `.push()` works (plan 026 #1, `src/builtins/json.c3`)
-- [ ] Fix `JSON.stringify` `replacer` array: only include listed keys in output per ES5 §15.12.3
-- [ ] Fix `JSON.stringify` `space` argument: honor numeric space > 10 clamped to 10 per ES5 §15.12.3
+- [x] Fix `JSON.stringify` `replacer` array: only include listed keys in output per ES5 §15.12.3
+- [x] Fix `JSON.stringify` `space` argument: honor numeric space > 10 clamped to 10 per ES5 §15.12.3
 - [x] Fix `JSON.stringify` with `toJSON()` method on values: call it before serializing
 - [x] Fix `JSON.parse` `reviver` function not being called on the root value (only on children)
-- [ ] Fix `JSON.stringify` to throw `TypeError` on circular references instead of crashing
+- [x] Fix `JSON.stringify` to throw `TypeError` on circular references instead of crashing
 
 ---
 
 ## Conformance: RegExp
 
 - [ ] Fix `RegExp.prototype.exec` to update `lastIndex` only when `global` or `sticky` flag is set per ES5 §15.10.6.2
-- [ ] Fix `String.prototype.match` with non-global regex to return `index` and `input` properties on result array
+- [x] Fix `String.prototype.match` with non-global regex to return `index` and `input` properties on result array
 - [ ] Implement `String.prototype.matchAll` returning a RegExpStringIterator (plan 023)
 - [ ] Fix `RegExp` constructor called with regex argument: should copy pattern+flags, not re-parse as string
 - [ ] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
@@ -103,11 +103,11 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Iterator Protocol & for-of (Plan 025)
 
-- [ ] Implement `Symbol.iterator` on `Array.prototype` returning an ArrayIterator per ES6 §22.1.3.29
-- [ ] Implement `Symbol.iterator` on `String.prototype` returning a StringIterator (Unicode code-point aware)
+- [x] Implement `Symbol.iterator` on `Array.prototype` returning an ArrayIterator per ES6 §22.1.3.29
+- [x] Implement `Symbol.iterator` on `String.prototype` returning a StringIterator (Unicode code-point aware)
 - [ ] Implement `Symbol.iterator` on `Map.prototype` / `Set.prototype` returning entries/values iterators
 - [ ] Implement `for-of` statement desugaring in the compiler: call `Symbol.iterator`, loop `.next()`, check `.done` (`src/compiler/statements.c3`)
-- [ ] Implement `Array.from` with iterator protocol support (currently only handles array-likes)
+- [x] Implement `Array.from` with iterator protocol support (currently only handles array-likes)
 - [ ] Implement spread operator `[...iter]` using iterator protocol
 - [ ] Implement destructuring assignment `const [a, b] = iter` using iterator protocol
 
@@ -158,7 +158,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `with` statement to throw `SyntaxError` in strict mode per ES5 §12.10
 - [x] Implement `Array.prototype.copyWithin` per ES6 §22.1.3.3
 - [x] Implement `Array.prototype.fill` per ES6 §22.1.3.6
-- [ ] Implement `Array.prototype.keys` / `.values` / `.entries` per ES6 (array iterator methods)
+- [x] Implement `Array.prototype.keys` / `.values` / `.entries` per ES6 (array iterator methods)
 - [x] Fix `String.prototype.padStart` / `padEnd` for fillString length > 1 character (currently may truncate incorrectly)
 - [x] Implement `String.prototype.trimStart` / `trimEnd` per ES2019 (`trimLeft`/`trimRight` aliases too)
 

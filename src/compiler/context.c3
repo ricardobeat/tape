@@ -407,7 +407,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         for (uint i = 0; i < self.code_count; i++) {
             Instruction ins = self.code[i];
             switch (ins.op) {
-                case Opcode.JUMP: {
+                case Opcode.JUMP:
+                case Opcode.BREAK:
+                case Opcode.CONTINUE: {
                     int off = ins.get_sabc();
                     int tgt = (int)i + 1 + off;
                     if (tgt >= 0 && (uint)tgt < self.code_count) {
@@ -769,13 +771,15 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         for (uint i = 0; i < self.code_count; i++) {
             Opcode cop = self.code[i].op;
             switch (cop) {
-                case Opcode.JUMP: {
+                case Opcode.JUMP:
+                case Opcode.BREAK:
+                case Opcode.CONTINUE: {
                     // WIDE_SABC: target = (pc+1) + sabc
                     int sabc = self.code[i].get_sabc();
                     int tgt_old = (int)i + 1 + sabc;
                     int tgt_new = (int)pc_map[(uint)tgt_old];
                     int new_sabc = tgt_new - ((int)pc_map[i] + 1);
-                    self.code[i] = bytecode::make_sabc(Opcode.JUMP, new_sabc);
+                    self.code[i] = bytecode::make_sabc(cop, new_sabc);
                 }
                 case Opcode.IF_TRUE:
                 case Opcode.IF_FALSE: {

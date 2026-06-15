@@ -86,6 +86,9 @@ const uint ACT_FLAG_DIRECT_EVAL    = 1u << 4;
 const uint CATCHER_FLAG_CATCH_ENABLED    = 1u << 0;
 const uint CATCHER_FLAG_FINALLY_ENABLED  = 1u << 1;
 const uint CATCHER_FLAG_PENDING_RETURN   = 1u << 2;
+const uint CATCHER_FLAG_PENDING_BREAK    = 1u << 3;
+const uint CATCHER_FLAG_PENDING_CONTINUE = 1u << 4;
+const uint CATCHER_FLAG_IN_FINALLY       = 1u << 5;
 
 /// A catcher entry pushed by TRY for exception handling.
 /// Singly-linked list rooted in Activation.cat.
@@ -102,6 +105,8 @@ struct Catcher {
     Instruction* finally_pc;
     /// Saved return value for return-through-finally (set by RET).
     TVal return_val;
+    /// Saved PC target for break/continue-through-finally.
+    Instruction* pending_pc;
 }
 
 // ============================================================================
@@ -177,6 +182,17 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
         Catcher* cat = (Catcher*)search_act.cat;
         while (cat != null) {
             if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
+                // If this is not the innermost catcher (i.e., we skipped
+                // catchers with IN_FINALLY), pop the skipped catchers so
+                // that the CATCH handler reads from the correct catcher.
+                if (cat != (Catcher*)search_act.cat) {
+                    // Pop catchers from the chain up to (but not including) this one.
+                    while ((Catcher*)search_act.cat != cat) {
+                        Catcher* skip = (Catcher*)search_act.cat;
+                        search_act.cat = (void*)skip.parent;
+                        libc::free(skip);
+                    }
+                }
                 vm.heap.tval_copy_ref(&cat.thrown_val, &thrown_val);
                 cat.flags &= ~CATCHER_FLAG_CATCH_ENABLED;
                 *curr_pc = cat.catch_pc;
@@ -202,7 +218,12 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                 }
                 return true;
             }
-            if (cat.flags & CATCHER_FLAG_FINALLY_ENABLED) {
+            if ((cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0
+                && (cat.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
+                // Skip catchers whose finally block is currently being executed
+                // (CATCHER_FLAG_IN_FINALLY is set).  Without this, a throw
+                // inside a finally block would re-enter the same finally block,
+                // causing an infinite loop.
                 vm.heap.tval_copy_ref(&cat.thrown_val, &thrown_val);
                 *curr_pc = cat.finally_pc;
                 search_act.curr_pc = *curr_pc;
@@ -221,6 +242,15 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                     }
                 }
                 return true;
+            }
+            // If this catcher has IN_FINALLY, it means we're inside its finally
+            // block and a throw occurred.  Pop it and continue to the next handler.
+            if (cat.flags & CATCHER_FLAG_IN_FINALLY) {
+                Catcher* next = (Catcher*)cat.parent;
+                search_act.cat = (void*)next;
+                libc::free(cat);
+                cat = next;
+                continue;
             }
             cat = cat.parent;
         }
@@ -845,6 +875,16 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
             TVal result;
             result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return result;
+        }
+        // Fast path: Symbol wrapper → unwrap directly
+        if (cls == hobject::ObjClass.SYMBOL &&
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            HString* s = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+            if (s != null && s.is_symbol()) {
+                TVal result;
+                result.set_string(s);
+                return result;
+            }
         }
         // Check Symbol.toPrimitive (ES6 §7.1.1)
         if (vm != null && vm.heap.call_fn != null && vm.heap.toprimitive_symbol != null) {
@@ -6239,12 +6279,20 @@ fn TVal? Vm.run(Vm* vm) {
             // handler.  After ENDFINALLY, the saved value will be used.
             Catcher* ret_cat = (Catcher*)act.cat;
             if (ret_cat != null && ret_cat.finally_pc != null) {
-                // Save return value and mark pending return
+                // Save return value
                 ret_cat.return_val = *ra;
-                ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
-                // Jump to finally handler
-                curr_pc = ret_cat.finally_pc;
-                act.curr_pc = curr_pc;
+                // If PENDING_RETURN is already set, we're inside the finally
+                // block that was entered due to an earlier return.  Just update
+                // the return value and let execution continue normally —
+                // ENDFINALLY at the end of the finally block will complete the
+                // return with the new value.  Without this check, we'd loop
+                // infinitely back to the same finally block.
+                if (!(ret_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                    // Jump to finally handler
+                    curr_pc = ret_cat.finally_pc;
+                    act.curr_pc = curr_pc;
+                }
                 break;
             }
 
@@ -6325,9 +6373,11 @@ fn TVal? Vm.run(Vm* vm) {
             Catcher* ret2_cat = (Catcher*)act.cat;
             if (ret2_cat != null && ret2_cat.finally_pc != null) {
                 ret2_cat.return_val.set_undefined();
-                ret2_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
-                curr_pc = ret2_cat.finally_pc;
-                act.curr_pc = curr_pc;
+                if (!(ret2_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret2_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                    curr_pc = ret2_cat.finally_pc;
+                    act.curr_pc = curr_pc;
+                }
                 break;
             }
 
@@ -7138,6 +7188,14 @@ fn TVal? Vm.run(Vm* vm) {
             // No-op marker — the catcher's finally_pc points here.
             // When entered via normal fall-through (after catch or via jump),
             // there may or may not be a catcher on the chain.
+            // Mark the catcher as "in finally" so that vm_throw_value skips it
+            // if a throw occurs inside the finally block (prevents infinite loop).
+            {
+                Catcher* fin_cat = (Catcher*)act.cat;
+                if (fin_cat != null) {
+                    fin_cat.flags |= CATCHER_FLAG_IN_FINALLY;
+                }
+            }
             break;
 
         case Opcode.ENDFINALLY: {
@@ -7148,12 +7206,26 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal pending_exc_val = cat.thrown_val;
                 bool has_pending_ret = (cat.flags & CATCHER_FLAG_PENDING_RETURN) != 0;
                 TVal saved_ret_val = cat.return_val;
+                bool has_pending_break = (cat.flags & CATCHER_FLAG_PENDING_BREAK) != 0;
+                bool has_pending_continue = (cat.flags & CATCHER_FLAG_PENDING_CONTINUE) != 0;
+                Instruction* saved_pending_pc = cat.pending_pc;
+                Catcher* parent_cat = (Catcher*)cat.parent;
 
                 // Pop the finally catcher
-                act.cat = (void*)cat.parent;
+                act.cat = (void*)parent_cat;
                 libc::free(cat);
 
                 if (has_pending_ret) {
+                    // Check if the parent catcher also has a finally — if so,
+                    // propagate the pending return through it before completing.
+                    if (parent_cat != null && parent_cat.finally_pc != null
+                        && (parent_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
+                        parent_cat.return_val = saved_ret_val;
+                        parent_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                        curr_pc = parent_cat.finally_pc;
+                        act.curr_pc = curr_pc;
+                        break;
+                    }
                     // Complete the return that was intercepted by the finally block.
                     TVal val = saved_ret_val;
                     Activation* callee_act = &vm.activations[vm.activation_count - 1];
@@ -7208,6 +7280,28 @@ fn TVal? Vm.run(Vm* vm) {
                     break;
                 }
 
+                if (has_pending_break || has_pending_continue) {
+                    // Check if the parent catcher also has a finally — if so,
+                    // propagate the pending break/continue through it first.
+                    if (parent_cat != null && parent_cat.finally_pc != null
+                        && (parent_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
+                        parent_cat.pending_pc = saved_pending_pc;
+                        if (has_pending_break) {
+                            parent_cat.flags |= CATCHER_FLAG_PENDING_BREAK;
+                        } else {
+                            parent_cat.flags |= CATCHER_FLAG_PENDING_CONTINUE;
+                        }
+                        curr_pc = parent_cat.finally_pc;
+                        act.curr_pc = curr_pc;
+                        break;
+                    }
+                    // All finally blocks have run — complete the break/continue
+                    // by jumping to the saved target.
+                    curr_pc = saved_pending_pc;
+                    act.curr_pc = curr_pc;
+                    break;
+                }
+
                 if (has_pending_exc) {
                     // Re-throw the pending exception
                     if (!vm_throw_value(vm, pending_exc_val, act, &curr_pc, &needs_restart)) {
@@ -7227,10 +7321,40 @@ fn TVal? Vm.run(Vm* vm) {
             break;
 
         case Opcode.BREAK:
-            break;
+        case Opcode.CONTINUE: {
+            // Compute the jump target from the signed 24-bit offset
+            int sabc = insn.get_sabc();
+            int target = (int)((long)(curr_pc - code_base) + (long)sabc);
+            Instruction* target_pc = code_base + target;
 
-        case Opcode.CONTINUE:
+            // Check if any active catcher has a finally handler that
+            // would be bypassed by this jump.  If so, save the target
+            // and redirect to the finally handler.
+            Catcher* bc_cat = (Catcher*)act.cat;
+            if (bc_cat != null && bc_cat.finally_pc != null
+                && (bc_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
+                // Save the pending jump target and flag on the catcher
+                bc_cat.pending_pc = target_pc;
+                if (insn.op == Opcode.BREAK) {
+                    bc_cat.flags |= CATCHER_FLAG_PENDING_BREAK;
+                } else {
+                    bc_cat.flags |= CATCHER_FLAG_PENDING_CONTINUE;
+                }
+                // Jump to the finally handler
+                curr_pc = bc_cat.finally_pc;
+                act.curr_pc = curr_pc;
+                break;
+            }
+            // No active finally handler — jump directly to target
+            if (target < (curr_pc - code_base)) {
+                if (--vm.heap.bwd_gc_budget == 0) {
+                    if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
+                    vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL;
+                }
+            }
+            curr_pc = target_pc;
             break;
+        }
 
         case Opcode.INITGET: {
             // A=object, B=key, C=getter_function

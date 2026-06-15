@@ -1533,7 +1533,7 @@ fn void? CompilerContext.break_statement(&self) {
         for (uint i = 0; i < self.label_count; i++) {
             if (str_eq(self.labels[i].name, label_name)) {
                 uint loop_idx = self.labels[i].loop_index;
-                uint jump_addr = self.emit_jump(Opcode.JUMP);
+                uint jump_addr = self.emit_jump(Opcode.BREAK);
                 self.loop_stack[loop_idx].break_patch_head =
                     self.add_patch(self.loop_stack[loop_idx].break_patch_head, jump_addr);
                 self.match(TokenType.SEMICOLON);
@@ -1545,7 +1545,7 @@ fn void? CompilerContext.break_statement(&self) {
     }
 
     // Unlabeled break — break out of the innermost loop or switch
-    uint jump_addr = self.emit_jump(Opcode.JUMP);
+    uint jump_addr = self.emit_jump(Opcode.BREAK);
     self.add_break_patch(jump_addr);
 
     self.match(TokenType.SEMICOLON);
@@ -1572,7 +1572,7 @@ fn void? CompilerContext.continue_statement(&self) {
                 // Use deferred patching so the continue target can be updated
                 // after the body is compiled (needed for rotated for-loops where
                 // continue_target is set to incr_label after body compilation).
-                uint jump_addr = self.emit_jump(Opcode.JUMP);
+                uint jump_addr = self.emit_jump(Opcode.CONTINUE);
                 self.loop_stack[loop_idx].continue_patch_head =
                     self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
                 self.match(TokenType.SEMICOLON);
@@ -1591,7 +1591,7 @@ fn void? CompilerContext.continue_statement(&self) {
     }
     if (loop_idx >= 0) {
         // Emit placeholder jump and add to continue_patch_head for deferred patching
-        uint jump_addr = self.emit_jump(Opcode.JUMP);
+        uint jump_addr = self.emit_jump(Opcode.CONTINUE);
         self.loop_stack[loop_idx].continue_patch_head =
             self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
     } else {

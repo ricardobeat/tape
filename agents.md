@@ -48,3 +48,16 @@ When calling a function with zero formal parameters but actual arguments (e.g. `
 ### Rosetta Code tests as a debugging tool
 
 The 43 rosetta tests cover 22+ JS language features and proved highly effective at finding real engine bugs. The pattern: minimize the failing test to a single-line repro, check if the issue is in the compiler (compile failed) or VM (VM_ERROR / wrong value), then trace through the bytecode. For VM issues, adding `io::printfn` debug prints to the relevant opcode handler was the fastest way to pinpoint the problem.
+
+### try/catch/finally with break/continue (vm.c3)
+
+**Problem**: `break`/`continue` inside a `try` block with a `finally` clause bypassed the `finally` block entirely. The compiler emitted plain `JUMP` instructions for break/continue, which jumped directly to the loop exit without running finally. Additionally, `return` inside a `finally` block caused an infinite loop because `RET` always redirected to `finally_pc` even when already inside the finally block.
+
+**Fix** (5 files):
+1. **bytecode.c3**: `BREAK`/`CONTINUE` changed from A_BC to WIDE_SABC format (carries signed 24-bit jump offset like `JUMP`).
+2. **vm.c3**: `BREAK`/`CONTINUE` handlers now check the catcher chain for active finally handlers. If found, they save the target PC on the catcher (`pending_pc`) and redirect to the finally block. `ENDFINALLY` propagates pending break/continue through nested finally blocks. `RET`/`RETUNDEF` check `CATCHER_FLAG_PENDING_RETURN` before redirecting. `FINALLY` sets `CATCHER_FLAG_IN_FINALLY` to prevent throw-in-finally infinite loops.
+3. **compiler/emit.c3**: `patch_jump` handles `BREAK`/`CONTINUE` opcodes.
+4. **compiler/patches.c3**: `patch_continue_chain` emits `CONTINUE` instead of `JUMP`.
+5. **compiler/statements.c3**: `break_statement`/`continue_statement` emit `BREAK`/`CONTINUE` opcodes.
+
+**Key flags**: `CATCHER_FLAG_PENDING_BREAK` (1<<3), `CATCHER_FLAG_PENDING_CONTINUE` (1<<4), `CATCHER_FLAG_IN_FINALLY` (1<<5).

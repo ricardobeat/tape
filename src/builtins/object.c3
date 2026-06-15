@@ -49,12 +49,22 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
     }
     // String → String exotic object with .length own property
     if (val.is_string()) {
+        HString* prim_str = (HString*)val.get_heapptr();
+        // Symbol → Symbol exotic object (must check before general string path)
+        if (prim_str != null && prim_str.is_symbol()) {
+            HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.SYMBOL);
+            if (catch err = obj_raw) return false;
+            HObject* obj = obj_raw;
+            obj.prototype = ctx.heap.symbol_proto;
+            (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+            ctx.result.set_object(obj);
+            return true;
+        }
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) return false;
         HObject* obj = obj_raw;
         obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
-        HString* prim_str = (HString*)val.get_heapptr();
         (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
@@ -154,6 +164,20 @@ fn void builtin_object(BuiltinContext* ctx) {
     }
 
     if (arg.is_string()) {
+        HString* prim_str = (HString*)arg.get_heapptr();
+        // Symbol → Symbol exotic object (must check before general string path)
+        if (prim_str != null && prim_str.is_symbol()) {
+            HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.SYMBOL);
+            if (catch err = obj_raw) {
+                ctx.result.set_undefined();
+                return;
+            }
+            HObject* obj = obj_raw;
+            obj.prototype = ctx.heap.symbol_proto;
+            (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+            ctx.result.set_object(obj);
+            return;
+        }
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err = obj_raw) {
             ctx.result.set_undefined();
@@ -162,7 +186,6 @@ fn void builtin_object(BuiltinContext* ctx) {
         HObject* obj = obj_raw;
         obj.flags.exotic_stringobj = true;
         obj.prototype = ctx.heap.string_proto;
-        HString* prim_str = (HString*)arg.get_heapptr();
         (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
         // Set .length own property (ES5 §15.5.5.1)
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];

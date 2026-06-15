@@ -198,7 +198,7 @@ const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
 const uint BUILTIN_ARRAY_PROTO_FINDLAST           = 307;
 const uint BUILTIN_ARRAY_PROTO_FINDLASTINDEX      = 308;
 const uint BUILTIN_FUNCTION_PROTO_TOSTRING       = 312;
-const uint BUILTIN_COUNT                         = 313;
+const uint BUILTIN_COUNT                         = 315;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -237,6 +237,7 @@ const uint BUILTIN_SYMBOL_FOR                = 141;
 const uint BUILTIN_SYMBOL_KEYFOR             = 142;
 const uint BUILTIN_SYMBOL_PROTO_TOSTRING     = 143;
 const uint BUILTIN_SYMBOL_PROTO_VALUEOF      = 144;
+const uint BUILTIN_SYMBOL_PROTO_TOPRIMITIVE  = 314;
 
 const uint BUILTIN_PROMISE                   = 145;
 const uint BUILTIN_PROMISE_PROTO_THEN        = 146;
@@ -623,6 +624,16 @@ fn TVal to_primitive_value_local(TVal* val) @public {
             result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return result;
         }
+        // Symbol wrapper → unwrap directly
+        if (cls == hobject::ObjClass.SYMBOL &&
+            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            HString* s = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+            if (s != null && s.is_symbol()) {
+                TVal result;
+                result.set_string(s);
+                return result;
+            }
+        }
     }
     return *val;
 }
@@ -678,8 +689,35 @@ fn HString* builtin_intern_string(Heap* heap, char[] data) {
 
 fn HString* builtin_to_string(Heap* heap, TVal* val) {
     switch (val.get_tag()) {
-        case STRING:
-            return (HString*)val.get_heapptr();
+        case STRING: {
+            HString* s = (HString*)val.get_heapptr();
+            // Symbols need special handling: ToString(symbol) = "Symbol(description)"
+            if (s != null && s.is_symbol()) {
+                // Build "Symbol(description)" string
+                char[] desc = "";
+                if (s.blen > 1) {
+                    char* ptr = s.get_cstr();
+                    desc = ptr[1:(sz)(s.blen - 1)];
+                }
+                char[512] result_buf;
+                result_buf[0] = 'S';
+                result_buf[1] = 'y';
+                result_buf[2] = 'm';
+                result_buf[3] = 'b';
+                result_buf[4] = 'o';
+                result_buf[5] = 'l';
+                result_buf[6] = '(';
+                int pos = 7;
+                for (int i = 0; i < desc.len && pos < 510; i++) {
+                    result_buf[pos] = desc[i];
+                    pos++;
+                }
+                result_buf[pos] = ')';
+                pos++;
+                return builtin_intern_string(heap, result_buf[:(uint)pos]);
+            }
+            return s;
+        }
         case NUMBER: {
             double d = val.get_number();
             // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
@@ -1746,6 +1784,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_SYMBOL_KEYFOR] = &builtin_symbol_keyfor,
     [BUILTIN_SYMBOL_PROTO_TOSTRING] = &builtin_symbol_proto_toString,
     [BUILTIN_SYMBOL_PROTO_VALUEOF] = &builtin_symbol_proto_valueOf,
+    [BUILTIN_SYMBOL_PROTO_TOPRIMITIVE] = &builtin_symbol_proto_toprimitive,
     [BUILTIN_SYNTAX_ERROR] = &builtin_syntax_error,
     [BUILTIN_TYPE_ERROR] = &builtin_type_error,
     [BUILTIN_URI_ERROR] = &builtin_uri_error,

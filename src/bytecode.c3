@@ -264,9 +264,13 @@ enum Opcode : char {
     NOP,
     /// Trigger a debugger breakpoint.
     DEBUGGER,
-    /// Labelled `break` — target label encoded in BC (A-BC format).
+    /// `PC += sABC`  — unconditional relative jump for `break` out of
+    /// a loop/switch.  Like JUMP but the VM intercepts it when crossing
+    /// a try-finally boundary to execute the finally block first.
     BREAK,
-    /// Labelled `continue` — target label encoded in BC (A-BC format).
+    /// `PC += sABC`  — unconditional relative jump for `continue`.
+    /// Like JUMP but the VM intercepts it when crossing a try-finally
+    /// boundary to execute the finally block first.
     CONTINUE,
 
     // ---- Special property initialisation ----------------------------------
@@ -460,8 +464,8 @@ fn OpFormat get_op_format(Opcode op) {
         case CLOSURE:   return A_BC;
         case GETBOUND:  return A_BC;
         case TRY:       return A_BC;
-        case BREAK:     return A_BC;
-        case CONTINUE:  return A_BC;
+        case BREAK:     return WIDE_SABC;
+        case CONTINUE:  return WIDE_SABC;
         case WITH_START: return A_BC;
         case PUTLEX:     return A_BC;
         case PUTLEX_C:   return A_BC;

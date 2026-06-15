@@ -307,24 +307,24 @@ fn void builtin_array(BuiltinContext* ctx) {
         TVal arg = ctx.regs[ctx.base_reg];
         if (arg.is_number() || arg.is_fastint()) {
             // Single numeric arg: set array length
+            // ES5 §15.4.2.2: If ToUint32(len) !== ToNumber(len), throw RangeError
             double d;
             if (arg.is_fastint()) {
                 d = (double)arg.get_fastint();
             } else {
                 d = arg.get_number();
             }
-            // ToUint32 check per ES5
+            // ToUint32 check per ES5 §9.6
             uint n = (uint)(long)d;
             if ((double)n != d) {
-                // Invalid array length — create empty array as fallback
-                TVal len_val;
-                len_val.set_fastint(0);
-                arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
-            } else {
-                TVal len_val;
-                len_val.set_fastint((long)n);
-                arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+                // Invalid array length — throw RangeError
+                arr_throw_range_error(ctx, "Invalid array length");
+                ctx.result.set_object(arr);
+                return;
             }
+            TVal len_val;
+            len_val.set_fastint((long)n);
+            arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
         } else {
             // Single non-numeric arg: array with one element
             TVal len_val;

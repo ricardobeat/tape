@@ -49,14 +49,14 @@ fn uint CompilerContext.emit_cond_jump(&self, Opcode op, uint a) {
     return self.emit(bytecode::make_a_sbx(op, a, 0));
 }
 
-/// Patch a previously emitted JUMP to target the current code position.
+/// Patch a previously emitted JUMP/BREAK/CONTINUE to target the current code position.
 fn void CompilerContext.patch_jump(&self, uint addr) {
     if (addr >= self.code_count) { return; }
     Opcode op = self.code[addr].op;
     int offset = (int)self.code_count - (int)addr - 1;
 
-    if (op == Opcode.JUMP) {
-        self.code[addr] = bytecode::make_sabc(Opcode.JUMP, offset);
+    if (op == Opcode.JUMP || op == Opcode.BREAK || op == Opcode.CONTINUE) {
+        self.code[addr] = bytecode::make_sabc(op, offset);
     } else {
         // Conditional branch: preserve the A field
         uint a = self.code[addr].a;
