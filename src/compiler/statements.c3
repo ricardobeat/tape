@@ -729,13 +729,20 @@ fn void? CompilerContext.for_statement(&self) {
             if (self.peek_type() == TokenType.IN) {
                 // for (let/const/var x in obj) { ... }
                 self.advance()!;  // consume 'in'
-                // Declare the for-in variable properly so let/const semantics
+                // Declare the for-in variable so let/const semantics
                 // (write-protection, TDZ, duplicate detection) are enforced.
-                // Use declare_var to register-cache it; after storing to env,
-                // reload via GETVAR to restore the register (PUTVAR clears it).
+                // For lexical bindings, declare_var pushes a scope_stack entry
+                // so the body can resolve the name via the scope chain.
                 ushort iter_var = self.declare_var(name_tok.str_value, decl_kind);
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
+
+                // For let/const, push a new lexical environment so the loop
+                // variable is block-scoped (not visible outside the loop) and
+                // closures inside the body capture from this lex_env.
+                if (is_lexical) {
+                    self.emit_simple(Opcode.PUSH_LEX);
+                }
 
                 // Emit INITFOR to set up the iterator
                 ushort iter_state = self.alloc_reg();
@@ -751,6 +758,9 @@ fn void? CompilerContext.for_statement(&self) {
                 uint forin_name_idx = self.add_string_constant(name_tok.str_value);
                 self.emit_var_store(iter_var, forin_name_idx, is_lexical, is_const);
                 // For var, reload after PUTVAR to restore register value
+                // (PUTVAR clears the source register per AGENTS.md).
+                // For let/const, PUTLEX does not clear the register, so the
+                // register-based read via resolve_var/LDREG works directly.
                 if (!is_lexical) {
                     self.emit_a_bc(Opcode.GETVAR, (uint)iter_var, forin_name_idx);
                 }
@@ -768,6 +778,12 @@ fn void? CompilerContext.for_statement(&self) {
 
                 self.patch_jump(exit_jump);
                 self.pop_loop();
+
+                // Pop the lexical scope for let/const, removing the
+                // block-scoped binding from the VM's lex_env chain.
+                if (is_lexical) {
+                    self.emit_simple(Opcode.POP_LEX);
+                }
 
                 self.free_reg(iter_state);
                 self.free_reg(obj_reg);

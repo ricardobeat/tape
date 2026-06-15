@@ -2172,7 +2172,7 @@ fn void builtin_array_isArray(BuiltinContext* ctx) {
 /// Helper: ToObject for Array.prototype methods (ES5 §9.9).
 /// Wraps primitives (Boolean/Number/String) into wrapper objects.
 /// Returns null-optional for null/undefined (caller should throw TypeError).
-fn HObject*? arr_to_object(TVal val, Heap* heap) {
+fn HObject* arr_to_object(TVal val, Heap* heap) {
     if (val.is_object() && val.get_heapptr() != null) {
         return (HObject*)val.get_heapptr();
     }
@@ -2394,12 +2394,11 @@ fn TVal arr_call_callback(BuiltinContext* ctx, TVal callback, TVal thisArg, TVal
 /// Array.prototype.forEach(callbackfn[, thisArg]) — ES5 §15.4.4.18
 fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2423,12 +2422,11 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
 /// Array.prototype.map(callbackfn[, thisArg]) — ES5 §15.4.4.19
 fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2465,12 +2463,11 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
 /// Array.prototype.filter(callbackfn[, thisArg]) — ES5 §15.4.4.20
 fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2511,12 +2508,11 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
 /// or undefined if none.
 fn void builtin_array_proto_find(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2545,12 +2541,11 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
 /// or undefined if none.
 fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2579,12 +2574,11 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
 /// or -1 if none.
 fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2615,12 +2609,11 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
 /// or -1 if none.
 fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2649,12 +2642,11 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
 /// Array.prototype.every(callbackfn[, thisArg]) — ES5 §15.4.4.17
 fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2682,12 +2674,11 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
 /// Array.prototype.some(callbackfn[, thisArg]) — ES5 §15.4.4.16
 fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2715,12 +2706,11 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
 /// Array.prototype.reduce(callbackfn[, initialValue]) — ES5 §15.4.4.21
 fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }
@@ -2772,12 +2762,11 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
 /// Array.prototype.reduceRight(callbackfn[, initialValue]) — ES5 §15.4.4.22
 fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    HObject*? o_raw = arr_to_object(this_val, ctx.heap);
-    if (catch err = o_raw) {
+    HObject* o = arr_to_object(this_val, ctx.heap);
+    if (o == null) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    HObject* o = o_raw;
     if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
         return;
     }

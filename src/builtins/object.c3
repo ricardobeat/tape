@@ -1514,24 +1514,82 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
 
-    // ES5 §15.4.5.1 step 3 (ArraySetLength): if defining 'length' on an Array with a
-    // value field, validate the value per ToUint32. Reject with RangeError if the
-    // value is not a valid uint32 (NaN, ±Infinity, negative, non-integer, > 2^32-1).
-    // Reject with TypeError if the value is undefined.
-    if (obj.get_class() == hobject::ObjClass.ARRAY
-        && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) {
+    // ES5 §15.4.5.1 ArraySetLength: full validation when defining 'length' on an Array.
+    // Per the spec, this must happen BEFORE the general [[DefineOwnProperty]] path.
+    // Array length is always non-configurable and non-writable.
+    bool is_array_length = obj.get_class() == hobject::ObjClass.ARRAY
+        && key_hstr.equals("length");
+    uint arr_new_len = 0;
+    bool arr_has_new_len = false;
+    if (is_array_length) {
+        // Check for accessor descriptor on length — reject (length is always data)
+        HString* get_k = builtin_intern_string(ctx.heap, "get");
+        HString* set_k = builtin_intern_string(ctx.heap, "set");
+        bool has_get = (get_k != null) && desc_obj.find_prop_idx(get_k) >= 0;
+        bool has_set = (set_k != null) && desc_obj.find_prop_idx(set_k) >= 0;
+        if (has_get || has_set) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err_acl = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "Cannot redefine property: length");
+            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+            return;
+        }
+
+        // ES5 §15.4.5.1 step 3.a: Reject if configurable is explicitly set to true
+        HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
+        bool has_conf = (conf_k != null) && desc_obj.find_prop_idx(conf_k) >= 0;
+        if (has_conf && desc_flags.configurable) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err_conf = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "Cannot redefine property: length");
+            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+            return;
+        }
+
+        // ES5 §15.4.5.1 step 3.b: Reject if writable is explicitly set to false
+        HString* writ_k = builtin_intern_string(ctx.heap, "writable");
+        bool has_wrt = (writ_k != null) && desc_obj.find_prop_idx(writ_k) >= 0;
+        if (has_wrt && !desc_flags.writable) {
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (catch err_wrt = err_raw) { ctx.result.set_undefined(); return; }
+            HObject* err = err_raw;
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "Cannot redefine property: length");
+            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+            return;
+        }
+
+        // ES5 §15.4.5.1 step 2: If 'value' is present, validate it.
         HString* val_k = builtin_intern_string(ctx.heap, "value");
         bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
         if (has_value_in_desc) {
             TVal new_len_val = desc_vals[0];
             if (new_len_val.is_undefined()) {
-                // ES5 §15.4.5.1 step 2a: undefined value throws TypeError
                 HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (catch err_lenu = err_raw) { ctx.result.set_undefined(); return; }
                 HObject* err = err_raw;
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length: undefined");
+                HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
                 if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv; msg_tv.set_string(msg_str);
                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
@@ -1539,50 +1597,63 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 ctx.throw_value.set_object(err);
                 return;
             }
-            // Validate per ToUint32 / ToNumber
-            double number_len;
+
+            // ES5 §15.4.5.1 step 3.c: ToNumber then ToUint32
+            double num;
             if (new_len_val.is_fastint()) {
-                long v = new_len_val.get_fastint();
-                if (v < 0L || v > 0xFFFFFFFFL) {
-                    // RangeError
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (catch err_lenr = err_raw) { ctx.result.set_undefined(); return; }
-                    HObject* err = err_raw;
-                    err.prototype = ctx.heap.range_err_proto;
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
-                    if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-                    TVal msg_tv; msg_tv.set_string(msg_str);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                    return;
-                }
+                num = (double)new_len_val.get_fastint();
             } else if (new_len_val.is_number()) {
-                double raw = new_len_val.get_number();
-                // ToUint32: NaN, ±Infinity, negative, non-integer, > 2^32-1 all invalid
-                if (raw != raw || raw < 0.0 || raw > 4294967295.0 || raw != math::floor(raw)) {
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (catch err_lenr2 = err_raw) { ctx.result.set_undefined(); return; }
-                    HObject* err = err_raw;
-                    err.prototype = ctx.heap.range_err_proto;
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
-                    if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-                    TVal msg_tv; msg_tv.set_string(msg_str);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                    return;
+                num = new_len_val.get_number();
+            } else {
+                // String/object → ToNumber first
+                TVal num_val;
+                builtin_to_number(&new_len_val, &num_val);
+                if (num_val.is_number()) {
+                    num = num_val.get_number();
+                } else if (num_val.is_fastint()) {
+                    num = (double)num_val.get_fastint();
+                } else {
+                    num = double::nan;
                 }
             }
-            // For non-numeric values (objects, strings, etc.), let the existing
-            // machinery handle coercion via desc_vals[0]. The result might still
-            // be wrong for exotic values, but the spec says ToUint32(ToNumber(v))
-            // must equal ToNumber(v), which we can't easily verify without
-            // re-implementing the coercion here. This is the same compromise
-            // that Duktape makes for the slow path.
+
+            // ToUint32: reject NaN, ±∞, negative, non-integer, > 2^32-1
+            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (catch err_lenr = err_raw) { ctx.result.set_undefined(); return; }
+                HObject* err = err_raw;
+                err.prototype = ctx.heap.range_err_proto;
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
+                if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                TVal msg_tv; msg_tv.set_string(msg_str);
+                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                ctx.should_throw = true;
+                ctx.throw_value.set_object(err);
+                return;
+            }
+
+            uint new_len = (uint)num;
+            arr_new_len = new_len;
+            arr_has_new_len = true;
+
+            // ES5 §15.4.5.1 step 3.l: truncate elements when new < old
+            uint old_len = array_get_length(obj, ctx.heap);
+            if (new_len < old_len) {
+                for (uint di = old_len; di > new_len; di--) {
+                    array_delete_elem(obj, di - 1, ctx.heap);
+                }
+            }
         }
+    }
+    // Array length: return early. The only valid operation is changing the value.
+    // configurable/writable are rejected above, and enumerable cannot be changed.
+    if (is_array_length) {
+        if (arr_has_new_len) {
+            array_set_length(obj, arr_new_len, ctx.heap);
+        }
+        ctx.result.set_object(obj);
+        return;
     }
 
     // Step 5: [[DefineOwnProperty]]
