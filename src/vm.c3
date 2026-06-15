@@ -3278,7 +3278,11 @@ fn TVal? Vm.run(Vm* vm) {
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
 
-                // Inline Cache fast path: check shape + key + prop_alloc pointer
+                // Inline Cache fast path: check shape + key + prop_values pointer
+                // NOTE: We use prop_values() (not prop_alloc) because prop_alloc is
+                // NULL for objects with ≤4 inline properties, making the check always
+                // true for all small objects. prop_values() returns a unique pointer
+                // per object even for inline properties.
                 if (ic_base != null) {
                     uint pc_off = (uint)(curr_pc - 1 - code_base);
                     hobject::ICEntry* ic = ic_base + pc_off;
@@ -3286,7 +3290,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (rc.is_string()) lookup_key = rc.get_heapptr();
                     if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
                         HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
-                        if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
+                        if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                             // Ultra-fast path: when the IC value is not a heap
                             // pointer (common for fastint/number results), skip
                             // decref/incref/track_heap_store entirely.
@@ -3409,7 +3413,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 ic.key = key;
                                 if (key != null) { ((types::HeapHeader*)key).incref(); }
                                 ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
-                                ic.cached_prop_alloc = res.owner.prop_alloc;
+                                ic.cached_prop_alloc = (void*)res.owner.prop_values();
                             }
                         }
                     } else {
@@ -3624,7 +3628,7 @@ fn TVal? Vm.run(Vm* vm) {
                         hobject::ICEntry* ic = ic_base + pc_off;
                         if (ic.key == (void*)key_hstr && ic.shape_id == hobj.shape_id) {
                             HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
-                            if (ic.cached_prop_alloc == ic_owner.prop_alloc) {
+                            if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                                 TVal ic_val = *ic.prop_value_ptr;
                                 if (!ic_val.is_heap_allocated()) {
                                     *ra = ic_val;
@@ -3713,7 +3717,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     ic.key = key;
                                     if (key != null) { ((types::HeapHeader*)key).incref(); }
                                     ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
-                                    ic.cached_prop_alloc = res.owner.prop_alloc;
+                                    ic.cached_prop_alloc = (void*)res.owner.prop_values();
                                 }
                             }
                         } else {
@@ -3898,7 +3902,7 @@ fn TVal? Vm.run(Vm* vm) {
                     hobject::ICEntry* ic = ic_base + pc_off;
                     void* wkey = rb.get_heapptr();
                     if (wkey != null && ic.key == wkey && ic.shape_id == hobj.shape_id && ic.proto == null) {
-                        if (ic.cached_prop_alloc == hobj.prop_alloc
+                        if (ic.cached_prop_alloc == (void*)hobj.prop_values()
                             && !ic.prop_flags.is_accessor
                             && ic.prop_flags.writable) {
                             vm.heap.tval_copy_ref(ic.prop_value_ptr, rc);
