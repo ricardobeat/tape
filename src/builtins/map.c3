@@ -60,6 +60,9 @@ fn bool same_value(TVal a, TVal b) {
     if ((a.is_number() && b.is_fastint()) || (a.is_fastint() && b.is_number())) {
         double av = a.is_fastint() ? (double)a.get_fastint() : a.get_number();
         double bv = b.is_fastint() ? (double)b.get_fastint() : b.get_number();
+        if (math::is_nan(av) && math::is_nan(bv)) return true;
+        // +0 !== -0: check if both are zero with different signs
+        if (av == 0.0 && bv == 0.0) return 1.0 / av == 1.0 / bv;
         return av == bv;
     }
     return false;

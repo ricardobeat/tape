@@ -28,6 +28,7 @@ fn HObject* regexp_get_this(BuiltinContext* ctx) {
 fn void builtin_regexp(BuiltinContext* ctx) {
     // Get pattern
     bool is_regexp = false;
+    HObject* pattern_regexp = null;  // Saved pointer for RegExp→RegExp constructor shortcut
     char* pattern_str = "";
     usz pattern_len = 0;
     int flags = 0;
@@ -42,6 +43,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             if (obj.get_class() == hobject::ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
                 // Pattern is a RegExp object — extract its pattern
                 is_regexp = true;
+                pattern_regexp = obj;
                 if ((*obj.extra_ptr()).prim.primitive_value.is_string()) {
                     HString* phs = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
                     pattern_str = phs.get_cstr();
@@ -83,6 +85,29 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                 flags_len = fhs.blen;
             }
         }
+    }
+
+    // ES2015 §21.2.3.1 step 4.b: If patternIsRegExp is true and flags is undefined,
+    // check SameValue(pattern.constructor, RegExp) and return pattern if true.
+    if (is_regexp && flags_len == 0) {
+        // Check if the pattern's constructor is the RegExp constructor itself
+        HString* ctor_key = builtin_intern_string(ctx.heap, "constructor");
+        if (try cv = pattern_regexp.get_prop_proto(ctor_key)) {
+            if (cv.is_object() && cv.get_heapptr() != null) {
+                HObject* ctor_obj = (HObject*)cv.get_heapptr();
+                // Check if ctor_obj is the global RegExp constructor (has builtin_fn_index == BUILTIN_REGEXP)
+                if (ctor_obj.get_class() == hobject::ObjClass.FUNCTION &&
+                    (*ctor_obj.extra_ptr()).func.builtin_fn_index == (int)BUILTIN_REGEXP) {
+                    // SameValue: same constructor → return the original pattern object
+                    ctx.result.set_object(pattern_regexp);
+                    return;
+                }
+            }
+        }
+        // Constructor mismatch — fall through to create a new RegExp with pattern's source/flags
+        // Extract pattern source and flags from the original regexp
+        js_flags = (*pattern_regexp.extra_ptr()).regexp.flags;
+        flags_len = 0;  // Clear flags so we don't re-parse
     }
 
     // Convert JS flags to libregexp flag bits and store JS flags
@@ -213,18 +238,17 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
         }
     }
 
-    // Get the global flag
-    HString* global_key = builtin_intern_string(ctx.heap, "global");
-    bool global_flag = false;
-    if (try gv = obj.get_prop(global_key)) {
-        if (gv.is_boolean()) global_flag = gv.get_boolean();
-    }
+    // Get the global and sticky flags
+    // Read directly from internal flags: 1=g, 2=i, 4=m, 8=s, 16=u, 32=y
+    int jsf_test = (*obj.extra_ptr()).regexp.flags;
+    bool global_flag = (jsf_test & 1) != 0;
+    bool sticky_flag = (jsf_test & 32) != 0;
 
-    // Get lastIndex (if global)
+    // Get lastIndex (if global or sticky)
     HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
     int start_pos = 0;
-    if (global_flag) {
-        if (try liv = obj.get_prop(li_key)) {
+    if (global_flag || sticky_flag) {
+        if (try liv = obj.get_prop_proto(li_key)) {
             if (liv.is_fastint()) {
                 start_pos = (int)liv.get_fastint();
             } else if (liv.is_number()) {
@@ -251,7 +275,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
         null, null, 0
     );
 
-    // Update lastIndex if global
+    // Update lastIndex if global (sticky does NOT update)
     if (global_flag) {
         if (result == re_bindings::RE_MATCH) {
             TVal end_tv;
@@ -305,18 +329,17 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         }
     }
 
-    // Get the global flag (ES5 §15.10.6.2 step 6)
-    HString* global_key = builtin_intern_string(ctx.heap, "global");
-    bool global_flag = false;
-    if (try gv = obj.get_prop(global_key)) {
-        if (gv.is_boolean()) global_flag = gv.get_boolean();
-    }
+    // Get the global and sticky flags (ES2015 §21.2.5.2 steps 4-5)
+    // Read directly from internal flags: 1=g, 2=i, 4=m, 8=s, 16=u, 32=y
+    int jsf = (*obj.extra_ptr()).regexp.flags;
+    bool global_flag = (jsf & 1) != 0;
+    bool sticky_flag = (jsf & 32) != 0;
 
-    // Get lastIndex (steps 4-5)
+    // Get lastIndex (steps 4-5) — used when global OR sticky
     HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
     int start_pos = 0;
-    if (global_flag) {
-        if (try liv = obj.get_prop(li_key)) {
+    if (global_flag || sticky_flag) {
+        if (try liv = obj.get_prop_proto(li_key)) {
             if (liv.is_fastint()) {
                 start_pos = (int)liv.get_fastint();
             } else if (liv.is_number()) {
@@ -349,7 +372,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     );
 
     if (result != re_bindings::RE_MATCH) {
-        // Step 9: no match — reset lastIndex to 0 if global
+        // Step 9: no match — reset lastIndex to 0 if global (not sticky)
         if (global_flag) {
             TVal zero_tv;
             zero_tv.set_fastint(0);
@@ -359,7 +382,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         return;
     }
 
-    // Step 10: if global, update lastIndex to end of match
+    // Step 10: if global, update lastIndex to end of match (sticky does NOT update)
     if (global_flag) {
         TVal end_tv;
         end_tv.set_fastint((long)out_end);
@@ -448,7 +471,7 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
         return;
     }
 
-    // Build "/pattern/flags" string from stored flags
+    // Build "/pattern/flags" string — apply EscapeRegExpPattern to the source
     char* pattern = "";
     usz plen = 0;
     if ((*obj.extra_ptr()).prim.primitive_value.is_string() && (*obj.extra_ptr()).prim.primitive_value.get_heapptr() != null) {
@@ -458,19 +481,26 @@ fn void builtin_regexp_proto_toString(BuiltinContext* ctx) {
     }
 
     int jsf = (*obj.extra_ptr()).regexp.flags;
-    char[512] buf;
+    char[1024] buf;
     int pos = 0;
     buf[pos++] = '/';
-    for (usz i = 0; i < plen && pos < 510; i++) {
-        buf[pos++] = pattern[i];
+    // Apply EscapeRegExpPattern: escape '/' and line terminators
+    for (usz i = 0; i < plen && pos < 1020; i++) {
+        char c = pattern[i];
+        if (c == '/' || c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029') {
+            buf[pos++] = '\\';
+            buf[pos++] = c;
+        } else {
+            buf[pos++] = c;
+        }
     }
     buf[pos++] = '/';
-    if ((jsf & 1) != 0 && pos < 511) buf[pos++] = 'g';
-    if ((jsf & 2) != 0 && pos < 511) buf[pos++] = 'i';
-    if ((jsf & 4) != 0 && pos < 511) buf[pos++] = 'm';
-    if ((jsf & 8) != 0 && pos < 511) buf[pos++] = 's';
-    if ((jsf & 16) != 0 && pos < 511) buf[pos++] = 'u';
-    if ((jsf & 32) != 0 && pos < 511) buf[pos++] = 'y';
+    if ((jsf & 1) != 0 && pos < 1023) buf[pos++] = 'g';
+    if ((jsf & 2) != 0 && pos < 1023) buf[pos++] = 'i';
+    if ((jsf & 4) != 0 && pos < 1023) buf[pos++] = 'm';
+    if ((jsf & 8) != 0 && pos < 1023) buf[pos++] = 's';
+    if ((jsf & 16) != 0 && pos < 1023) buf[pos++] = 'u';
+    if ((jsf & 32) != 0 && pos < 1023) buf[pos++] = 'y';
     buf[pos] = 0;
 
     HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
@@ -540,13 +570,37 @@ fn void builtin_regexp_proto_get_flags(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
+/// EscapeRegExpPattern — ES2015 §21.2.3.2.4
+/// Escapes `/` and line terminators (LF, CR, LS, PS) in a regex pattern
+/// so it can be safely embedded in a RegExpLiteral.
+fn usz escape_regexp_pattern(char* src, usz slen, char* dst, usz dmax) {
+    usz di = 0;
+    for (usz si = 0; si < slen && di + 1 < dmax; si++) {
+        char c = src[si];
+        if (c == '/' || c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029') {
+            if (di + 2 > dmax) break;
+            dst[di++] = '\\';
+            dst[di++] = c;
+        } else {
+            dst[di++] = c;
+        }
+    }
+    dst[di] = 0;
+    return di;
+}
+
 /// RegExp.prototype.source — ES6 §21.2.5.10
 fn void builtin_regexp_proto_get_source(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this_or_throw(ctx);
     if (obj == null) return;
     if ((*obj.extra_ptr()).prim.primitive_value.is_string() && (*obj.extra_ptr()).prim.primitive_value.get_heapptr() != null) {
         HString* phs = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        ctx.result.set_string(phs);
+        char* src = phs.get_cstr();
+        usz slen = phs.blen;
+        // Apply EscapeRegExpPattern: escape '/' and line terminators
+        char[4096] esc_buf;
+        usz esc_len = escape_regexp_pattern(src, slen, &esc_buf, 4095);
+        ctx.result.set_string(builtin_intern_string(ctx.heap, esc_buf[:esc_len]));
     } else {
         ctx.result.set_string(builtin_intern_string(ctx.heap, "(?:)"));
     }
