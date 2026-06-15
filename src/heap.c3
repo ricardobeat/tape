@@ -214,6 +214,7 @@ struct Heap {
     HObject* promise_proto;
     HObject* generator_proto;
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
+    HObject* typedarray_proto; // Shared %TypedArray%.prototype
 
     // Generator resume state (set by .next()/.throw()/.return() builtins,
     // read by the VM CALL handler and YIELD/RET opcodes).
@@ -1082,6 +1083,7 @@ fn void Heap.reset(&self) {
     self.promise_proto    = null;
     self.generator_proto  = null;
     self.iterator_proto   = null;
+    self.typedarray_proto = null;
 
     // Clear builtin string cache
     for (usz i = 0; i < STRS_CACHE_SIZE; i++) {
@@ -1634,6 +1636,7 @@ fn void Heap.mark_roots(&self) {
     if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }
     if (self.generator_proto != null) { self.mark_hobject(self.generator_proto); }
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
+    if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
 
     // Scan the VM value stack as a GC root — all live TVal slots
     // (from base to top) may reference heap objects or strings.

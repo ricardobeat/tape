@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 192 (indexOf/lastIndexOf -0 length, defineProperties enumerable filter)
+**Last Updated:** Session 193 (array ToObject, step ordering, defineProperties SameValue, TypedArray, GOPD, globals)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 192, 2026-06-15)
+## Summary (after Session 193, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~16,401 |
-| Currently failing (phases 0-8) | ~5,202 |
-| Overall pass rate | ~75.9% |
+| Currently passing (phases 0-8) | ~16,629 |
+| Currently failing (phases 0-8) | ~4,974 |
+| Overall pass rate | ~77.0% |
 
 ## Per-Phase Status
 
@@ -20,10 +20,10 @@
 | 0-1: Core VM | 2,185 | 608 | 280 | 1,297 |
 | 1: Calling Convention | 426 | 59 | 29 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,572 | 1,227 | 1,967 |
+| 3: Object System | 7,766 | 4,657 | 1,142 | 1,967 |
 | 4: Error Handling | 402 | 126 | 75 | 201 |
-| 5: Built-in Constructors | 8,615 | 5,557 | 1,533 | 1,525 |
-| 6: Prototype Methods | 4,713 | 2,730 | 1,047 | 936 |
+| 5: Built-in Constructors | 8,615 | 5,648 | 1,442 | 1,525 |
+| 6: Prototype Methods | 4,713 | 2,767 | 1,010 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
 | 8: ES5 Built-in Objects | 2,747 | 1,083 | 201 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 193 | array_proto_get_this ToObject for primitives; forEach/map/every/filter/some/reduce/reduceRight step ordering; defineProperties SameValue check; TypedArray constructors; GOPD fixes; global immutable props (undefined/Infinity/NaN); Array/Number.prototype.toLocaleString | +228 (Phase 2: +2, Phase 3: +85, Phase 4: +10, Phase 5: +89, Phase 6: +37, Phase 7: +1, Phase 15: +3)
 | 192 | indexOf/lastIndexOf ToLength (no RangeError for -0/NaN); defineProperties enumerable filter (skip non-enumerable props like Error.stack) | +83 (Phase 3: +33, Phase 5: +33, Phase 6: +17)
 | 191 | String.prototype.trim UTF-8 aware whitespace; Function.prototype.apply/call this-value coercion; Object.keys temp buffer; test harness nativeFunctionMatcher + isConstructor | +163 (Phase 0-1: +1, Phase 3: +35, Phase 5: +81, Phase 6: +46) |
 | 190 | Array.prototype.unshift ToObject TypeError on non-objects; Object.defineProperties atomic swap (all descriptors validated before mutation); Object.defineProperty descriptor validation for non-configurable properties (sameValue checks); for-in with let/const declarations; inline cache stale entry handling | +101 (Phase 3: +37, Phase 5: +38, Phase 6: +16, Phase 14: +7) |

@@ -482,6 +482,7 @@ fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
         case builtins::BUILTIN_SYMBOL:          return vm.heap.symbol_proto;
         case builtins::BUILTIN_PROMISE:         return vm.heap.promise_proto;
         case builtins::BUILTIN_GENERATOR_FUNCTION: return vm.heap.generator_proto;
+        case builtins::BUILTIN_URI_ERROR: return vm.heap.uri_err_proto;
         case builtins::BUILTIN_AGGREGATE_ERROR: return vm.heap.aggregate_err_proto;
         default: return null;
     }

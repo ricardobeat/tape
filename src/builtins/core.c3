@@ -198,7 +198,19 @@ const uint BUILTIN_STRING_PROTO_LOCALECOMPARE    = 300;
 const uint BUILTIN_ARRAY_PROTO_FINDLAST           = 307;
 const uint BUILTIN_ARRAY_PROTO_FINDLASTINDEX      = 308;
 const uint BUILTIN_FUNCTION_PROTO_TOSTRING       = 312;
-const uint BUILTIN_COUNT                         = 315;
+
+// TypedArray constructors (9 types)
+const uint BUILTIN_INT8ARRAY                 = 316;
+const uint BUILTIN_UINT8ARRAY                = 317;
+const uint BUILTIN_UINT8CLAMPEDARRAY         = 318;
+const uint BUILTIN_INT16ARRAY                = 319;
+const uint BUILTIN_UINT16ARRAY               = 320;
+const uint BUILTIN_INT32ARRAY                = 321;
+const uint BUILTIN_UINT32ARRAY               = 322;
+const uint BUILTIN_FLOAT32ARRAY              = 323;
+const uint BUILTIN_FLOAT64ARRAY              = 324;
+
+const uint BUILTIN_COUNT                         = 325;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1480,7 +1492,7 @@ fn bool register_named_value(EnvRecord* global_env, Heap* heap, char[] name, TVa
 }
 
 fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
-                                  TValTag tag, double number_val, long fastint_val) {
+                                   TValTag tag, double number_val, long fastint_val) {
     uint hash = heap.hash_string(name);
     HString* existing = heap.str_table_lookup(name, hash);
     HString* key;
@@ -1503,6 +1515,36 @@ fn bool register_global_constant(EnvRecord* global_env, Heap* heap, char[] name,
         val.set_number(number_val);
     }
     env::env_declare_nonenum(global_env, key, val);
+    return true;
+}
+
+/// Register a global constant with ES5 §15.1 flags:
+/// {writable: false, enumerable: false, configurable: false}.
+/// Used for `undefined`, `NaN`, `Infinity`.
+fn bool register_global_immutable(EnvRecord* global_env, Heap* heap, char[] name,
+                                   TValTag tag, double number_val, long fastint_val) {
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch err = new_key) {
+            return false;
+        }
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal val;
+    if (tag == FASTINT) {
+        val.set_fastint(fastint_val);
+    } else if (tag == STRING || tag == OBJECT) {
+        val.set_string(null);
+    } else {
+        val.set_number(number_val);
+    }
+    env::env_declare_immutable(global_env, key, val);
     return true;
 }
 
@@ -1860,6 +1902,16 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_WEAKSET_PROTO_ADD] = &builtin_weakset_proto_add,
     [BUILTIN_WEAKSET_PROTO_DELETE] = &builtin_weakset_proto_delete,
     [BUILTIN_WEAKSET_PROTO_HAS] = &builtin_weakset_proto_has,
+    // TypedArray constructors
+    [BUILTIN_INT8ARRAY] = &builtin_int8array,
+    [BUILTIN_UINT8ARRAY] = &builtin_uint8array,
+    [BUILTIN_UINT8CLAMPEDARRAY] = &builtin_uint8clampedarray,
+    [BUILTIN_INT16ARRAY] = &builtin_int16array,
+    [BUILTIN_UINT16ARRAY] = &builtin_uint16array,
+    [BUILTIN_INT32ARRAY] = &builtin_int32array,
+    [BUILTIN_UINT32ARRAY] = &builtin_uint32array,
+    [BUILTIN_FLOAT32ARRAY] = &builtin_float32array,
+    [BUILTIN_FLOAT64ARRAY] = &builtin_float64array,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -2010,8 +2062,26 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (!register_simple_builtin(global_env, heap, "__resetGlobals", BUILTIN_RESET_GLOBALS)) return false;
 
     // Register global constants: NaN, Infinity, undefined
-    if (!register_global_constant(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
-    if (!register_global_constant(global_env, heap, "Infinity", NUMBER, double::inf, 0)) return false;
+    // ES5 §15.1: these are {writable: false, enumerable: false, configurable: false}
+    if (!register_global_immutable(global_env, heap, "NaN", NUMBER, double::nan, 0)) return false;
+    if (!register_global_immutable(global_env, heap, "Infinity", NUMBER, double::inf, 0)) return false;
+    {
+        // Register `undefined` — ES5 §15.1.1 value is the undefined value
+        uint u_hash = heap.hash_string("undefined");
+        HString* u_existing = heap.str_table_lookup("undefined", u_hash);
+        HString* u_key;
+        if (u_existing != null) {
+            u_key = u_existing;
+        } else {
+            HString*? u_new = hstring::hstring_alloc(heap, "undefined", u_hash);
+            if (catch err = u_new) return false;
+            heap.str_table_insert(u_new);
+            u_key = u_new;
+        }
+        TVal u_val;
+        u_val.set_undefined();
+        env::env_declare_immutable(global_env, u_key, u_val);
+    }
 
     // Register Object constructor FIRST — creates Object.prototype (root of all chains)
     if (!register_object_constructor(global_env, heap)) return false;
@@ -2092,6 +2162,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register %IteratorPrototype% (ES6 §25.1.2) — shared prototype for all
     // built-in iterators, providing [Symbol.iterator]() that returns `this`.
     if (!register_iterator_prototype(heap)) return false;
+
+    // Register TypedArray constructors (Int8Array, Uint8Array, etc.)
+    if (!register_typed_array_constructors(global_env, heap)) return false;
 
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;

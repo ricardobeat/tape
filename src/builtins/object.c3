@@ -8,6 +8,7 @@ import libc;
 import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
+import duktape::vm;
 
 // ============================================================================
 // Object constructor builtins
@@ -947,6 +948,42 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 ctx.result.set_undefined();
             }
             return;
+        } else if (key_hstr.equals("prototype")) {
+            // ES5 §15.3.5: Function.prototype property of constructors
+            // {writable: false, enumerable: false, configurable: false}
+            // Map lightfunc indices to their prototype objects from the heap.
+            HObject* proto = null;
+            switch (fn_idx) {
+                case builtins::BUILTIN_TYPE_ERROR:      proto = ctx.heap.type_err_proto; break;
+                case builtins::BUILTIN_RANGE_ERROR:     proto = ctx.heap.range_err_proto; break;
+                case builtins::BUILTIN_REFERENCE_ERROR:  proto = ctx.heap.ref_err_proto; break;
+                case builtins::BUILTIN_SYNTAX_ERROR:    proto = ctx.heap.syntax_err_proto; break;
+                case builtins::BUILTIN_EVAL_ERROR:      proto = ctx.heap.eval_err_proto; break;
+                case builtins::BUILTIN_URI_ERROR:       proto = ctx.heap.uri_err_proto; break;
+                case builtins::BUILTIN_AGGREGATE_ERROR:  proto = ctx.heap.aggregate_err_proto; break;
+                case builtins::BUILTIN_BOOLEAN:         proto = ctx.heap.bool_proto; break;
+                default: break;
+            }
+            if (proto != null) {
+                HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err6 = desc_raw) { ctx.result.set_undefined(); return; }
+                HObject* desc = desc_raw;
+                desc.prototype = ctx.heap.object_proto;
+
+                TVal proto_tv; proto_tv.set_object(proto);
+                desc.put_prop(builtin_intern_string(ctx.heap, "value"), proto_tv, hobject::PROP_FLAGS_WEC);
+                TVal w_tv; w_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
+                TVal e_tv; e_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "enumerable"), e_tv, hobject::PROP_FLAGS_WEC);
+                TVal c_tv; c_tv.set_boolean(false);
+                desc.put_prop(builtin_intern_string(ctx.heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
+
+                ctx.result.set_object(desc);
+            } else {
+                ctx.result.set_undefined();
+            }
+            return;
         } else {
             ctx.result.set_undefined();
             return;
@@ -982,8 +1019,23 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         return;
     }
     TVal key_val = ctx.regs[ctx.base_reg + 1];
-    HString* key_hstr = builtin_to_string(ctx.heap, &key_val);
-    if (key_hstr == null) { ctx.result.set_undefined(); return; }
+    // Use ToPropertyKey (not just ToString) so that objects with
+    // toString/valueOf get properly coerced per ES5 §8.10.1 step 1.
+    HString* key_hstr = builtin_to_string_vm(ctx, &key_val);
+    if (key_hstr == null) {
+        // builtin_to_string_vm returns null when ToPrimitive fails.
+        // If throw_pending is set, propagate the error (e.g. TypeError).
+        if (ctx.vm != null) {
+            Vm* vm_ptr = (Vm*)ctx.vm;
+            if (vm_ptr.throw_pending) {
+                ctx.should_throw = true;
+                ctx.throw_value = vm_ptr.throw_value;
+                return;
+            }
+        }
+        ctx.result.set_undefined();
+        return;
+    }
     void* key = key_hstr;
 
     // String exotic [[GetOwnProperty]] — ES5 §15.5.5.1
@@ -2204,20 +2256,24 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 } else {
                     // Basic data property update
                     if (has_value_in_desc_helper(ctx.heap, desc_obj)) {
+                        // ES5 §8.12.9 step 9: If non-configurable and non-writable, reject only if
+                        // the new value differs from the current value (SameValue check).
                         if (!cur_flags.configurable && !cur_flags.writable) {
-                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (catch err5 = err_raw) { ctx.result.set_undefined(); return; }
-                            HObject* err = err_raw;
-                            err.prototype = ctx.heap.type_err_proto;
-                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            HString* msg_str = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
-                            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-                            TVal msg_tv;
-                            msg_tv.set_string(msg_str);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                            ctx.should_throw = true;
-                            ctx.throw_value.set_object(err);
-                            return;
+                            if (!same_value(*current, desc_vals[0])) {
+                                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (catch err5 = err_raw) { ctx.result.set_undefined(); return; }
+                                HObject* err = err_raw;
+                                err.prototype = ctx.heap.type_err_proto;
+                                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                                HString* msg_str = builtin_intern_string(ctx.heap, "Cannot change value of non-writable non-configurable property");
+                                if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_str);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                                ctx.should_throw = true;
+                                ctx.throw_value.set_object(err);
+                                return;
+                            }
                         }
                         *current = desc_vals[0];
                     }

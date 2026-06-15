@@ -275,6 +275,12 @@ fn bool env_declare_nonenum(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WC);
 }
 
+/// Declare a non-enumerable, non-writable, non-configurable binding (ES5 §15.1).
+/// Used for `undefined`, `NaN`, `Infinity` which are immutable globals.
+fn bool env_declare_immutable(EnvRecord* env, void* key, TVal val) @inline {
+    return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_NNC);
+}
+
 // ============================================================================
 // TDZ sentinel for let/const declarations
 // ============================================================================
