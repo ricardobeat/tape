@@ -3,6 +3,7 @@ module duktape::builtins;
 import duktape::types;
 import std::math;
 import duktape::env;
+import duktape::vm;
 
 import duktape::heap;
 import duktape::hstring;
@@ -73,16 +74,16 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
         return (usz)libc::snprintf(buf, buf_size, "Invalid Date");
     }
     long t_sec = (long)(time_val / 1000.0);
-    Tm result;
-    libc::localtime_r(&t_sec, &result);
-    Tm* tm = &result;
+    Tm local_result;
+    libc::localtime_r(&t_sec, &local_result);
+    Tm* tm = &local_result;
 
-    // Compute timezone offset by comparing localtime with a gmtime conversion
-    // Use mktime on the local tm to get epoch, then compare with raw input
-    long local_as_epoch = (long)libc::mktime(tm);
-    // If mktime fails, local_as_epoch could be -1
-    if (local_as_epoch == -1) local_as_epoch = t_sec;
-    long tz_seconds = local_as_epoch - t_sec;
+    // Compute timezone offset using gmtime_r (more reliable than mktime for old dates)
+    Tm utc_result;
+    libc::gmtime_r(&t_sec, &utc_result);
+    long tz_seconds = (long)(local_result.tm_hour - utc_result.tm_hour) * 3600
+                    + (long)(local_result.tm_min - utc_result.tm_min) * 60
+                    - (long)(local_result.tm_mday - utc_result.tm_mday) * 86400;
     char tz_sign = '+';
     int offs_hours = (int)(tz_seconds / 3600);
     int offs_mins = (int)((tz_seconds / 60) % 60);
@@ -129,35 +130,60 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
 }
 
 /// Format a Date as ISO 8601 string (used by toJSON).
+/// Uses UTC components. Large years (>=10000 or <=-9999) use expanded format.
 fn usz date_format_iso(double time_val, char* buf, usz buf_size) {
     if (math::is_nan(time_val)) {
         return (usz)libc::snprintf(buf, buf_size, "null");
     }
-    long t_sec = (long)(time_val / 1000.0);
-    Tm result;
-    libc::localtime_r(&t_sec, &result);
-    Tm* tm = &result;
-
-    // Compute timezone offset
-    long local_as_epoch = (long)libc::mktime(tm);
-    if (local_as_epoch == -1) local_as_epoch = t_sec;
-    long tz_seconds = local_as_epoch - t_sec;
-    char tz_sign = '+';
-    int offs_hours = (int)(tz_seconds / 3600);
-    int offs_mins = (int)((tz_seconds / 60) % 60);
-    if (tz_seconds < 0) {
-        tz_sign = '-';
-        offs_hours = -offs_hours;
-        offs_mins = -offs_mins;
-    }
+    long year, month, day, wday, hour, min, sec;
+    date_break_time_utc(time_val, &year, &month, &day, &wday, &hour, &min, &sec);
     int ms = (int)((long)time_val % 1000);
     if (ms < 0) ms += 1000;
 
-    return (usz)libc::snprintf(buf, buf_size,
-        "%04d-%02d-%02dT%02d:%02d:%02d.%03d%c%02d:%02d",
-        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-        tm.tm_hour, tm.tm_min, tm.tm_sec, ms,
-        tz_sign, offs_hours, offs_mins);
+    usz pos = 0;
+
+    // Expanded format for large years: +YYYYYY or -YYYYYY
+    if (year >= 10000 || year <= -9999) {
+        long abs_year = (year < 0) ? -year : year;
+        buf[pos++] = (year < 0) ? '-' : '+';
+        // 6+ digit year
+        buf[pos++] = (char)(abs_year / 100000 % 10 + '0');
+        buf[pos++] = (char)(abs_year / 10000 % 10 + '0');
+        buf[pos++] = (char)(abs_year / 1000 % 10 + '0');
+        buf[pos++] = (char)(abs_year / 100 % 10 + '0');
+        buf[pos++] = (char)(abs_year / 10 % 10 + '0');
+        buf[pos++] = (char)(abs_year % 10 + '0');
+    } else {
+        // Standard 4-digit year
+        buf[pos++] = (char)((long)year / 1000 + '0');
+        buf[pos++] = (char)((long)year / 100 % 10 + '0');
+        buf[pos++] = (char)((long)year / 10 % 10 + '0');
+        buf[pos++] = (char)((long)year % 10 + '0');
+    }
+
+    // -MM-DDTHH:mm:ss.sssZ
+    buf[pos++] = '-';
+    buf[pos++] = (char)((month + 1) / 10 + '0');
+    buf[pos++] = (char)((month + 1) % 10 + '0');
+    buf[pos++] = '-';
+    buf[pos++] = (char)(day / 10 + '0');
+    buf[pos++] = (char)(day % 10 + '0');
+    buf[pos++] = 'T';
+    buf[pos++] = (char)(hour / 10 + '0');
+    buf[pos++] = (char)(hour % 10 + '0');
+    buf[pos++] = ':';
+    buf[pos++] = (char)(min / 10 + '0');
+    buf[pos++] = (char)(min % 10 + '0');
+    buf[pos++] = ':';
+    buf[pos++] = (char)(sec / 10 + '0');
+    buf[pos++] = (char)(sec % 10 + '0');
+    buf[pos++] = '.';
+    buf[pos++] = (char)(ms / 100 + '0');
+    buf[pos++] = (char)(ms / 10 % 10 + '0');
+    buf[pos++] = (char)(ms % 10 + '0');
+    buf[pos++] = 'Z';
+
+    return pos;
 }
 
 /// Parse an ISO 8601 date string into milliseconds since epoch.
@@ -183,6 +209,8 @@ fn double date_parse_iso_str(char* str, usz len) {
     if (year_digits < 4) return double::nan;
     // Handle leading sign
     if (has_sign && str[0] == '-') year = -year;
+    // -000000 is invalid (negative zero year) per ES2015
+    if (has_sign && year == 0 && str[0] == '-') return double::nan;
 
     long month = 1;  // default
     long day = 1;    // default
@@ -276,7 +304,7 @@ fn double date_parse_iso_str(char* str, usz len) {
     if (pos < len && str[pos] == 'Z') {
         // UTC timezone — use date_utc_to_ms
         pos++;
-        return date_utc_to_ms(year, month - 1, day, hour, minute, second, millis);
+        return date_time_clip(date_utc_to_ms(year, month - 1, day, hour, minute, second, millis));
     } else if (pos + 5 <= len && (str[pos] == '+' || str[pos] == '-')) {
         // Parse timezone offset: +HH:MM or -HH:MM
         bool neg = (str[pos] == '-');
@@ -296,11 +324,139 @@ fn double date_parse_iso_str(char* str, usz len) {
         if (neg) offset_ms = -offset_ms;
         // Convert to UTC: local = utc + offset, so utc = local - offset
         double local_ms = date_local_to_ms(year, month - 1, day, hour, minute, second, millis);
-        return local_ms - (double)offset_ms;
+        return date_time_clip(local_ms - (double)offset_ms);
     }
 
     // No timezone specified: treat as UTC (simpler for now; local tz can be added later)
-    return date_utc_to_ms(year, month - 1, day, hour, minute, second, millis);
+    return date_time_clip(date_utc_to_ms(year, month - 1, day, hour, minute, second, millis));
+}
+
+/// Helper: match a 3-letter month name, return 0-based month index or -1.
+fn long date_parse_month_name(char* s, usz len, usz pos) {
+    if (pos + 3 > len) return -1;
+    if (s[pos] == 'J' && s[pos+1] == 'a' && s[pos+2] == 'n') return 0;
+    if (s[pos] == 'F' && s[pos+1] == 'e' && s[pos+2] == 'b') return 1;
+    if (s[pos] == 'M' && s[pos+1] == 'a' && s[pos+2] == 'r') return 2;
+    if (s[pos] == 'A' && s[pos+1] == 'p' && s[pos+2] == 'r') return 3;
+    if (s[pos] == 'M' && s[pos+1] == 'a' && s[pos+2] == 'y') return 4;
+    if (s[pos] == 'J' && s[pos+1] == 'u' && s[pos+2] == 'n') return 5;
+    if (s[pos] == 'J' && s[pos+1] == 'u' && s[pos+2] == 'l') return 6;
+    if (s[pos] == 'A' && s[pos+1] == 'u' && s[pos+2] == 'g') return 7;
+    if (s[pos] == 'S' && s[pos+1] == 'e' && s[pos+2] == 'p') return 8;
+    if (s[pos] == 'O' && s[pos+1] == 'c' && s[pos+2] == 't') return 9;
+    if (s[pos] == 'N' && s[pos+1] == 'o' && s[pos+2] == 'v') return 10;
+    if (s[pos] == 'D' && s[pos+1] == 'e' && s[pos+2] == 'c') return 11;
+    return -1;
+}
+
+/// Parse a toString/toUTCString format date string.
+/// Formats: "Thu Jan 01 1970 01:00:00 GMT+0000" (toString)
+///          "Thu, 01 Jan 1970 00:00:00 GMT" (toUTCString)
+/// Returns NaN on failure.
+fn double date_parse_locale_str(char* str, usz len) {
+    if (len < 20) return double::nan;
+    usz pos = 0;
+
+    // Skip day-of-week name (3 chars)
+    if (pos + 3 > len) return double::nan;
+    pos += 3;
+
+    // Skip optional comma and space (toUTCString: "Thu, 01...")
+    if (pos < len && str[pos] == ',') pos++;
+    if (pos < len && str[pos] == ' ') pos++;
+
+    long month = -1;
+    long day = 0;
+
+    // Detect format: if next char is a digit, it's toUTCString (day before month)
+    // If next char is a letter, it's toString (month before day)
+    if (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+        // toUTCString format: "Thu, 01 Jan 1970 00:00:00 GMT"
+        // Parse day number (1-2 digits)
+        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+            day = day * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        // Expect space
+        if (pos >= len || str[pos] != ' ') return double::nan;
+        pos++;
+        // Parse month name
+        month = date_parse_month_name(str, len, pos);
+        if (month < 0) return double::nan;
+        pos += 3;
+    } else if (pos < len && str[pos] >= 'A' && str[pos] <= 'Z') {
+        // toString format: "Thu Jan 01 1970 01:00:00 GMT+0000"
+        // Parse month name first
+        month = date_parse_month_name(str, len, pos);
+        if (month < 0) return double::nan;
+        pos += 3;
+        // Expect space
+        if (pos >= len || str[pos] != ' ') return double::nan;
+        pos++;
+        // Parse day number (1-2 digits)
+        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+            day = day * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+    } else {
+        return double::nan;
+    }
+
+    // Expect space
+    if (pos >= len || str[pos] != ' ') return double::nan;
+    pos++;
+
+    // Parse year (4 digits)
+    if (pos + 4 > len) return double::nan;
+    long year = 0;
+    for (uint i = 0; i < 4; i++) {
+        if (str[pos] < '0' || str[pos] > '9') return double::nan;
+        year = year * 10 + (long)(str[pos] - '0');
+        pos++;
+    }
+
+    // Expect space
+    if (pos >= len || str[pos] != ' ') return double::nan;
+    pos++;
+
+    // Parse time: HH:MM:SS
+    if (pos + 8 > len) return double::nan;
+    long hour = 0;
+    long minute = 0;
+    long second = 0;
+    if (str[pos] < '0' || str[pos] > '9') return double::nan;
+    hour = (long)(str[pos] - '0') * 10 + (long)(str[pos+1] - '0');
+    if (str[pos+2] != ':') return double::nan;
+    minute = (long)(str[pos+3] - '0') * 10 + (long)(str[pos+4] - '0');
+    if (str[pos+5] != ':') return double::nan;
+    second = (long)(str[pos+6] - '0') * 10 + (long)(str[pos+7] - '0');
+    pos += 8;
+
+    // Expect space
+    if (pos >= len || str[pos] != ' ') return double::nan;
+    pos++;
+
+    // Parse timezone: "GMT", "GMT+HHMM", "GMT-HHMM"
+    if (pos + 3 > len) return double::nan;
+    if (str[pos] != 'G' || str[pos+1] != 'M' || str[pos+2] != 'T') return double::nan;
+    pos += 3;
+
+    long tz_offset_min = 0;  // default UTC
+    if (pos < len && (str[pos] == '+' || str[pos] == '-')) {
+        bool neg = (str[pos] == '-');
+        pos++;
+        if (pos + 4 > len) return double::nan;
+        long tz_h = (long)(str[pos] - '0') * 10 + (long)(str[pos+1] - '0');
+        long tz_m = (long)(str[pos+2] - '0') * 10 + (long)(str[pos+3] - '0');
+        tz_offset_min = tz_h * 60 + tz_m;
+        if (neg) tz_offset_min = -tz_offset_min;
+    }
+
+    // Convert to UTC: the parsed time is in local time, offset is local-UTC
+    // utc = local - offset
+    double local_ms = date_utc_to_ms(year, month, day, hour, minute, second, 0);
+    double utc_ms = local_ms - (double)tz_offset_min * 60000.0;
+    return utc_ms;
 }
 
 /// Date() as function — returns current date-time string (ES5 §15.9.2.1).
@@ -345,15 +501,74 @@ fn void builtin_date(BuiltinContext* ctx) {
             }
         } else {
             // Multiple args: Date(year, month[, day, hour, minute, second, ms])
+            // ES5 §15.9.3.1: call ToNumber on each argument (must call valueOf)
+            Vm* v = (Vm*)ctx.vm;
             TVal* year_arg  = &ctx.regs[ctx.base_reg];
             TVal* month_arg = &ctx.regs[ctx.base_reg + 1];
-            double year  = year_arg.get_number_or_fastint();
-            double month = month_arg.get_number_or_fastint();
-            double day   = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : 1.0;
-            double hour  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : 0.0;
-            double min   = (ctx.argc > 4) ? ctx.regs[ctx.base_reg + 4].get_number_or_fastint() : 0.0;
-            double sec   = (ctx.argc > 5) ? ctx.regs[ctx.base_reg + 5].get_number_or_fastint() : 0.0;
-            double ms    = (ctx.argc > 6) ? ctx.regs[ctx.base_reg + 6].get_number_or_fastint() : 0.0;
+            double year  = vm::vm_to_number(v, year_arg);
+            if (v.throw_pending) {
+                ctx.should_throw = true;
+                ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                v.throw_pending = false;
+                return;
+            }
+            double month = vm::vm_to_number(v, month_arg);
+            if (v.throw_pending) {
+                ctx.should_throw = true;
+                ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                v.throw_pending = false;
+                return;
+            }
+            double day = 1.0;
+            if (ctx.argc > 2) {
+                day = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 2]);
+                if (v.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                    v.throw_pending = false;
+                    return;
+                }
+            }
+            double hour = 0.0;
+            if (ctx.argc > 3) {
+                hour = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 3]);
+                if (v.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                    v.throw_pending = false;
+                    return;
+                }
+            }
+            double min = 0.0;
+            if (ctx.argc > 4) {
+                min = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 4]);
+                if (v.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                    v.throw_pending = false;
+                    return;
+                }
+            }
+            double sec = 0.0;
+            if (ctx.argc > 5) {
+                sec = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 5]);
+                if (v.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                    v.throw_pending = false;
+                    return;
+                }
+            }
+            double ms = 0.0;
+            if (ctx.argc > 6) {
+                ms = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 6]);
+                if (v.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                    v.throw_pending = false;
+                    return;
+                }
+            }
 
             // Year < 100 means 1900 + year
             if (year >= 0 && year < 100) year += 1900;
@@ -385,15 +600,74 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
         ctx.result.set_number(double::nan);
         return;
     }
+    // ES5 §15.9.4.3: call ToNumber on each argument (must call valueOf)
+    Vm* v = (Vm*)ctx.vm;
     TVal* year_arg  = &ctx.regs[ctx.base_reg];
     TVal* month_arg = &ctx.regs[ctx.base_reg + 1];
-    double year  = year_arg.get_number_or_fastint();
-    double month = month_arg.get_number_or_fastint();
-    double day   = (ctx.argc > 2) ? ctx.regs[ctx.base_reg + 2].get_number_or_fastint() : 1.0;
-    double hour  = (ctx.argc > 3) ? ctx.regs[ctx.base_reg + 3].get_number_or_fastint() : 0.0;
-    double min   = (ctx.argc > 4) ? ctx.regs[ctx.base_reg + 4].get_number_or_fastint() : 0.0;
-    double sec   = (ctx.argc > 5) ? ctx.regs[ctx.base_reg + 5].get_number_or_fastint() : 0.0;
-    double ms    = (ctx.argc > 6) ? ctx.regs[ctx.base_reg + 6].get_number_or_fastint() : 0.0;
+    double year  = vm::vm_to_number(v, year_arg);
+    if (v.throw_pending) {
+        ctx.should_throw = true;
+        ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+        v.throw_pending = false;
+        return;
+    }
+    double month = vm::vm_to_number(v, month_arg);
+    if (v.throw_pending) {
+        ctx.should_throw = true;
+        ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+        v.throw_pending = false;
+        return;
+    }
+    double day = 1.0;
+    if (ctx.argc > 2) {
+        day = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 2]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
+    double hour = 0.0;
+    if (ctx.argc > 3) {
+        hour = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 3]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
+    double min = 0.0;
+    if (ctx.argc > 4) {
+        min = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 4]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
+    double sec = 0.0;
+    if (ctx.argc > 5) {
+        sec = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 5]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
+    double ms = 0.0;
+    if (ctx.argc > 6) {
+        ms = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 6]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
+    }
 
     if (year >= 0 && year < 100) year += 1900;
 
@@ -441,6 +715,10 @@ fn void builtin_date_parse(BuiltinContext* ctx) {
     char* str = s.get_cstr();
     usz slen = s.blen;
     double date_val = date_parse_iso_str(str, slen);
+    if (math::is_nan(date_val)) {
+        // Try toString/toUTCString locale format
+        date_val = date_parse_locale_str(str, slen);
+    }
     ctx.result.set_number(date_val);
 }
 
@@ -557,10 +835,12 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
     libc::localtime_r(&t_sec, &tm_result);
     Tm* tm = &tm_result;
 
-    // Compute timezone offset
-    long local_as_epoch = (long)libc::mktime(tm);
-    if (local_as_epoch == -1) local_as_epoch = t_sec;
-    long tz_seconds = local_as_epoch - t_sec;
+    // Compute timezone offset using gmtime_r (more reliable than mktime for old dates)
+    Tm utc_result;
+    libc::gmtime_r(&t_sec, &utc_result);
+    long tz_seconds = (long)(tm_result.tm_hour - utc_result.tm_hour) * 3600
+                    + (long)(tm_result.tm_min - utc_result.tm_min) * 60
+                    - (long)(tm_result.tm_mday - utc_result.tm_mday) * 86400;
     char tz_sign = '+';
     int offs_hours = (int)(tz_seconds / 3600);
     int offs_mins = (int)((tz_seconds / 60) % 60);
@@ -1183,19 +1463,18 @@ fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
     long ms = (long)tv % 1000; if (ms < 0) ms += 1000;
-    // Format: "YYYY-MM-DDTHH:mm:ss.sssZ" (24 bytes)
-    // For negative years (before 1970), use "-YYYYY-MM-DDTHH:mm:ss.sssZ" (25 bytes with sign)
-    if (year < 0) {
-        // 6-digit year with minus sign: -YYYYYY-MM-DDTHH:mm:ss.sssZ (27 bytes)
+
+    // Expanded format for large years (>=10000 or <=-9999): +YYYYYY or -YYYYYY
+    if (year >= 10000 || year <= -9999) {
         char[27] buf;
-        buf[0] = '-';
-        long neg_year = -year;
-        buf[1] = (char)(neg_year / 100000 % 10 + 48);
-        buf[2] = (char)(neg_year / 10000 % 10 + 48);
-        buf[3] = (char)(neg_year / 1000 % 10 + 48);
-        buf[4] = (char)(neg_year / 100 % 10 + 48);
-        buf[5] = (char)(neg_year / 10 % 10 + 48);
-        buf[6] = (char)(neg_year % 10 + 48);
+        long abs_year = (year < 0) ? -year : year;
+        buf[0] = (year < 0) ? '-' : '+';
+        buf[1] = (char)(abs_year / 100000 % 10 + 48);
+        buf[2] = (char)(abs_year / 10000 % 10 + 48);
+        buf[3] = (char)(abs_year / 1000 % 10 + 48);
+        buf[4] = (char)(abs_year / 100 % 10 + 48);
+        buf[5] = (char)(abs_year / 10 % 10 + 48);
+        buf[6] = (char)(abs_year % 10 + 48);
         buf[7] = '-';
         date_pad2(&buf[8], month + 1);
         buf[10] = '-';
@@ -1212,7 +1491,33 @@ fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
         buf[25] = (char)(ms % 10 + 48);
         buf[26] = 'Z';
         ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:27]));
+    } else if (year < 0) {
+        // Negative year within standard range: -YYYY-MM-DDTHH:mm:ss.sssZ (25 bytes)
+        char[25] buf;
+        buf[0] = '-';
+        long neg_year = -year;
+        buf[1] = (char)(neg_year / 1000 + 48);
+        buf[2] = (char)(neg_year / 100 % 10 + 48);
+        buf[3] = (char)(neg_year / 10 % 10 + 48);
+        buf[4] = (char)(neg_year % 10 + 48);
+        buf[5] = '-';
+        date_pad2(&buf[6], month + 1);
+        buf[8] = '-';
+        date_pad2(&buf[9], day);
+        buf[11] = 'T';
+        date_pad2(&buf[12], hour);
+        buf[14] = ':';
+        date_pad2(&buf[15], min);
+        buf[17] = ':';
+        date_pad2(&buf[18], sec);
+        buf[20] = '.';
+        buf[21] = (char)(ms / 100 + 48);
+        buf[22] = (char)(ms / 10 % 10 + 48);
+        buf[23] = (char)(ms % 10 + 48);
+        buf[24] = 'Z';
+        ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:25]));
     } else {
+        // Standard format: YYYY-MM-DDTHH:mm:ss.sssZ (24 bytes)
         char[24] buf;
         date_pad4(&buf[0], year);
         buf[4] = '-';

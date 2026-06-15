@@ -28,7 +28,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `getOwnPropertyDescriptor` for dense array indices: read actual array-part flags instead of hardcoding `{w:true, e:true, c:true}` (`src/builtins/object.c3:658-697`)
 - [ ] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
 - [ ] Fix `defineProperty` validation order for combined data+accessor descriptor (should throw TypeError before making any change)
-- [ ] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
+- [x] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
 - [x] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
 - [ ] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
 - [ ] Fix `Object.defineProperties` to apply descriptors atomically: validate all before writing any
@@ -44,11 +44,11 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Implement `Array.prototype.at` per ES2022 (~10 tests)
 - [x] Implement `String.prototype.at` per ES2022 (~10 tests)
 - [x] Implement `Array.prototype.findLast` / `findLastIndex` per ES2023 (~10 tests)
-- [ ] Fix `Number.prototype.toFixed` for large values and negative fractionDigits edge cases per ES5 §15.7.4.5
-- [ ] Fix `Number.prototype.toExponential` edge cases (negative fractionDigits, NaN, Infinity) per ES5 §15.7.4.6
-- [ ] Fix `Number.prototype.toPrecision` edge cases (precision=undefined falls back to toString, range checks) per ES5 §15.7.4.7
+- [x] Fix `Number.prototype.toFixed` for large values and negative fractionDigits edge cases per ES5 §15.7.4.5
+- [x] Fix `Number.prototype.toExponential` edge cases (negative fractionDigits, NaN, Infinity) per ES5 §15.7.4.6
+- [x] Fix `Number.prototype.toPrecision` edge cases (precision=undefined falls back to toString, range checks) per ES5 §15.7.4.7
 - [x] Implement `Error.prototype.toString` to return `name + ": " + message` per ES5 §15.11.4.4 (currently uses default Object.toString)
-- [ ] Fix sort comparator throws being swallowed in `Array.prototype.sort` (plan 025, `src/builtins/array.c3`)
+- [x] Fix sort comparator throws being swallowed in `Array.prototype.sort` (plan 025, `src/builtins/array.c3`)
 - [x] Fix JSON replacer throws being swallowed in `JSON.stringify` (plan 025, `src/builtins/json.c3`)
 - [x] Fix `String.prototype.lastIndexOf` unsigned underflow: add early-return `if search_len > len` guard (plan 026 #7, `src/builtins/string.c3:1821`)
 
@@ -59,7 +59,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Implement `Date` constructor string parsing for ISO 8601 (`YYYY-MM-DDTHH:mm:ss.sssZ`) (plan 026 #4, `src/builtins/date.c3`)
 - [ ] Implement `Date.prototype.toLocaleDateString` / `toLocaleTimeString` / `toLocaleString` stubs returning formatted strings
 - [ ] Implement `Date.prototype.toUTCString` per ES5 §15.9.5.42 (RFC 7231 format)
-- [ ] Fix `Date.parse` to accept ISO 8601 strings and return correct milliseconds timestamp
+- [x] Fix `Date.parse` to accept ISO 8601 strings and return correct milliseconds timestamp
 - [ ] Fix `new Date(year, month, day, ...)` with month overflow/underflow normalization per ES5 §15.9.1.11
 - [ ] Implement `Date.prototype.setUTCFullYear` / `setUTCMonth` / `setUTCDate` / `setUTCHours` etc.
 - [ ] Fix `Date.prototype.getTimezoneOffset` to return correct local-UTC offset in minutes
