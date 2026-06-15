@@ -11,6 +11,7 @@ import duktape::env;
 import duktape::compiler;
 import duktape::lexer;
 import duktape::re_bindings;
+import duktape::vm;
 import std::io;
 import std::math;
 import libc;
@@ -842,6 +843,38 @@ fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
     builtin_to_number(val, &num);
     if (num.is_fastint()) return (double)num.get_fastint();
     return num.get_number();
+}
+
+/// ToNumber for builtins with VM access — calls ToPrimitive(value) then ToNumber.
+/// This properly handles objects by calling valueOf() first, then toString().
+fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
+    if (val.is_fastint()) return (double)val.get_fastint();
+    if (val.get_tag() == types::TValTag.NUMBER) return val.get_number();
+    if (val.is_object() && ctx.vm != null) {
+        Vm* vm_ptr = (Vm*)ctx.vm;
+        TVal prim = vm::to_primitive_value(vm_ptr, val, false);  // hint "number"
+        if (vm_ptr.throw_pending || prim.is_object()) return 0.0 / 0.0;
+        return builtin_to_number_getdouble(ctx, &prim);
+    }
+    TVal num;
+    builtin_to_number(val, &num);
+    if (num.is_fastint()) return (double)num.get_fastint();
+    return num.get_number();
+}
+
+/// ToString for builtins with VM access — calls ToPrimitive(value, "string") then ToString.
+/// This properly handles objects by calling toString() first, then valueOf().
+fn HString* builtin_to_string_vm(BuiltinContext* ctx, TVal* val) {
+    if (val.is_string()) return (HString*)val.get_heapptr();
+    if (val.is_object() && ctx.vm != null) {
+        Vm* vm_ptr = (Vm*)ctx.vm;
+        TVal prim = vm::to_primitive_value(vm_ptr, val, true);  // hint "string"
+        if (vm_ptr.throw_pending) return null;
+        if (prim.is_string()) return (HString*)prim.get_heapptr();
+        if (prim.is_object()) return null;  // ToPrimitive returned object
+        return builtin_to_string(ctx.heap, &prim);
+    }
+    return builtin_to_string(ctx.heap, val);
 }
 
 // ============================================================================

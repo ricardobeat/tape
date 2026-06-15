@@ -155,10 +155,12 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
     }
 
     for (int i = start_i; i < (int)len; i++) {
-        TVal elem = array_get_elem(obj, (uint)i, ctx.heap);
-        if (same_value_zero(elem, search_elem)) {
-            ctx.result.set_boolean(true);
-            return;
+        TVal v;
+        if (arr_get_elem_vm(obj, (uint)i, ctx.heap, ctx.vm, &v)) {
+            if (same_value_zero(v, search_elem)) {
+                ctx.result.set_boolean(true);
+                return;
+            }
         }
     }
     ctx.result.set_boolean(false);
@@ -429,14 +431,54 @@ fn void arr_throw_range_error(BuiltinContext* ctx, char[] msg) {
     }
 }
 
+/// Helper to invoke a getter and return the result as double.
+fn double invoke_getter_as_length(HObject* obj, TVal getter_fn, Heap* heap, void* vm_ptr) {
+    if (getter_fn.is_undefined() || getter_fn.is_null()) return 0;
+    if (!getter_fn.is_object() || getter_fn.get_heapptr() == null) return 0;
+    HObject* fn_obj = (HObject*)getter_fn.get_heapptr();
+    if (!fn_obj.is_callable() || heap.call_fn == null || vm_ptr == null) return 0;
+    TVal this_val; this_val.set_object(obj);
+    TVal result = heap.call_fn(vm_ptr, getter_fn, null, 0, this_val);
+    if (heap.has_error) {
+        heap.has_error = false;
+        return 0;
+    }
+    return builtin_to_number_getdouble(null, &result);
+}
+
 /// Read the raw 'length' property as a double from an array-like object.
-fn double array_get_length_raw(HObject* obj, Heap* heap) {
+/// Handles accessor properties by invoking the getter.
+fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
+
     if (obj.get_class() == ARRAY) {
+        // For ARRAY class, also check if length is an accessor (set via defineProperty)
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key != null) {
+            int own_idx = obj.find_prop_idx(len_key);
+            if (own_idx >= 0) {
+                PropFlags pf = obj.get_prop_flags((uint)own_idx);
+                if (pf.is_accessor) {
+                    TVal gs_slot = obj.prop_values()[own_idx];
+                    TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+                    return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+                }
+            }
+        }
         return (double)*obj.array_len_ptr();
     }
     if (obj.get_class() == ARGUMENTS) {
         HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (len_key == null) return 0;
+        // Check own properties first for accessor
+        int own_idx = obj.find_prop_idx(len_key);
+        if (own_idx >= 0) {
+            PropFlags pf = obj.get_prop_flags((uint)own_idx);
+            if (pf.is_accessor) {
+                TVal gs_slot = obj.prop_values()[own_idx];
+                TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+                return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+            }
+        }
         TVal? len_val = obj.get_prop(len_key);
         if (try v = len_val) {
             if (v.is_fastint()) return (double)v.get_fastint();
@@ -449,27 +491,76 @@ fn double array_get_length_raw(HObject* obj, Heap* heap) {
         }
         return 0;
     }
+    // For plain objects and other classes, use get_prop_or_accessor_proto
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return 0;
-    TVal? len_val = obj.get_prop_proto(len_key);
-    if (try v = len_val) {
+
+    // Check own properties first for accessor
+    int own_idx = obj.find_prop_idx(len_key);
+    if (own_idx >= 0) {
+        PropFlags pf = obj.get_prop_flags((uint)own_idx);
+        if (pf.is_accessor) {
+            TVal gs_slot = obj.prop_values()[own_idx];
+            TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+            return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+        }
+    }
+
+    // Fallback to normal lookup
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(len_key, true);
+    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        TVal getter_fn = res.acc.accessor_fn;
+        return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        TVal v = res.data_val;
         if (v.is_fastint()) return (double)v.get_fastint();
         if (v.is_number()) return v.get_number();
     }
     return 0;
 }
 
-/// ES5 §15.4.4.x: Read length, apply ToUint32, validate via SameValue.
+/// ES2022 §7.1.21 ToLength conversion for array iteration methods.
+/// Converts a raw double to a length value per the spec:
+///   1. ToIntegerOrInfinity: NaN → 0, +0/-0 → 0, ±Infinity → 0, otherwise truncate
+///   2. If len ≤ 0, return 0
+///   3. Return min(len, 2^53 − 1)
+fn ulong arr_to_length(double raw) {
+    // Step 1: ToIntegerOrInfinity
+    if (raw != raw) return 0;           // NaN → 0
+    if (raw == 0.0) return 0;           // +0 / -0 → 0
+    if (raw == double::inf) return 9007199254740991L;  // +Infinity → 2^53-1
+    if (raw == -double::inf) return 0;  // -Infinity → 0
+
+    // Step 2-3: clamp to [0, 2^53-1]
+    if (raw < 0) return 0;
+    if (raw > 9007199254740991.0) return 9007199254740991L;
+    return (ulong)raw;
+}
+
+/// ES2022 ToLength for Array.prototype iteration methods.
+/// Applies ToLength conversion without RangeError validation.
+/// NaN → 0, -0 → 0, Infinity → 2^53-1, negative → 0.
+/// Returns true on success (out_len set).
+fn bool array_to_length(HObject* obj, Heap* heap, void* vm_ptr, uint* out_len) {
+    double raw = array_get_length_raw(obj, heap, vm_ptr);
+    ulong len = arr_to_length(raw);
+    if (len > 0xFFFFFFFF) len = 0xFFFFFFFF;
+    *out_len = (uint)len;
+    return true;
+}
+
+/// ES5 §15.4.4.x: Read length, validate as valid array length (RangeError on invalid).
+/// Used by indexOf/lastIndexOf which DO require RangeError on invalid lengths.
 /// Returns true on success (out_len set). Returns false and sets
-/// ctx.should_throw + RangeError if the length is invalid.
+/// ctx.should_throw + RangeError if the length is invalid (NaN, Infinity, negative).
 fn bool array_to_length_checked(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out_len) {
-    double raw = array_get_length_raw(obj, heap);
-    uint len = to_uint32(raw);
+    double raw = array_get_length_raw(obj, heap, ctx.vm);
+    // ES5 §15.4.4.x: validate via SameValue — NaN, Infinity, negative, -0 are invalid
     if (!is_valid_array_length(raw)) {
         arr_throw_range_error(ctx, "Invalid array length");
         return false;
     }
-    *out_len = len;
+    *out_len = to_uint32(raw);
     return true;
 }
 
@@ -481,7 +572,8 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
         return *obj.array_len_ptr();
     }
     // For non-array objects, read raw and apply ToUint32.
-    return to_uint32(array_get_length_raw(obj, heap));
+    // Pass null for vm_ptr since we don't need getter invocation here.
+    return to_uint32(array_get_length_raw(obj, heap, null));
 }
 
 /// Set the 'length' property of an array-like object.
@@ -1507,10 +1599,12 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     }
 
     for (; k < len; k++) {
-        TVal elem = array_get_elem(obj, k, ctx.heap);
-        if (array_strict_equals(elem, search_elem)) {
-            ctx.result.set_fastint((long)k);
-            return;
+        TVal v;
+        if (arr_get_elem_vm(obj, k, ctx.heap, ctx.vm, &v)) {
+            if (array_strict_equals(v, search_elem)) {
+                ctx.result.set_fastint((long)k);
+                return;
+            }
         }
     }
 
@@ -1554,10 +1648,12 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     }
 
     for (; k >= 0; k--) {
-        TVal elem = array_get_elem(obj, (uint)k, ctx.heap);
-        if (array_strict_equals(elem, search_elem)) {
-            ctx.result.set_fastint((long)k);
-            return;
+        TVal v;
+        if (arr_get_elem_vm(obj, (uint)k, ctx.heap, ctx.vm, &v)) {
+            if (array_strict_equals(v, search_elem)) {
+                ctx.result.set_fastint((long)k);
+                return;
+            }
         }
     }
 
@@ -2019,7 +2115,8 @@ fn void arr_throw_type_error(BuiltinContext* ctx, char[] msg) {
     }
 }
 
-/// Helper: check if numeric key exists on object.
+/// Helper: check if numeric key exists on object (ES5 §15.4.5.1 step 4 "k in O").
+/// Uses get_prop_or_accessor_proto to handle accessor properties.
 fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
     // Fast path: dense array storage
     if (obj.get_class() == hobject::ObjClass.ARRAY) {
@@ -2028,13 +2125,63 @@ fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
     }
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
+    // Check own properties first (handles accessor properties set via defineProperty)
+    int own_idx = obj.find_prop_idx(pk);
+    if (own_idx >= 0) return true;
+    // Then check prototype chain
     TVal? found = obj.get_prop_proto(pk);
     return @ok(found);
 }
 
+/// Helper: invoke a getter function. Returns the getter result or undefined.
+/// Used by arr_get_elem to handle accessor properties at numeric indices.
+fn TVal arr_invoke_getter(HObject* obj, TVal getter_fn, Heap* heap, void* vm_ptr) {
+    if (getter_fn.is_undefined() || getter_fn.is_null()) {
+        TVal undef; undef.set_undefined(); return undef;
+    }
+    if (!getter_fn.is_object() || getter_fn.get_heapptr() == null) {
+        TVal undef; undef.set_undefined(); return undef;
+    }
+    HObject* fn_obj = (HObject*)getter_fn.get_heapptr();
+    if (!fn_obj.is_callable()) {
+        TVal undef; undef.set_undefined(); return undef;
+    }
+    if (heap.call_fn != null && vm_ptr != null) {
+        TVal this_val;
+        this_val.set_object(obj);
+        TVal result = heap.call_fn(vm_ptr, getter_fn, null, 0, this_val);
+        if (heap.has_error) {
+            heap.has_error = false;
+            TVal undef; undef.set_undefined(); return undef;
+        }
+        return result;
+    }
+    TVal undef; undef.set_undefined(); return undef;
+}
+
 /// Helper: get value at numeric index, returns false if not present.
+/// Handles accessor properties by invoking the getter.
 fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
-    // Fast path: dense array storage
+    HString* pk = heap.int_to_hstring((long)key);
+    if (pk == null) return false;
+
+    // Check own properties first — may be an accessor (set via defineProperty)
+    // This must come BEFORE the dense array fast path because accessor properties
+    // at numeric indices override the dense array value.
+    int own_idx = obj.find_prop_idx(pk);
+    if (own_idx >= 0) {
+        PropFlags pf = obj.get_prop_flags((uint)own_idx);
+        if (pf.is_accessor) {
+            TVal gs_slot = obj.prop_values()[own_idx];
+            TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+            *out = arr_invoke_getter(obj, getter_fn, heap, null);
+            return true;
+        }
+        *out = obj.prop_values()[own_idx];
+        return true;
+    }
+
+    // Fast path: dense array storage (no accessor at this index)
     if (obj.get_class() == hobject::ObjClass.ARRAY) {
         if (try v = obj.get_array_idx(key)) {
             *out = v;
@@ -2042,10 +2189,54 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
         }
         // Fall through: element may be stored as a named property (sparse or pre-dense)
     }
+
+    // Prototype chain lookup
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(pk, true);
+    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        *out = arr_invoke_getter(obj, res.acc.accessor_fn, heap, null);
+        return true;
+    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        *out = res.data_val;
+        return true;
+    }
+    return false;
+}
+
+/// Helper: get value at numeric index with VM context (for getter invocation).
+/// Handles accessor properties by invoking the getter via VM.
+fn bool arr_get_elem_vm(HObject* obj, uint key, Heap* heap, void* vm_ptr, TVal* out) {
+    // Fast path: dense array storage (covers the vast majority of cases)
+    if (obj.get_class() == hobject::ObjClass.ARRAY) {
+        if (try v = obj.get_array_idx(key)) {
+            *out = v;
+            return true;
+        }
+    }
+
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
-    if (try v = obj.get_prop_proto(pk)) {
-        *out = v;
+
+    // Check own properties — may be an accessor (set via defineProperty)
+    int own_idx = obj.find_prop_idx(pk);
+    if (own_idx >= 0) {
+        PropFlags pf = obj.get_prop_flags((uint)own_idx);
+        if (pf.is_accessor) {
+            TVal gs_slot = obj.prop_values()[own_idx];
+            TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+            *out = arr_invoke_getter(obj, getter_fn, heap, vm_ptr);
+            return true;
+        }
+        *out = obj.prop_values()[own_idx];
+        return true;
+    }
+
+    // Prototype chain lookup
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(pk, true);
+    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        *out = arr_invoke_getter(obj, res.acc.accessor_fn, heap, vm_ptr);
+        return true;
+    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        *out = res.data_val;
         return true;
     }
     return false;
@@ -2094,11 +2285,11 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             }
@@ -2123,7 +2314,7 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2132,7 +2323,7 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 HString* akey = ctx.heap.int_to_hstring((long)aj);
@@ -2165,7 +2356,7 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2174,7 +2365,7 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal sel = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&sel)) {
@@ -2214,7 +2405,7 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
@@ -2248,7 +2439,7 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
     for (long k = (long)len - 1; k >= 0; k--) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, (uint)k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, (uint)k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, (uint)k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
@@ -2282,7 +2473,7 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
     for (long k = (long)len - 1; k >= 0; k--) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, (uint)k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, (uint)k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, (uint)k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
@@ -2318,7 +2509,7 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
@@ -2349,11 +2540,11 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (!builtin_to_boolean(&test)) {
@@ -2382,11 +2573,11 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&test)) {
@@ -2413,7 +2604,7 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     uint k = 0;
     TVal acc;
     bool has_acc;
@@ -2427,14 +2618,14 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
             arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
             return;
         }
-        arr_get_elem(o, k, ctx.heap, &acc);
+        arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &acc);
         has_acc = true;
         k++;
     }
     while (k < len) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
                 TVal[4] args;
                 args[0] = acc;
                 args[1] = v;
@@ -2470,7 +2661,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len;
-    if (!array_to_length_checked(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
     if (len == 0 && ctx.argc < 2) {
         arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
         return;
@@ -2488,14 +2679,14 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
             arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
             return;
         }
-        arr_get_elem(o, (uint)k, ctx.heap, &acc);
+        arr_get_elem_vm(o, (uint)k, ctx.heap, ctx.vm, &acc);
         has_acc = true;
         k--;
     }
     while (k >= 0) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
-            if (arr_get_elem(o, (uint)k, ctx.heap, &v)) {
+            if (arr_get_elem_vm(o, (uint)k, ctx.heap, ctx.vm, &v)) {
                 TVal[4] args;
                 args[0] = acc;
                 args[1] = v;

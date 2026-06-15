@@ -823,7 +823,7 @@ fn bool vm_check_call_fn_error(Vm* vm) @inline {
 /// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
 /// Calls Symbol.toPrimitive first (ES6 §7.1.1), then valueOf/toString.
 /// Sets vm.throw_pending if both valueOf and toString return non-primitives.
-fn TVal to_primitive_value(Vm* vm, TVal* val) {
+fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
@@ -869,10 +869,13 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
                 }
             }
             if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
-                // Call Symbol.toPrimitive(obj, hint) where hint defaults to "default"
-                HString* default_str = intern_string(vm, "default");
+                // Call Symbol.toPrimitive(obj, hint) — use "default" for general ToPrimitive,
+                // but "string" for + operator (ES5 §11.6.1).
+                HString* hint_str = hint_is_string
+                    ? intern_string(vm, "string")
+                    : intern_string(vm, "default");
                 TVal hint_val;
-                hint_val.set_string(default_str);
+                hint_val.set_string(hint_str);
                 TVal[1] hint_args;
                 hint_args[0] = hint_val;
                 TVal prim = h.call_fn(vm, toprim_fn, &hint_args[0], 1, *val);
@@ -885,16 +888,18 @@ fn TVal to_primitive_value(Vm* vm, TVal* val) {
             }
         }
         // Generic objects: call valueOf(), then toString()
-        // Default hint for ToPrimitive without explicit hint is "Number" (ES5 §9.1)
-        // EXCEPT for Date objects, which use "string" hint (toString first, then valueOf)
+        // ES5 §9.1: hint "string" → toString first, then valueOf;
+        //           hint "number" (default) → valueOf first, then toString.
+        // Date objects override [[DefaultValue]] to always use "string" hint.
         if (vm != null && vm.heap.call_fn != null) {
             Heap* h = vm.heap;
             bool is_date = (cls == hobject::ObjClass.DATE);
-            // Date uses toString first, then valueOf; all other objects use valueOf first, then toString.
-            HString* first_key = is_date
+            // Date always uses toString first; other objects depend on hint.
+            bool use_string_first = is_date || hint_is_string;
+            HString* first_key = use_string_first
                 ? (HString*)h.strs[heap::BuiltinStr.TO_STRING]
                 : (HString*)h.strs[heap::BuiltinStr.VALUE_OF];
-            HString* second_key = is_date
+            HString* second_key = use_string_first
                 ? (HString*)h.strs[heap::BuiltinStr.VALUE_OF]
                 : (HString*)h.strs[heap::BuiltinStr.TO_STRING];
             if (first_key != null) {
@@ -2167,10 +2172,11 @@ fn TVal? Vm.run(Vm* vm) {
             }
             TVal prim_b = *rb;
             TVal prim_c = *rc;
-            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb); }
+            // ES5 §11.6.1: + operator uses hint "string" for ToPrimitive
+            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, true); }
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             if (needs_restart) break;
-            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc); }
+            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, true); }
             if (!vm_check_to_number_throw(vm, act, &curr_pc, &needs_restart)) return VM_ERROR~;
             if (needs_restart) break;
             TValTag pt_b = prim_b.get_tag();

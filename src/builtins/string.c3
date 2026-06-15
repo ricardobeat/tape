@@ -9,6 +9,7 @@ import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::re_bindings;
+import duktape::vm;
 
 // ============================================================================
 // String constructor builtins
@@ -243,7 +244,27 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         ctx.should_throw = true;
         return null;
     }
-    // Coerce to string via ToString for booleans, numbers, objects, etc.
+    // ES5 §9.8 ToString for objects: use ToPrimitive with hint "string" (toString first,
+    // then valueOf), then convert the primitive to string. This ensures custom toString()
+    // and Date.prototype.toString() work correctly per ES5 §9.1.
+    if (this_val.is_object() && ctx.vm != null) {
+        Vm* vm_ptr = (Vm*)ctx.vm;
+        TVal prim = vm::to_primitive_value(vm_ptr, &this_val, true);  // hint "string"
+        if (vm_ptr.throw_pending) {
+            ctx.should_throw = true;
+            return null;
+        }
+        // Convert the primitive to string
+        if (prim.is_string()) {
+            return (HString*)prim.get_heapptr();
+        }
+        if (prim.is_object()) {
+            // ToPrimitive returned an object — error
+            ctx.should_throw = true;
+            return null;
+        }
+        return builtin_to_string(ctx.heap, &prim);
+    }
     return builtin_to_string(ctx.heap, &this_val);
 }
 
@@ -1708,7 +1729,7 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    double max_len_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    double max_len_d = (ctx.argc > 0) ? builtin_to_number_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
     uint max_len = (uint)(long)max_len_d;
 
@@ -1718,8 +1739,8 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     }
 
     HString* fill_hstr;
-    if (ctx.argc > 1) {
-        fill_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
+        fill_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
     } else {
         fill_hstr = builtin_intern_string(ctx.heap, " ");
     }
@@ -1755,7 +1776,7 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    double max_len_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    double max_len_d = (ctx.argc > 0) ? builtin_to_number_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
     uint max_len = (uint)(long)max_len_d;
 
@@ -1765,8 +1786,8 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     }
 
     HString* fill_hstr;
-    if (ctx.argc > 1) {
-        fill_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
+        fill_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
     } else {
         fill_hstr = builtin_intern_string(ctx.heap, " ");
     }
