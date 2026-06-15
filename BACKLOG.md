@@ -96,8 +96,8 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Implement `Symbol.toStringTag` lookup in `Object.prototype.toString` per ES6 §19.1.3.6
 - [x] Implement `Symbol.hasInstance` lookup in `instanceof` operator per ES6 §12.10.4
 - [x] Implement `Symbol.isConcatSpreadable` check in `Array.prototype.concat` per ES6 §22.1.3.1
-- [ ] Fix `Symbol.prototype.toString` to return `"Symbol(description)"` format per ES6 §19.4.3.2
-- [ ] Fix `Symbol.prototype[Symbol.toPrimitive]` to return the symbol itself per ES6 §19.4.3.5
+- [x] Fix `Symbol.prototype.toString` to return `"Symbol(description)"` format per ES6 §19.4.3.2
+- [x] Fix `Symbol.prototype[Symbol.toPrimitive]` to return the symbol itself per ES6 §19.4.3.5
 
 ---
 
@@ -127,9 +127,9 @@ Tasks are grouped by area but are otherwise independent.
 ## Conformance: Error Handling
 
 - [ ] Fix `TypeError` message to include the offending value/type in property access on null/undefined
-- [ ] Fix `RangeError` for `Array` constructor with invalid length (non-integer or > 2^32-1)
+- [x] Fix `RangeError` for `Array` constructor with invalid length (non-integer or > 2^32-1)
 - [ ] Fix `SyntaxError` from `eval()` to propagate as a catchable exception
-- [ ] Fix `try/catch/finally` with `break`/`continue` inside: finally must still run and value must be correct
+- [x] Fix `try/catch/finally` with `break`/`continue` inside: finally must still run and value must be correct
 - [x] Implement `Error.captureStackTrace` stub (returns undefined) so Node.js-style code doesn't crash
 - [x] Fix error `stack` property to be a string (currently missing or undefined on thrown errors)
 
@@ -143,7 +143,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Implement `**` (exponentiation) operator as `Math.pow` per ES2016 §12.6.3
 - [x] Fix optional chaining `?.` to short-circuit correctly on `null` and `undefined` (currently parsed but behavior uncertain)
 - [x] Fix logical assignment `||=`, `&&=`, `??=` to not assign when short-circuit condition is met per ES2021
-- [ ] Fix comma operator in `for` init/update to evaluate all expressions and return the last value
+- [x] Fix comma operator in `for` init/update to evaluate all expressions and return the last value
 
 ---
 
