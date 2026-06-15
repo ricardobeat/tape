@@ -608,8 +608,15 @@ fn void builtin_date(BuiltinContext* ctx) {
             // Year < 100 means 1900 + year
             if (year >= 0 && year < 100) year += 1900;
 
-            time_val = date_local_to_ms((long)year, (long)month, (long)day,
-                                        (long)hour, (long)min, (long)sec, (long)ms);
+            // NaN propagation: if any argument is NaN, result is NaN
+            if (math::is_nan(year) || math::is_nan(month) ||
+                math::is_nan(day) || math::is_nan(hour) ||
+                math::is_nan(min) || math::is_nan(sec) || math::is_nan(ms)) {
+                time_val = double::nan;
+            } else {
+                time_val = date_local_to_ms((long)year, (long)month, (long)day,
+                                            (long)hour, (long)min, (long)sec, (long)ms);
+            }
         }
 
         (*obj.extra_ptr()).prim.primitive_value.set_number(date_time_clip(time_val));
@@ -705,6 +712,14 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
     }
 
     if (year >= 0 && year < 100) year += 1900;
+
+    // NaN propagation: if any argument is NaN, result is NaN (ES5 §15.9.4.3)
+    if (math::is_nan(year) || math::is_nan(month) ||
+        math::is_nan(day) || math::is_nan(hour) ||
+        math::is_nan(min) || math::is_nan(sec) || math::is_nan(ms)) {
+        ctx.result.set_number(double::nan);
+        return;
+    }
 
     // For Date.UTC, the time is in UTC. We compute days from epoch using
     // simple calendar math (no timezone offset).
