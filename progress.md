@@ -1,34 +1,34 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 189 (Array iteration error propagation, toString, bind, split)
+**Last Updated:** Session 190 (Array ToObject TypeError, Object.defineProperties atomic, defineProperty validation, for-in let/const, IC stale cache)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 189, 2026-06-15)
+## Summary (after Session 190, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~16,054 |
-| Currently failing (phases 0-8) | ~5,549 |
-| Overall pass rate | ~74.3% |
+| Currently passing (phases 0-8) | ~16,155 |
+| Currently failing (phases 0-8) | ~5,448 |
+| Overall pass rate | ~74.8% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
 | 0-1: Core VM | 2,185 | 607 | 281 | 1,297 |
-| 1: Calling Convention | 426 | 58 | 30 | 338 |
+| 1: Calling Convention | 426 | 59 | 29 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,467 | 1,332 | 1,967 |
+| 3: Object System | 7,766 | 4,504 | 1,295 | 1,967 |
 | 4: Error Handling | 402 | 126 | 75 | 201 |
-| 5: Built-in Constructors | 8,615 | 5,405 | 1,685 | 1,525 |
-| 6: Prototype Methods | 4,713 | 2,651 | 1,126 | 936 |
+| 5: Built-in Constructors | 8,615 | 5,443 | 1,647 | 1,525 |
+| 6: Prototype Methods | 4,713 | 2,667 | 1,110 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 1,081 | 203 | 1,463 |
+| 8: ES5 Built-in Objects | 2,747 | 1,083 | 201 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 3 | 29 | 719 |
+| 14: for-of | 751 | 10 | 22 | 719 |
 | 15: Classes | 8,520 | 67 | 195 | 8,258 |
 | 17-20: Map/Set/Symbol/Promise | 1,614 | 360 | 280 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 190 | Array.prototype.unshift ToObject TypeError on non-objects; Object.defineProperties atomic swap (all descriptors validated before mutation); Object.defineProperty descriptor validation for non-configurable properties (sameValue checks); for-in with let/const declarations; inline cache stale entry handling | +101 (Phase 3: +37, Phase 5: +38, Phase 6: +16, Phase 14: +7) |
 | 189 | Array iteration error propagation (throw in callback now propagates correctly); Array.prototype.toString uses join method per ES5 §15.4.4.2; Function.prototype.bind thisArg TypeError for non-callable; String.prototype.split fix for limit argument handling | +35 (Phase 3: +7, Phase 5: +14, Phase 6: +14) |
 | 188 | defineProperty §8.12.9 SameValue check for non-configurable properties — comparator now properly rejects accessor descriptors that differ via SameValue when property is non-configurable; RegExp.prototype.source returns original pattern text (not stringified form); RegExp constructor called with regex argument copies pattern+flags; RegExp.prototype.exec updates lastIndex only when global or sticky flag is set per ES5 §15.10.6.2; RegExp.prototype.flags getter alphabetical order fix (gimsuy) | +41 (Phase 3: +9, Phase 5: +9, Phase 8: +23) |
 | 187 | Symbol.prototype.toString returning "Symbol(description)" format per ES6 §19.4.3.2; Symbol.prototype[Symbol.toPrimitive] returning the symbol itself per ES6 §19.4.3.5; RangeError for Array constructor with invalid length (NaN, ±Infinity, negative, non-integer, >2^32-1); try/catch/finally with break/continue inside — finally now runs and value propagated correctly; comma operator in for init/update already working | +20 (Phase 3: +6, Phase 4: +6, Phase 5: +3, Phase 0-1: +1) |
