@@ -2053,7 +2053,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     HString*[256] keys_arr;
     uint keys_count = 0;
     for (uint i = 0; i < props.prop_count && keys_count < 256; i++) {
-        if (props.prop_key_at(i) != null) {
+        if (props.prop_key_at(i) != null && props.get_prop_flags(i).enumerable) {
             keys_arr[keys_count] = (HString*)props.prop_key_at(i);
             keys_count++;
         }

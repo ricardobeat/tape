@@ -559,21 +559,17 @@ fn bool array_to_length(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out
     return true;
 }
 
-/// ES5 §15.4.4.x: Read length, validate as valid array length (RangeError on invalid).
-/// Used by indexOf/lastIndexOf which DO require RangeError on invalid lengths.
-/// Returns true on success (out_len set). Returns false and sets
-/// ctx.should_throw + RangeError if the length is invalid (NaN, Infinity, negative),
-/// or if the length getter threw.
+/// ES5 §15.4.4.x: Read length, convert via ToLength for indexOf/lastIndexOf.
+/// ES2022 ToLength: NaN → 0, -0 → 0, negative → 0, Infinity → 2^53-1.
+/// indexOf/lastIndexOf use ToLength, not RangeError validation.
 fn bool array_to_length_checked(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out_len) {
     double raw = array_get_length_raw(obj, heap, ctx);
     // Check if the length getter threw an error
     if (ctx.should_throw) return false;
-    // ES5 §15.4.4.x: validate via SameValue — NaN, Infinity, negative, -0 are invalid
-    if (!is_valid_array_length(raw)) {
-        arr_throw_range_error(ctx, "Invalid array length");
-        return false;
-    }
-    *out_len = to_uint32(raw);
+    // ES2022: use ToLength conversion, no RangeError for -0 or NaN
+    ulong len = arr_to_length(raw);
+    if (len > 0xFFFFFFFF) len = 0xFFFFFFFF;
+    *out_len = (uint)len;
     return true;
 }
 
