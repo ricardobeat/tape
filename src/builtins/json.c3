@@ -608,9 +608,95 @@ struct JsonSerializeCtx {
     bool has_replacer_array;
     /// Set when a call_fn error occurred (toJSON/replacer threw)
     bool error;
+    /// Stack of object pointers for circular reference detection
+    HObject*[128] visited_stack;
+    uint visited_count;
 }
 
 const uint JSON_MAX_DEPTH = 128;
+
+/// Helper: throw a TypeError from the serialization context.
+fn void json_throw_type_error(JsonSerializeCtx* jctx, char[] msg) {
+    HObject*? err_raw = jctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = jctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(jctx.heap, msg);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(jctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        jctx.heap.has_error = true;
+        jctx.heap.error_value.set_object(err);
+    }
+    jctx.error = true;
+}
+
+/// Check if object is already on the serialization stack (circular reference detection).
+fn bool json_stack_has(JsonSerializeCtx* jctx, HObject* obj) {
+    for (uint i = 0; i < jctx.visited_count; i++) {
+        if (jctx.visited_stack[i] == obj) return true;
+    }
+    return false;
+}
+
+/// Push an object onto the serialization stack.
+fn void json_stack_push(JsonSerializeCtx* jctx, HObject* obj) {
+    if (jctx.visited_count < JSON_MAX_DEPTH) {
+        jctx.visited_stack[jctx.visited_count++] = obj;
+    }
+}
+
+/// Pop the last object from the serialization stack.
+fn void json_stack_pop(JsonSerializeCtx* jctx) {
+    if (jctx.visited_count > 0) jctx.visited_count--;
+}
+
+/// ES5 §9.8.1 ToString for Number values — produces the shortest string that
+/// uniquely identifies the IEEE 754 double.  Writes into `buf` and returns the
+/// number of characters written.
+fn usz json_number_to_string(double d, char* buf, usz buf_size) {
+    // NaN → "NaN"
+    if (math::is_nan(d)) {
+        libc::memcpy(buf, "NaN", 3);
+        return 3;
+    }
+    // +Infinity → "Infinity"
+    if (math::is_inf(d) && d > 0.0) {
+        libc::memcpy(buf, "Infinity", 8);
+        return 8;
+    }
+    // -Infinity → "-Infinity"
+    if (math::is_inf(d) && d < 0.0) {
+        libc::memcpy(buf, "-Infinity", 9);
+        return 9;
+    }
+    // +0 / -0 → "0"  (ES5 §9.8.1 step 2)
+    if (d == 0.0) {
+        buf[0] = '0';
+        return 1;
+    }
+    // Try decreasing precisions to find the shortest round-trip representation.
+    // Start at 17 (enough for IEEE 754 double) and decrease.
+    for (int prec = 17; prec >= 1; prec--) {
+        char[8] fmt;
+        fmt[0] = '%'; fmt[1] = '.'; fmt[2] = (char)('0' + prec); fmt[3] = 'g'; fmt[4] = 0;
+        int len = libc::snprintf(buf, buf_size, (ZString)(char*)&fmt, d);
+        if (len <= 0 || (usz)len >= buf_size) continue;
+        // Round-trip check: does parsing the string give the same double?
+        char saved = buf[len];
+        buf[len] = 0;
+        double roundtrip = libc::strtod(buf, null);
+        buf[len] = saved;
+        if (roundtrip == d) {
+            return (usz)len;
+        }
+    }
+    // Fallback: full precision
+    int len = libc::snprintf(buf, buf_size, "%.17g", d);
+    return (len > 0) ? (usz)len : 0;
+}
 
 /// ES5 §15.12.3 step 5: Type unwrapping via ToString/ToNumber/ToBoolean.
 /// For String/Number wrapper objects, calls toString()/valueOf() (per spec)
@@ -776,6 +862,17 @@ fn bool json_is_array(HObject* obj) {
 fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     if (jctx.error) return -1;
     if (jctx.offset >= jctx.buf_size) return -1;
+
+    // ES5 §15.12.3 step 1: If stack contains value, throw TypeError
+    if (json_stack_has(jctx, obj)) {
+        json_throw_type_error(jctx, "Converting circular structure to JSON");
+        return -1;
+    }
+    json_stack_push(jctx, obj);
+    defer json_stack_pop(jctx);
+
+    jctx.indent_level++;
+
     jctx.buf[jctx.offset++] = '{';
 
     // Create holder TVal for replacer calls
@@ -812,12 +909,30 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         for (uint p = 0; p < jctx.prop_key_count; p++) {
             HString* key_hstr = jctx.prop_keys[p];
 
-            // Get value from object
-            TVal? val_opt = obj.get_prop_proto(key_hstr);
+            // Get value from object — must handle accessor properties (getters)
             TVal val;
-            if (try v = val_opt) {
-                val = v;
-            } else {
+            bool found_prop = false;
+            for (uint pi = 0; pi < obj.prop_count; pi++) {
+                if (obj.prop_key_at(pi) == key_hstr) {
+                    if (obj.get_prop_flags(pi).is_accessor) {
+                        // Invoke the getter to get the property value
+                        TVal getter_fn = hobject::hobject_access_getter(obj.prop_values()[pi]);
+                        if (getter_fn.is_undefined() || getter_fn.is_null()) {
+                            val.set_undefined();
+                        } else if (jctx.heap.call_fn != null && jctx.vm != null) {
+                            val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder);
+                            if (jctx.heap.has_error) { jctx.error = true; return -1; }
+                        } else {
+                            val.set_undefined();
+                        }
+                    } else {
+                        val = obj.prop_values()[pi];
+                    }
+                    found_prop = true;
+                    break;
+                }
+            }
+            if (!found_prop) {
                 val.set_undefined();
             }
 
@@ -837,7 +952,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             if (jctx.gap_len > 0) {
                 if (jctx.offset >= jctx.buf_size) return -1;
                 jctx.buf[jctx.offset++] = '\n';
-                for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
                     jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
                 }
             }
@@ -927,7 +1042,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             if (jctx.gap_len > 0) {
                 if (jctx.offset >= jctx.buf_size) return -1;
                 jctx.buf[jctx.offset++] = '\n';
-                for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
                     jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
                 }
             }
@@ -960,6 +1075,7 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         }
     }
 
+    jctx.indent_level--;
     if (jctx.gap_len > 0) {
         if (jctx.offset >= jctx.buf_size) return -1;
         jctx.buf[jctx.offset++] = '\n';
@@ -977,6 +1093,17 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
 fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     if (jctx.error) return -1;
     if (jctx.offset >= jctx.buf_size) return -1;
+
+    // ES5 §15.12.3 step 1: If stack contains value, throw TypeError
+    if (json_stack_has(jctx, arr)) {
+        json_throw_type_error(jctx, "Converting circular structure to JSON");
+        return -1;
+    }
+    json_stack_push(jctx, arr);
+    defer json_stack_pop(jctx);
+
+    jctx.indent_level++;
+
     jctx.buf[jctx.offset++] = '[';
 
     // Create holder TVal for replacer calls
@@ -1047,7 +1174,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         if (jctx.gap_len > 0) {
             if (jctx.offset >= jctx.buf_size) return -1;
             jctx.buf[jctx.offset++] = '\n';
-            for (usz g = 0; g < (jctx.indent_level + 1) * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+            for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
                 jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
             }
         }
@@ -1089,6 +1216,7 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         }
     }
 
+    jctx.indent_level--;
     if (jctx.gap_len > 0) {
         if (jctx.offset >= jctx.buf_size) return -1;
         jctx.buf[jctx.offset++] = '\n';
@@ -1133,12 +1261,11 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
                 jctx.offset += 4;
                 return 0;
             }
-            char[64] buf;
-            int len = libc::snprintf(&buf, 64, "%.17g", d);
-            if (len < 0 || len >= 64) return -1;
-            if (jctx.offset + (usz)len > jctx.buf_size) return -1;
-            for (int i = 0; i < len; i++) {
-                jctx.buf[jctx.offset++] = buf[i];
+            char[64] num_buf;
+            usz num_len = json_number_to_string(d, &num_buf, 64);
+            if (jctx.offset + num_len > jctx.buf_size) return -1;
+            for (usz i = 0; i < num_len; i++) {
+                jctx.buf[jctx.offset++] = num_buf[i];
             }
             return 0;
         }
@@ -1289,7 +1416,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         str_key = ctx.heap.int_to_hstring(elem.get_fastint());
                     } else if (elem.is_number()) {
                         char[64] num_buf;
-                        int num_len = libc::snprintf(&num_buf, 64, "%.17g", elem.get_number());
+                        usz num_len = json_number_to_string(elem.get_number(), &num_buf, 64);
                         str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
                     } else if (elem.is_object() && elem.get_heapptr() != null) {
                         HObject* eobj = (HObject*)elem.get_heapptr();
@@ -1337,8 +1464,8 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                             str_key = (HString*)res.get_heapptr();
                                         } else if (res.is_fastint() || res.is_number()) {
                                             char[64] nb;
-                                            int nl = libc::snprintf(&nb, 64, "%.17g",
-                                                res.is_fastint() ? (double)res.get_fastint() : res.get_number());
+                                            usz nl = json_number_to_string(
+                                                res.is_fastint() ? (double)res.get_fastint() : res.get_number(), &nb, 64);
                                             str_key = builtin_intern_string(ctx.heap, nb[:nl]);
                                         }
                                     }
@@ -1351,7 +1478,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                     str_key = ctx.heap.int_to_hstring(pv.get_fastint());
                                 } else if (pv.is_number()) {
                                     char[64] num_buf;
-                                    int num_len = libc::snprintf(&num_buf, 64, "%.17g", pv.get_number());
+                                    usz num_len = json_number_to_string(pv.get_number(), &num_buf, 64);
                                     str_key = builtin_intern_string(ctx.heap, num_buf[:num_len]);
                                 }
                             }
@@ -1409,7 +1536,13 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         }
                         if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                             TVal res = ctx.heap.call_fn(ctx.vm, vo_fn, null, 0, space_arg);
-                            if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
+                            if (ctx.heap.has_error) {
+                                ctx.throw_value = ctx.heap.error_value;
+                                ctx.heap.has_error = false;
+                                ctx.should_throw = true;
+                                if (prop_keys != null) libc::free(prop_keys);
+                                return;
+                            }
                             else { space_arg = res; }
                         }
                     }
@@ -1431,7 +1564,13 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         }
                         if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                             TVal res = ctx.heap.call_fn(ctx.vm, ts_fn, null, 0, space_arg);
-                            if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
+                            if (ctx.heap.has_error) {
+                                ctx.throw_value = ctx.heap.error_value;
+                                ctx.heap.has_error = false;
+                                ctx.should_throw = true;
+                                if (prop_keys != null) libc::free(prop_keys);
+                                return;
+                            }
                             else { space_arg = res; }
                         }
                     }
@@ -1444,11 +1583,16 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         }
 
         if (space_arg.is_fastint()) {
-            space_num = (uint)space_arg.get_fastint();
-            if (space_num > 10) space_num = 10;
+            // ES5 §15.12.3 step 6: min(10, ToInteger(space)); if < 1, gap is empty
+            long si = space_arg.get_fastint();
+            if (si < 0) si = 0;
+            if (si > 10) si = 10;
+            space_num = (uint)si;
         } else if (space_arg.is_number()) {
-            space_num = (uint)(long)space_arg.get_number();
-            if (space_num > 10) space_num = 10;
+            long si = (long)space_arg.get_number();
+            if (si < 0) si = 0;
+            if (si > 10) si = 10;
+            space_num = (uint)si;
         } else if (space_arg.is_string()) {
             HString* s = (HString*)space_arg.get_heapptr();
             char* data = s.get_cstr();

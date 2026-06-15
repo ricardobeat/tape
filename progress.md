@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 184 (Date.parse/toISOString, Number edge cases, sort throw)
+**Last Updated:** Session 185 (Date constructor/setter/toJSON/UTC fixes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 184, 2026-06-15)
+## Summary (after Session 185, 2026-06-15)
 
 | Metric | Value |
 |---|---|
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 185 | Date constructor single-arg ToNumber coercion (valueOf throw propagation); Date constructor locale format fallback for toString/toUTCString strings; Date.prototype setter coercion order — ToNumber on all args before NaN check (15 setter methods); Date.prototype thisTimeValue TypeError for non-Date this (27 methods); Date.prototype.toJSON Invoke(O, "toISOString") per ES5 §15.9.5.44; Date.UTC NaN propagation fix; TimeClip -0 → +0 fix | TBD (Phase 5: Date constructor/setter/UTC, Phase 6: Date.prototype methods) |
 | 184 | Date.parse ISO 8601 string parsing; Date.prototype.toISOString with RangeError for NaN; Number.prototype.toFixed/toExponential/toPrecision throw RangeError for out-of-range args; toExponential no-arg fix; toPrecision trailing zeros fix; negative zero normalization; sort comparator throw propagation verified working | +10 (Phase 5: +4, Phase 6: +4, Phase 8: +2) |
 | 183 | Error.prototype.stack property set on construction ("name: message" format); Map.prototype.forEach callback invocation with (value, key, map) per ES6 §23.1.3.5; Set.prototype.forEach callback invocation with (value, value, set) per ES6 §23.2.3.6. Verified Object.seal/freeze/isSealed/isFrozen/GOPD for dense arrays already correct. | +70 (Phase 17-20: +74, Phase 3/5: -4 regressed) |
 | 182 | For-in enumeration order fix: integer indices ascending first, then string keys, then symbol keys (ES2020 §13.7.5.15). Delete on non-configurable properties now throws TypeError in strict mode (ES5 §11.4.1). Stack overflow now throws RangeError "Maximum call stack size exceeded" at all 7 check sites. Verified GOPD and isSealed/isFrozen already correct for dense arrays. | +5 (Phase 7: +5) |

@@ -1807,8 +1807,22 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                     for (uint ai = 0; ai < nargs; ai++) {
                         args_obj.set_array_idx(ai, frame[ai]);
                     }
-                    // No own .length property — handled via exotic_arguments fast path in GETPROP
-                    args_obj.prototype = null;
+                    // ES5 §10.6: [[Prototype]] is Object.prototype
+                    args_obj.prototype = vm.heap.object_proto;
+                    // ES5 §10.6: define 'callee' property (writable, non-enumerable, configurable)
+                    HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                    if (callee_key != null) {
+                        TVal callee_tv;
+                        callee_tv.set_object(hobj);
+                        args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
+                    }
+                    // ES5 §10.6: define 'length' property (writable, non-enumerable, configurable)
+                    HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                    if (length_key != null) {
+                        TVal length_tv;
+                        length_tv.set_fastint((long)nargs);
+                        args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+                    }
                     // Declare 'arguments' in the function's var_env
                     HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                     if (args_name != null) {
@@ -3265,9 +3279,26 @@ fn TVal? Vm.run(Vm* vm) {
 
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    // ARGUMENTS exotic: .length returns array_used directly (no own property)
-                    if (hobj.get_class() == hobject::ObjClass.ARGUMENTS && key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                        ra.set_fastint((long)hobj.array_used);
+                    // ES5 strict mode: arguments.callee throws TypeError
+                    if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
+                        && (act.flags & ACT_FLAG_STRICT) != 0
+                        && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            HString* emsg = intern_string(vm, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode");
+                            if (emsg != null) {
+                                TVal emsg_val; emsg_val.set_string(emsg);
+                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val; err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
                         break;
                     }
                     // STRING exotic: indexed access reads characters lazily from the primitive value.
@@ -3568,9 +3599,26 @@ fn TVal? Vm.run(Vm* vm) {
 
                     void* key = (void*)key_hstr;
                     if (key != null) {
-                        // ARGUMENTS exotic: .length fast path
-                        if (hobj.get_class() == hobject::ObjClass.ARGUMENTS && key == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                            ra.set_fastint((long)hobj.array_used);
+                        // ES5 strict mode: arguments.callee throws TypeError
+                        if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
+                            && (act.flags & ACT_FLAG_STRICT) != 0
+                            && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* emsg = intern_string(vm, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode");
+                                if (emsg != null) {
+                                    TVal emsg_val; emsg_val.set_string(emsg);
+                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val; err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
                             break;
                         }
                         // STRING exotic: string-key indexed access (array-index string keys like "0")
@@ -4739,8 +4787,22 @@ fn TVal? Vm.run(Vm* vm) {
                             for (uint ai = 0; ai < nargs; ai++) {
                                 args_obj.set_array_idx(ai, regs_base[ai]);
                             }
-                            // No own .length property — handled via exotic_arguments fast path in GETPROP
-                            args_obj.prototype = null;
+                            // ES5 §10.6: [[Prototype]] is Object.prototype
+                            args_obj.prototype = vm.heap.object_proto;
+                            // ES5 §10.6: define 'callee' property (writable, non-enumerable, configurable)
+                            HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                            if (callee_key != null) {
+                                TVal callee_tv;
+                                callee_tv.set_object(hobj_fast);
+                                args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
+                            }
+                            // ES5 §10.6: define 'length' property (writable, non-enumerable, configurable)
+                            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                            if (length_key != null) {
+                                TVal length_tv;
+                                length_tv.set_fastint((long)nargs);
+                                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+                            }
                             // Declare 'arguments' in the function's var_env
                             HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                             if (args_name != null) {

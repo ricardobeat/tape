@@ -39,7 +39,7 @@ Tasks are grouped by area but are otherwise independent.
 ## Conformance: Built-in Prototype Methods (Plan 023)
 
 - [ ] Implement `String.prototype.normalize(form)` — NFC/NFD/NFKC/NFKD normalization per ES6 §21.1.3.12 (~30 test262 tests)
-- [ ] Fix `Array.prototype.find` / `findIndex` to accept a `thisArg` second argument and call callback correctly per ES6 §22.1.3.8 (`src/builtins/array.c3`)
+- [x] Fix `Array.prototype.find` / `findIndex` to accept a `thisArg` second argument and call callback correctly per ES6 §22.1.3.8 (`src/builtins/array.c3`)
 - [x] Implement `Array.prototype.flat` and `Array.prototype.flatMap` per ES2019 (~20 tests, phase 6)
 - [x] Implement `Array.prototype.at` per ES2022 (~10 tests)
 - [x] Implement `String.prototype.at` per ES2022 (~10 tests)
@@ -56,13 +56,13 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Date
 
-- [ ] Implement `Date` constructor string parsing for ISO 8601 (`YYYY-MM-DDTHH:mm:ss.sssZ`) (plan 026 #4, `src/builtins/date.c3`)
-- [ ] Implement `Date.prototype.toLocaleDateString` / `toLocaleTimeString` / `toLocaleString` stubs returning formatted strings
-- [ ] Implement `Date.prototype.toUTCString` per ES5 §15.9.5.42 (RFC 7231 format)
+- [x] Implement `Date` constructor string parsing for ISO 8601 (`YYYY-MM-DDTHH:mm:ss.sssZ`) (plan 026 #4, `src/builtins/date.c3`)
+- [x] Implement `Date.prototype.toLocaleDateString` / `toLocaleTimeString` / `toLocaleString` stubs returning formatted strings
+- [x] Implement `Date.prototype.toUTCString` per ES5 §15.9.5.42 (RFC 7231 format)
 - [x] Fix `Date.parse` to accept ISO 8601 strings and return correct milliseconds timestamp
-- [ ] Fix `new Date(year, month, day, ...)` with month overflow/underflow normalization per ES5 §15.9.1.11
-- [ ] Implement `Date.prototype.setUTCFullYear` / `setUTCMonth` / `setUTCDate` / `setUTCHours` etc.
-- [ ] Fix `Date.prototype.getTimezoneOffset` to return correct local-UTC offset in minutes
+- [x] Fix `new Date(year, month, day, ...)` with month overflow/underflow normalization per ES5 §15.9.1.11
+- [x] Implement `Date.prototype.setUTCFullYear` / `setUTCMonth` / `setUTCDate` / `setUTCHours` etc.
+- [x] Fix `Date.prototype.getTimezoneOffset` to return correct local-UTC offset in minutes
 
 ---
 
@@ -71,7 +71,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `JSON.parse` to set `Array.prototype` on parsed arrays so `.push()` works (plan 026 #1, `src/builtins/json.c3`)
 - [ ] Fix `JSON.stringify` `replacer` array: only include listed keys in output per ES5 §15.12.3
 - [ ] Fix `JSON.stringify` `space` argument: honor numeric space > 10 clamped to 10 per ES5 §15.12.3
-- [ ] Fix `JSON.stringify` with `toJSON()` method on values: call it before serializing
+- [x] Fix `JSON.stringify` with `toJSON()` method on values: call it before serializing
 - [x] Fix `JSON.parse` `reviver` function not being called on the root value (only on children)
 - [ ] Fix `JSON.stringify` to throw `TypeError` on circular references instead of crashing
 
