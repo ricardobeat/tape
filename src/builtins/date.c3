@@ -162,10 +162,11 @@ fn usz date_format_iso(double time_val, char* buf, usz buf_size) {
 
 /// Parse an ISO 8601 date string into milliseconds since epoch.
 /// Supported formats: "YYYY-MM-DDTHH:mm:ss.sssZ", "YYYY-MM-DDTHH:mm:ssZ",
-/// "YYYY-MM-DD". Returns NaN on parse failure.
+/// "YYYY-MM-DDTHH:mm:ss.sss", "YYYY-MM-DDTHH:mm:ss", "YYYY-MM-DDTHH:mm",
+/// "YYYY-MM-DD", "YYYY-MM", "YYYY". Returns NaN on parse failure.
 fn double date_parse_iso_str(char* str, usz len) {
-    // Minimum: "YYYY-MM-DD" = 10 chars
-    if (len < 10) return double::nan;
+    // Minimum: "YYYY" = 4 chars
+    if (len < 4) return double::nan;
 
     // Parse year
     long year = 0;
@@ -183,31 +184,32 @@ fn double date_parse_iso_str(char* str, usz len) {
     // Handle leading sign
     if (has_sign && str[0] == '-') year = -year;
 
-    // Expect '-'
-    if (pos >= len || str[pos] != '-') return double::nan;
-    pos++;
+    long month = 1;  // default
+    long day = 1;    // default
 
-    // Parse month (2 digits)
-    long month = 0;
-    usz month_start = pos;
-    while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
-        month = month * 10 + (long)(str[pos] - '0');
+    // Optional: '-' + month (2 digits)
+    if (pos < len && str[pos] == '-') {
         pos++;
-    }
-    if (pos - month_start != 2) return double::nan;
+        month = 0;
+        usz month_start = pos;
+        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+            month = month * 10 + (long)(str[pos] - '0');
+            pos++;
+        }
+        if (pos - month_start != 2) return double::nan;
 
-    // Expect '-'
-    if (pos >= len || str[pos] != '-') return double::nan;
-    pos++;
-
-    // Parse day (2 digits)
-    long day = 0;
-    usz day_start = pos;
-    while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
-        day = day * 10 + (long)(str[pos] - '0');
-        pos++;
+        // Optional: '-' + day (2 digits)
+        if (pos < len && str[pos] == '-') {
+            pos++;
+            day = 0;
+            usz day_start = pos;
+            while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+                day = day * 10 + (long)(str[pos] - '0');
+                pos++;
+            }
+            if (pos - day_start != 2) return double::nan;
+        }
     }
-    if (pos - day_start != 2) return double::nan;
 
     long hour = 0;
     long minute = 0;
@@ -226,43 +228,46 @@ fn double date_parse_iso_str(char* str, usz len) {
         }
         if (pos - hour_start != 2) return double::nan;
 
-        if (pos >= len || str[pos] != ':') return double::nan;
-        pos++;
-
-        // Parse minute (2 digits)
-        usz min_start = pos;
-        while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
-            minute = minute * 10 + (long)(str[pos] - '0');
-            pos++;
-        }
-        if (pos - min_start != 2) return double::nan;
-
+        // Optional ':' + minute
         if (pos < len && str[pos] == ':') {
             pos++;
 
-            // Parse second (2 digits)
-            usz sec_start = pos;
+            // Parse minute (2 digits)
+            usz min_start = pos;
             while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
-                second = second * 10 + (long)(str[pos] - '0');
+                minute = minute * 10 + (long)(str[pos] - '0');
                 pos++;
             }
-            if (pos - sec_start != 2) return double::nan;
+            if (pos - min_start != 2) return double::nan;
 
-            // Optional fractional seconds
-            if (pos < len && str[pos] == '.') {
+            // Optional ':' + second
+            if (pos < len && str[pos] == ':') {
                 pos++;
-                long frac = 0;
-                uint frac_digits = 0;
-                while (pos < len && str[pos] >= '0' && str[pos] <= '9' && frac_digits < 3) {
-                    frac = frac * 10 + (long)(str[pos] - '0');
-                    frac_digits++;
+
+                // Parse second (2 digits)
+                usz sec_start = pos;
+                while (pos < len && str[pos] >= '0' && str[pos] <= '9') {
+                    second = second * 10 + (long)(str[pos] - '0');
                     pos++;
                 }
-                // Consume remaining digits beyond 3
-                while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
-                // Normalize to milliseconds
-                while (frac_digits < 3) { frac *= 10; frac_digits++; }
-                millis = frac;
+                if (pos - sec_start != 2) return double::nan;
+
+                // Optional fractional seconds
+                if (pos < len && str[pos] == '.') {
+                    pos++;
+                    long frac = 0;
+                    uint frac_digits = 0;
+                    while (pos < len && str[pos] >= '0' && str[pos] <= '9' && frac_digits < 3) {
+                        frac = frac * 10 + (long)(str[pos] - '0');
+                        frac_digits++;
+                        pos++;
+                    }
+                    // Consume remaining digits beyond 3
+                    while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
+                    // Normalize to milliseconds
+                    while (frac_digits < 3) { frac *= 10; frac_digits++; }
+                    millis = frac;
+                }
             }
         }
     }
@@ -272,7 +277,7 @@ fn double date_parse_iso_str(char* str, usz len) {
         // UTC timezone — use date_utc_to_ms
         pos++;
         return date_utc_to_ms(year, month - 1, day, hour, minute, second, millis);
-    } else if (pos + 5 < len && (str[pos] == '+' || str[pos] == '-')) {
+    } else if (pos + 5 <= len && (str[pos] == '+' || str[pos] == '-')) {
         // Parse timezone offset: +HH:MM or -HH:MM
         bool neg = (str[pos] == '-');
         pos++;
@@ -294,8 +299,8 @@ fn double date_parse_iso_str(char* str, usz len) {
         return local_ms - (double)offset_ms;
     }
 
-    // Use date_local_to_ms for local time
-    return date_local_to_ms(year, month - 1, day, hour, minute, second, millis);
+    // No timezone specified: treat as UTC (simpler for now; local tz can be added later)
+    return date_utc_to_ms(year, month - 1, day, hour, minute, second, millis);
 }
 
 /// Date() as function — returns current date-time string (ES5 §15.9.2.1).
@@ -409,7 +414,7 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
     ctx.result.set_number(t);
 }
 
-/// Date.parse(string) — ES5 §15.9.4.2 (simplified)
+/// Date.parse(string) — ES5 §15.9.4.2
 fn void builtin_date_parse(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
         ctx.result.set_number(double::nan);
@@ -432,10 +437,11 @@ fn void builtin_date_parse(BuiltinContext* ctx) {
         ctx.result.set_number(num_val);
         return;
     }
-    // For non-numeric strings, try parsing as date string via libc
-    // For now, return NaN (Date.parse is notoriously complex)
-    // Full implementation would use a proper date parser
-    ctx.result.set_number(double::nan);
+    // Try parsing as ISO 8601 date string
+    char* str = s.get_cstr();
+    usz slen = s.blen;
+    double date_val = date_parse_iso_str(str, slen);
+    ctx.result.set_number(date_val);
 }
 
 /// Date.prototype.toString() — ES5 §15.9.5.2
@@ -722,11 +728,11 @@ fn void date_break_time_utc(double time_val, long* year, long* month, long* day,
 fn double date_utc_to_ms(long year, long month, long day,
                          long hour, long minute, long second, long ms) {
     long y = year;
-    long m = month + 1;  // JS months are 0-based, calculation uses 1-based
-    if (m < 3) { y--; m += 12; }
+    long m = month;  // JS months are 0-based
+    if (m < 2) { y--; m += 12; }
     long era = (y >= 0 ? y : y - 399) / 400;
     long yoe = y - era * 400;
-    long doy = (153 * (m - 3) + 2) / 5 + day - 1;
+    long doy = (153 * (m - 2) + 2) / 5 + day - 1;
     long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     long epoch_day = era * 146097 + doe - 719468;
     double t = (double)epoch_day * 86400000.0;
@@ -1148,32 +1154,84 @@ fn void date_pad4(char* buf, long val) {
     buf[3] = (char)(val % 10 + 48);
 }
 
-/// Date.prototype.toISOString() — ES5 §15.9.5.41
+/// Date.prototype.toISOString() — ES5 §15.9.5.43
+/// Returns a string in ISO 8601 format: "YYYY-MM-DDTHH:mm:ss.sssZ".
+/// Throws RangeError if the date value is NaN.
 fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     double tv = date_get_time_value(&this_val);
-    if (math::is_nan(tv)) { ctx.result.set_string(builtin_intern_string(ctx.heap, "Invalid Date")); return; }
+    if (math::is_nan(tv)) {
+        // Throw RangeError per ES5 §15.9.5.43
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err_obj = err_raw;
+        err_obj.prototype = ctx.heap.range_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Invalid Date");
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err_obj.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err_obj);
+        return;
+    }
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
     long ms = (long)tv % 1000; if (ms < 0) ms += 1000;
-    char[24] buf;
-    date_pad4(&buf[0], year);
-    buf[4] = '-';
-    date_pad2(&buf[5], month + 1);
-    buf[7] = '-';
-    date_pad2(&buf[8], day);
-    buf[10] = 'T';
-    date_pad2(&buf[11], hour);
-    buf[13] = ':';
-    date_pad2(&buf[14], min);
-    buf[16] = ':';
-    date_pad2(&buf[17], sec);
-    buf[19] = '.';
-    buf[20] = (char)(ms / 100 + 48);
-    buf[21] = (char)(ms / 10 % 10 + 48);
-    buf[22] = (char)(ms % 10 + 48);
-    buf[23] = 'Z';
-    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:24]));
+    // Format: "YYYY-MM-DDTHH:mm:ss.sssZ" (24 bytes)
+    // For negative years (before 1970), use "-YYYYY-MM-DDTHH:mm:ss.sssZ" (25 bytes with sign)
+    if (year < 0) {
+        // 6-digit year with minus sign: -YYYYYY-MM-DDTHH:mm:ss.sssZ (27 bytes)
+        char[27] buf;
+        buf[0] = '-';
+        long neg_year = -year;
+        buf[1] = (char)(neg_year / 100000 % 10 + 48);
+        buf[2] = (char)(neg_year / 10000 % 10 + 48);
+        buf[3] = (char)(neg_year / 1000 % 10 + 48);
+        buf[4] = (char)(neg_year / 100 % 10 + 48);
+        buf[5] = (char)(neg_year / 10 % 10 + 48);
+        buf[6] = (char)(neg_year % 10 + 48);
+        buf[7] = '-';
+        date_pad2(&buf[8], month + 1);
+        buf[10] = '-';
+        date_pad2(&buf[11], day);
+        buf[13] = 'T';
+        date_pad2(&buf[14], hour);
+        buf[16] = ':';
+        date_pad2(&buf[17], min);
+        buf[19] = ':';
+        date_pad2(&buf[20], sec);
+        buf[22] = '.';
+        buf[23] = (char)(ms / 100 + 48);
+        buf[24] = (char)(ms / 10 % 10 + 48);
+        buf[25] = (char)(ms % 10 + 48);
+        buf[26] = 'Z';
+        ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:27]));
+    } else {
+        char[24] buf;
+        date_pad4(&buf[0], year);
+        buf[4] = '-';
+        date_pad2(&buf[5], month + 1);
+        buf[7] = '-';
+        date_pad2(&buf[8], day);
+        buf[10] = 'T';
+        date_pad2(&buf[11], hour);
+        buf[13] = ':';
+        date_pad2(&buf[14], min);
+        buf[16] = ':';
+        date_pad2(&buf[17], sec);
+        buf[19] = '.';
+        buf[20] = (char)(ms / 100 + 48);
+        buf[21] = (char)(ms / 10 % 10 + 48);
+        buf[22] = (char)(ms % 10 + 48);
+        buf[23] = 'Z';
+        ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:24]));
+    }
 }
 
 /// Date.prototype.toUTCString() — ES5 §15.9.5.44

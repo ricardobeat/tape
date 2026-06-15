@@ -989,6 +989,7 @@ fn void builtin_array_proto_sort(BuiltinContext* ctx) {
                     ctx.should_throw = true;
                     ctx.throw_value = ctx.heap.error_value;
                     ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
                     return;
                 }
                 TVal num;

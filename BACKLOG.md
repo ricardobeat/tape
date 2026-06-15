@@ -40,7 +40,7 @@ Tasks are grouped by area but are otherwise independent.
 
 - [ ] Implement `String.prototype.normalize(form)` — NFC/NFD/NFKC/NFKD normalization per ES6 §21.1.3.12 (~30 test262 tests)
 - [ ] Fix `Array.prototype.find` / `findIndex` to accept a `thisArg` second argument and call callback correctly per ES6 §22.1.3.8 (`src/builtins/array.c3`)
-- [ ] Implement `Array.prototype.flat` and `Array.prototype.flatMap` per ES2019 (~20 tests, phase 6)
+- [x] Implement `Array.prototype.flat` and `Array.prototype.flatMap` per ES2019 (~20 tests, phase 6)
 - [x] Implement `Array.prototype.at` per ES2022 (~10 tests)
 - [x] Implement `String.prototype.at` per ES2022 (~10 tests)
 - [x] Implement `Array.prototype.findLast` / `findLastIndex` per ES2023 (~10 tests)
@@ -49,7 +49,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `Number.prototype.toPrecision` edge cases (precision=undefined falls back to toString, range checks) per ES5 §15.7.4.7
 - [x] Implement `Error.prototype.toString` to return `name + ": " + message` per ES5 §15.11.4.4 (currently uses default Object.toString)
 - [ ] Fix sort comparator throws being swallowed in `Array.prototype.sort` (plan 025, `src/builtins/array.c3`)
-- [ ] Fix JSON replacer throws being swallowed in `JSON.stringify` (plan 025, `src/builtins/json.c3`)
+- [x] Fix JSON replacer throws being swallowed in `JSON.stringify` (plan 025, `src/builtins/json.c3`)
 - [x] Fix `String.prototype.lastIndexOf` unsigned underflow: add early-return `if search_len > len` guard (plan 026 #7, `src/builtins/string.c3:1821`)
 
 ---
@@ -68,7 +68,7 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: JSON
 
-- [ ] Fix `JSON.parse` to set `Array.prototype` on parsed arrays so `.push()` works (plan 026 #1, `src/builtins/json.c3`)
+- [x] Fix `JSON.parse` to set `Array.prototype` on parsed arrays so `.push()` works (plan 026 #1, `src/builtins/json.c3`)
 - [ ] Fix `JSON.stringify` `replacer` array: only include listed keys in output per ES5 §15.12.3
 - [ ] Fix `JSON.stringify` `space` argument: honor numeric space > 10 clamped to 10 per ES5 §15.12.3
 - [ ] Fix `JSON.stringify` with `toJSON()` method on values: call it before serializing
