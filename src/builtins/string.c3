@@ -695,6 +695,34 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
+    // ── ES5 §15.5.4.14 step 1: convert limit FIRST via ToUint32 ────
+    uint limit = 0xFFFFFFFF;  // 2^32 - 1
+    if (ctx.argc > 1) {
+        TVal limit_arg = ctx.regs[ctx.base_reg + 1];
+        // ToUint32: convert via ToNumber first (calls valueOf), then to uint32
+        double limit_num = builtin_to_number_vm(ctx, &limit_arg);
+        // Apply ToUint32: NaN→0, ±Infinity→0, then floor(mod(2^32))
+        if (limit_num != limit_num) {  // NaN
+            limit = 0;
+        } else if (limit_num == 0.0 || limit_num == double::inf || limit_num == -double::inf) {
+            limit = 0;
+        } else {
+            double two32 = 4294967296.0;
+            double n = limit_num - math::floor(limit_num / two32) * two32;
+            if (n < 0.0) n += two32;
+            limit = (uint)n;
+        }
+    }
+
+    // Step 3: If lim = 0, return empty array
+    if (limit == 0) {
+        TVal len_val; len_val.set_fastint(0);
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(arr);
+        return;
+    }
+
     // If separator is undefined, return [string]
     if (ctx.argc == 0 || ctx.regs[ctx.base_reg].is_undefined()) {
         TVal elem;
@@ -717,13 +745,7 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         char* input = data;
         int input_len = (int)len;
 
-        uint limit = 0xFFFFFFFF;
-        if (ctx.argc > 1) {
-            double limit_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
-            if (!math::is_nan(limit_d) && limit_d >= 0) {
-                limit = (uint)(long)limit_d;
-            }
-        }
+        // limit already computed via ToUint32 above
 
         HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
         TVal zero_tv; zero_tv.set_fastint(0);
@@ -823,20 +845,13 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     }
 
     // ── String separator ─────────────────────────────────────────────────
-    HString* sep_hstr = builtin_to_string(ctx.heap, sep_val);
+    HString* sep_hstr = builtin_to_string_vm(ctx, sep_val);
     if (sep_hstr == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    // Get limit
-    uint limit = 0xFFFFFFFF;
-    if (ctx.argc > 1) {
-        double limit_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
-        if (!math::is_nan(limit_d) && limit_d >= 0) {
-            limit = (uint)(long)limit_d;
-        }
-    }
+    // limit already computed via ToUint32 above
 
     char* sep_data = sep_hstr.get_cstr();
     uint sep_len = sep_hstr.blen;

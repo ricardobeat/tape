@@ -432,14 +432,21 @@ fn void arr_throw_range_error(BuiltinContext* ctx, char[] msg) {
 }
 
 /// Helper to invoke a getter and return the result as double.
-fn double invoke_getter_as_length(HObject* obj, TVal getter_fn, Heap* heap, void* vm_ptr) {
+/// Propagates getter errors through ctx.should_throw / ctx.throw_value.
+fn double invoke_getter_as_length(HObject* obj, TVal getter_fn, Heap* heap, BuiltinContext* ctx) {
     if (getter_fn.is_undefined() || getter_fn.is_null()) return 0;
     if (!getter_fn.is_object() || getter_fn.get_heapptr() == null) return 0;
     HObject* fn_obj = (HObject*)getter_fn.get_heapptr();
+    void* vm_ptr = (ctx != null) ? ctx.vm : null;
     if (!fn_obj.is_callable() || heap.call_fn == null || vm_ptr == null) return 0;
     TVal this_val; this_val.set_object(obj);
     TVal result = heap.call_fn(vm_ptr, getter_fn, null, 0, this_val);
     if (heap.has_error) {
+        // Propagate getter error instead of swallowing it
+        if (ctx != null) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+        }
         heap.has_error = false;
         return 0;
     }
@@ -448,7 +455,8 @@ fn double invoke_getter_as_length(HObject* obj, TVal getter_fn, Heap* heap, void
 
 /// Read the raw 'length' property as a double from an array-like object.
 /// Handles accessor properties by invoking the getter.
-fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
+/// Propagates getter errors through ctx.should_throw / ctx.throw_value.
+fn double array_get_length_raw(HObject* obj, Heap* heap, BuiltinContext* ctx) {
 
     if (obj.get_class() == ARRAY) {
         // For ARRAY class, also check if length is an accessor (set via defineProperty)
@@ -460,7 +468,7 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
                 if (pf.is_accessor) {
                     TVal gs_slot = obj.prop_values()[own_idx];
                     TVal getter_fn = hobject::hobject_access_getter(gs_slot);
-                    return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+                    return invoke_getter_as_length(obj, getter_fn, heap, ctx);
                 }
             }
         }
@@ -476,7 +484,7 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
             if (pf.is_accessor) {
                 TVal gs_slot = obj.prop_values()[own_idx];
                 TVal getter_fn = hobject::hobject_access_getter(gs_slot);
-                return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+                return invoke_getter_as_length(obj, getter_fn, heap, ctx);
             }
         }
         TVal? len_val = obj.get_prop(len_key);
@@ -502,7 +510,7 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
         if (pf.is_accessor) {
             TVal gs_slot = obj.prop_values()[own_idx];
             TVal getter_fn = hobject::hobject_access_getter(gs_slot);
-            return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+            return invoke_getter_as_length(obj, getter_fn, heap, ctx);
         }
     }
 
@@ -510,7 +518,7 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, void* vm_ptr) {
     hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(len_key, true);
     if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
         TVal getter_fn = res.acc.accessor_fn;
-        return invoke_getter_as_length(obj, getter_fn, heap, vm_ptr);
+        return invoke_getter_as_length(obj, getter_fn, heap, ctx);
     } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
         TVal v = res.data_val;
         if (v.is_fastint()) return (double)v.get_fastint();
@@ -540,9 +548,11 @@ fn ulong arr_to_length(double raw) {
 /// ES2022 ToLength for Array.prototype iteration methods.
 /// Applies ToLength conversion without RangeError validation.
 /// NaN → 0, -0 → 0, Infinity → 2^53-1, negative → 0.
-/// Returns true on success (out_len set).
-fn bool array_to_length(HObject* obj, Heap* heap, void* vm_ptr, uint* out_len) {
-    double raw = array_get_length_raw(obj, heap, vm_ptr);
+/// Returns true on success (out_len set). Returns false if the length getter threw.
+fn bool array_to_length(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out_len) {
+    double raw = array_get_length_raw(obj, heap, ctx);
+    // Check if the length getter threw an error
+    if (ctx != null && ctx.should_throw) return false;
     ulong len = arr_to_length(raw);
     if (len > 0xFFFFFFFF) len = 0xFFFFFFFF;
     *out_len = (uint)len;
@@ -552,9 +562,12 @@ fn bool array_to_length(HObject* obj, Heap* heap, void* vm_ptr, uint* out_len) {
 /// ES5 §15.4.4.x: Read length, validate as valid array length (RangeError on invalid).
 /// Used by indexOf/lastIndexOf which DO require RangeError on invalid lengths.
 /// Returns true on success (out_len set). Returns false and sets
-/// ctx.should_throw + RangeError if the length is invalid (NaN, Infinity, negative).
+/// ctx.should_throw + RangeError if the length is invalid (NaN, Infinity, negative),
+/// or if the length getter threw.
 fn bool array_to_length_checked(HObject* obj, Heap* heap, BuiltinContext* ctx, uint* out_len) {
-    double raw = array_get_length_raw(obj, heap, ctx.vm);
+    double raw = array_get_length_raw(obj, heap, ctx);
+    // Check if the length getter threw an error
+    if (ctx.should_throw) return false;
     // ES5 §15.4.4.x: validate via SameValue — NaN, Infinity, negative, -0 are invalid
     if (!is_valid_array_length(raw)) {
         arr_throw_range_error(ctx, "Invalid array length");
@@ -572,7 +585,7 @@ fn uint array_get_length(HObject* obj, Heap* heap) {
         return *obj.array_len_ptr();
     }
     // For non-array objects, read raw and apply ToUint32.
-    // Pass null for vm_ptr since we don't need getter invocation here.
+    // Pass null for ctx since we don't need getter invocation here.
     return to_uint32(array_get_length_raw(obj, heap, null));
 }
 
@@ -682,37 +695,146 @@ fn bool array_strict_equals(TVal a, TVal b) {
 // Array.prototype.toString (ES5 §15.4.4.2)
 // ============================================================================
 //
-// Join all elements with comma separator.
+// Per ES5 §15.4.4.3: Let func be Get(array, "join").
+// If IsCallable(func) is false, set func to Object.prototype.toString.
+// Return Call(func, array).
 fn void builtin_array_proto_toString(BuiltinContext* ctx) {
-    HObject* obj = array_proto_get_this(ctx);
-    if (obj == null) { ctx.result.set_undefined(); return; }
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
 
-    uint len = array_get_length(obj, ctx.heap);
-    char[4096] buf;
-    usz offset = 0;
-
-    for (uint i = 0; i < len; i++) {
-        if (i > 0) {
-            if (offset < 4095) buf[offset++] = ',';
-        }
-        TVal elem = array_get_elem(obj, i, ctx.heap);
-        if (!elem.is_undefined() && !elem.is_null()) {
-            HString* elem_str = builtin_to_string(ctx.heap, &elem);
-            if (elem_str != null) {
-                char* data = elem_str.get_cstr();
-                uint blen = elem_str.blen;
-                uint max_copy = blen;
-                if ((uint)offset + max_copy > 4090) max_copy = 4090 - (uint)offset;
-                for (uint j = 0; j < max_copy; j++) {
-                    buf[offset++] = data[j];
-                }
-            }
+    // Step 1: Let array be ToObject(this value)
+    // For primitives, ToObject creates a wrapper (e.g. Boolean → Boolean wrapper).
+    HObject* obj = null;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        obj = (HObject*)this_val.get_heapptr();
+    } else if (this_val.is_null() || this_val.is_undefined()) {
+        ctx.result.set_undefined();
+        return;
+    } else {
+        // Box primitive via ToObject
+        HObject*? boxed = arr_to_object(this_val, ctx.heap);
+        if (try b = boxed) {
+            obj = b;
+        } else {
+            ctx.result.set_undefined();
+            return;
         }
     }
 
-    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
-    if (result == null) { ctx.result.set_undefined(); return; }
-    ctx.result.set_string(result);
+    // Step 2: Let func be Get(array, "join")
+    HString* join_key = builtin_intern_string(ctx.heap, "join");
+    TVal join_fn;
+    bool join_found = false;
+    if (obj != null) {
+        TVal? join_val = obj.get_prop_proto(join_key);
+        if (try jv = join_val) {
+            join_fn = jv;
+            join_found = true;
+        }
+    }
+
+    // Step 3: If IsCallable(func) is false, set func to Object.prototype.toString
+    bool join_callable = false;
+    if (join_found) {
+        if (join_fn.is_lightfunc()) {
+            join_callable = true;
+        } else if (join_fn.is_object() && join_fn.get_heapptr() != null) {
+            join_callable = ((HObject*)join_fn.get_heapptr()).is_callable();
+        }
+    }
+
+    if (!join_callable) {
+        // Fall back to Object.prototype.toString
+        // Build the toString result directly based on object class and Symbol.toStringTag
+        if (obj != null) {
+            char[64] buf;
+            char* class_name = "Object";
+            switch (obj.get_class()) {
+                case hobject::ObjClass.ARRAY:     class_name = "Array"; break;
+                case hobject::ObjClass.FUNCTION:  class_name = "Function"; break;
+                case hobject::ObjClass.BOOLEAN:   class_name = "Boolean"; break;
+                case hobject::ObjClass.NUMBER:    class_name = "Number"; break;
+                case hobject::ObjClass.STRING:    class_name = "String"; break;
+                case hobject::ObjClass.ERROR:     class_name = "Error"; break;
+                case hobject::ObjClass.JSON:      class_name = "JSON"; break;
+                case hobject::ObjClass.MATH:      class_name = "Math"; break;
+                case hobject::ObjClass.DATE:      class_name = "Date"; break;
+                case hobject::ObjClass.REGEXP:    class_name = "RegExp"; break;
+                case hobject::ObjClass.MAP:       class_name = "Map"; break;
+                case hobject::ObjClass.SET:       class_name = "Set"; break;
+                case hobject::ObjClass.WEAKMAP:   class_name = "WeakMap"; break;
+                case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
+                case hobject::ObjClass.SYMBOL:    class_name = "Symbol"; break;
+                case hobject::ObjClass.PROMISE:   class_name = "Promise"; break;
+                case hobject::ObjClass.GENERATOR: class_name = "Generator"; break;
+                default:                          class_name = "Object"; break;
+            }
+
+            // Check @@toStringTag
+            HString* tag_sym = ensure_tostringtag_symbol(ctx.heap);
+            if (tag_sym != null) {
+                TVal? tag_val = obj.get_prop_proto(tag_sym);
+                if (try tv = tag_val) {
+                    if (tv.is_string()) {
+                        HString* tag_str = (HString*)tv.get_heapptr();
+                        if (tag_str != null && !tag_str.is_symbol()) {
+                            char[] tag_bytes = tag_str.get_data();
+                            int tag_len = (int)tag_bytes.len;
+                            if (tag_len > 0 && tag_len < 64) {
+                                int pos = libc::snprintf(&buf, 64, "[object %.*s]", tag_len, tag_bytes.ptr);
+                                if (pos > 0 && pos < 64) {
+                                    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:pos]));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
+            if (len > 0 && len < 64) {
+                ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
+                return;
+            }
+            ctx.result.set_undefined();
+            return;
+        } else if (this_val.is_undefined()) {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, "[object Undefined]"));
+            return;
+        } else if (this_val.is_null()) {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, "[object Null]"));
+            return;
+        } else {
+            // Primitive (string, number, boolean) — use toString on the type
+            // Actually Object.prototype.toString with a primitive this should return "[object <type>]"
+            // But primitives get boxed by ToObject, so we'd need the wrapper's class.
+            // For simplicity, call builtin_to_string.
+            HString* s = builtin_to_string(ctx.heap, &this_val);
+            if (s != null) {
+                ctx.result.set_string(s);
+                return;
+            }
+            ctx.result.set_undefined();
+            return;
+        }
+    }
+
+    // Step 4: Return Call(func, array) — call join with the object as this
+    if (ctx.heap.call_fn != null && ctx.vm != null) {
+        TVal this_tv;
+        if (obj != null) {
+            this_tv.set_object(obj);
+        } else {
+            this_tv = this_val;
+        }
+        *ctx.result = ctx.heap.call_fn(ctx.vm, join_fn, null, 0, this_tv);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.heap.has_error = false;
+        }
+    } else {
+        ctx.result.set_undefined();
+    }
 }
 
 // ============================================================================
@@ -2285,7 +2407,7 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2314,7 +2436,7 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2356,7 +2478,7 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
     HObject* arr = arr_raw;
@@ -2540,7 +2662,7 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2573,7 +2695,7 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2604,7 +2726,7 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     uint k = 0;
     TVal acc;
     bool has_acc;
@@ -2661,7 +2783,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     }
     TVal callback = ctx.regs[ctx.base_reg];
     uint len;
-    if (!array_to_length(o, ctx.heap, ctx.vm, &len)) { ctx.result.set_undefined(); return; }
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     if (len == 0 && ctx.argc < 2) {
         arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
         return;

@@ -585,7 +585,8 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null) downstream_constructable = tobj.flags.constructable;
     }
-    bound_obj.flags.constructable = downstream_constructable;
+    // ES5 §15.3.4.5: Bound functions do NOT implement [[Construct]].
+    bound_obj.flags.constructable = false;
 
     // Store bound data as internal properties (non-enumerable, non-writable, non-configurable)
     // Key: use special strings "\x00bound_downstream", "\x00bound_this", "\x00bound_args"
@@ -634,24 +635,99 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     }
     bound_obj.put_prop(key_args, args_tv, internal_flags);
 
-    // Set .length on the bound function
-    // Length = max(0, downstream.length - bound_argc)
-    int downstream_len = 0;
+    // ── Set .name: "bound " + targetName (ES6 §19.2.3.3) ──────────────
+    HString* name_key = builtin_intern_string(ctx.heap, "name");
+    char[128] name_buf;
+    int name_pos = 0;
+    // Copy "bound " prefix
+    char[] prefix = "bound ";
+    for (usz i = 0; i < prefix.len; i++) name_buf[name_pos++] = prefix[i];
+
     if (downstream.is_object()) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
-        if (tobj != null && (*tobj.extra_ptr()).func.comp_func != null) {
-            downstream_len = (int)(*tobj.extra_ptr()).func.comp_func.num_formals;
+        if (tobj != null) {
+            TVal? target_name_val = tobj.get_prop_proto(name_key);
+            if (try tn = target_name_val) {
+                if (tn.is_string() && tn.get_heapptr() != null) {
+                    HString* tn_str = (HString*)tn.get_heapptr();
+                    char* tn_data = tn_str.get_cstr();
+                    uint tn_len = tn_str.blen;
+                    for (usz i = 0; i < tn_len && name_pos < 126; i++) {
+                        name_buf[name_pos++] = tn_data[i];
+                    }
+                }
+                // Non-string targetName → use "" (nothing after "bound ")
+            }
+        }
+    }
+    HString* bound_name = builtin_intern_string(ctx.heap, name_buf[:name_pos]);
+    if (bound_name != null) {
+        TVal name_tv; name_tv.set_string(bound_name);
+        bound_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // ── Set .length (ES6 §19.2.3.3 SetFunctionLength) ────────────────
+    int bound_len = 0;
+    if (downstream.is_object()) {
+        HObject* tobj = (HObject*)downstream.get_heapptr();
+        if (tobj != null) {
+            HString* tlen_key = builtin_intern_string(ctx.heap, "length");
+            // HasOwnProperty: check own properties only
+            int own_idx = tobj.find_prop_idx(tlen_key);
+            if (own_idx >= 0) {
+                TVal tlen_val = tobj.prop_values()[own_idx];
+                if (tlen_val.is_number()) {
+                    double target_len_d = tlen_val.get_number();
+                    if (math::is_nan(target_len_d)) {
+                        bound_len = 0;
+                    } else if (target_len_d == 0.0) {
+                        bound_len = 0;
+                    } else if (target_len_d == double::inf) {
+                        bound_len = 0x7FFFFFFF;
+                    } else if (target_len_d == -double::inf) {
+                        bound_len = 0;
+                    } else {
+                        int target_len_int = (int)math::trunc(target_len_d);
+                        bound_len = target_len_int - (int)bound_argc;
+                        if (bound_len < 0) bound_len = 0;
+                    }
+                } else if (tlen_val.is_fastint()) {
+                    int target_len_int = (int)tlen_val.get_fastint();
+                    bound_len = target_len_int - (int)bound_argc;
+                    if (bound_len < 0) bound_len = 0;
+                }
+                // Non-number length → L = 0
+            }
         }
     }
 
-    int bound_len = downstream_len - (int)bound_argc;
-    if (bound_len < 0) bound_len = 0;
-
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
-    len_tv.set_fastint((long)bound_len);
-    PropFlags wec = hobject::PROP_FLAGS_WEC;
-    bound_obj.put_prop(len_key, len_tv, wec);
+    if (bound_len == 0x7FFFFFFF) {
+        len_tv.set_number(double::inf);
+    } else {
+        len_tv.set_fastint((long)bound_len);
+    }
+    PropFlags len_flags;
+    len_flags.writable = false;
+    len_flags.enumerable = false;
+    len_flags.configurable = true;
+    len_flags.is_accessor = false;
+    bound_obj.put_prop(len_key, len_tv, len_flags);
+
+    // ── Prototype chain for `new` operator ─────────────────────────────
+    if (downstream_constructable && downstream.is_object()) {
+        HObject* tobj = (HObject*)downstream.get_heapptr();
+        if (tobj != null) {
+            TVal? proto_val = tobj.get_prop_proto(builtin_intern_string(ctx.heap, "prototype"));
+            if (try pv = proto_val) {
+                if (pv.is_object() && pv.get_heapptr() != null) {
+                    HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
+                    bound_obj.put_prop(proto_key, pv, hobject::PROP_FLAGS_WEC);
+                }
+            }
+        }
+    }
 
     // Result
     ctx.result.set_object(bound_obj);
