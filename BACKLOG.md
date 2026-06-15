@@ -26,7 +26,7 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `Object.seal()` / `Object.freeze()` to iterate dense array elements and set their flags non-configurable / non-writable (`src/hobject.c3:495-514`)
 - [x] Fix `Object.isSealed()` / `Object.isFrozen()` to check dense array element flags, not just named props (`src/builtins/object.c3:1667-1731`)
 - [x] Fix `getOwnPropertyDescriptor` for dense array indices: read actual array-part flags instead of hardcoding `{w:true, e:true, c:true}` (`src/builtins/object.c3:658-697`)
-- [ ] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
+- [x] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
 - [ ] Fix `defineProperty` validation order for combined data+accessor descriptor (should throw TypeError before making any change)
 - [x] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
 - [x] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
@@ -79,12 +79,12 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: RegExp
 
-- [ ] Fix `RegExp.prototype.exec` to update `lastIndex` only when `global` or `sticky` flag is set per ES5 §15.10.6.2
+- [x] Fix `RegExp.prototype.exec` to update `lastIndex` only when `global` or `sticky` flag is set per ES5 §15.10.6.2
 - [x] Fix `String.prototype.match` with non-global regex to return `index` and `input` properties on result array
 - [ ] Implement `String.prototype.matchAll` returning a RegExpStringIterator (plan 023)
-- [ ] Fix `RegExp` constructor called with regex argument: should copy pattern+flags, not re-parse as string
-- [ ] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
-- [ ] Fix `RegExp.prototype.flags` getter to return flags in alphabetical order `gimsuy` per ES2015
+- [x] Fix `RegExp` constructor called with regex argument: should copy pattern+flags, not re-parse as string
+- [x] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
+- [x] Fix `RegExp.prototype.flags` getter to return flags in alphabetical order `gimsuy` per ES2015
 - [ ] Add `RegExp.prototype[Symbol.replace]` and `[Symbol.split]` for protocol correctness
 - [ ] Fix named capture groups: ensure `exec` result has `.groups` property with `undefined` for missing captures
 

@@ -1,17 +1,17 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 187 (Symbol toString/toPrimitive, Array RangeError, try/finally break/continue)
+**Last Updated:** Session 188 (defineProperty SameValue, RegExp source/constructor/exec)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 187, 2026-06-15)
+## Summary (after Session 188, 2026-06-15)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~15,978 |
-| Currently failing (phases 0-8) | ~5,625 |
-| Overall pass rate | ~74.0% |
+| Currently passing (phases 0-8) | ~16,019 |
+| Currently failing (phases 0-8) | ~5,584 |
+| Overall pass rate | ~74.2% |
 
 ## Per-Phase Status
 
@@ -20,12 +20,12 @@
 | 0-1: Core VM | 2,185 | 607 | 281 | 1,297 |
 | 1: Calling Convention | 426 | 58 | 30 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,451 | 1,348 | 1,967 |
+| 3: Object System | 7,766 | 4,460 | 1,339 | 1,967 |
 | 4: Error Handling | 402 | 126 | 75 | 201 |
-| 5: Built-in Constructors | 8,615 | 5,382 | 1,708 | 1,525 |
+| 5: Built-in Constructors | 8,615 | 5,391 | 1,699 | 1,525 |
 | 6: Prototype Methods | 4,713 | 2,637 | 1,140 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 1,058 | 226 | 1,463 |
+| 8: ES5 Built-in Objects | 2,747 | 1,081 | 203 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
 | 14: for-of | 751 | 3 | 29 | 719 |
@@ -52,6 +52,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 188 | defineProperty §8.12.9 SameValue check for non-configurable properties — comparator now properly rejects accessor descriptors that differ via SameValue when property is non-configurable; RegExp.prototype.source returns original pattern text (not stringified form); RegExp constructor called with regex argument copies pattern+flags; RegExp.prototype.exec updates lastIndex only when global or sticky flag is set per ES5 §15.10.6.2; RegExp.prototype.flags getter alphabetical order fix (gimsuy) | +41 (Phase 3: +9, Phase 5: +9, Phase 8: +23) |
 | 187 | Symbol.prototype.toString returning "Symbol(description)" format per ES6 §19.4.3.2; Symbol.prototype[Symbol.toPrimitive] returning the symbol itself per ES6 §19.4.3.5; RangeError for Array constructor with invalid length (NaN, ±Infinity, negative, non-integer, >2^32-1); try/catch/finally with break/continue inside — finally now runs and value propagated correctly; comma operator in for init/update already working | +20 (Phase 3: +6, Phase 4: +6, Phase 5: +3, Phase 0-1: +1) |
 | 186 | Array iteration accessor/ToLength fix (dense array elements now properly accessible via indexed access); + operator ToPrimitive with no hint (ES5 §11.6.1: object operand now uses `to_primitive_value` with no hint instead of default number hint); String.prototype.padStart/padEnd fix for fillString length > 1 character | +1234 (Phase 3: +362, Phase 5: +438, Phase 6: +438) |
 | 185 | Date constructor single-arg ToNumber coercion (valueOf throw propagation); Date constructor locale format fallback for toString/toUTCString strings; Date.prototype setter coercion order — ToNumber on all args before NaN check (15 setter methods); Date.prototype thisTimeValue TypeError for non-Date this (27 methods); Date.prototype.toJSON Invoke(O, "toISOString") per ES5 §15.9.5.44; Date.UTC NaN propagation fix; TimeClip -0 → +0 fix; JSON.stringify circular reference detection (TypeError); JSON.stringify replacer array support; JSON.stringify space argument clamping; JSON.stringify negative zero as "0"; arguments object: ES5 §10.6 callee, length, indexed access, strict mode TypeError; String.prototype.match capture groups for non-global regex | +209 (Phase 3: +20, Phase 5: +23, Phase 6: +11, Phase 8: +142) |
