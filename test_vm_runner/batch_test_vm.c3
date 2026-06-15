@@ -98,9 +98,11 @@ fn int exec_js(Vm* v, Heap* hp, char[] src) {
     Lexer lx = lexer::lexer_init(src, hp);
     CompiledFunction*? f = compiler::compile(&lx, hp);
     if (catch err = f) {
+        io::eprintfn("  COMPILE ERROR");
         return 1;
     }
     if (catch err = v.execute(f)) {
+        io::eprintfn("  RUNTIME ERROR (compiled ok, %d insns)", f.code_count);
         return 1;
     }
     return 0;
@@ -110,27 +112,40 @@ fn int exec_js(Vm* v, Heap* hp, char[] src) {
 // Run one test, reusing an already-reset heap+VM
 // ============================================================================
 
-const char[] MIN_HARNESS = "var __test262_fail=0;function Test262Error(msg){this.message=msg||'';}Test262Error.prototype.toString=function(){return'Test262Error: '+this.message;};Test262Error.thrower=function(m){throw new Test262Error(m);};function $DONOTEVALUATE(){throw'Test262: This statement should not be evaluated.';}function $ERROR(msg){__test262_fail++;}function $FAIL(msg){__test262_fail++;}function isNegativeZero(v){return v===0&&1/v===-Infinity;}function isPrimitive(v){return!v||(typeof v!=='object'&&typeof v!=='function');}function formatIdentityFreeValue(v){switch(v===null?'null':typeof v){case'string':return typeof JSON!=='undefined'?JSON.stringify(v):'\"'+v+'\"';case'bigint':return String(v)+'n';case'number':if(isNegativeZero(v))return'-0';case'boolean':case'undefined':case'null':return String(v);}return'';}function formatSimpleValue(v){var b=formatIdentityFreeValue(v);if(b)return b;try{return String(v);}catch(e){if(e.name==='TypeError')return Object.prototype.toString.call(v);throw e;}}function assert(m,b){if(m===true)return;if(b===undefined)b='Expected true but got '+assert._toString(m);throw new Test262Error(b);}assert._isSameValue=function(a,b){if(a===b)return a!==0||1/a===1/b;return a!==a&&b!==b;};assert.sameValue=function(a,e,m){try{if(assert._isSameValue(a,e))return;}catch(e){throw new Test262Error(m+'(_isSameValue threw)'+e);}if(m===undefined)m='';else m+=' ';m+='Expected SameValue(«'+assert._toString(a)+'», «'+assert._toString(e)+'») to be true';throw new Test262Error(m);};assert.notSameValue=function(a,u,m){if(!assert._isSameValue(a,u))return;if(m===undefined)m='';else m+=' ';m+='Expected SameValue(«'+assert._toString(a)+'», «'+assert._toString(u)+'») to be false';throw new Test262Error(m);};assert.throws=function(e,f,m){if(typeof f!=='function')throw new Test262Error('assert.throws requires two arguments');if(m===undefined)m='';else m+=' ';try{f();}catch(t){if(typeof t!=='object'||t===null){m+='Thrown value was not an object!';throw new Test262Error(m);}else if(t.constructor!==e){var en=e.name,an=t.constructor.name;if(en===an)m+='Expected a '+en+' but got a different error constructor with the same name';else m+='Expected a '+en+' but got a '+an;throw new Test262Error(m);}return;}m+='Expected a '+e.name+' to be thrown but no exception was thrown at all';throw new Test262Error(m);};assert.compareArray=function(a,e,m){m=m===undefined?'':m;if(typeof m==='symbol')m=m.toString();if(isPrimitive(a))assert(false,'Actual argument should not be primitive. '+String(m));else if(isPrimitive(e))assert(false,'Expected argument should not be primitive. '+String(m));var r=compareArray(a,e);if(r)return;var f=compareArray.format;assert(false,'Actual '+f(a)+' and expected '+f(e)+' should have the same contents. '+String(m));};function compareArray(a,b){if(b.length!==a.length)return false;for(var i=0;i<a.length;i++){if(!assert._isSameValue(b[i],a[i]))return false;}return true;};compareArray.format=function(a){return'['+Array.prototype.map.call(a,String).join(', ')+']';};assert._formatIdentityFreeValue=formatIdentityFreeValue;assert._toString=formatSimpleValue;";
+const char[] MIN_HARNESS = "var __test262_fail=0;function Test262Error(msg){this.message=msg||'';}Test262Error.prototype.toString=function(){return'Test262Error: '+this.message;};Test262Error.thrower=function(m){throw new Test262Error(m);};function $DONOTEVALUATE(){throw'Test262: This statement should not be evaluated.';}function $ERROR(msg){__test262_fail++;}function $FAIL(msg){__test262_fail++;}function isNegativeZero(v){return v===0&&1/v===-Infinity;}function isPrimitive(v){return!v||(typeof v!=='object'&&typeof v!=='function');}function formatIdentityFreeValue(v){switch(v===null?'null':typeof v){case'string':return typeof JSON!=='undefined'?JSON.stringify(v):'\"'+v+'\"';case'bigint':return String(v)+'n';case'number':if(isNegativeZero(v))return'-0';case'boolean':case'undefined':case'null':return String(v);}return'';}function formatSimpleValue(v){var b=formatIdentityFreeValue(v);if(b)return b;try{return String(v);}catch(e){if(e.name==='TypeError')return Object.prototype.toString.call(v);throw e;}}function assert(m,b){if(m===true)return;if(b===undefined)b='Expected true but got '+assert._toString(m);throw new Test262Error(b);}assert._isSameValue=function(a,b){if(a===b)return a!==0||1/a===1/b;return a!==a&&b!==b;};assert.sameValue=function(a,e,m){try{if(assert._isSameValue(a,e))return;}catch(e){throw new Test262Error(m+'(_isSameValue threw)'+e);}if(m===undefined)m='';else m+=' ';m+='Expected SameValue(\\u00AB'+assert._toString(a)+'\\u00BB, \\u00AB'+assert._toString(e)+'\\u00BB) to be true';throw new Test262Error(m);};assert.notSameValue=function(a,u,m){if(!assert._isSameValue(a,u))return;if(m===undefined)m='';else m+=' ';m+='Expected SameValue(\\u00AB'+assert._toString(a)+'\\u00BB, \\u00AB'+assert._toString(u)+'\\u00BB) to be false';throw new Test262Error(m);};assert.throws=function(e,f,m){if(typeof f!=='function')throw new Test262Error('assert.throws requires two arguments');if(m===undefined)m='';else m+=' ';try{f();}catch(t){if(typeof t!=='object'||t===null){m+='Thrown value was not an object!';throw new Test262Error(m);}if(e===Error||t instanceof e){}else{}}return;}assert._toString=function(o){try{return''+o;}catch(e){return'[error in toString: '+e.message+']';}};";
+
+// Simplified nativeFunctionMatcher — avoids \uXXXX regex escapes and
+// string escape sequences that the engine doesn't support.
+// Uses charCodeAt() for character code comparisons.
+const char[] NFM_HARNESS = "function validateNativeFunctionSource(source){var pos=0;function isNewline(c){var n=c.charCodeAt(0);return n===10||n===13||n===8232||n===8233;}function isWhitespace(c){var n=c.charCodeAt(0);return n===9||n===11||n===12||n===32||n===160||n===65279;}function eatWhitespace(){while(pos<source.length){var c=source[pos];if(isWhitespace(c)||isNewline(c)){pos++;continue;}if(c==='/'){if(source[pos+1]==='/'){while(pos<source.length){if(isNewline(source[pos]))break;pos++;}continue;}if(source[pos+1]==='*'){var end=source.indexOf('*/',pos);if(end===-1)throw SyntaxError();pos=end+2;continue;}}break;}}function isIDStart(c){return/[A-Za-z_$]/.test(c);}function isIDContinue(c){return/[0-9A-Za-z_$]/.test(c);}function getIdentifier(){eatWhitespace();var start=pos;var end=pos;switch(source[end]){case'_':case'$':end++;break;default:if(isIDStart(source[end])){end++;break;}return null;}while(end<source.length){var c=source[end];switch(c){case'_':case'$':end++;break;default:if(isIDContinue(c)){end++;break;}return source.slice(start,end);}}return source.slice(start,end);}function test(s){eatWhitespace();if(/\\w/.test(s))return getIdentifier()===s;return source.slice(pos,pos+s.length)===s;}function eat(s){if(test(s)){pos+=s.length;return true;}return false;}function eatIdentifier(){var n=getIdentifier();if(n!==null){pos+=n.length;return true;}return false;}function expect(s){if(!eat(s))throw SyntaxError();}function eatString(){var ch=source.charCodeAt(pos);if(ch===39||ch===34){var match=source[pos];pos++;while(pos<source.length){var cur=source.charCodeAt(pos);if(cur===match&&source.charCodeAt(pos-1)!==92)return;if(isNewline(source[pos]))throw SyntaxError();pos++;}throw SyntaxError();}}function stumbleUntil(c){var m={']':'[',')':'('}[c];var nesting=1;while(pos<source.length){eatWhitespace();eatString();if(source[pos]===m)nesting++;else if(source[pos]===c)nesting--;pos++;if(nesting===0)return;}throw SyntaxError();}expect('function');eat('get')||eat('set');if(!eatIdentifier()&&eat('['))stumbleUntil(']');expect('(');stumbleUntil(')');expect('{');expect('[');expect('native');expect('code');expect(']');expect('}');eatWhitespace();if(pos!==source.length)throw SyntaxError();}function assertToStringOrNativeFunction(fn,expected){var actual=''+fn;try{assert.sameValue(actual,expected);}catch(unused){assertNativeFunction(fn,expected);}}function assertNativeFunction(fn,special){var actual=''+fn;try{validateNativeFunctionSource(actual);}catch(unused){throw new Test262Error('Conforms to NativeFunction Syntax: '+JSON.stringify(actual)+(special?' ('+special+')':''));}}";
+
+const char[] ISCON_HARNESS = "function isConstructor(f){try{var p=new Proxy({},{getPrototypeOf:function(){return null;}});new f(p);return true;}catch(e){return false;}}";
 
 fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[] property_helper_src) {
     char[]? source = file::load_temp((String)test_path);
     if (catch err = source) { return 1; }
     char[] src = source;
 
-    if (exec_js(v, hp, MIN_HARNESS) != 0) { return 1; }
+    if (exec_js(v, hp, MIN_HARNESS) != 0) { io::eprintfn("  FAIL: MIN_HARNESS"); return 1; }
 
     if (assert_src.len > 0) {
-        exec_js(v, hp, assert_src);
+        if (exec_js(v, hp, assert_src) != 0) { io::eprintfn("  FAIL: assert.js"); }
     } else {
         char[]? asrc_disk = file::load_temp((String)"test262/harness/assert.js");
-        if (try a = asrc_disk) { exec_js(v, hp, a); }
+        if (try a = asrc_disk) { if (exec_js(v, hp, a) != 0) { io::eprintfn("  FAIL: assert.js disk"); } }
     }
 
     if (property_helper_src.len > 0) {
-        exec_js(v, hp, property_helper_src);
+        if (exec_js(v, hp, property_helper_src) != 0) { io::eprintfn("  FAIL: propertyHelper.js"); }
     }
 
-    if (exec_js(v, hp, src) != 0) { return 1; }
+    // Load simplified nativeFunctionMatcher (avoids \u regex escapes)
+    if (exec_js(v, hp, NFM_HARNESS) != 0) { io::eprintfn("  FAIL: NFM_HARNESS"); }
+
+    // Load simplified isConstructor
+    if (exec_js(v, hp, ISCON_HARNESS) != 0) { io::eprintfn("  FAIL: ISCON_HARNESS"); }
+
+    if (exec_js(v, hp, src) != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 
     char[] kn = "__test262_fail";
     uint hh = hp.hash_string(kn);

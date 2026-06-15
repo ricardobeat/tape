@@ -470,14 +470,77 @@ fn double string_to_double(TVal* val) {
 }
 
 // ============================================================================
-// ECMAScript whitespace check (ASCII subset)
+// ECMAScript whitespace check
 // ============================================================================
 
 /// ECMAScript whitespace (ASCII subset: Tab, VT, FF, Space, NBSP, LF, CR).
+/// Used by ToNumber which only needs ASCII whitespace.
 fn bool is_ecma_whitespace(char c) @inline {
     return c == 0x09 || c == 0x0B || c == 0x0C
         || c == 0x20 || c == 0xA0
         || c == 0x0A || c == 0x0D;
+}
+
+/// ECMAScript whitespace check at the Unicode codepoint level (ES5 §7.2 + §7.3).
+/// Handles the full Unicode range including Zs (Space_Separator) characters.
+/// Used by String.prototype.trim which must strip all Unicode whitespace.
+fn bool is_ecma_ws_codepoint(uint cp) @inline {
+    // Line terminators (§7.3)
+    if (cp == 0x000A) return true;  // LF
+    if (cp == 0x000D) return true;  // CR
+    if (cp == 0x2028) return true;  // Line Separator
+    if (cp == 0x2029) return true;  // Paragraph Separator
+    // Explicit whitespace (§7.2)
+    if (cp == 0x0009) return true;  // Tab
+    if (cp == 0x000B) return true;  // Vertical Tab
+    if (cp == 0x000C) return true;  // Form Feed
+    if (cp == 0x0020) return true;  // Space
+    if (cp == 0x00A0) return true;  // No-Break Space
+    if (cp == 0xFEFF) return true;  // BOM / ZWNBSP
+    // Unicode Zs (Space_Separator) category
+    if (cp == 0x1680) return true;  // OGHAM SPACE MARK
+    if (cp >= 0x2000 && cp <= 0x200A) return true;  // EN QUAD .. HAIR SPACE
+    if (cp == 0x202F) return true;  // NARROW NO-BREAK SPACE
+    if (cp == 0x205F) return true;  // MATHEMATICAL SPACE
+    if (cp == 0x3000) return true;  // IDEOGRAPHIC SPACE
+    return false;
+}
+
+/// Decode a UTF-8 codepoint starting at `data[off]`. Returns the codepoint
+/// and sets `*seq_len` to the number of bytes consumed (1-4). Returns 0 on
+/// invalid/truncated input.
+fn uint decode_codepoint_at(char* data, uint off, uint total_len, uint* seq_len) {
+    if (off >= total_len) { *seq_len = 0; return 0; }
+    uint b0 = (uint)data[off];
+    // 1-byte (ASCII)
+    if (b0 < 0x80) { *seq_len = 1; return b0; }
+    // 2-byte: 110xxxxx 10xxxxxx
+    if ((b0 & 0xE0) == 0xC0) {
+        if (off + 1 >= total_len) { *seq_len = 1; return 0; }
+        uint b1 = (uint)data[off + 1];
+        *seq_len = 2;
+        return ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+    }
+    // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
+    if ((b0 & 0xF0) == 0xE0) {
+        if (off + 2 >= total_len) { *seq_len = 1; return 0; }
+        uint b1 = (uint)data[off + 1];
+        uint b2 = (uint)data[off + 2];
+        *seq_len = 3;
+        return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+    }
+    // 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+    if ((b0 & 0xF8) == 0xF0) {
+        if (off + 3 >= total_len) { *seq_len = 1; return 0; }
+        uint b1 = (uint)data[off + 1];
+        uint b2 = (uint)data[off + 2];
+        uint b3 = (uint)data[off + 3];
+        *seq_len = 4;
+        return ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+    }
+    // Invalid lead byte — skip one byte
+    *seq_len = 1;
+    return 0;
 }
 
 /// ECMAScript ToNumber for strings (§7.1.3.1).
@@ -1080,7 +1143,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 162: return { "defineProperty", 3 };
         case 163: return { "getOwnPropertyNames", 1 };
         case 164: return { "defineProperties", 2 };
-        case 165: return { "create", 1 };
+        case 165: return { "create", 2 };
         case 166: return { "seal", 1 };
         case 167: return { "freeze", 1 };
         case 168: return { "isSealed", 1 };

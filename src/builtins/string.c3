@@ -639,6 +639,11 @@ fn void builtin_string_proto_localeCompare(BuiltinContext* ctx) {
 }
 
 /// String.prototype.trim() — ES5 §15.5.4.20
+///
+/// Removes leading and trailing WhiteSpace and LineTerminator characters.
+/// Must handle the full Unicode range (not just ASCII bytes) including
+/// multi-byte UTF-8 characters like U+FEFF, U+2028, U+2029, and all
+/// Unicode Zs (Space_Separator) characters.
 fn void builtin_string_proto_trim(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -648,22 +653,33 @@ fn void builtin_string_proto_trim(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
 
-    // Trim leading whitespace
+    // ── Trim leading whitespace (by codepoint) ──
     uint start = 0;
-    while (start < len && is_ecma_whitespace(data[start])) {
-        start++;
+    while (start < len) {
+        uint seq_len;
+        uint cp = decode_codepoint_at(data, start, len, &seq_len);
+        if (!is_ecma_ws_codepoint(cp)) break;
+        start += seq_len;
     }
 
     // All whitespace
-    if (start == len) {
+    if (start >= len) {
         ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
 
-    // Trim trailing whitespace
+    // ── Trim trailing whitespace (by codepoint) ──
     uint end = len;
-    while (end > start && is_ecma_whitespace(data[end - 1])) {
-        end--;
+    while (end > start) {
+        // Walk backward to find the lead byte of the last codepoint
+        uint lead = end - 1;
+        while (lead > start && ((uint)data[lead] & 0xC0) == 0x80) {
+            lead--;
+        }
+        uint seq_len;
+        uint cp = decode_codepoint_at(data, lead, end, &seq_len);
+        if (!is_ecma_ws_codepoint(cp)) break;
+        end = lead;
     }
 
     uint substr_len = end - start;
@@ -1676,7 +1692,12 @@ fn void builtin_string_proto_trimStart(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
     uint start = 0;
-    while (start < len && is_ecma_whitespace(data[start])) { start++; }
+    while (start < len) {
+        uint seq_len;
+        uint cp = decode_codepoint_at(data, start, len, &seq_len);
+        if (!is_ecma_ws_codepoint(cp)) break;
+        start += seq_len;
+    }
     if (start == 0) {
         ctx.result.set_string(s_hstr); return;
     }
@@ -1693,7 +1714,17 @@ fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
     uint end = len;
-    while (end > 0 && is_ecma_whitespace(data[end - 1])) { end--; }
+    while (end > 0) {
+        // Walk backward to find the lead byte of the last codepoint
+        uint lead = end - 1;
+        while (lead > 0 && ((uint)data[lead] & 0xC0) == 0x80) {
+            lead--;
+        }
+        uint seq_len;
+        uint cp = decode_codepoint_at(data, lead, end, &seq_len);
+        if (!is_ecma_ws_codepoint(cp)) break;
+        end = lead;
+    }
     if (end == len) {
         ctx.result.set_string(s_hstr); return;
     }

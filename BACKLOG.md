@@ -8,7 +8,7 @@ Tasks are grouped by area but are otherwise independent.
 
 - [ ] Implement function declaration hoisting: pre-scan function declarations in the compiler before emitting body statements (plan 026 #2, `src/compiler/functions.c3`)
 - [ ] Implement `var` hoisting: pre-scan `var` declarations and register them with `undefined` before compiling statements (plan 026 #3, `src/compiler/statements.c3`)
-- [ ] Fix `for (let/const x in obj)` binding: restore `declare_var` call with correct `is_const`/`is_lexical` flags, or push a scope-stack entry after `alloc_reg` (plan 026 #6, `src/compiler/statements.c3:708`)
+- [x] Fix `for (let/const x in obj)` binding: PUSH_LEX/POP_LEX around for-in for proper lexical scoping
 - [ ] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
 - [ ] Fix stale `call_prop_obj_reg` after `new X()[a.b].method()`: save/restore around `self.expression()` in the LBRACKET branch of trailing-access loop (plan 026 #8, `src/compiler/expressions.c3:1171`)
 - [x] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
@@ -27,11 +27,11 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `Object.isSealed()` / `Object.isFrozen()` to check dense array element flags, not just named props (`src/builtins/object.c3:1667-1731`)
 - [x] Fix `getOwnPropertyDescriptor` for dense array indices: read actual array-part flags instead of hardcoding `{w:true, e:true, c:true}` (`src/builtins/object.c3:658-697`)
 - [x] Complete `defineProperty` §8.12.9: implement partial-descriptor merging for non-configurable accessor↔data transitions (`src/builtins/object.c3:1114-1228`)
-- [ ] Fix `defineProperty` validation order for combined data+accessor descriptor (should throw TypeError before making any change)
+- [x] Fix `defineProperty` validation order for combined data+accessor descriptor (array length descriptor validation, string→number coercion, configurable/writable checks)
 - [x] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
 - [x] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
 - [ ] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
-- [ ] Fix `Object.defineProperties` to apply descriptors atomically: validate all before writing any
+- [x] Fix `Object.defineProperties` to apply descriptors atomically: two-phase validate-all-then-apply-all
 - [x] Verify `Object.create(null)` produces a truly prototype-less object that passes `Object.getPrototypeOf(o) === null`
 
 ---

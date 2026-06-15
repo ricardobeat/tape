@@ -1338,7 +1338,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     new_act.curr_pc = null;
     new_act.bottom = new_bottom;
     new_act.retval = null;
-    new_act.flags = ACT_FLAG_STRICT;
+    new_act.flags = (target_func != null && target_func.is_strict()) ? ACT_FLAG_STRICT : 0;
     if (is_construct) {
         new_act.flags |= ACT_FLAG_CONSTRUCT;
     }
@@ -1463,7 +1463,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.curr_pc = target.code;
     new_act.bottom = new_bottom;
     new_act.retval = act.bottom + result_reg;
-    new_act.flags = ACT_FLAG_STRICT;
+    new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
     vm.heap.tval_copy_ref(&new_act.this_binding, this_val);
 
     // Clear registers and copy args (getters have 0 args)
@@ -4056,7 +4056,7 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_act.curr_pc = target.code;
                                         new_act.bottom = new_bottom;
                                         new_act.retval = null;  // setter return value is discarded
-                                        new_act.flags = ACT_FLAG_STRICT;
+                                        new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
                                         vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
                                         TVal* new_regs = new_act.bottom;
@@ -4139,7 +4139,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_act.curr_pc = target.code;
                                     new_act.bottom = new_bottom;
                                     new_act.retval = null;  // setter return value is discarded
-                                    new_act.flags = ACT_FLAG_STRICT;
+                                    new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
                                     vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
                                     TVal* new_regs = new_act.bottom;
@@ -5308,12 +5308,63 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_STRICT;
+            bool is_strict = target.is_arrow() ? (act.flags & ACT_FLAG_STRICT) != 0 : target.is_strict();
+            new_act.flags = is_strict ? ACT_FLAG_STRICT : 0;
             // Arrow functions use lexical this (inherited from enclosing scope)
             if (target.is_arrow()) {
                 vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
             } else {
-                vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
+                // ES5 §10.4.3: non-strict mode this coercion
+                TVal raw_this = regs_base[callee_reg + 1];
+                if (!is_strict) {
+                    // null or undefined → global object
+                    if (raw_this.is_null() || raw_this.is_undefined()) {
+                        TVal global_this;
+                        global_this.set_object(vm.global_env.bindings);
+                        vm.heap.tval_copy_ref(&new_act.this_binding, &global_this);
+                    }
+                    // Primitives → ToObject wrapper
+                    else if (raw_this.is_boolean()) {
+                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
+                        if (try w = wrapped) {
+                            w.prototype = vm.heap.bool_proto;
+                            (*w.extra_ptr()).prim.primitive_value.set_boolean(raw_this.get_boolean());
+                            TVal boxed; boxed.set_object(w);
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
+                        } else {
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
+                        }
+                    } else if (raw_this.is_string()) {
+                        HString* prim_str = (HString*)raw_this.get_heapptr();
+                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
+                        if (try w = wrapped) {
+                            w.flags.exotic_stringobj = true;
+                            w.prototype = vm.heap.string_proto;
+                            (*w.extra_ptr()).prim.primitive_value.set_string(prim_str);
+                            HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                            TVal len_tv; len_tv.set_fastint((long)prim_str.char_length());
+                            w.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+                            TVal boxed; boxed.set_object(w);
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
+                        } else {
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
+                        }
+                    } else if (raw_this.is_number() || raw_this.is_fastint()) {
+                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
+                        if (try w = wrapped) {
+                            w.prototype = vm.heap.number_proto;
+                            vm.heap.tval_copy_ref(&(*w.extra_ptr()).prim.primitive_value, &raw_this);
+                            TVal boxed; boxed.set_object(w);
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
+                        } else {
+                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
+                        }
+                    } else {
+                        vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
+                    }
+                } else {
+                    vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
+                }
             }
 
             TVal* new_regs = new_act.bottom;
@@ -5573,7 +5624,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
+            new_act.flags = ACT_FLAG_CONSTRUCT | (super_target.is_strict() ? ACT_FLAG_STRICT : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
             new_act.new_target = new_target;  // Pass through new.target
 
@@ -5953,7 +6004,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_STRICT;
+            new_act.flags = ACT_FLAG_CONSTRUCT | (target.is_strict() ? ACT_FLAG_STRICT : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
 
