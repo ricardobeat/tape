@@ -513,6 +513,12 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                 }
                 Instruction jns = self.code[j];
                 Opcode jop2 = jns.op;
+                // Terminal instructions end the fall-through basic block.
+                if (jop2 == Opcode.RET || jop2 == Opcode.RETUNDEF
+                    || jop2 == Opcode.RET_GEN || jop2 == Opcode.RETUNDEF_GEN
+                    || jop2 == Opcode.THROW || jop2 == Opcode.JUMP) {
+                    break;
+                }
                 OpFormat jfmt = bytecode::get_op_format(jop2);
                 // IF_TRUE/IF_FALSE use field A as a source (the register being tested),
                 // not as a destination.  Check them for reads.
@@ -557,6 +563,12 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                         if (j != (uint)tgt_raw && jump_targets[j]) { rA_live_branch = true; break; }
                         Instruction jns = self.code[j];
                         Opcode jop2 = jns.op;
+                        // Terminal instructions end the branch basic block.
+                        if (jop2 == Opcode.RET || jop2 == Opcode.RETUNDEF
+                            || jop2 == Opcode.RET_GEN || jop2 == Opcode.RETUNDEF_GEN
+                            || jop2 == Opcode.THROW || jop2 == Opcode.JUMP) {
+                            break;
+                        }
                         OpFormat jfmt = bytecode::get_op_format(jop2);
                         if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
                             if ((uint)jns.a == rA) { rA_live_branch = true; break; }
