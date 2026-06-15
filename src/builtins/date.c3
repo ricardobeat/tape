@@ -899,47 +899,135 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
 }
 
 /// Date.prototype.toJSON(key) — ES5 §15.9.5.44
+///
+/// ES2015 §20.4.4.28:
+/// 1. Let O be ? ToObject(this value).
+/// 2. Let tv be ? ToPrimitive(O, hint Number).
+/// 3. If Type(tv) is Number and tv is not finite, return null.
+/// 4. Return ? Invoke(O, "toISOString").
+///
+/// For Date objects, ToPrimitive returns the internal [[DateValue]] (a Number).
+/// For plain objects, ToPrimitive calls valueOf/toString and returns a String
+/// (e.g. "[object Object]"), so Type(tv) is NOT Number → step 3 is skipped →
+/// step 4 calls toISOString.
 fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    // ES5 §15.9.5.44: call ToObject(this), then ToPrimitive(O, "number")
-    // For Date objects, this returns the time value. For non-Date objects,
-    // ToPrimitive calls valueOf/toString to get a numeric value.
-    double time_val;
+    TVal object_val = this_val;
+
+    // Step 1: ToObject(this value) — VM already boxes primitives.
+
+    // Steps 2–3: Compute ToPrimitive(O, hint Number), then check
+    // "Type(tv) is Number and tv is not finite" → return null.
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
-        if (obj.get_class() == hobject::ObjClass.DATE &&
-            ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
-            time_val = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+        if (obj.get_class() == hobject::ObjClass.DATE) {
+            // Date object: ToPrimitive returns the internal time value.
+            double time_val;
+            if ((*obj.extra_ptr()).prim.primitive_value.is_number() ||
+                (*obj.extra_ptr()).prim.primitive_value.is_fastint()) {
+                time_val = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+            } else {
+                time_val = double::nan;
+            }
+            // Step 3: If Type(tv) is Number and not finite → return null.
+            if (math::is_nan(time_val) || !math::is_finite(time_val)) {
+                ctx.result.set_null();
+                return;
+            }
+            // Step 4: Fall through to Invoke(O, "toISOString") below.
         } else {
-            // Non-Date object: call ToPrimitive via vm_to_number
+            // Non-Date object: call ToPrimitive via to_primitive_value.
+            // For plain objects, valueOf returns self (not primitive),
+            // then toString returns "[object Object]" (a String, NOT a Number),
+            // so Type(tv) is String → step 3 is skipped → Invoke in step 4.
+            // For objects with custom valueOf returning NaN/Infinity,
+            // the result IS a Number type and not finite → return null.
             Vm* v = (Vm*)ctx.vm;
-            time_val = vm::vm_to_number(v, &this_val);
+            TVal prim = vm::to_primitive_value(v, &this_val);
             if (v.throw_pending) {
                 ctx.should_throw = true;
                 ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
                 v.throw_pending = false;
                 return;
             }
+            // Check Type(tv) is Number and not finite.
+            if ((prim.is_number() || prim.is_fastint()) &&
+                (math::is_nan(prim.get_number_or_fastint()) || !math::is_finite(prim.get_number_or_fastint()))) {
+                ctx.result.set_null();
+                return;
+            }
         }
     } else {
-        // Primitives: call ToPrimitive (vm_to_number handles this)
+        // Primitive this: ToObject boxes it.  For Date.prototype.toJSON
+        // the VM wraps primitives before calling the builtin, so this path
+        // is rarely reached.  Handle it defensively: ToPrimitive on a boxed
+        // primitive returns the unwrapped value.
         Vm* v = (Vm*)ctx.vm;
-        time_val = vm::vm_to_number(v, &this_val);
+        TVal prim = vm::to_primitive_value(v, &this_val);
         if (v.throw_pending) {
             ctx.should_throw = true;
             ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
             v.throw_pending = false;
             return;
         }
+        if ((prim.is_number() || prim.is_fastint()) &&
+            (math::is_nan(prim.get_number_or_fastint()) || !math::is_finite(prim.get_number_or_fastint()))) {
+            ctx.result.set_null();
+            return;
+        }
+        // For primitive "this", Invoke needs an object.  The VM boxes
+        // primitives into wrapper objects before calling builtins, so this
+        // branch should not be reached.  But just in case, fall through
+        // and the TypeError from Invoke will be raised.
     }
-    if (math::is_nan(time_val) || !math::is_finite(time_val)) {
-        ctx.result.set_null();
+
+    // Step 4: Return ? Invoke(O, "toISOString")
+    // Look up "toISOString" on O, then call it with O as the receiver.
+    // If the property is missing or not callable, Invoke throws TypeError.
+    if (object_val.is_object() && object_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)object_val.get_heapptr();
+        HString* toiso_key = builtin_intern_string(ctx.heap, "toISOString");
+        TVal? toiso_val = obj.get_prop_proto(toiso_key);
+        if (try toiso_fn = toiso_val) {
+            bool callable = false;
+            if (toiso_fn.is_object() && toiso_fn.get_heapptr() != null) {
+                HObject* fn_hobj = (HObject*)toiso_fn.get_heapptr();
+                callable = fn_hobj.is_callable();
+            } else if (toiso_fn.is_lightfunc()) {
+                callable = true;
+            }
+            if (callable) {
+                Vm* v = (Vm*)ctx.vm;
+                TVal result = ctx.heap.call_fn(v, toiso_fn, null, 0, object_val);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    // The error is already set on the VM — propagate it.
+                    ctx.heap.has_error = false;
+                    return;
+                }
+                ctx.heap.tval_copy_ref(ctx.result, &result);
+                return;
+            }
+        }
+    }
+
+    // Invoke(O, "toISOString") — property missing or not callable → TypeError
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err = err_raw) {
+        ctx.result.set_undefined();
         return;
     }
-    char[128] buf;
-    usz len = date_format_iso(time_val, &buf, 128);
-    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
-    ctx.result.set_string(result);
+    HObject* err_obj = err_raw;
+    err_obj.prototype = ctx.heap.type_err_proto;
+    HString* msg_str = builtin_intern_string(ctx.heap, "toISOString is not a function");
+    if (msg_str != null) {
+        TVal msg_val;
+        msg_val.set_string(msg_str);
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        err_obj.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+    }
+    ctx.should_throw = true;
+    ctx.throw_value.set_object(err_obj);
 }
 
 /// Date.prototype.data.valueOf() — ES5 §15.9.5.8
