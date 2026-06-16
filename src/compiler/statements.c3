@@ -233,6 +233,9 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     uint saved_depth = self.scope_depth;
     ushort saved_reg = self.next_reg;
 
+    // Push a scope marker so duplicate let/const checks stop at this block boundary.
+    self.push_scope_marker();
+
     // Pre-scan for let/const declarations at this block level so we can
     // TDZ-initialize them at block entry (before any code in the block runs).
     NameSpan[MAX_PRESCAN_NAMES] lex_spans;
@@ -342,6 +345,20 @@ fn void? CompilerContext.var_declaration(&self) {
                     reg = self.declare_var(name_tok.str_value, kind);
                 }
             } else {
+                // Check for duplicate let/const in the same block scope (ES6 §13.3.1)
+                if (is_lexical) {
+                    uint i = self.scope_depth;
+                    while (i > 0) {
+                        i--;
+                        // Stop at VAR entries (function-scope boundary) or
+                        // SCOPEMARK entries (block-scope boundary).
+                        if (self.scope_stack[i].kind == VAR || self.scope_stack[i].kind == SCOPEMARK) break;
+                        if (str_eq(self.scope_stack[i].name, name_tok.str_value) &&
+                            (self.scope_stack[i].kind == LET || self.scope_stack[i].kind == CONST)) {
+                            return COMPILE_ERROR~;
+                        }
+                    }
+                }
                 reg = self.declare_var(name_tok.str_value, kind);
             }
             ushort saved_reg = self.next_reg;
@@ -356,7 +373,9 @@ fn void? CompilerContext.var_declaration(&self) {
                 self.free_reg(val_reg);
                 has_init = true;
             } else if (!already_declared) {
-                // Default initialize to undefined (only for new declarations)
+                if (is_const) {
+                    return COMPILE_ERROR~;
+                }
                 self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
             }
 
@@ -371,7 +390,13 @@ fn void? CompilerContext.var_declaration(&self) {
             // At global scope, free the var register and any leaked temporaries
             // from the initializer evaluation.  Global vars use PUTVAR/GETVAR
             // at runtime — the register is only needed briefly as the PUTVAR source.
+            // Lexical declarations (let/const) at global scope have their registers
+            // managed by pop_scope_to() from the enclosing block() or from the
+            // top-level compile() cleanup.
             if (self.is_global) {
+                if (!is_lexical) {
+                    self.free_reg(reg);
+                }
                 self.free_regs_to(saved_reg);
             }
         }
@@ -652,6 +677,7 @@ fn void? CompilerContext.for_statement(&self) {
     // the register-cached value back to the environment (needed so closures
     // inside the loop and code after the loop see the correct final value).
     bool has_for_var = false;
+    bool is_lexical = false;
     ushort for_var_reg = 0;
     uint for_var_name_idx = 0;
 
@@ -680,7 +706,7 @@ fn void? CompilerContext.for_statement(&self) {
         // We parse the variable declaration keyword
         Token decl_tok = self.advance()!;
         bool is_const = (decl_tok.type == TokenType.CONST);
-        bool is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
+        is_lexical = (decl_tok.type == TokenType.LET || decl_tok.type == TokenType.CONST);
         ScopeKind decl_kind = is_const ? CONST : (decl_tok.type == TokenType.LET ? LET : VAR);
 
         // Check for destructuring: [pattern] or {pattern}
@@ -1442,6 +1468,7 @@ fn void? CompilerContext.for_statement(&self) {
             has_for_var = !is_lexical && !self.is_global;
             for_var_reg = var_reg;
             for_var_name_idx = self.add_string_constant(name_tok.str_value);
+            if (is_lexical) { self.emit_simple(Opcode.PUSH_LEX); }
             if (self.match(TokenType.ASSIGN)) {
                 ushort init_val = self.assignment_expr()!;
                 if (init_val != var_reg) {
@@ -1742,6 +1769,7 @@ fn void? CompilerContext.for_statement(&self) {
 
     // exit: pop_loop patches all break jumps to current position.
     self.pop_loop();
+    if (is_lexical) { self.emit_simple(Opcode.POP_LEX); }
 
     // For uncaptured for-init vars the environment was not updated each
     // iteration, so write the final register value once before the register

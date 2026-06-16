@@ -56,6 +56,9 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
         ctx.statement()!;
     }
 
+    // Free any remaining scope_stack entries (top-level lexical declarations)
+    ctx.pop_scope_to(0);
+
     // Emit implicit "return undefined" at end of program
     ctx.emit_simple(Opcode.RETUNDEF);
 
@@ -110,6 +113,9 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
+
+    // Free any remaining scope_stack entries (top-level lexical declarations)
+    ctx.pop_scope_to(0);
 
     // Return the accumulated eval result (or undefined if no expression)
     ctx.emit_a_bc(Opcode.RET, (uint)ctx.eval_acc_reg, 0);

@@ -78,6 +78,7 @@ enum ScopeKind : char {
     VAR,
     LET,
     CONST,
+    SCOPEMARK,   ///< boundary marker pushed by block() to delimit scope
 }
 
 struct ScopeEntry {

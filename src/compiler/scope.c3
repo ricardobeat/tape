@@ -36,16 +36,34 @@ fn void CompilerContext.pop_scope(&self) {
 fn void CompilerContext.pop_scope_to(&self, uint saved_depth) {
     while (self.scope_depth > saved_depth) {
         ScopeEntry* top = &self.scope_stack[self.scope_depth - 1];
-        self.free_reg(top.reg);
+        // Scope markers have no register to free.
+        if (top.kind != SCOPEMARK) {
+            self.free_reg(top.reg);
+        }
         self.scope_depth--;
+    }
+}
+
+/// Push a scope marker to delimit block scope boundaries for duplicate
+/// let/const detection.  The marker has no name and no register.
+fn void CompilerContext.push_scope_marker(&self) {
+    if (self.scope_depth < MAX_SCOPE_DEPTH) {
+        self.scope_stack[self.scope_depth].name = (char[]){};
+        self.scope_stack[self.scope_depth].reg = 0;
+        self.scope_stack[self.scope_depth].kind = SCOPEMARK;
+        self.scope_stack[self.scope_depth].is_captured = false;
+        self.scope_depth++;
     }
 }
 
 /// Declare a variable in the current scope.
 fn ushort CompilerContext.declare_var(&self, char[] name, ScopeKind kind) {
     ushort reg = self.alloc_reg();
-    // At global scope, don't register-cache — use environment via PUTVAR/GETVAR
-    if (!self.is_global && self.scope_depth < MAX_SCOPE_DEPTH) {
+    // Push to scope_stack for all lexical declarations (even at global scope)
+    // so duplicate let/const can be detected.  Var at global scope is still
+    // hoisted to the function-scoped environment and doesn't need scope tracking.
+    bool push_scope = !self.is_global || kind != VAR;
+    if (push_scope && self.scope_depth < MAX_SCOPE_DEPTH) {
         self.scope_stack[self.scope_depth].name = name;
         self.scope_stack[self.scope_depth].reg = reg;
         self.scope_stack[self.scope_depth].kind = kind;
