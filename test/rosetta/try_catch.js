@@ -34,6 +34,62 @@ var v = withFinally();
 assert(v === 42, "finally doesn't override return");
 assert(log[log.length - 1] === "returned", "finally runs on normal return");
 
+// Finally side-effect: variable modified in finally persists
+var finallyExecuted = false;
+function finallySideEffect() {
+    try {
+        return 42;
+    } finally {
+        finallyExecuted = true;
+    }
+}
+assert(finallySideEffect() === 42, "return value preserved when finally sets a variable");
+assert(finallyExecuted, "finally block runs and modifies outer variable after return");
+
+// Nested try-finally with return from inner block
+var finallyOrder = [];
+function nestedTryFinally() {
+    finallyOrder = [];
+    try {
+        finallyOrder.push("outer try");
+        try {
+            finallyOrder.push("inner try");
+            return "inner-value";
+        } finally {
+            finallyOrder.push("inner finally");
+        }
+    } finally {
+        finallyOrder.push("outer finally");
+    }
+}
+var nestedResult = nestedTryFinally();
+assert(nestedResult === "inner-value", "nested try-finally returns inner value");
+assert(finallyOrder[0] === "outer try", "nested order: outer try first");
+assert(finallyOrder[1] === "inner try", "nested order: then inner try");
+assert(finallyOrder[2] === "inner finally", "nested order: inner finally runs before outer finally");
+assert(finallyOrder[3] === "outer finally", "nested order: outer finally runs last");
+
+// Deeply nested try-finally with three levels
+function deepNestedFinally() {
+    var v = 0;
+    try {
+        try {
+            try {
+                return 99;
+            } finally {
+                v += 10;
+            }
+        } finally {
+            v += 100;
+        }
+    } finally {
+        v += 1000;
+    }
+    return -1;
+}
+assert(deepNestedFinally() === 99, "deeply nested try-finally preserves innermost return");
+// All finally blocks run
+
 // Custom error type
 function ValueError(msg) {
     this.message = msg;
