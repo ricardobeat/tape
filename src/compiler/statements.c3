@@ -70,7 +70,21 @@ fn void? CompilerContext.statement(&self) {
                     self.labeled_statement(id_tok.str_value)!;
                     break;
                 }
-                // Not a label — push the identifier back and fall through
+
+                // `async function name() {}` — treat as function declaration
+                if (self.peek_type() == TokenType.FUNCTION &&
+                    id_tok.str_value.len == 5 &&
+                    id_tok.str_value[0] == 'a' && id_tok.str_value[1] == 's' &&
+                    id_tok.str_value[2] == 'y' && id_tok.str_value[3] == 'n' &&
+                    id_tok.str_value[4] == 'c') {
+                    // id_tok was `async`; next token is `function`
+                    self.is_async = true;
+                    self.function_declaration()!;
+                    self.is_async = false;
+                    break;
+                }
+
+                // Not a label or async function — push the identifier back and fall through
                 self.lexer.pushback(id_tok);
             }
             self.expression_statement()!;
@@ -2313,6 +2327,11 @@ fn void? CompilerContext.function_declaration(&self) {
     bool saved_is_generator = self.is_generator;
     self.is_generator = false;
 
+    // Save and reset async state: nested function declarations
+    // inside an async function do not inherit the async flag.
+    bool saved_is_async = self.is_async;
+    self.is_async = false;
+
     // Check for generator star: function* name() {}
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
@@ -2324,8 +2343,9 @@ fn void? CompilerContext.function_declaration(&self) {
     // Compile the function into a nested CompiledFunction
     CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
 
-    // Restore generator flag
+    // Restore generator / async flags
     self.is_generator = saved_is_generator;
+    self.is_async = saved_is_async;
 
     // Add to inner functions table
     uint inner_idx = 0;

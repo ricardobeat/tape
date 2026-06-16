@@ -621,6 +621,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     // the inner context (which parses the body) needs to know it's in a generator.
     inner_ctx.is_generator = self.is_generator;
 
+    // Propagate async flag: if the caller is compiling an async function,
+    // the inner context (which parses the body) needs to know it's in an async function.
+    inner_ctx.is_async = self.is_async;
+
     // Propagate class context (for super expressions)
     inner_ctx.in_class_body = self.in_class_body;
     inner_ctx.has_super_binding = self.has_super_binding;
@@ -784,6 +788,10 @@ fn ushort? CompilerContext.function_expr(&self) {
     bool saved_is_generator = self.is_generator;
     self.is_generator = false;
 
+    // Save and reset async state
+    bool saved_is_async = self.is_async;
+    self.is_async = false;
+
     // Check for generator star: function* name?() {}
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
@@ -799,8 +807,9 @@ fn ushort? CompilerContext.function_expr(&self) {
     // Compile the function body into a sub-context
     CompiledFunction* inner = self.compile_inner_function(name)!;
 
-    // Restore generator flag
+    // Restore generator / async flags
     self.is_generator = saved_is_generator;
+    self.is_async = saved_is_async;
 
     // Add to inner functions table
     uint inner_idx = 0;

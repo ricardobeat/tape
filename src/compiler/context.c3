@@ -902,6 +902,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
     func.flags.is_generator = self.is_generator;
+    func.flags.is_async = self.is_async;
     func.flags.uses_arguments = self.uses_arguments;
 
     // `needs_env` controls whether the CALL fast path allocates a fresh

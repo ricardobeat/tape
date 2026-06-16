@@ -1407,6 +1407,15 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.IDENTIFIER:
             // Check for arrow function: IDENTIFIER ARROW => single param
             {
+                // Detect `async function ...` expression: consume the async
+                // identifier and delegate to function_expr with is_async set.
+                if (self.peek_type() == TokenType.IDENTIFIER &&
+                    self.match_async_function()) {
+                    self.is_async = true;
+                    ushort r = self.function_expr()!;
+                    self.is_async = false;
+                    return r;
+                }
                 Token id_tok = self.advance()!;
 
                 // Check for literal keywords tokenized as identifiers
