@@ -148,6 +148,7 @@ enum ObjClass : char {
     STRING_ITERATOR,
     MAP_ITERATOR,
     SET_ITERATOR,
+    REGEXP_STRING_ITERATOR,
     /// Internal GC cell for boxed accessor pairs (getter + setter).
     GETTER_SETTER,
 }
@@ -432,6 +433,15 @@ struct HObjectIterator {
     uint              kind;     /// 0=values, 1=keys, 2=entries.
 }
 
+/// RegExpStringIterator: lazy iteration over regexp matches.
+/// Active when flags.obj_class is REGEXP_STRING_ITERATOR.
+/// Stores the iterated string (for GC tracing) and the regexp.
+struct HObjectRegExpStringIterator {
+    TVal     string_val;   /// The string being iterated (for GC tracing).
+    HObject* regexp;       /// The RegExp object.
+    uint     flags;        /// Bit 0: global flag; bit 1: done flag.
+}
+
 /// Boxed accessor pair (getter + setter) stored in a GC-managed HObject
 /// with ObjClass.GETTER_SETTER.  Referenced from prop_values[] slots
 /// when PropFlags.is_accessor is true.
@@ -443,12 +453,13 @@ struct HObjectGetterSetter {
 /// Tagged union of subtype-specific fields.
 /// Discriminator is flags.obj_class (in the common header).
 union HObjectExtra {
-    HObjectFunction      func;
-    HObjectPrimitive     prim;
-    HObjectRegExp        regexp;
-    HObjectGenerator     gen;
-    HObjectIterator      iter;
-    HObjectGetterSetter  gs;
+    HObjectFunction              func;
+    HObjectPrimitive             prim;
+    HObjectRegExp                regexp;
+    HObjectGenerator             gen;
+    HObjectIterator              iter;
+    HObjectRegExpStringIterator  regexp_iter;
+    HObjectGetterSetter          gs;
 }
 
 /// The core ECMAScript object representation.

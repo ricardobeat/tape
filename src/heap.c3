@@ -1588,6 +1588,12 @@ fn void Heap.drain_gray(&self) {
             case ObjClass.STRING_ITERATOR:
                 self.mark_tval(&(*obj.extra_ptr()).prim.primitive_value);
                 break;
+            case ObjClass.REGEXP_STRING_ITERATOR:
+                self.mark_tval(&(*obj.extra_ptr()).regexp_iter.string_val);
+                if ((*obj.extra_ptr()).regexp_iter.regexp != null) {
+                    self.mark_hobject((*obj.extra_ptr()).regexp_iter.regexp);
+                }
+                break;
             case ObjClass.GETTER_SETTER:
                 self.mark_tval(&(*obj.extra_ptr()).gs.getter);
                 self.mark_tval(&(*obj.extra_ptr()).gs.setter);

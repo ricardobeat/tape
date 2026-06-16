@@ -1360,7 +1360,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         if (match_sym != null) {
             TVal match_fn;
             match_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_MATCH);
-            proto.put_prop(match_sym, match_fn, hobject::PROP_FLAGS_WEC);
+            proto.put_prop(match_sym, match_fn, hobject::PROP_FLAGS_WC);
         }
     }
 
@@ -1370,7 +1370,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         if (search_sym != null) {
             TVal search_fn;
             search_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH);
-            proto.put_prop(search_sym, search_fn, hobject::PROP_FLAGS_WEC);
+            proto.put_prop(search_sym, search_fn, hobject::PROP_FLAGS_WC);
         }
     }
 
@@ -1380,7 +1380,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         if (replace_sym != null) {
             TVal replace_fn;
             replace_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE);
-            proto.put_prop(replace_sym, replace_fn, hobject::PROP_FLAGS_WEC);
+            proto.put_prop(replace_sym, replace_fn, hobject::PROP_FLAGS_WC);
         }
     }
 
@@ -1390,7 +1390,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         if (split_sym != null) {
             TVal split_fn;
             split_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT);
-            proto.put_prop(split_sym, split_fn, hobject::PROP_FLAGS_WEC);
+            proto.put_prop(split_sym, split_fn, hobject::PROP_FLAGS_WC);
         }
     }
 

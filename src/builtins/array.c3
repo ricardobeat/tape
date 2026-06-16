@@ -2929,7 +2929,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
             }
             TVal iter_tv;
             iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         }
     }
 

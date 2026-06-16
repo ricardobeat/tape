@@ -316,7 +316,7 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Generator"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
     // Wire prototype.constructor → GeneratorFunction constructor

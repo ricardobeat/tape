@@ -2211,24 +2211,97 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     ctx.result.set_object(arr);
 }
 
+/// Helper: create a RegExp HObject from a pattern string with JS flags.
+/// Used by matchAll for the non-RegExp arg path.
+/// Returns null on failure (allocation or compile error).
+fn HObject* create_regexp_from_string(Heap* heap, char[] pattern, int js_flags) {
+    // Compute engine flags from js_flags (only i, m, s affect compilation)
+    int engine_flags = 0;
+    if (js_flags & 2)  engine_flags |= re_bindings::RE_FLAG_IGNORECASE;
+    if (js_flags & 4)  engine_flags |= re_bindings::RE_FLAG_MULTILINE;
+    if (js_flags & 8)  engine_flags |= re_bindings::RE_FLAG_DOTALL;
+
+    // Compile the regexp
+    char[128] error_buf;
+    void* compiled = re_bindings::re_compile(
+        (char*)pattern.ptr, pattern.len,
+        engine_flags, &error_buf, 128
+    );
+    if (compiled == null) return null;
+
+    HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.REGEXP);
+    if (catch err = obj_raw) {
+        re_bindings::re_free(compiled);
+        return null;
+    }
+    HObject* obj = obj_raw;
+    obj.prototype = heap.regexp_proto;
+    (*obj.extra_ptr()).regexp.regexp_data = compiled;
+    (*obj.extra_ptr()).regexp.flags = js_flags;
+
+    // Store pattern string as primitive_value
+    HString* pattern_hs = builtin_intern_string(heap, pattern);
+    if (pattern_hs != null) {
+        (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);
+    }
+
+    // Set lastIndex to 0
+    HString* li_key = builtin_intern_string(heap, "lastIndex");
+    TVal zero_tv; zero_tv.set_fastint(0);
+    obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+
+    return obj;
+}
+
+/// Helper: create a RegExpStringIterator object with .next() method.
+fn HObject* create_regexp_string_iterator(Heap* heap, HObject* rx, HString* s_hstr, bool global_flag) {
+    HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.REGEXP_STRING_ITERATOR);
+    if (catch err = iter_raw) return null;
+    HObject* iter = iter_raw;
+
+    // Store string (for GC tracing) and regexp
+    TVal str_tv;
+    str_tv.set_string(s_hstr);
+    (*iter.extra_ptr()).regexp_iter.string_val = str_tv;
+    (*iter.extra_ptr()).regexp_iter.regexp = rx;
+    (*iter.extra_ptr()).regexp_iter.flags = global_flag ? 1u : 0u; // bit 0 = global
+
+    iter.prototype = heap.iterator_proto;
+
+    // Add .next method as an own property
+    HString* next_key = builtin_intern_string(heap, "next");
+    if (next_key != null) {
+        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try fn_obj = fn_raw) {
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_REGEXP_STRING_ITERATOR_NEXT;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            TVal fn_tv;
+            fn_tv.set_object(fn_obj);
+            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    return iter;
+}
+
 /// String.prototype.matchAll(regexp) — ES2020 §21.1.3.12
-/// Returns an array of all match results (simplified: returns array instead of iterator).
+/// Returns a RegExpStringIterator that lazily yields match results.
 fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
-    char* input = s_hstr.get_cstr();
-    int input_len = (int)s_hstr.blen;
 
     if (ctx.argc == 0) {
         // matchAll() with no args: RegExp(undefined) has no 'g' flag → TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.matchAll requires a global regular expression");
+            err.prototype = heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(heap, "String.prototype.matchAll requires a global regular expression");
             if (msg_str != null) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                HString* msg_key = builtin_intern_string(heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
             }
             TVal err_tv;
@@ -2242,23 +2315,21 @@ fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
 
     TVal* search_val = &ctx.regs[ctx.base_reg];
 
-    // If searchValue is a regex, check for global flag
+    // If searchValue is a RegExp, check for global flag and create iterator
     if (is_regexp_object(search_val)) {
         HObject* rx = (HObject*)search_val.get_heapptr();
 
         // Read the global flag directly from the internal flags byte.
-        // (get_prop("global") doesn't invoke accessor getters — it
-        // returns the getter function object instead of the boolean.)
         bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
         if (!global_flag) {
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
             if (try err = err_raw) {
-                err.prototype = ctx.heap.type_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.matchAll called with a non-global regular expression");
+                err.prototype = heap.type_err_proto;
+                HString* msg_str = builtin_intern_string(heap, "String.prototype.matchAll called with a non-global regular expression");
                 if (msg_str != null) {
                     TVal msg_val;
                     msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    HString* msg_key = builtin_intern_string(heap, "message");
                     err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
                 }
                 TVal err_tv;
@@ -2270,204 +2341,40 @@ fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
             return;
         }
 
-        // Reset lastIndex to 0
-        HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+        // Reset lastIndex to 0 (per spec §21.2.7.5.1 step 5)
+        HString* li_key = builtin_intern_string(heap, "lastIndex");
         TVal zero_tv; zero_tv.set_fastint(0);
         rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
 
-        // Create result array
-        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-        if (catch err = arr_raw) { ctx.result.set_null(); return; }
-        HObject* result_arr = arr_raw;
-        result_arr.prototype = ctx.heap.array_proto;
-
-        uint arr_idx = 0;
-        int search_pos = 0;
-
-        while (search_pos <= input_len) {
-            int out_start = 0;
-            int out_end = 0;
-            int out_num_captures = 0;
-            int[re_bindings::RE_MAX_CAPTURES] caps_start;
-            int[re_bindings::RE_MAX_CAPTURES] caps_end;
-            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-
-            int result = re_bindings::re_exec(
-                (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
-                &out_start, &out_end, &out_num_captures,
-                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
-            );
-
-            if (result != re_bindings::RE_MATCH) break;
-
-            // Create match result array with captures, index, input
-            HObject*? match_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-            if (catch err = match_arr_raw) break;
-            HObject* match_arr = match_arr_raw;
-            match_arr.prototype = ctx.heap.array_proto;
-
-            // Element 0: full match
-            usz match_len = (usz)(out_end - out_start);
-            HString* match_str;
-            if (match_len == 0) {
-                match_str = builtin_intern_string(ctx.heap, "");
-            } else {
-                match_str = builtin_intern_string(ctx.heap, input[out_start : match_len]);
-            }
-            TVal elem;
-            elem.set_string(match_str);
-            HString* zero_key = builtin_intern_string(ctx.heap, "0");
-            match_arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
-
-            // Capture groups
-            uint match_arr_len = 1;
-            int num_caps = out_num_captures;
-            if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
-            for (int i = 0; i < num_caps; i++) {
-                HString* cap_str;
-                if (caps_start[i] >= 0 && caps_end[i] >= 0) {
-                    usz cap_len = (usz)(caps_end[i] - caps_start[i]);
-                    cap_str = cap_len == 0
-                        ? builtin_intern_string(ctx.heap, "")
-                        : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]);
-                } else {
-                    cap_str = null; // undefined
-                }
-                TVal cap_elem;
-                if (cap_str != null) {
-                    cap_elem.set_string(cap_str);
-                } else {
-                    cap_elem.set_undefined();
-                }
-                match_arr.put_prop(ctx.heap.int_to_hstring((long)(i + 1)), cap_elem, hobject::PROP_FLAGS_WEC);
-                match_arr_len++;
-            }
-
-            // Set index property
-            TVal idx_tv;
-            idx_tv.set_fastint((long)out_start);
-            HString* idx_key = builtin_intern_string(ctx.heap, "index");
-            match_arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
-
-            // Set input property
-            TVal input_tv;
-            input_tv.set_string(s_hstr);
-            HString* input_key = builtin_intern_string(ctx.heap, "input");
-            match_arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
-
-            // Set length
-            TVal mlen_tv;
-            mlen_tv.set_fastint((long)match_arr_len);
-            HString* mlen_key = builtin_intern_string(ctx.heap, "length");
-            match_arr.put_prop(mlen_key, mlen_tv, hobject::PROP_FLAGS_WEC);
-
-            // Add match result array to outer array
-            TVal match_tv;
-            match_tv.set_object(match_arr);
-            result_arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), match_tv, hobject::PROP_FLAGS_WEC);
-            arr_idx++;
-
-            // Advance: if empty match, move by one; else go to end of match
-            if (out_end == search_pos) {
-                search_pos = out_end + 1;
-                if (search_pos > input_len) break;
-            } else {
-                search_pos = out_end;
-            }
+        // Create and return the RegExpStringIterator
+        HObject*? iter = create_regexp_string_iterator(heap, rx, s_hstr, true);
+        if (try it = iter) {
+            ctx.result.set_object(it);
+        } else {
+            ctx.result.set_undefined();
         }
-
-        // Reset lastIndex
-        TVal li_tv; li_tv.set_fastint(0);
-        rx.put_prop(li_key, li_tv, hobject::PROP_FLAGS_WEC);
-
-        // Set length on result array
-        TVal len_tv;
-        len_tv.set_fastint((long)arr_idx);
-        HString* len_key = builtin_intern_string(ctx.heap, "length");
-        result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-
-        ctx.result.set_object(result_arr);
         return;
     }
 
-    // Non-RegExp arg: convert to RegExp with "g" flag by doing literal string search
-    HString* search_hstr = builtin_to_string(ctx.heap, search_val);
+    // Non-RegExp arg: convert to string and create a RegExp with "g" flag
+    HString* search_hstr = builtin_to_string(heap, search_val);
     if (search_hstr == null) { ctx.result.set_null(); return; }
-    char* search_data = search_hstr.get_cstr();
-    uint search_len = search_hstr.blen;
+    char[] pattern = search_hstr.get_data();
 
-    // Create result array
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_null(); return; }
-    HObject* result_arr = arr_raw;
-    result_arr.prototype = ctx.heap.array_proto;
-
-    if (search_len == 0) {
-        // Empty pattern: return empty array
-        TVal len_tv; len_tv.set_fastint(0);
-        HString* len_key = builtin_intern_string(ctx.heap, "length");
-        result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-        ctx.result.set_object(result_arr);
+    // Create a RegExp from the pattern string with "g" flag (js_flags = 1)
+    HObject* rx = create_regexp_from_string(heap, pattern, 1);
+    if (rx == null) {
+        ctx.result.set_null();
         return;
     }
 
-    uint arr_idx = 0;
-    uint pos = 0;
-
-    while (pos + search_len <= (uint)input_len) {
-        bool match = true;
-        for (uint j = 0; j < search_len; j++) {
-            if (input[pos + j] != search_data[j]) { match = false; break; }
-        }
-        if (!match) { pos++; continue; }
-
-        // Create match result array
-        HObject*? match_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-        if (catch err = match_arr_raw) break;
-        HObject* match_arr = match_arr_raw;
-        match_arr.prototype = ctx.heap.array_proto;
-
-        // Element 0: full match
-        TVal elem;
-        elem.set_string(search_hstr);
-        HString* zero_key = builtin_intern_string(ctx.heap, "0");
-        match_arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
-
-        // Set index property
-        TVal idx_tv;
-        idx_tv.set_fastint((long)pos);
-        HString* idx_key = builtin_intern_string(ctx.heap, "index");
-        match_arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
-
-        // Set input property
-        TVal input_tv;
-        input_tv.set_string(s_hstr);
-        HString* input_key = builtin_intern_string(ctx.heap, "input");
-        match_arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
-
-        // Set length = 1
-        TVal mlen_tv;
-        mlen_tv.set_fastint(1);
-        HString* mlen_key = builtin_intern_string(ctx.heap, "length");
-        match_arr.put_prop(mlen_key, mlen_tv, hobject::PROP_FLAGS_WEC);
-
-        // Add to result array
-        TVal match_tv;
-        match_tv.set_object(match_arr);
-        result_arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), match_tv, hobject::PROP_FLAGS_WEC);
-        arr_idx++;
-
-        pos += search_len;
+    // Create and return the RegExpStringIterator
+    HObject*? iter = create_regexp_string_iterator(heap, rx, s_hstr, true);
+    if (try it = iter) {
+        ctx.result.set_object(it);
+    } else {
+        ctx.result.set_undefined();
     }
-
-    // Set length on result array
-    TVal len_tv;
-    len_tv.set_fastint((long)arr_idx);
-    HString* len_key = builtin_intern_string(ctx.heap, "length");
-    result_arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-
-    ctx.result.set_object(result_arr);
 }
 
 /// String.prototype.normalize([form]) — ES6 §21.1.3.12
@@ -2682,7 +2589,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
             }
             TVal iter_tv;
             iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         }
     }
 

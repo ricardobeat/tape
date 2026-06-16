@@ -1089,9 +1089,9 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Promise"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_WEC);
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
-
+    
     // Create Promise function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
@@ -1102,7 +1102,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WEC);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
@@ -1119,38 +1119,38 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(1);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
     // Register static methods on Promise
     HString* resolve_key = builtin_intern_string(heap, "resolve");
     TVal resolve_tv;
     resolve_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RESOLVE);
-    ctor.put_prop(resolve_key, resolve_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(resolve_key, resolve_tv, hobject::PROP_FLAGS_WC);
 
     HString* reject_key = builtin_intern_string(heap, "reject");
     TVal reject_tv;
     reject_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_REJECT);
-    ctor.put_prop(reject_key, reject_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(reject_key, reject_tv, hobject::PROP_FLAGS_WC);
 
     HString* all_key = builtin_intern_string(heap, "all");
     TVal all_tv;
     all_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ALL);
-    ctor.put_prop(all_key, all_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(all_key, all_tv, hobject::PROP_FLAGS_WC);
 
     HString* race_key = builtin_intern_string(heap, "race");
     TVal race_tv;
     race_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RACE);
-    ctor.put_prop(race_key, race_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(race_key, race_tv, hobject::PROP_FLAGS_WC);
 
     HString* allsettled_key = builtin_intern_string(heap, "allSettled");
     TVal allsettled_tv;
     allsettled_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ALLSETTLED);
-    ctor.put_prop(allsettled_key, allsettled_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(allsettled_key, allsettled_tv, hobject::PROP_FLAGS_WC);
 
     HString* any_key = builtin_intern_string(heap, "any");
     TVal any_tv;
     any_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ANY);
-    ctor.put_prop(any_key, any_tv, hobject::PROP_FLAGS_WEC);
+    ctor.put_prop(any_key, any_tv, hobject::PROP_FLAGS_WC);
 
     // Register "Promise" in global environment
     uint hash = heap.hash_string("Promise");

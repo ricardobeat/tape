@@ -215,7 +215,9 @@ const uint BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH  = 326;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE = 327;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT   = 328;
 
-const uint BUILTIN_COUNT                       = 329;
+const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
+
+const uint BUILTIN_COUNT                       = 330;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1289,6 +1291,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 326: return { "[Symbol.search]", 1 };
         case 327: return { "[Symbol.replace]", 2 };
         case 328: return { "[Symbol.split]", 2 };
+        case 329: return { "next", 0 };
         default: return { "", -1 };
     }
 }
@@ -1846,6 +1849,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT] = &builtin_regexp_proto_symbol_split,
     [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
     [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
+    [BUILTIN_REGEXP_STRING_ITERATOR_NEXT] = &builtin_regexp_string_iterator_next,
     [BUILTIN_REFLECT_OWNKEYS] = &builtin_reflect_ownKeys,
     [BUILTIN_RESET_GLOBALS] = &builtin_reset_globals,
     [BUILTIN_SET] = &builtin_set,

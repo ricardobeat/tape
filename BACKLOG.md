@@ -7,13 +7,13 @@ Tasks are grouped by area but are otherwise independent.
 ## Conformance: Core VM & Compiler
 
 - [x] Implement function declaration hoisting: pre-scan function declarations in the compiler before emitting body statements (plan 026 #2, `src/compiler/functions.c3`)
-- [ ] Implement `var` hoisting: pre-scan `var` declarations and register them with `undefined` before compiling statements (plan 026 #3, `src/compiler/statements.c3`)
+- [x] Implement `var` hoisting: pre-scan `var` declarations and register them with `undefined` before compiling statements (plan 026 #3, `src/compiler/statements.c3`)
 - [x] Fix `for (let/const x in obj)` binding: PUSH_LEX/POP_LEX around for-in for proper lexical scoping
-- [ ] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
-- [ ] Fix stale `call_prop_obj_reg` after `new X()[a.b].method()`: save/restore around `self.expression()` in the LBRACKET branch of trailing-access loop (plan 026 #8, `src/compiler/expressions.c3:1171`)
+- [x] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
+- [x] Fix stale `call_prop_obj_reg` after `new X()[a.b].method()`: save/restore around `self.expression()` in the LBRACKET branch of trailing-access loop (plan 026 #8, `src/compiler/expressions.c3:1171`)
 - [x] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
 - [x] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
-- [ ] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
+- [x] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
 - [x] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
 - [x] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
 - [x] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
@@ -29,10 +29,10 @@ These features are tracked as high-priority items. Tests for them are currently 
 - [x] Implement destructuring binding (`const [a, b] = arr` and `const {x, y} = obj`) — compiler/parser
 - [x] Implement destructuring assignment (`[a, b] = arr` and `{x, y} = obj`) — compiler/parser
 - [x] Implement default parameters (`function f(x = 42) {}`) — compiler
-- [ ] Implement rest parameters (`function f(...args) {}`) — compiler
+- [x] Implement rest parameters (`function f(...args) {}`) — compiler
 - [x] Implement object spread (`{...obj}`) — compiler + VM
 - [ ] Implement async/await — compiler + VM (requires Promise)
-- [ ] Implement class declaration / class expression — compiler (extends, constructor, methods, static fields)
+- [x] Implement class declaration / class expression — compiler (extends, constructor, methods, static fields)
 
 ---
 
@@ -45,7 +45,7 @@ These features are tracked as high-priority items. Tests for them are currently 
 - [x] Fix `defineProperty` validation order for combined data+accessor descriptor (array length descriptor validation, string→number coercion, configurable/writable checks)
 - [x] Fix `Object.assign` to use `[[Set]]` instead of `put_prop` so setters are invoked and non-writable targets throw (`src/builtins/object.c3:1943`)
 - [x] Fix `for-in` enumeration order: emit integer indices ascending, then string keys in insertion order, then Symbol keys (ES2020 §13.7.5.15, `src/vm.c3:884-954`)
-- [ ] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
+- [x] Audit remaining builtin method `.writable`/`.configurable` flags not matching ES5 §15.3.5.1 (plan 022 Bug F)
 - [x] Fix `Object.defineProperties` to apply descriptors atomically: two-phase validate-all-then-apply-all
 - [x] Verify `Object.create(null)` produces a truly prototype-less object that passes `Object.getPrototypeOf(o) === null`
 
@@ -96,7 +96,7 @@ These features are tracked as high-priority items. Tests for them are currently 
 
 - [x] Fix `RegExp.prototype.exec` to update `lastIndex` only when `global` or `sticky` flag is set per ES5 §15.10.6.2
 - [x] Fix `String.prototype.match` with non-global regex to return `index` and `input` properties on result array
-- [ ] Implement `String.prototype.matchAll` returning a RegExpStringIterator (plan 023)
+- [x] Implement `String.prototype.matchAll` returning a RegExpStringIterator (plan 023)
 - [x] Fix `RegExp` constructor called with regex argument: should copy pattern+flags, not re-parse as string
 - [x] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
 - [x] Fix `RegExp.prototype.flags` getter to return flags in alphabetical order `gimsuy` per ES2015
@@ -120,11 +120,11 @@ These features are tracked as high-priority items. Tests for them are currently 
 
 - [x] Implement `Symbol.iterator` on `Array.prototype` returning an ArrayIterator per ES6 §22.1.3.29
 - [x] Implement `Symbol.iterator` on `String.prototype` returning a StringIterator (Unicode code-point aware)
-- [ ] Implement `Symbol.iterator` on `Map.prototype` / `Set.prototype` returning entries/values iterators
-- [ ] Implement `for-of` statement desugaring in the compiler: call `Symbol.iterator`, loop `.next()`, check `.done` (`src/compiler/statements.c3`)
+- [x] Implement `Symbol.iterator` on `Map.prototype` / `Set.prototype` returning entries/values iterators
+- [x] Implement `for-of` statement desugaring in the compiler: call `Symbol.iterator`, loop `.next()`, check `.done` (`src/compiler/statements.c3`)
 - [x] Implement `Array.from` with iterator protocol support (currently only handles array-likes)
-- [ ] Implement spread operator `[...iter]` using iterator protocol
-- [ ] Implement destructuring assignment `const [a, b] = iter` using iterator protocol
+- [x] Implement spread operator `[...iter]` using iterator protocol
+- [x] Implement destructuring assignment `const [a, b] = iter` using iterator protocol
 
 ---
 
@@ -181,8 +181,8 @@ These features are tracked as high-priority items. Tests for them are currently 
 
 ## Performance
 
-- [ ] Replace `dispatch_builtin` 290-case `switch` with a function-pointer table (`src/builtins/core.c3`) — estimated 1.5× speedup on `bench_function_call`
-- [ ] Implement boxed accessor pairs: shrink `PropValue` from 16 bytes to 8 bytes by boxing getters/setters in a `GetterSetter` GC cell (plan 033 item 1) — estimated 3–5 MB RSS reduction
+- [x] Replace `dispatch_builtin` 290-case `switch` with a function-pointer table (`src/builtins/core.c3`) — estimated 1.5× speedup on `bench_function_call`
+- [x] Implement boxed accessor pairs: shrink `PropValue` from 16 bytes to 8 bytes by boxing getters/setters in a `GetterSetter` GC cell (plan 033 item 1) — estimated 3–5 MB RSS reduction
 - [ ] Route all remaining `libc::malloc/realloc/free` calls through the `Heap` allocator (104 sites remain, plan 005)
 - [ ] Investigate `bench_recursion` 1.9× vs Duktape gap: profile call frame allocation and valstack growth on deep recursion (`bench_recursion_deep` is 7.5× vs QuickJS)
 - [ ] Add inline cache for `GETPROP` on prototype-chain hits (currently IC only covers own-property fast path)

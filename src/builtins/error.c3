@@ -423,13 +423,13 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
         HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         TVal length_tv;
         length_tv.set_fastint(1);
-        err_ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WEC);
+        err_ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
         // Register static method: Error.captureStackTrace
         HString* capture_key = builtin_intern_string(heap, "captureStackTrace");
         TVal capture_tv;
         capture_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_CAPTURE_STACK_TRACE);
-        err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WEC);
+        err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WC);
 
         // Register in global environment
         uint hash = heap.hash_string("Error");

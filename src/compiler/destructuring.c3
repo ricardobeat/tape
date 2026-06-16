@@ -1195,7 +1195,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKind kind, bool is_lexical, bool is_const, bool is_array_pattern) {
     if (is_array_pattern) {
         // Array pattern: for (let [a, b] of arr)
-        // value_reg holds the yielded value (should be iterable-like)
+        // value_reg holds the yielded value — use iterator protocol to extract elements
         ArrayBind[32] binds;
         uint bind_count = 0;
 
@@ -1252,57 +1252,140 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
             if (!self.match(TokenType.COMMA)) break;
         }
         self.expect(TokenType.RBRACKET)!;
-        self.expect(TokenType.RPAREN)!;
 
-        // Emit extraction code
+        // Caller must have consumed RPAREN before calling this function.
+
+        // === Emit extraction code using iterator protocol ===
+        // Set up inner iterator on value_reg: value_reg[Symbol.iterator]()
+        ushort inner_sym_reg = self.alloc_reg();
+        self.emit_a_bc(Opcode.GETVAR, (uint)inner_sym_reg, self.add_string_constant("Symbol"));
+
+        ushort inner_iter_key_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDCONST, (uint)inner_iter_key_reg, self.add_string_constant("iterator"), 0);
+
+        ushort inner_symbol_val_reg = self.alloc_reg();
+        self.emit_abc(Opcode.GETPROP, (uint)inner_symbol_val_reg, (uint)inner_sym_reg, (uint)inner_iter_key_reg);
+        self.free_reg(inner_iter_key_reg);
+        self.free_reg(inner_sym_reg);
+
+        ushort inner_method_reg = self.alloc_reg();
+        self.emit_abc(Opcode.GETPROP, (uint)inner_method_reg, (uint)value_reg, (uint)inner_symbol_val_reg);
+        self.free_reg(inner_symbol_val_reg);
+
+        // Call value_reg[Symbol.iterator]() to get the inner iterator
+        ushort inner_this_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDREG, (uint)inner_this_reg, (uint)value_reg, 0);
+        self.emit_abc(Opcode.CALL, (uint)inner_method_reg, (uint)inner_method_reg, 0);
+        self.free_reg(inner_this_reg);
+
+        // Get .next method from inner iterator
+        ushort inner_next_reg = self.alloc_reg();
+        ushort inner_next_key_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDCONST, (uint)inner_next_key_reg, self.add_string_constant("next"), 0);
+        self.emit_abc(Opcode.GETPROP, (uint)inner_next_reg, (uint)inner_method_reg, (uint)inner_next_key_reg);
+        self.free_reg(inner_next_key_reg);
+
+        // Set up callee + this for inner .next() calls
+        ushort inner_callee_reg = self.alloc_reg();
+        ushort inner_callee_this_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDREG, (uint)inner_callee_reg, (uint)inner_next_reg, 0);
+        self.emit_abc(Opcode.LDREG, (uint)inner_callee_this_reg, (uint)inner_method_reg, 0);
+
+        // Emit extraction for each binding
         for (uint i = 0; i < bind_count; i++) {
-            if (binds[i].is_hole) continue;
+            if (binds[i].is_hole) {
+                // Advance the inner iterator by one — discard the value
+                ushort hole_result_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CALL, (uint)hole_result_reg, (uint)inner_callee_reg, 0);
+                self.free_reg(hole_result_reg);
+                continue;
+            }
 
             if (binds[i].is_rest) {
-                // Rest element: slice from current index
-                uint rest_idx = 0;
-                for (uint j = 0; j < i; j++) {
-                    if (!binds[j].is_hole) rest_idx++;
+                // Rest element: collect all remaining values from inner iterator into a new array
+                ushort arr_reg = self.alloc_reg();
+                self.emit_abc(Opcode.NEWARR, (uint)arr_reg, 0, 0);
+
+                uint collect_start = self.code_count;
+
+                // Call .next()
+                ushort inner_result_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CALL, (uint)inner_result_reg, (uint)inner_callee_reg, 0);
+
+                // Check .done — exit if done
+                ushort inner_done_key_reg = self.alloc_reg();
+                ushort inner_done_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)inner_done_key_reg, self.add_string_constant("done"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)inner_done_reg, (uint)inner_result_reg, (uint)inner_done_key_reg);
+                uint inner_done_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)inner_done_reg);
+
+                // Extract .value
+                ushort inner_val_key_reg = self.alloc_reg();
+                ushort inner_val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)inner_val_key_reg, self.add_string_constant("value"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)inner_val_reg, (uint)inner_result_reg, (uint)inner_val_key_reg);
+                self.free_reg(inner_val_key_reg);
+                self.free_reg(inner_result_reg);
+
+                // Push .value to array via arr.push(value)
+                ushort push_key_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);
+                ushort push_method_reg = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)push_method_reg, (uint)arr_reg, (uint)push_key_reg);
+                self.free_reg(push_key_reg);
+
+                ushort push_callee_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)push_callee_reg, (uint)push_method_reg, 0);
+                self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 1), (uint)arr_reg, 0);
+                if (self.next_reg < push_callee_reg + 3) {
+                    self.next_reg = push_callee_reg + 3;
                 }
+                self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 2), (uint)inner_val_reg, 0);
+                self.free_reg(inner_val_reg);
+                self.free_reg(push_method_reg);
+                self.emit_abc(Opcode.CALL, (uint)push_callee_reg, (uint)push_callee_reg, 1);
+                // push_callee_reg now holds the new length (unused)
 
-                // Call value.slice(rest_idx)
-                // CALL convention: callee at callee_reg, this at callee_reg+1, args at callee_reg+2..
-                ushort callee_reg = self.alloc_reg();
-                if (self.next_reg < callee_reg + 3) {
-                    self.next_reg = callee_reg + 3;
-                }
+                // Jump back to collect next value
+                int back_offset = (int)collect_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
-                ushort slice_key_reg = self.alloc_reg();
-                uint slice_key_idx = self.add_string_constant("slice");
-                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
-                ushort method_reg = self.alloc_reg();
-                self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)value_reg, (uint)slice_key_reg);
+                self.patch_jump(inner_done_jump);
 
-                // Move method to callee_reg, this to callee_reg+1, arg to callee_reg+2
-                self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
-                self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)value_reg, 0);
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
+                // Free collect-loop temps
+                self.free_reg(inner_done_key_reg);
+                self.free_reg(inner_done_reg);
 
-                // Call
-                self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
-
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
-                self.free_regs_to(callee_reg);
+                // Store the collected array into the rest binding
+                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)arr_reg, 0);
+                self.free_reg(arr_reg);
             } else {
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
-                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)value_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
+                // Regular binding: call .next() and extract .value
+                ushort inner_result_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CALL, (uint)inner_result_reg, (uint)inner_callee_reg, 0);
 
-                // Apply default
+                ushort inner_val_key_reg = self.alloc_reg();
+                ushort inner_val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)inner_val_key_reg, self.add_string_constant("value"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)inner_val_reg, (uint)inner_result_reg, (uint)inner_val_key_reg);
+                self.free_reg(inner_val_key_reg);
+                self.free_reg(inner_result_reg);
+
+                // Store in binding register
+                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)inner_val_reg, 0);
+                self.free_reg(inner_val_reg);
+
+                // Apply default if value is undefined
                 if (binds[i].has_default) {
                     ushort undef_check_reg = self.alloc_reg();
                     self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
                     ushort is_undef_reg = self.alloc_reg();
                     self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
                     self.free_reg(undef_check_reg);
+
                     uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                     self.free_reg(is_undef_reg);
+
                     self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
                     self.patch_jump(skip_default);
                     self.free_reg(binds[i].default_val_reg);
@@ -1311,6 +1394,12 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
 
             self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
         }
+
+        // Free inner iterator registers
+        self.free_reg(inner_callee_this_reg);
+        self.free_reg(inner_callee_reg);
+        self.free_reg(inner_next_reg);
+        self.free_reg(inner_method_reg);
     } else {
         // Object pattern: for (let {x, y} of arr)
         ObjBind[32] binds;
@@ -1363,7 +1452,8 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
             }
         }
         self.expect(TokenType.RBRACE)!;
-        self.expect(TokenType.RPAREN)!;
+
+        // Caller must have consumed RPAREN before calling this function.
 
         // Emit extraction code
         for (uint i = 0; i < bind_count; i++) {

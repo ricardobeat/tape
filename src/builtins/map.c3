@@ -519,9 +519,9 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
         }
         TVal iter_tv;
         iter_tv.set_object(fn_obj);
-        proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_NWC);
+proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
     }
-
+    
     // Set @@toStringTag on Map.prototype
     HString* tag_key = ensure_tostringtag_symbol(heap);
     if (tag_key != null) {

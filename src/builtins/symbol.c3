@@ -603,7 +603,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
         if (toprim_key != null) {
             TVal toprim_fn;
             toprim_fn.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE);
-            proto.put_prop(toprim_key, toprim_fn, hobject::PROP_FLAGS_WEC);
+            proto.put_prop(toprim_key, toprim_fn, hobject::PROP_FLAGS_WC);
         }
     }
 
