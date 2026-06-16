@@ -23,7 +23,12 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     // Check for "use strict" directive prologue at program level
     ctx.parse_directives()!;
 
-    // Hoist var and function declarations at the global level.
+    // Hoist function declarations at the global level (ES5 §10.2.1.1).
+    // This implements function declaration hoisting by pre-scanning the source
+    // and compiling function declarations before any statements are parsed.
+    ctx.hoist_global_fn_decls()!;
+
+    // Hoist var declarations at the global level.
     ctx.hoist_decls(true)!;
 
     // Parse statements until EOF
@@ -53,7 +58,10 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     // Check for "use strict" directive prologue at eval level
     ctx.parse_directives()!;
 
-    // Hoist var and function declarations at the eval level.
+    // Hoist function declarations at the eval level (ES5 §10.2.1.1).
+    ctx.hoist_global_fn_decls()!;
+
+    // Hoist var declarations at the eval level.
     ctx.hoist_decls(true)!;
 
     // Parse statements until EOF

@@ -1856,8 +1856,48 @@ fn void? CompilerContext.expression_statement(&self) {
 }
 
 /// Parse a function declaration (hoisted).
+/// This is called during normal statement parsing for function declarations
+/// that were NOT hoisted during the pre-scan phase.
 fn void? CompilerContext.function_declaration(&self) {
     self.expect(TokenType.FUNCTION)!;
+
+    // Check if this function declaration was already hoisted during pre-scan
+    // If so, skip it entirely to avoid duplicate compilation.
+    // For global scope, check against hoisted_fn_names
+    if (self.is_global) {
+        // Extract function name from current lexer position
+        Token? star_opt = self.lexer.next_token();
+        if (catch _err2 = star_opt) return;
+        if (star_opt.type == TokenType.STAR) {
+            // Generator function - put star back and continue
+            self.lexer.pushback(star_opt);
+        } else {
+            // Not a star - put it back (it's the function name)
+            self.lexer.pushback(star_opt);
+        }
+        Token? name_opt = self.lexer.next_token();
+        if (catch _err = name_opt) return;
+        if (name_opt.type == TokenType.IDENTIFIER) {
+            char[] fn_name = name_opt.str_value;
+            if (fn_name.len > 0) {
+                // Check if already hoisted
+                bool already = false;
+                for (ushort hi = 0; hi < self.hoisted_fn_count; hi++) {
+                    if (str_eq(self.hoisted_fn_names[hi], fn_name)) {
+                        already = true;
+                        break;
+                    }
+                }
+                if (already) {
+                    // Skip the rest of the function body
+                    self.skip_function_body();
+                    return;
+                }
+            }
+        }
+        // Put back the name token for normal processing
+        self.lexer.pushback(name_opt);
+    }
 
     // Function declarations are hoisted to function scope — need env.
     self.has_local_bindings = true;

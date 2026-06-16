@@ -6,7 +6,7 @@ Tasks are grouped by area but are otherwise independent.
 
 ## Conformance: Core VM & Compiler
 
-- [ ] Implement function declaration hoisting: pre-scan function declarations in the compiler before emitting body statements (plan 026 #2, `src/compiler/functions.c3`)
+- [x] Implement function declaration hoisting: pre-scan function declarations in the compiler before emitting body statements (plan 026 #2, `src/compiler/functions.c3`)
 - [ ] Implement `var` hoisting: pre-scan `var` declarations and register them with `undefined` before compiling statements (plan 026 #3, `src/compiler/statements.c3`)
 - [x] Fix `for (let/const x in obj)` binding: PUSH_LEX/POP_LEX around for-in for proper lexical scoping
 - [ ] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
