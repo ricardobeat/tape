@@ -16,41 +16,81 @@ const uint PROMISE_PENDING   = 0;
 const uint PROMISE_FULFILLED = 1;
 const uint PROMISE_REJECTED  = 2;
 
-/// Get the promise state from the HObject's array_part[0].
+/// Hidden property keys for Promise internals.
+/// Leading \xFF makes them inaccessible to user code (no way to spell that
+/// byte in ECMAScript string literals).
+const char[] PROMISE_REACTION_NEXT_KEY = "\xFFpromise_reaction_next";
+
+/// Initialize the HObjectPromise extra fields for a freshly-allocated
+/// Promise object.  Called once on allocation (covers both user-facing
+/// Promise instances and Promise.prototype itself).
+fn void promise_init(HObject* promise) {
+    if (promise == null) return;
+    (*promise.extra_ptr()).promise.state = PROMISE_PENDING;
+    (*promise.extra_ptr()).promise.result.set_undefined();
+    (*promise.extra_ptr()).promise.reactions_head = null;
+    (*promise.extra_ptr()).promise.reactions_tail = null;
+}
+
+/// Get the promise state from HObjectExtra.promise.state.
 fn uint promise_get_state(HObject* promise, uint default_state) {
-    if (promise.array_part() != null && promise.array_size >= 2) {
-        return (uint)promise.array_part()[0].get_fastint();
-    }
-    return default_state;
+    if (promise == null) return default_state;
+    return (*promise.extra_ptr()).promise.state;
 }
 
-/// Set the promise state in array_part.
-/// Layout: array[0]=state, array[1]=result, array[2+]=reactions.
-/// We must ensure array_used >= 2 so that reactions start at index 2.
-/// set_array_idx's undefined-based tracking only counts index 0 (state)
-/// as used, leaving index 1 (result=undef) uncounted. Without the fix,
-/// promise_add_reaction writes to index 1, clobbering the result slot,
-/// and promise_trigger_reactions finds zero reactions.
+/// Set the promise state.  Idempotent: only writes if currently pending
+/// (a Promise can only be settled once).
 fn void promise_set_state(HObject* promise, uint state) {
-    TVal state_tv;
-    state_tv.set_fastint((long)state);
-    promise.set_array_idx(0, state_tv);
-    TVal undef;
-    undef.set_undefined();
-    promise.set_array_idx(1, undef);
-    if (promise.array_used < 2) {
-        promise.array_used = 2;
-    }
+    if (promise == null) return;
+    if ((*promise.extra_ptr()).promise.state != PROMISE_PENDING) return;
+    (*promise.extra_ptr()).promise.state = state;
 }
 
-/// Set the promise result in array_part.
-/// Writes directly to array_part[1] — the slot is already accounted for in
-/// array_used by promise_set_state, so using set_array_idx would incorrectly
-/// increment array_used when transitioning from undefined to non-undefined.
-fn void promise_set_result(HObject* promise, TVal* val) {
-    if (promise.array_part() != null && promise.array_size > 1) {
-        promise.array_part()[1] = *val;
+/// Settle a Promise in one shot: state + result + refcounting.
+/// No-op if the promise is already settled.
+fn void promise_settle(HObject* promise, uint state, TVal* val, Heap* heap) {
+    if (promise == null) return;
+    if ((*promise.extra_ptr()).promise.state != PROMISE_PENDING) return;
+    heap.tval_copy_ref(&(*promise.extra_ptr()).promise.result, val);
+    (*promise.extra_ptr()).promise.state = state;
+}
+
+/// Set the promise result.  Refcount-aware.
+fn void promise_set_result(HObject* promise, TVal* val, Heap* heap) {
+    if (promise == null) return;
+    heap.tval_copy_ref(&(*promise.extra_ptr()).promise.result, val);
+}
+
+/// Get the promise's resolved value / rejection reason.
+fn TVal promise_get_result(HObject* promise) {
+    return (*promise.extra_ptr()).promise.result;
+}
+
+/// Get the "next" pointer in the reaction linked list.
+fn HObject* reaction_get_next(HObject* reaction, Heap* heap) {
+    if (reaction == null) return null;
+    HString* key = builtin_intern_string(heap, PROMISE_REACTION_NEXT_KEY);
+    if (key == null) return null;
+    if (try nv = reaction.get_prop(key)) {
+        if (nv.is_object() && nv.get_heapptr() != null) {
+            return (HObject*)nv.get_heapptr();
+        }
     }
+    return null;
+}
+
+/// Set the "next" pointer in the reaction linked list.
+fn void reaction_set_next(HObject* reaction, HObject* next, Heap* heap) {
+    if (reaction == null) return;
+    HString* key = builtin_intern_string(heap, PROMISE_REACTION_NEXT_KEY);
+    if (key == null) return;
+    TVal nv;
+    if (next != null) {
+        nv.set_object(next);
+    } else {
+        nv.set_undefined();
+    }
+    reaction.put_prop(key, nv, hobject::PROP_FLAGS_WEC);
 }
 
 /// Check that `this` is a Promise object.
@@ -78,24 +118,25 @@ fn HObject* check_promise(BuiltinContext* ctx) {
     return null;
 }
 
-/// Trigger all pending reactions for a settled promise.
+/// Trigger all pending reactions for a settled promise.  Reactions are
+/// detached from the promise's linked list before invocation, so new
+/// reactions added during a handler call don't re-trigger this promise.
 fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state == PROMISE_PENDING) return;
 
-    TVal result = promise.array_part()[1];
+    // Snapshot and clear the reaction list before invoking.
+    HObject* reaction = (*promise.extra_ptr()).promise.reactions_head;
+    (*promise.extra_ptr()).promise.reactions_head = null;
+    (*promise.extra_ptr()).promise.reactions_tail = null;
 
-    // Iterate reactions stored in array_part starting at index 2
-    // Each reaction occupies one slot (an OBJECT with handler/downstream props)
-    uint num_reactions = 0;
-    if (promise.array_used > 2) {
-        num_reactions = promise.array_used - 2;
-    }
+    TVal result = promise_get_result(promise);
 
-    for (uint i = 0; i < num_reactions; i++) {
-        TVal reaction_val = promise.array_part()[2 + i];
-        if (!reaction_val.is_object() || reaction_val.get_heapptr() == null) continue;
-        HObject* reaction = (HObject*)reaction_val.get_heapptr();
+    while (reaction != null) {
+        HObject* next = reaction_get_next(reaction, heap);
+        // Unlink before invoking so reactions added during invocation are
+        // attached to whatever new promise the handler returns to.
+        reaction_set_next(reaction, null, heap);
 
         // Get handler: onFulfilled for fulfilled, onRejected for rejected
         char[] handler_prop = (state == PROMISE_FULFILLED) ? "onFulfilled" : "onRejected";
@@ -124,11 +165,13 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
         }
 
         if (state == PROMISE_FULFILLED) {
-            if (handler.is_undefined()) {
+            bool callable = handler.is_lightfunc() ||
+                (handler.is_object() && handler.get_heapptr() != null &&
+                 ((HObject*)handler.get_heapptr()).is_callable());
+            if (handler.is_undefined() || !callable) {
                 // No onFulfilled — pass through to downstream
                 if (downstream != null) {
-                    promise_set_state(downstream, PROMISE_FULFILLED);
-                    promise_set_result(downstream, &result);
+                    promise_settle(downstream, PROMISE_FULFILLED, &result, heap);
                     promise_trigger_reactions(downstream, heap, vm);
                 }
             } else {
@@ -137,11 +180,13 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
                 heap.enqueue_microtask(handler, result, downstream_val);
             }
         } else {
-            if (handler.is_undefined()) {
+            bool callable = handler.is_lightfunc() ||
+                (handler.is_object() && handler.get_heapptr() != null &&
+                 ((HObject*)handler.get_heapptr()).is_callable());
+            if (handler.is_undefined() || !callable) {
                 // No onRejected — pass through rejection to downstream
                 if (downstream != null) {
-                    promise_set_state(downstream, PROMISE_REJECTED);
-                    promise_set_result(downstream, &result);
+                    promise_settle(downstream, PROMISE_REJECTED, &result, heap);
                     promise_trigger_reactions(downstream, heap, vm);
                 }
             } else {
@@ -150,6 +195,8 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
                 heap.enqueue_microtask(handler, result, downstream_val);
             }
         }
+
+        reaction = next;
     }
 }
 
@@ -178,8 +225,7 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
     // Resolve the downstream promise with the handler's return value.
     // If the result is a thenable, we should follow it (Promise Resolution
     // Function).  For now, do a simple resolve.
-    promise_set_state(ds, PROMISE_FULFILLED);
-    promise_set_result(ds, &result);
+    promise_settle(ds, PROMISE_FULFILLED, &result, heap);
     promise_trigger_reactions(ds, heap, vm);
 }
 
@@ -192,8 +238,7 @@ fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool i
         HObject* obj = (HObject*)callee.get_heapptr();
         // If it's a PROMISE directly, resolve/reject it
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-            promise_set_state(obj, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
-            promise_set_result(obj, val);
+            promise_settle(obj, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED, val, heap);
             promise_trigger_reactions(obj, heap, vm);
             return;
         }
@@ -203,8 +248,7 @@ fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool i
             if (pv.is_object() && pv.get_heapptr() != null) {
                 HObject* prom = (HObject*)pv.get_heapptr();
                 if (prom.flags.obj_class == hobject::ObjClass.PROMISE) {
-                    promise_set_state(prom, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED);
-                    promise_set_result(prom, val);
+                    promise_settle(prom, is_resolve ? PROMISE_FULFILLED : PROMISE_REJECTED, val, heap);
                     promise_trigger_reactions(prom, heap, vm);
                 }
             }
@@ -241,8 +285,7 @@ fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
     value.set_undefined();
     if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
 
-    promise_set_state(promise, PROMISE_FULFILLED);
-    promise_set_result(promise, &value);
+    promise_settle(promise, PROMISE_FULFILLED, &value, heap);
     promise_trigger_reactions(promise, heap, ctx.vm);
 }
 
@@ -273,29 +316,26 @@ fn void builtin_promise_reject_callback(BuiltinContext* ctx) {
     reason.set_undefined();
     if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
 
-    promise_set_state(promise, PROMISE_REJECTED);
-    promise_set_result(promise, &reason);
+    promise_settle(promise, PROMISE_REJECTED, &reason, heap);
     promise_trigger_reactions(promise, heap, ctx.vm);
 }
 
-/// Create a new Promise with the given internal structure.
+/// Create a new pending Promise.
 fn HObject*? promise_create(Heap* heap) {
     HObject*? prom_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
     if (catch err = prom_raw) return null;
     HObject* prom = prom_raw;
     prom.prototype = heap.promise_proto;
-    promise_set_state(prom, PROMISE_PENDING);
+    promise_init(prom);
     return prom;
 }
 
 /// Create a resolve/reject capability object (internal).
-/// Returns a pair of functions as properties on a capability HObject.
 fn HObject*? promise_create_capability(Heap* heap, HObject* promise) {
     HObject*? cap_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = cap_raw) return null;
     HObject* cap = cap_raw;
 
-    // Store a reference to the promise this capability controls
     HString* promise_key = builtin_intern_string(heap, "promise");
     TVal promise_val;
     promise_val.set_object(promise);
@@ -304,10 +344,25 @@ fn HObject*? promise_create_capability(Heap* heap, HObject* promise) {
     return cap;
 }
 
-/// Add a reaction to a pending promise.
-fn void promise_add_reaction(HObject* promise, TVal reaction_val) {
-    uint idx = promise.array_used;
-    promise.set_array_idx(idx, reaction_val);
+/// Append a reaction HObject to the promise's reaction linked list.
+fn void promise_add_reaction(HObject* promise, HObject* reaction, Heap* heap) {
+    if (promise == null || reaction == null) return;
+    reaction_set_next(reaction, null, heap);
+    if ((*promise.extra_ptr()).promise.reactions_tail == null) {
+        (*promise.extra_ptr()).promise.reactions_head = reaction;
+    } else {
+        reaction_set_next((HObject*)(*promise.extra_ptr()).promise.reactions_tail, reaction, heap);
+    }
+    (*promise.extra_ptr()).promise.reactions_tail = reaction;
+}
+
+/// Get the resolved value of a Promise-like object (Promise, thenable, etc).
+/// Reads from the HObjectPromise extra slot.  Only valid for ObjClass.PROMISE.
+fn TVal promise_try_get_value(HObject* obj) {
+    if (obj == null || obj.flags.obj_class != hobject::ObjClass.PROMISE) {
+        TVal undef; undef.set_undefined(); return undef;
+    }
+    return promise_get_result(obj);
 }
 
 // ============================================================================
@@ -321,9 +376,6 @@ fn void builtin_promise(BuiltinContext* ctx) {
         return;
     }
     HObject* promise = prom_raw;
-
-    // Set prototype
-    promise.prototype = ctx.heap.promise_proto;
 
     if (ctx.argc < 1) {
         // No executor — return pending promise
@@ -379,7 +431,6 @@ fn void builtin_promise(BuiltinContext* ctx) {
     (*resolve_func.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
     resolve_func.flags.callable = true;
     resolve_func.prototype = heap.function_proto;
-    // Store promise reference on the function object
     HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
     TVal promise_ref;
     promise_ref.set_object(promise);
@@ -449,29 +500,26 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     }
     HObject* reaction = reaction_raw;
 
-    // Store handlers
     HString* onf_key = builtin_intern_string(ctx.heap, "onFulfilled");
     reaction.put_prop(onf_key, on_fulfilled, hobject::PROP_FLAGS_WEC);
 
     HString* onr_key = builtin_intern_string(ctx.heap, "onRejected");
     reaction.put_prop(onr_key, on_rejected, hobject::PROP_FLAGS_WEC);
 
-    // Store the downstream promise directly on the reaction
     HString* downstream_key = builtin_intern_string(ctx.heap, "downstream");
     TVal downstream_val;
     downstream_val.set_object(new_promise);
     reaction.put_prop(downstream_key, downstream_val, hobject::PROP_FLAGS_WEC);
 
-    // Add reaction to the original promise
-    TVal reaction_val;
-    reaction_val.set_object(reaction);
-
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state == PROMISE_PENDING) {
-        promise_add_reaction(promise, reaction_val);
+        promise_add_reaction(promise, reaction, ctx.heap);
     } else {
-        // Promise already settled — trigger reaction immediately
-        promise_add_reaction(promise, reaction_val);
+        // Promise already settled — trigger reactions now.  Adding the
+        // reaction first then triggering ensures the linked-list walk sees
+        // it (trigger clears the list before iterating, but our snapshot
+        // already includes the just-added reaction).
+        promise_add_reaction(promise, reaction, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
@@ -483,12 +531,10 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_proto_catch(BuiltinContext* ctx) {
-    // catch(onRejected) is equivalent to then(undefined, onRejected)
     TVal on_rejected;
     on_rejected.set_undefined();
     if (ctx.argc >= 1) on_rejected = ctx.regs[ctx.base_reg];
 
-    // Set up: then(undefined, on_rejected)
     ctx.regs[ctx.base_reg].set_undefined();     // onFulfilled = undefined
     ctx.regs[ctx.base_reg + 1] = on_rejected;   // onRejected = original arg
     ctx.argc = 2;
@@ -507,7 +553,6 @@ fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
     on_finally.set_undefined();
     if (ctx.argc >= 1) on_finally = ctx.regs[ctx.base_reg];
 
-    // If onFinally is not callable, just pass through: then(onFinally, onFinally)
     if (!on_finally.is_object() || on_finally.get_heapptr() == null ||
         !((HObject*)on_finally.get_heapptr()).is_callable()) {
         ctx.regs[ctx.base_reg + 1] = on_finally;
@@ -515,11 +560,7 @@ fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
         return;
     }
 
-    // ES2018 §25.4.5.3: wrap onFinally in handlers that call it with no args
-    // and preserve the original fulfillment value / rejection reason.
-    // For now, use onFinally as a passthrough handler (slightly wrong: receives
-    // value as arg) — but the downstream promise at least gets a value.
-    ctx.regs[ctx.base_reg + 1] = on_finally;  // Set both onFulfilled and onRejected
+    ctx.regs[ctx.base_reg + 1] = on_finally;
     builtin_promise_proto_then(ctx);
 }
 
@@ -541,15 +582,13 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
         }
     }
 
-    // Create a new fulfilled promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
-    promise_set_state(promise, PROMISE_FULFILLED);
-    promise_set_result(promise, &val);
+    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
 
     ctx.result.set_object(promise);
 }
@@ -569,8 +608,7 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
         return;
     }
     HObject* promise = prom_raw;
-    promise_set_state(promise, PROMISE_REJECTED);
-    promise_set_result(promise, &reason);
+    promise_settle(promise, PROMISE_REJECTED, &reason, ctx.heap);
 
     ctx.result.set_object(promise);
 }
@@ -580,12 +618,10 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_all(BuiltinContext* ctx) {
-    // Get the iterable argument
     TVal iterable;
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
-    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -593,7 +629,6 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     }
     HObject* promise = prom_raw;
 
-    // Helper: resolve result promise with empty array
     usz len = 0;
     bool has_len = false;
     HObject* obj = null;
@@ -609,7 +644,6 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         }
     }
 
-    // Zero-length or non-iterable — resolve with [] immediately
     if (!has_len || len == 0) {
         HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         TVal arr_val;
@@ -618,13 +652,11 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             arr.prototype = ctx.heap.array_proto;
             arr_val.set_object(arr);
         }
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &arr_val);
+        promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
         ctx.result.set_object(promise);
         return;
     }
 
-    // Allocate results array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.set_object(promise);
@@ -649,29 +681,28 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        // Check if element is a Promise
         if (elem.is_object() && elem.get_heapptr() != null) {
             HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
                 if (state == PROMISE_FULFILLED) {
-                    arr.set_array_idx((uint)i, elem_obj.array_part()[1]);
+                    TVal val = promise_get_result(elem_obj);
+                    arr.set_array_idx((uint)i, val);
                     remaining--;
                 } else if (state == PROMISE_REJECTED) {
-                    promise_set_state(promise, PROMISE_REJECTED);
-                    promise_set_result(promise, &elem_obj.array_part()[1]);
+                    TVal val = promise_get_result(elem_obj);
+                    promise_settle(promise, PROMISE_REJECTED, &val, ctx.heap);
                     promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     rejected = true;
                     break;
                 } else {
-                    // Pending promise — skip (no async support yet)
+                    // Pending — skip (no async support yet)
                     remaining--;
                 }
                 continue;
             }
         }
 
-        // Not a promise — store as value
         arr.set_array_idx((uint)i, elem);
         remaining--;
     }
@@ -679,8 +710,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     if (!rejected && remaining == 0) {
         TVal arr_val;
         arr_val.set_object(arr);
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &arr_val);
+        promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
@@ -692,12 +722,10 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_allsettled(BuiltinContext* ctx) {
-    // Get the iterable argument
     TVal iterable;
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
-    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -705,7 +733,6 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     }
     HObject* promise = prom_raw;
 
-    // Get .length from iterable
     usz len = 0;
     bool has_len = false;
     HObject* obj = null;
@@ -721,7 +748,6 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
         }
     }
 
-    // Zero-length or non-iterable — resolve with [] immediately
     if (!has_len || len == 0) {
         HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         TVal arr_val;
@@ -730,13 +756,11 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
             arr.prototype = ctx.heap.array_proto;
             arr_val.set_object(arr);
         }
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &arr_val);
+        promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
         ctx.result.set_object(promise);
         return;
     }
 
-    // Allocate results array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.set_object(promise);
@@ -765,25 +789,24 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        // Check if element is a Promise
         if (elem.is_object() && elem.get_heapptr() != null) {
             HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
 
-                // Create result object
                 HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
                 if (try result_obj = result_obj_raw) {
                     result_obj.prototype = ctx.heap.object_proto;
 
                     if (state == PROMISE_FULFILLED) {
                         result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
-                        result_obj.put_prop(value_key, elem_obj.array_part()[1], hobject::PROP_FLAGS_WEC);
+                        TVal val = promise_get_result(elem_obj);
+                        result_obj.put_prop(value_key, val, hobject::PROP_FLAGS_WEC);
                     } else if (state == PROMISE_REJECTED) {
                         result_obj.put_prop(status_key, rejected_status, hobject::PROP_FLAGS_WEC);
-                        result_obj.put_prop(reason_key, elem_obj.array_part()[1], hobject::PROP_FLAGS_WEC);
+                        TVal val = promise_get_result(elem_obj);
+                        result_obj.put_prop(reason_key, val, hobject::PROP_FLAGS_WEC);
                     } else {
-                        // Pending — use "fulfilled" with undefined value (no async yet)
                         result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
                         TVal undef;
                         undef.set_undefined();
@@ -798,7 +821,6 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
             }
         }
 
-        // Not a promise — store as fulfilled
         HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try result_obj = result_obj_raw) {
             result_obj.prototype = ctx.heap.object_proto;
@@ -814,8 +836,7 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     if (remaining == 0) {
         TVal arr_val;
         arr_val.set_object(arr);
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &arr_val);
+        promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
@@ -827,12 +848,10 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
 // ============================================================================
 
 fn void builtin_promise_any(BuiltinContext* ctx) {
-    // Get the iterable argument
     TVal iterable;
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
-    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -840,7 +859,6 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     }
     HObject* promise = prom_raw;
 
-    // Get .length from iterable
     usz len = 0;
     bool has_len = false;
     HObject* obj = null;
@@ -856,7 +874,6 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         }
     }
 
-    // Empty iterable or non-iterable — reject with AggregateError
     if (!has_len || len == 0) {
         TVal errors_tv;
         errors_tv.set_undefined();
@@ -864,7 +881,6 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         TVal msg_tv;
         msg_tv.set_string(msg);
 
-        // Create AggregateError with empty errors array
         HObject*? agg_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try agg = agg_raw) {
             agg.prototype = ctx.heap.aggregate_err_proto;
@@ -885,8 +901,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         if (try agg2 = agg_raw) {
             agg_tv.set_object(agg2);
         }
-        promise_set_state(promise, PROMISE_REJECTED);
-        promise_set_result(promise, &agg_tv);
+        promise_settle(promise, PROMISE_REJECTED, &agg_tv, ctx.heap);
         ctx.result.set_object(promise);
         return;
     }
@@ -911,26 +926,23 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        // Check if element is a Promise
         if (elem.is_object() && elem.get_heapptr() != null) {
             HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
                 if (state == PROMISE_FULFILLED) {
-                    // Fulfilled — resolve with value
-                    promise_set_state(promise, PROMISE_FULFILLED);
-                    promise_set_result(promise, &elem_obj.array_part()[1]);
+                    TVal val = promise_get_result(elem_obj);
+                    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
                     promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     ctx.result.set_object(promise);
                     return;
                 } else if (state == PROMISE_REJECTED) {
-                    // Track rejection reason
                     if (errors_arr != null) {
-                        errors_arr.set_array_idx((uint)(rejected_count), elem_obj.array_part()[1]);
+                        TVal val = promise_get_result(elem_obj);
+                        errors_arr.set_array_idx((uint)(rejected_count), val);
                     }
                     rejected_count++;
                 } else {
-                    // Pending — accumulate as rejected with undefined reason
                     if (errors_arr != null) {
                         TVal undef;
                         undef.set_undefined();
@@ -943,15 +955,12 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             }
         }
 
-        // Not a promise — resolve with this value immediately
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &elem);
+        promise_settle(promise, PROMISE_FULFILLED, &elem, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
         ctx.result.set_object(promise);
         return;
     }
 
-    // All rejected — create AggregateError
     if (remaining == 0) {
         TVal errors_val;
         if (errors_arr != null) {
@@ -974,8 +983,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
             agg_tv.set_object(agg);
         }
-        promise_set_state(promise, PROMISE_REJECTED);
-        promise_set_result(promise, &agg_tv);
+        promise_settle(promise, PROMISE_REJECTED, &agg_tv, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
@@ -991,7 +999,6 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
-    // Create the result promise
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -1033,32 +1040,28 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        // If element is a Promise, check its state
         if (elem.is_object() && elem.get_heapptr() != null) {
             HObject* elem_obj = (HObject*)elem.get_heapptr();
             if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
                 uint state = promise_get_state(elem_obj, PROMISE_PENDING);
                 if (state == PROMISE_FULFILLED) {
-                    promise_set_state(promise, PROMISE_FULFILLED);
-                    promise_set_result(promise, &elem_obj.array_part()[1]);
+                    TVal val = promise_get_result(elem_obj);
+                    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
                     promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     settled = true;
                     break;
                 } else if (state == PROMISE_REJECTED) {
-                    promise_set_state(promise, PROMISE_REJECTED);
-                    promise_set_result(promise, &elem_obj.array_part()[1]);
+                    TVal val = promise_get_result(elem_obj);
+                    promise_settle(promise, PROMISE_REJECTED, &val, ctx.heap);
                     promise_trigger_reactions(promise, ctx.heap, ctx.vm);
                     settled = true;
                     break;
                 }
-                // Pending: continue (no async support yet)
                 continue;
             }
         }
 
-        // Non-promise value — immediate resolution
-        promise_set_state(promise, PROMISE_FULFILLED);
-        promise_set_result(promise, &elem);
+        promise_settle(promise, PROMISE_FULFILLED, &elem, ctx.heap);
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
         settled = true;
         break;
@@ -1072,39 +1075,37 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create Promise.prototype
+    // Create Promise.prototype.  Allocated as PROMISE class so the GC
+    // mark case for ObjClass.PROMISE is exercised, but initialized via
+    // promise_init so the extra fields are well-defined.
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
+    promise_init(proto);
     heap.promise_proto = proto;
 
-    // Register prototype methods
     if (!register_string_proto_method(proto, heap, "then",    BUILTIN_PROMISE_PROTO_THEN))    return false;
     if (!register_string_proto_method(proto, heap, "catch",   BUILTIN_PROMISE_PROTO_CATCH))   return false;
     if (!register_string_proto_method(proto, heap, "finally", BUILTIN_PROMISE_PROTO_FINALLY)) return false;
 
-    // Set @@toStringTag on Promise.prototype
     HString* tag_key = ensure_tostringtag_symbol(heap);
     if (tag_key != null) {
         TVal tag_tv;
         tag_tv.set_string(builtin_intern_string(heap, "Promise"));
         proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
-    
-    // Create Promise function object
+
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE;
 
-    // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
     constructor_tv.set_object(ctor);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
-    // Wire ctor.prototype → proto (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
     proto_tv.set_object(proto);
@@ -1115,13 +1116,11 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     proto_pflags.is_accessor = false;
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
-    // Promise.length = 1
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal length_tv;
     length_tv.set_fastint(1);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
-    // Register static methods on Promise
     HString* resolve_key = builtin_intern_string(heap, "resolve");
     TVal resolve_tv;
     resolve_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_RESOLVE);
@@ -1152,7 +1151,6 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     any_tv.set_lightfunc((void*)(usz)BUILTIN_PROMISE_ANY);
     ctor.put_prop(any_key, any_tv, hobject::PROP_FLAGS_WC);
 
-    // Register "Promise" in global environment
     uint hash = heap.hash_string("Promise");
     HString* existing = heap.str_table_lookup("Promise", hash);
     HString* promise_key;

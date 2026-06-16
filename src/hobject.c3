@@ -420,6 +420,18 @@ struct HObjectGenerator {
     EnvRecord*        lex_env;
 }
 
+/// Promise: internal state, result, and pending reaction list.
+/// Reactions are linked HObjects (allocated as ObjClass.OBJECT) so that
+/// user code cannot reach or mutate the promise's state via the property
+/// table — Promise state lives entirely in the HObjectExtra union slot
+/// keyed by flags.obj_class == PROMISE.
+struct HObjectPromise {
+    uint      state;             // 0=pending, 1=fulfilled, 2=rejected
+    TVal      result;            // resolved value or rejection reason
+    HObject*  reactions_head;    // linked list of reaction records
+    HObject*  reactions_tail;    // tail pointer (O(1) append)
+}
+
 /// Array/Map/Set iterator state.
 /// Active when flags.obj_class is ARRAY_ITERATOR, MAP_ITERATOR, or SET_ITERATOR.
 ///
@@ -457,6 +469,7 @@ union HObjectExtra {
     HObjectPrimitive             prim;
     HObjectRegExp                regexp;
     HObjectGenerator             gen;
+    HObjectPromise               promise;
     HObjectIterator              iter;
     HObjectRegExpStringIterator  regexp_iter;
     HObjectGetterSetter          gs;
@@ -1496,6 +1509,16 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
     if (obj.flags.obj_class == ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
         re_bindings::re_free((*obj.extra_ptr()).regexp.regexp_data);
         (*obj.extra_ptr()).regexp.regexp_data = null;
+    }
+
+    // Decref string held in Promise's resolved value / rejection reason.
+    // Reactions are HObjects and managed by the GC mark-sweep cycle, so we
+    // do not free them here.
+    if (obj.flags.obj_class == ObjClass.PROMISE && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        h.decref_tval(&(*obj.extra_ptr()).promise.result);
+        (*obj.extra_ptr()).promise.reactions_head = null;
+        (*obj.extra_ptr()).promise.reactions_tail = null;
     }
 
     // Free the per-object property hash table.

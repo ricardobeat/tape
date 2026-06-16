@@ -1570,6 +1570,16 @@ fn void Heap.drain_gray(&self) {
                     self.mark_hobject((*obj.extra_ptr()).gen.lex_env.bindings);
                 }
                 break;
+            case ObjClass.PROMISE:
+                // Mark the resolved value/rejection reason and the linked list
+                // of pending reaction records.
+                self.mark_tval(&(*obj.extra_ptr()).promise.result);
+                HObject* reaction = (*obj.extra_ptr()).promise.reactions_head;
+                while (reaction != null) {
+                    self.mark_hobject(reaction);
+                    reaction = (HObject*)reaction.next;
+                }
+                break;
             case ObjClass.BOOLEAN:
             case ObjClass.NUMBER:
             case ObjClass.STRING:
