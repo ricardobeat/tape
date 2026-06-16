@@ -242,37 +242,54 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
         return;
     }
 
-    // Validate callbackfn is callable (if provided)
-    if (ctx.argc >= 1) {
-        TVal* arg = &ctx.regs[ctx.base_reg];
-        if (!arg.is_object() || arg.get_heapptr() == null || !((HObject*)arg.get_heapptr()).is_callable()) {
-            HObject*? err_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err2 = err_raw2) {
-                err2.prototype = ctx.heap.type_err_proto;
-                HString* msg2 = builtin_intern_string(ctx.heap, "Array.prototype.flatMap callback is not callable");
-                TVal msg_tv2; msg_tv2.set_string(msg2);
-                HString* msg_key2 = builtin_intern_string(ctx.heap, "message");
-                err2.put_prop(msg_key2, msg_tv2, hobject::PROP_FLAGS_WEC);
-                ctx.should_throw = true;
-                ctx.throw_value.set_object(err2);
-            }
-            return;
-        }
+    // mapFn is required and must be callable (ES2019 §22.1.3.11 step 2-3)
+    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+        return;
     }
 
-    // Stub: flatten without mapping (no VM callback support yet)
-    uint len = array_get_length(obj, ctx.heap);
+    // flatMap(mapFn, thisArg): map each element then flatten depth 1
+    TVal callback = ctx.regs[ctx.base_reg];
+    TVal thisArg;
+    if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
+
+    uint len;
+    if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = new_arr) {
-        ctx.result.set_undefined(); return;
-    }
+    if (catch err = new_arr) { ctx.result.set_undefined(); return; }
     HObject* result = new_arr;
     result.prototype = ctx.heap.array_proto;
 
-    uint n = flatten_into(result, obj, len, 0, 1.0, ctx.heap);
-    array_set_length(result, n, ctx.heap);
+    uint n = 0;
+    for (uint k = 0; k < len; k++) {
+        if (!arr_has_prop(obj, k, ctx.heap)) continue;
+        TVal v;
+        if (!arr_get_elem_vm(obj, k, ctx.heap, ctx.vm, &v)) continue;
 
+        TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+        // Flatten mapped result to depth 1
+        if (mapped.is_object() && mapped.get_heapptr() != null &&
+            ((HObject*)mapped.get_heapptr()).get_class() == hobject::ObjClass.ARRAY) {
+            HObject* mapped_arr = (HObject*)mapped.get_heapptr();
+            uint mapped_len = array_get_length(mapped_arr, ctx.heap);
+            for (uint j = 0; j < mapped_len; j++) {
+                if (arr_has_prop(mapped_arr, j, ctx.heap)) {
+                    TVal elem;
+                    if (arr_get_elem_vm(mapped_arr, j, ctx.heap, ctx.vm, &elem)) {
+                        array_set_elem(result, n, elem, ctx.heap);
+                        n++;
+                    }
+                }
+            }
+        } else {
+            array_set_elem(result, n, mapped, ctx.heap);
+            n++;
+        }
+    }
+
+    array_set_length(result, n, ctx.heap);
     ctx.result.set_object(result);
 }
 
@@ -2520,7 +2537,8 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2553,7 +2571,8 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
@@ -2586,7 +2605,8 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
@@ -2621,7 +2641,8 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    uint len = array_get_length(o, ctx.heap);
+    uint len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2735,6 +2756,7 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
         has_acc = true;
         k++;
     }
+    TVal undef_this; undef_this.set_undefined();
     while (k < len) {
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
@@ -2745,7 +2767,7 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
                 TVal k_tv; k_tv.set_fastint((long)k);
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
-                acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, acc);
+                acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, undef_this);
                 if (ctx.heap.has_error) {
                     ctx.should_throw = true;
                     ctx.throw_value = ctx.heap.error_value;
@@ -2795,6 +2817,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         has_acc = true;
         k--;
     }
+    TVal undef_this; undef_this.set_undefined();
     while (k >= 0) {
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
@@ -2805,7 +2828,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
                 TVal k_tv; k_tv.set_fastint((long)k);
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
-                acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, acc);
+                acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, undef_this);
                 if (ctx.heap.has_error) {
                     ctx.should_throw = true;
                     ctx.throw_value = ctx.heap.error_value;

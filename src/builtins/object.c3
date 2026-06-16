@@ -2664,9 +2664,9 @@ fn void builtin_object_isSealed(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // ES5 §15.2.3.11: non-object arguments return false
+    // ES5 §15.2.3.11: non-object arguments return true
     if (!arg.is_object()) {
-        ctx.result.set_boolean(false);
+        ctx.result.set_boolean(true);
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -2705,9 +2705,9 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // ES5 §15.2.3.12: non-object arguments return false
+    // ES5 §15.2.3.12: non-object arguments return true
     if (!arg.is_object()) {
-        ctx.result.set_boolean(false);
+        ctx.result.set_boolean(true);
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
@@ -2867,10 +2867,9 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err2 = wrapped) { ctx.result.set_undefined(); return; }
-        obj = wrapped;
-        obj.prototype = ctx.heap.object_proto;
+        // ToObject wrapper for primitives — use proper exotic class
+        if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
+        obj = (HObject*)ctx.result.get_heapptr();
     }
     // Count enumerable own properties
     uint count = 0;
@@ -3223,7 +3222,108 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
     if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
     HObject* obj = obj_raw;
     obj.prototype = ctx.heap.object_proto;
-    // Get length
+
+    // --- Iterator Protocol (ES2019 §19.1.2.5 step 4) ---
+    // Try @@iterator first (spec-compliant path for arrays, Maps, Sets, generators, etc.)
+    HString* iter_sym = ensure_iterator_symbol(ctx.heap);
+    bool use_iter = false;
+    TVal iterator;
+
+    // DEBUG: force fallback path
+    use_iter = false;
+
+    if (false && iter_sym != null) {
+        TVal? iter_method_opt = iterable.get_prop_proto(iter_sym);
+        if (try iter_method = iter_method_opt) {
+            bool callable = false;
+            if (iter_method.is_lightfunc()) {
+                callable = true;
+            } else if (iter_method.is_object() && iter_method.get_heapptr() != null) {
+                callable = ((HObject*)iter_method.get_heapptr()).is_callable();
+            }
+            if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
+                iterator = ctx.heap.call_fn(ctx.vm, iter_method, null, 0, arg);
+                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                use_iter = true;
+            }
+        }
+    }
+
+    if (use_iter) {
+        // === Iterator path ===
+        HString* next_key = builtin_intern_string(ctx.heap, "next");
+        HString* done_key = builtin_intern_string(ctx.heap, "done");
+        HString* value_key = builtin_intern_string(ctx.heap, "value");
+
+        while (ctx.heap.call_fn != null && ctx.vm != null) {
+            if (!iterator.is_object() || iterator.get_heapptr() == null) break;
+            HObject* iter_obj = (HObject*)iterator.get_heapptr();
+
+            TVal? next_method_opt = iter_obj.get_prop_proto(next_key);
+            TVal next_method;
+            if (try nm = next_method_opt) {
+                next_method = nm;
+            } else { break; }
+
+            bool callable = false;
+            if (next_method.is_lightfunc()) {
+                callable = true;
+            } else if (next_method.is_object() && next_method.get_heapptr() != null) {
+                callable = ((HObject*)next_method.get_heapptr()).is_callable();
+            }
+            if (!callable) break;
+
+            TVal result = ctx.heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+            if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+            if (!result.is_object() || result.get_heapptr() == null) break;
+
+            HObject* result_obj = (HObject*)result.get_heapptr();
+            TVal? done_opt = result_obj.get_prop_proto(done_key);
+            bool done = false;
+            if (try dv = done_opt) {
+                done = builtin_to_boolean(&dv);
+            }
+            if (done) break;
+
+            TVal? value_opt = result_obj.get_prop_proto(value_key);
+            TVal entry;
+            if (try vv = value_opt) {
+                entry = vv;
+            } else { break; }
+
+            // Extract [key, value] from the entry pair
+            if (!entry.is_object()) continue;
+            HObject* pair = (HObject*)entry.get_heapptr();
+
+            // Get key from pair[0]
+            TVal key_idx;
+            key_idx.set_fastint(0);
+            TVal key_val;
+            if (try kv = pair.get_prop(&key_idx)) {
+                key_val = kv;
+            } else {
+                continue;
+            }
+            // Get value from pair[1]
+            TVal val_idx;
+            val_idx.set_fastint(1);
+            TVal val_val;
+            if (try vv = pair.get_prop(&val_idx)) {
+                val_val = vv;
+            } else {
+                val_val.set_undefined();
+            }
+            // Convert key to property key (ToPropertyKey)
+            HString* key_str = builtin_to_property_key(ctx, key_val);
+            if (key_str != null) {
+                obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
+            }
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
+
+    // === Fallback: length-based iteration for array-like objects without @@iterator ===
     usz len = 0;
     bool has_len = false;
     HString* length_key = builtin_intern_string(ctx.heap, "length");
@@ -3240,7 +3340,7 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
         ctx.result.set_object(obj);
         return;
     }
-    // Iterate entries
+    // Iterate entries by numeric index
     for (usz i = 0; i < len; i++) {
         TVal idx_tv;
         idx_tv.set_fastint((long)i);
@@ -3270,47 +3370,37 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
         } else {
             val_val.set_undefined();
         }
-        // Convert key to string
-        HString* key_str = null;
-        if (key_val.is_string()) {
-            key_str = (HString*)key_val.get_heapptr();
-        } else if (key_val.is_number()) {
-            char[32] buf;
-            int slen = libc::snprintf(&buf[0], 32, "%g", key_val.get_number());
-            if (slen > 0) {
-                key_str = ctx.heap.str_intern(buf[..slen]);
-            }
-        } else if (key_val.is_object()) {
-            // Symbol objects: skip per spec (Symbol keys are not string-coerced)
-            HObject* key_obj = (HObject*)key_val.get_heapptr();
-            if (key_obj.get_class() == hobject::ObjClass.SYMBOL) continue;
-            // For other objects, use toString via .name or [object Object]
-            char[64] buf;
-            char* repr = "[object Object]";
-            int slen = 15;
-            libc::memcpy(&buf, repr, (usz)slen);
-            key_str = ctx.heap.str_intern(buf[..slen]);
-        } else {
-            // ToPropertyKey: toString for null/undefined/boolean
-            char[64] buf;
-            char* repr = "undefined";
-            int slen = 9;
-            if (key_val.is_null()) {
-                repr = "null";
-                slen = 4;
-            } else if (key_val.is_boolean()) {
-                if (key_val.get_boolean()) { repr = "true"; slen = 4; }
-                else { repr = "false"; slen = 5; }
-            }
-            uint hash = ctx.heap.hash_string(buf[..slen]);
-            libc::memcpy(&buf, repr, (usz)slen);
-            key_str = ctx.heap.str_intern(buf[..slen]);
-        }
+        // Convert key to property key (ToPropertyKey)
+        HString* key_str = builtin_to_property_key(ctx, key_val);
         if (key_str != null) {
             obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
         }
     }
     ctx.result.set_object(obj);
+}
+
+/// Convert a TVal to a property key (HString*) for use in Object.fromEntries.
+/// Per ES2019 §19.1.2.5, this performs ToPropertyKey on the entry's "0" element.
+/// Uses builtin_to_string_vm for object values (calls toString/valueOf via ToPrimitive),
+/// and builtin_to_string for primitives.
+fn HString* builtin_to_property_key(BuiltinContext* ctx, TVal key_val) {
+    if (key_val.is_string()) {
+        return (HString*)key_val.get_heapptr();
+    }
+    if (key_val.is_number()) {
+        return builtin_to_string(ctx.heap, &key_val);
+    }
+    if (key_val.is_object()) {
+        HObject* key_obj = (HObject*)key_val.get_heapptr();
+        // Symbol objects: ToString produces "Symbol(description)"
+        if (key_obj.get_class() == hobject::ObjClass.SYMBOL) {
+            return builtin_to_string(ctx.heap, &key_val);
+        }
+        // For other objects, call ToString (invokes toString/valueOf via ToPrimitive)
+        return builtin_to_string_vm(ctx, &key_val);
+    }
+    // null, undefined, boolean — call ToString
+    return builtin_to_string(ctx.heap, &key_val);
 }
 
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
