@@ -7,6 +7,8 @@ import duktape::hstring;
 import duktape::heap;
 import duktape::hobject;
 import duktape::env;
+import duktape::bytecode;
+import std::io;
 
 // ============================================================================
 // Promise helpers (ES6 §25.4)
@@ -1168,4 +1170,95 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     env::env_declare_nonenum(global_env, promise_key, promise_val);
 
     return true;
+}
+
+// ============================================================================
+// Async/await resume and reject callbacks
+// ============================================================================
+
+/// Resume callback for async/await. Called as a microtask when a pending
+/// Promise settles with a fulfilled value.  Re-enters the suspended async
+/// function at the AWAIT point via the generator resume mechanism.
+fn void builtin_async_resume(BuiltinContext* ctx) {
+    // The GeneratorState was stashed in the function object's var_env field
+    // by the AWAIT opcode handler.
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+
+    // Set the resume value from the settled Promise result
+    if (ctx.argc >= 1) {
+        gs.resume_value = ctx.regs[ctx.base_reg];
+    } else {
+        gs.resume_value.set_undefined();
+    }
+    gs.resume_kind = NEXT;
+
+    // Signal the VM to resume from the saved state
+    ctx.heap.resume_gen = gs;
+
+    // Build a callable TVal for the compiled function and invoke it directly.
+    // vm_call_fn_impl Case 3 checks resume_gen and restores the saved PC/regs.
+    HObject*? func_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) {
+        ctx.heap.resume_gen = null;
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* func_obj = func_raw;
+    func_obj.flags.callable = true;
+    (*func_obj.extra_ptr()).func.comp_func = (CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (EnvRecord*)gs.lex_env;
+
+    TVal func_tv;
+    func_tv.set_object(func_obj);
+
+    // Call the compiled function directly — vm_call_fn_impl will detect
+    // resume_gen and restore the saved PC + registers.
+    TVal resume_arg;
+    resume_arg = gs.resume_value;
+    TVal result = ctx.heap.call_fn(ctx.vm, func_tv, &resume_arg, 1, gs.this_binding);
+
+    ctx.heap.resume_gen = null;
+
+    // If the function completed (returned a value), store it in ctx.result
+    // so the downstream promise gets settled.
+    *ctx.result = result;
+}
+
+/// Reject callback for async/await. Called when a pending Promise rejects.
+/// Injects the rejection reason as an exception into the suspended async function.
+fn void builtin_async_reject(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+
+    // Set the throw value from the rejection reason
+    if (ctx.argc >= 1) {
+        gs.throw_value = ctx.regs[ctx.base_reg];
+    } else {
+        gs.throw_value.set_undefined();
+    }
+    gs.resume_kind = THROW;
+
+    ctx.heap.resume_gen = gs;
+
+    HObject*? func_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) {
+        ctx.heap.resume_gen = null;
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* func_obj = func_raw;
+    func_obj.flags.callable = true;
+    (*func_obj.extra_ptr()).func.comp_func = (bytecode::CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (env::EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (env::EnvRecord*)gs.lex_env;
+
+    TVal func_tv;
+    func_tv.set_object(func_obj);
+    ctx.regs[ctx.base_reg - 2] = func_tv;
+    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
+
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
 }

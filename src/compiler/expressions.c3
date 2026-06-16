@@ -1730,6 +1730,21 @@ fn ushort? CompilerContext.primary_expr(&self) {
             }
         }
 
+        // `await expr` — contextual keyword, only valid in async functions.
+        // Emits AWAIT + LOAD_RESUME so the VM can suspend/resume at this point.
+        case TokenType.AWAIT:
+        {
+            self.advance()!;  // consume 'await'
+            if (!self.is_async) {
+                return COMPILE_ERROR~;
+            }
+            ushort operand = self.unary_expr()!;
+            // AWAIT suspends the async function; LOAD_RESUME loads the settled value
+            self.emit_abc(Opcode.AWAIT, (uint)operand, 0, 0);
+            self.emit_abc(Opcode.LOAD_RESUME, (uint)operand, 0, 0);
+            return operand;
+        }
+
         case TokenType.CLASS:
             return self.class_expression()!;
 

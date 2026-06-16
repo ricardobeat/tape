@@ -41,6 +41,7 @@ fn void CompilerContext.skip_function_body(&self) {
         else if (tt == TokenType.RPAREN) {
             if (paren_depth == 0) break; // found the matching ')'
             paren_depth--;
+            if (paren_depth == 0) break;
         }
     }
     // Skip '{' ... '}'
@@ -55,6 +56,7 @@ fn void CompilerContext.skip_function_body(&self) {
         else if (tt == TokenType.RBRACE) {
             if (brace_depth == 0) break; // found matching '}'
             brace_depth--;
+            if (brace_depth == 0) break;
         }
     }
 }
@@ -143,7 +145,37 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             continue;
         }
 
+        // Detect `async function` at brace_depth 0: the pre-scan sees
+        // IDENTIFIER("async") first, peeks at FUNCTION, and if so pushes
+        // "function" back so the next iteration handles it as a FUNCTION
+        // token with is_async already set.
+        if (brace_depth == 0 && tt == TokenType.IDENTIFIER &&
+            tok_opt.str_value.len == 5 &&
+            tok_opt.str_value[0] == 'a' && tok_opt.str_value[1] == 's' &&
+            tok_opt.str_value[2] == 'y' && tok_opt.str_value[3] == 'n' &&
+            tok_opt.str_value[4] == 'c') {
+            Token? async_peek = self.lexer.next_token();
+            if (catch _err_peek = async_peek) continue;
+            if (async_peek.type == TokenType.FUNCTION) {
+                // "async" consumed; push "function" back for the next iteration.
+                {
+                    Token fn_tok = async_peek;
+                    self.lexer.pushback(fn_tok);
+                }
+                self.is_async = true;
+                continue;
+            }
+            // Not followed by function — push back the peeked token
+            {
+                Token async_tok = async_peek;
+                self.lexer.pushback(async_tok);
+            }
+        }
+
         if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+            // If we detected `async function` above, is_async is already true.
+            bool hoist_is_async = self.is_async;
+            self.is_async = false;
             // Check for generator star
             Token? star_opt = self.lexer.next_token();
             if (catch _err2 = star_opt) continue;
@@ -189,7 +221,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             self.lexer.has_pushed_back = haspb_before;
             self.lexer.seen_line_term  = slt_before;
 
-            // Re-consume 'function'
+            // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
 
             // Handle generator star
@@ -204,7 +236,9 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
+            self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
+            self.is_async = false;
 
             self.is_generator = saved_gen;
 
@@ -307,7 +341,31 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             continue;
         }
 
+        // Detect `async function` at brace_depth 0
+        if (brace_depth == 0 && tt == TokenType.IDENTIFIER &&
+            tok_opt.str_value.len == 5 &&
+            tok_opt.str_value[0] == 'a' && tok_opt.str_value[1] == 's' &&
+            tok_opt.str_value[2] == 'y' && tok_opt.str_value[3] == 'n' &&
+            tok_opt.str_value[4] == 'c') {
+            Token? async_peek = self.lexer.next_token();
+            if (catch _err_peek = async_peek) continue;
+            if (async_peek.type == TokenType.FUNCTION) {
+                {
+                    Token fn_tok = async_peek;
+                    self.lexer.pushback(fn_tok);
+                }
+                self.is_async = true;
+                continue;
+            }
+            {
+                Token async_tok = async_peek;
+                self.lexer.pushback(async_tok);
+            }
+        }
+
         if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+            bool hoist_is_async = self.is_async;
+            self.is_async = false;
             // Check for generator star
             Token? star_opt = self.lexer.next_token();
             if (catch _err2 = star_opt) continue;
@@ -353,7 +411,7 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             self.lexer.has_pushed_back = haspb_before;
             self.lexer.seen_line_term  = slt_before;
 
-            // Re-consume 'function'
+            // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
 
             // Handle generator star
@@ -368,7 +426,9 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
+            self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
+            self.is_async = false;
 
             self.is_generator = saved_gen;
 
@@ -552,7 +612,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         }
     }
     if (!has_return) {
-        self.emit_simple(self.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        self.emit_simple((self.is_generator && !self.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 }
 
@@ -623,7 +683,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
 
     // Propagate async flag: if the caller is compiling an async function,
     // the inner context (which parses the body) needs to know it's in an async function.
+    // Async functions also set is_generator so they can use YIELD/LOAD_RESUME
+    // for suspend/resume via the AWAIT opcode.
     inner_ctx.is_async = self.is_async;
+    if (inner_ctx.is_async) inner_ctx.is_generator = true;
 
     // Propagate class context (for super expressions)
     inner_ctx.in_class_body = self.in_class_body;
@@ -766,7 +829,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
         }
     }
     if (!has_return) {
-        inner_ctx.emit_simple(inner_ctx.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        inner_ctx.emit_simple((inner_ctx.is_generator && !inner_ctx.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 
     CompiledFunction* func = inner_ctx.finish()!;
@@ -804,12 +867,15 @@ fn ushort? CompilerContext.function_expr(&self) {
         name = name_tok.str_value;
     }
 
-    // Compile the function body into a sub-context
-    CompiledFunction* inner = self.compile_inner_function(name)!;
-
-    // Restore generator / async flags
-    self.is_generator = saved_is_generator;
+    // Compile the function body into a sub-context.
+    // Restore is_async so compile_inner_function propagates the flag,
+    // then immediately reset to prevent nested functions from inheriting it.
     self.is_async = saved_is_async;
+    CompiledFunction* inner = self.compile_inner_function(name)!;
+    self.is_async = false;
+
+    // Restore generator flag (async already reset above)
+    self.is_generator = saved_is_generator;
 
     // Add to inner functions table
     uint inner_idx = 0;

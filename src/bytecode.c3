@@ -381,6 +381,13 @@ enum Opcode : char {
     /// Same encoding as RETUNDEF (NONE format).
     RETUNDEF_GEN,
 
+    /// `await A` — suspend async function at a thenable value.
+    /// Saves register state, enqueues a resume callback via the thenable's
+    /// `.then()`, and pops the activation.  The resume callback re-enters
+    /// the function at the next instruction (LOAD_RESUME) with the settled value.
+    /// ABC format: A=value_reg, B=0, C=0.
+    AWAIT,
+
     // ---- Fastint arithmetic fusion ----------------------------------------
 
     /// `A = A + 1` (in-place fastint increment). Hot loop counter idiom.
@@ -500,6 +507,7 @@ fn OpFormat get_op_format(Opcode op) {
         case NOP:       return NONE;
         case RETUNDEF:  return NONE;
         case RETUNDEF_GEN: return NONE;
+        case AWAIT:     return ABC;
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;
@@ -1085,6 +1093,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.YIELD_STAR.ordinal]  = "YIELD_STAR",
     [Opcode.RET_GEN.ordinal]     = "RET_GEN",
     [Opcode.RETUNDEF_GEN.ordinal] = "RETUNDEF_GEN",
+    [Opcode.AWAIT.ordinal]        = "AWAIT",
     [Opcode.INC.ordinal]          = "INC",
     [Opcode.DEC.ordinal]          = "DEC",
     [Opcode.INC_VAR.ordinal]      = "INC_VAR",

@@ -216,8 +216,10 @@ const uint BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE = 327;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT   = 328;
 
 const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
+const uint BUILTIN_ASYNC_RESUME               = 330;
+const uint BUILTIN_ASYNC_REJECT               = 331;
 
-const uint BUILTIN_COUNT                       = 330;
+const uint BUILTIN_COUNT                       = 332;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1850,6 +1852,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
     [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
     [BUILTIN_REGEXP_STRING_ITERATOR_NEXT] = &builtin_regexp_string_iterator_next,
+    [BUILTIN_ASYNC_RESUME] = &builtin_async_resume,
+    [BUILTIN_ASYNC_REJECT] = &builtin_async_reject,
     [BUILTIN_REFLECT_OWNKEYS] = &builtin_reflect_ownKeys,
     [BUILTIN_RESET_GLOBALS] = &builtin_reset_globals,
     [BUILTIN_SET] = &builtin_set,
