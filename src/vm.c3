@@ -1339,7 +1339,14 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     new_act.curr_pc = null;
     new_act.bottom = new_bottom;
     new_act.retval = null;
-    new_act.flags = (target_func != null && target_func.is_strict()) ? ACT_FLAG_STRICT : 0;
+    uint act_flags = 0;
+    if (target_func != null && target_func.is_strict()) {
+        act_flags |= ACT_FLAG_STRICT;
+    }
+    if (target_func != null && target_func.has_direct_eval()) {
+        act_flags |= ACT_FLAG_DIRECT_EVAL;
+    }
+    new_act.flags = act_flags;
     if (is_construct) {
         new_act.flags |= ACT_FLAG_CONSTRUCT;
     }
@@ -1465,6 +1472,9 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.bottom = new_bottom;
     new_act.retval = act.bottom + result_reg;
     new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+    if (target.has_direct_eval()) {
+        new_act.flags |= ACT_FLAG_DIRECT_EVAL;
+    }
     vm.heap.tval_copy_ref(&new_act.this_binding, this_val);
 
     // Clear registers and copy args (getters have 0 args)
@@ -1833,7 +1843,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.curr_pc = target.code;
             act.bottom = frame;
             act.retval = null;
-            act.flags = ACT_FLAG_STRICT;
+            act.flags = ACT_FLAG_STRICT
+                      | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             act.max_heap_reg = 0;
             act.caller_valstack_top = frame + nregs;
             // Raw assign: this_val is kept alive by the caller for the duration
@@ -1954,6 +1965,9 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     // ES5 §10.4.1: at the top level of a script, the global `this` is the
     // global object in non-strict mode, and `undefined` in strict mode.
     entry_act.flags = func.is_strict() ? ACT_FLAG_STRICT : 0;
+    if (func.has_direct_eval()) {
+        entry_act.flags |= ACT_FLAG_DIRECT_EVAL;
+    }
 
     TVal this_val;
     if (func.is_strict()) {
@@ -4066,6 +4080,9 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_act.bottom = new_bottom;
                                         new_act.retval = null;  // setter return value is discarded
                                         new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+                                        if (target.has_direct_eval()) {
+                                            new_act.flags |= ACT_FLAG_DIRECT_EVAL;
+                                        }
                                         vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
                                         TVal* new_regs = new_act.bottom;
@@ -4149,6 +4166,9 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_act.bottom = new_bottom;
                                     new_act.retval = null;  // setter return value is discarded
                                     new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+                                    if (target.has_direct_eval()) {
+                                        new_act.flags |= ACT_FLAG_DIRECT_EVAL;
+                                    }
                                     vm.heap.tval_copy_ref(&new_act.this_binding, &obj_tv);
 
                                     TVal* new_regs = new_act.bottom;
@@ -4835,6 +4855,9 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.bottom = new_bottom;
                     new_act.retval = regs_base + result_reg;
                     new_act.flags = target_fast.is_strict() ? ACT_FLAG_STRICT : 0;
+                    if (target_fast.has_direct_eval()) {
+                        new_act.flags |= ACT_FLAG_DIRECT_EVAL;
+                    }
                     new_act.max_heap_reg = 0;
                     new_act.caller_valstack_top = vm.valstack_top;
                     // Arrow functions use lexical this (inherited from enclosing scope)
@@ -5231,7 +5254,8 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act_r.curr_pc = gs.saved_pc;
                     new_act_r.bottom = new_bottom_r;
                     new_act_r.retval = regs_base + result_reg;
-                    new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD;
+                    new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD
+                                    | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
                     vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);
 
                     // Copy saved registers to valstack
@@ -5406,6 +5430,9 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.retval = regs_base + result_reg;
             bool is_strict = target.is_arrow() ? (act.flags & ACT_FLAG_STRICT) != 0 : target.is_strict();
             new_act.flags = is_strict ? ACT_FLAG_STRICT : 0;
+            if (target.has_direct_eval()) {
+                new_act.flags |= ACT_FLAG_DIRECT_EVAL;
+            }
             // Arrow functions use lexical this (inherited from enclosing scope)
             if (target.is_arrow()) {
                 vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
@@ -5720,7 +5747,8 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | (super_target.is_strict() ? ACT_FLAG_STRICT : 0);
+            new_act.flags = ACT_FLAG_CONSTRUCT | (super_target.is_strict() ? ACT_FLAG_STRICT : 0)
+                          | (super_target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
             new_act.new_target = new_target;  // Pass through new.target
 
@@ -6100,7 +6128,8 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | (target.is_strict() ? ACT_FLAG_STRICT : 0);
+            new_act.flags = ACT_FLAG_CONSTRUCT | (target.is_strict() ? ACT_FLAG_STRICT : 0)
+                          | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
 

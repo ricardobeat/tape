@@ -106,3 +106,15 @@ void re_free(ReCompiled* re)
         free(re);
     }
 }
+
+const char* re_get_groupnames(ReCompiled* re)
+{
+    if (!re || !re->bc) return NULL;
+    return lre_get_groupnames(re->bc);
+}
+
+int re_get_capture_count(ReCompiled* re)
+{
+    if (!re || !re->bc) return 0;
+    return re->capture_count;
+}

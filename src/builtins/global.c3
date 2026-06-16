@@ -12,6 +12,7 @@ import duktape::hobject;
 
 import duktape::heap;
 import duktape::env;
+import duktape::vm;
 
 /// Print a single TVal using proper JS ToString coercion.
 /// For objects, looks up and calls the object's toString() method via call_fn
@@ -198,9 +199,24 @@ fn void builtin_eval(BuiltinContext* ctx) {
     (*func_obj.extra_ptr()).func.comp_func = func;
     (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
 
-    // For eval, use the global environment
-    (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
-    (*func_obj.extra_ptr()).func.lex_env = ctx.global_env;
+    // Determine whether this is a direct eval call by checking the calling
+    // activation's ACT_FLAG_DIRECT_EVAL flag (set by the compiler when the
+    // function body contains a direct eval(...) call).
+    // For direct eval, use the caller's lexical environment (ES5 §10.4.2).
+    // For indirect eval, use the global environment.
+    vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
+    usz act_count = eval_vm.activation_count;
+    bool is_direct_eval = false;
+    EnvRecord* env_for_eval = ctx.global_env;
+    if (act_count > 0) {
+        vm::Activation* caller_act = &eval_vm.activations[act_count - 1];
+        if ((caller_act.flags & vm::ACT_FLAG_DIRECT_EVAL) != 0) {
+            is_direct_eval = true;
+            env_for_eval = caller_act.lex_env;
+        }
+    }
+    (*func_obj.extra_ptr()).func.var_env = env_for_eval;
+    (*func_obj.extra_ptr()).func.lex_env = env_for_eval;
 
     // Replace the callee slot with the compiled function HObject
     TVal func_tv;

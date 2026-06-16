@@ -858,6 +858,14 @@ fn ushort? CompilerContext.call_expr(&self) {
 fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
     self.expect(TokenType.LPAREN)!;
 
+    // Detect direct eval: callee was the identifier `eval` (set by primary_expr)
+    // and this is not a property call (obj.eval()).
+    if (self.callee_is_eval && self.call_prop_obj_reg == MAX_REGISTERS) {
+        self.has_direct_eval = true;
+    }
+    // Consume the flag so it doesn't leak to subsequent calls.
+    self.callee_is_eval = false;
+
     // Layout: callee_reg = func, callee_reg+1 = this, callee_reg+2.. callee_reg+1+nargs = args
     ushort first_arg = callee_reg + 2;
 
@@ -1265,10 +1273,14 @@ fn ushort? CompilerContext.new_expr(&self) {
 
 /// Parse member expression: property accesses and computed accesses.
 fn ushort? CompilerContext.member_expr(&self) {
+    self.callee_is_eval = false;  // Reset before each callee resolution
     ushort obj = self.primary_expr()!;
 
     for (;;) {
         if (self.match(TokenType.DOT)) {
+            // Member access (obj.prop) — not a direct identifier reference,
+            // so clear the direct eval flag.
+            self.callee_is_eval = false;
             // Get next token — after '.' it can be an identifier OR any keyword
             // (ES5 §11.2.1: property name must be an IdentifierName)
             Token? prop_name_opt = self.lexer.next_token();
@@ -1313,6 +1325,8 @@ fn ushort? CompilerContext.member_expr(&self) {
             }
             obj = result;
         } else if (self.match(TokenType.LBRACKET)) {
+            // Computed member access — not a direct identifier reference.
+            self.callee_is_eval = false;
             // Save lhs_mode: the inner expression() calls assignment_expr()
             // which resets lhs_mode to false, clobbering the outer mode.
             bool saved_lhs = self.lhs_mode;
@@ -1427,6 +1441,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     params_arr[0] = id_tok.str_value;
                     return self.parse_arrow_function(&params_arr[0], 1, false)!;
                 }
+
+                // When the identifier is 'eval', track it for direct eval detection.
+                // emit_call checks callee_is_eval to set has_direct_eval.
+                // This must be set BEFORE the early return for local variables.
+                self.callee_is_eval = str_eq(id_tok.str_value, "eval");
 
                 // Try to resolve as a local variable first (skip at global scope — use environment)
                 if (!self.is_global) {

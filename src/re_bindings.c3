@@ -13,6 +13,10 @@ extern fn int re_exec(void* re, char* input, int input_len,
 
 extern fn void re_free(void* re);
 
+extern fn char* re_get_groupnames(void* re);
+
+extern fn int re_get_capture_count(void* re);
+
 /* Constants matching re_wrapper.h */
 const int RE_FLAG_IGNORECASE = 2;
 const int RE_FLAG_MULTILINE  = 4;

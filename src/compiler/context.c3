@@ -261,6 +261,9 @@ struct CompilerContext {
 
     // Direct eval tracking — when true, the CALL path must create a fresh env.
     bool has_direct_eval;
+    /// Set by primary_expr when the identifier "eval" is resolved; checked and
+    /// cleared by emit_call to detect direct eval calls (eval(...) by name).
+    bool callee_is_eval;
 
     // Arrow/async tracking — needed for needs_env computation in finish().
     bool is_arrow;
@@ -384,19 +387,19 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         }
     }
 
-    // --- Peephole: fuse LT/LE/GT/GE rA=rB,rC + IF_FALSE rA, sbx → JMP_NLT/NLE/NGT/NGE off,rB,rC + NOP ---
+    // --- Peephole: fuse LT/LE/GT/GE + IF_FALSE/IF_TRUE → JMP_NLT/NLE/NGT/NGE / JMP_LT/LE/GT/GE + NOP ---
     // Saves 1 dispatch and 1 boolean round-trip per loop condition.
     // Rules:
-    //   1. code[i] is LT/LE/GT/GE; code[i+1] is IF_FALSE.
-    //   2. The result register rA (written by compare, read by IF_FALSE) is dead after i+1.
-    //   3. Slot i+1 (the IF_FALSE) must NOT be a jump target — landing there after fusion
+    //   1. code[i] is LT/LE/GT/GE; code[i+1] is IF_FALSE or IF_TRUE.
+    //   2. The result register rA (written by compare, read by IF_FALSE/IF_TRUE) is dead after i+1.
+    //   3. Slot i+1 (the branch) must NOT be a jump target — landing there after fusion
     //      would fall through the NOP without branching, which is wrong.
     //   4. The adjusted offset (sbx+1) must fit in a signed 8-bit field (-128..127).
-    //      Offset math: IF_FALSE at slot i+1 reads sbx relative to curr_pc=i+2, landing at
+    //      Offset math: IF_FALSE/IF_TRUE at slot i+1 reads sbx relative to curr_pc=i+2, landing at
     //      i+2+sbx.  Fused op at slot i has curr_pc=i+1, so fused_offset = (i+2+sbx)-(i+1)
     //      = sbx+1.
-    //   TODO: also handle IF_TRUE following a compare (currently skipped — loop conditions
-    //         emit IF_FALSE, so this covers the hot case).
+    //   Mapping: IF_FALSE → JMP_NLT/NLE/NGT/NGE (branch on false); IF_TRUE → JMP_LT/LE/GT/GE
+    //   (branch on true).  Both variants are fully supported.
     if (self.code_count >= 2) {
         // Build a jump-target bit-set: mark every slot that is the destination of a branch.
         // We must NOT fuse when slot i+1 is a target.

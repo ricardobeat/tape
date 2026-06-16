@@ -453,6 +453,53 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     input_val.set_string(builtin_intern_string(ctx.heap, input[:input_len]));
     arr.put_prop(input_key, input_val, hobject::PROP_FLAGS_WEC);
 
+    // Create .groups property (ES2018 §21.2.5.2 steps 36-38)
+    void* re_data = (*obj.extra_ptr()).regexp.regexp_data;
+    char* group_names = re_bindings::re_get_groupnames(re_data);
+    if (group_names != null) {
+        // Has named capture groups — create a plain object (null prototype)
+        HObject*? groups_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try groups = groups_raw) {
+            groups.prototype = null;
+            int total_captures = re_bindings::re_get_capture_count(re_data);
+            // total_captures includes group 0; group names has entries for 1..total_captures-1
+            int num_entries = total_captures - 1;
+            char* p = group_names;
+            for (int gi = 0; gi < num_entries; gi++) {
+                usz name_len = libc::strlen((ZString)p);
+                if (name_len > 0) {
+                    // Named capture group — look up the capture value at caps_start[gi] / caps_end[gi]
+                    HString* name_str = builtin_intern_string(ctx.heap, p[:name_len]);
+                    TVal cap_val;
+                    if (gi < num_caps && caps_start[gi] >= 0 && caps_end[gi] >= 0) {
+                        usz cap_len = (usz)(caps_end[gi] - caps_start[gi]);
+                        usz cap_copy = cap_len < 1024 ? cap_len : 1024;
+                        char[1024] cap_buf;
+                        for (usz j = 0; j < cap_copy; j++) {
+                            cap_buf[j] = input[(usz)caps_start[gi] + j];
+                        }
+                        HString* cap_str = builtin_intern_string(ctx.heap, cap_buf[:cap_copy]);
+                        cap_val.set_string(cap_str);
+                    } else {
+                        cap_val.set_undefined();
+                    }
+                    groups.put_prop(name_str, cap_val, hobject::PROP_FLAGS_WEC);
+                }
+                p += (long)(name_len + 1);
+            }
+            TVal groups_val;
+            groups_val.set_object(groups);
+            HString* groups_key = builtin_intern_string(ctx.heap, "groups");
+            arr.put_prop(groups_key, groups_val, hobject::PROP_FLAGS_WEC);
+        }
+    } else {
+        // No named groups — .groups = undefined
+        TVal groups_undef;
+        groups_undef.set_undefined();
+        HString* groups_key = builtin_intern_string(ctx.heap, "groups");
+        arr.put_prop(groups_key, groups_undef, hobject::PROP_FLAGS_WEC);
+    }
+
     // Set length
     uint total_elements = 1 + (uint)num_caps;
     HString* len_key = builtin_intern_string(ctx.heap, "length");

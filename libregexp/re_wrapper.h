@@ -58,6 +58,19 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
  */
 void re_free(ReCompiled* re);
 
+/*
+ * Get pointer to group names buffer from compiled regexp.
+ * Returns NULL if no named capture groups.
+ * The returned buffer contains one null-terminated string per capture group
+ * (index 1, 2, ...) in order. An empty string means the group is unnamed.
+ */
+const char* re_get_groupnames(ReCompiled* re);
+
+/*
+ * Get total number of captures (including group 0).
+ */
+int re_get_capture_count(ReCompiled* re);
+
 #ifdef __cplusplus
 }
 #endif

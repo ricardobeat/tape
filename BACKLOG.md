@@ -14,10 +14,10 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
 - [x] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
 - [ ] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
-- [ ] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
+- [x] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
 - [x] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
 - [x] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
-- [ ] Implement `eval()` as indirect/direct call distinction: direct `eval()` should share the current scope; indirect `eval()` runs in the global scope
+- [x] Implement `eval()` as indirect/direct call distinction: direct `eval()` should share the current scope; indirect `eval()` runs in the global scope
 
 
 ---
@@ -101,7 +101,7 @@ These features are tracked as high-priority items. Tests for them are currently 
 - [x] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
 - [x] Fix `RegExp.prototype.flags` getter to return flags in alphabetical order `gimsuy` per ES2015
 - [ ] Add `RegExp.prototype[Symbol.replace]` and `[Symbol.split]` for protocol correctness
-- [ ] Fix named capture groups: ensure `exec` result has `.groups` property with `undefined` for missing captures
+- [x] Fix named capture groups: ensure `exec` result has `.groups` property with `undefined` for missing captures
 
 ---
 
