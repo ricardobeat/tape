@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 193 (array ToObject, step ordering, defineProperties SameValue, TypedArray, GOPD, globals)
+**Last Updated:** Session 193 (array ToObject, step ordering, defineProperties SameValue, TypedArray, GOPD, globals, test262 skip pattern fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 193, 2026-06-15)
@@ -9,26 +9,26 @@
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~16,629 |
-| Currently failing (phases 0-8) | ~4,974 |
-| Overall pass rate | ~77.0% |
+| Currently passing (phases 0-8) | ~18,302 |
+| Currently failing (phases 0-8) | ~12,573 |
+| Overall pass rate | ~59.3% (corrected — old pattern skipped too many tests) |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
 | 0-1: Core VM | 2,185 | 608 | 280 | 1,297 |
-| 1: Calling Convention | 426 | 59 | 29 | 338 |
+| 1: Calling Convention | 426 | 68 | 272 | 338 |
 | 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,657 | 1,142 | 1,967 |
+| 3: Object System | 7,766 | 4,941 | 2,081 | 1,967 |
 | 4: Error Handling | 402 | 126 | 75 | 201 |
-| 5: Built-in Constructors | 8,615 | 5,648 | 1,442 | 1,525 |
-| 6: Prototype Methods | 4,713 | 2,767 | 1,010 | 936 |
+| 5: Built-in Constructors | 8,615 | 6,047 | 1,899 | 1,525 |
+| 6: Prototype Methods | 4,713 | 3,052 | 1,361 | 936 |
 | 7: ES5 Features | 1,240 | 198 | 95 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 1,083 | 201 | 1,463 |
+| 8: ES5 Built-in Objects | 2,747 | 1,226 | 521 | 1,463 |
 | 11: Arrow/Templates | 427 | 62 | 41 | 324 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 10 | 22 | 719 |
+| 14: for-of | 751 | 22 | 560 | 719 |
 | 15: Classes | 8,520 | 67 | 195 | 8,258 |
 | 17-20: Map/Set/Symbol/Promise | 1,614 | 360 | 280 | 974 |
 | 21: Generators | 619 | 0 | 2 | 617 |

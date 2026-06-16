@@ -19,6 +19,21 @@ Tasks are grouped by area but are otherwise independent.
 - [x] Fix `delete` on non-configurable properties: should return `false` in sloppy mode, throw in strict mode per ES5 §11.4.1
 - [ ] Implement `eval()` as indirect/direct call distinction: direct `eval()` should share the current scope; indirect `eval()` runs in the global scope
 
+
+---
+
+## ES6+ Features (Intentionally Planned)
+
+These features are tracked as high-priority items. Tests for them are currently running (not skipped) in test262.
+
+- [ ] Implement destructuring binding (`const [a, b] = arr` and `const {x, y} = obj`) — compiler/parser
+- [ ] Implement destructuring assignment (`[a, b] = arr` and `{x, y} = obj`) — compiler/parser
+- [ ] Implement default parameters (`function f(x = 42) {}`) — compiler
+- [ ] Implement rest parameters (`function f(...args) {}`) — compiler
+- [ ] Implement object spread (`{...obj}`) — compiler + VM
+- [ ] Implement async/await — compiler + VM (requires Promise)
+- [ ] Implement generators (`function*`) — compiler + VM
+
 ---
 
 ## Conformance: Property Descriptors (Plan 022 — highest impact)

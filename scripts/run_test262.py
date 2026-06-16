@@ -91,7 +91,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-fields-private|class-static-fields-public|"
     r"class-static-block|"
     # Other unimplemented ES features
-    r"object-rest|optional-chaining|logical-assignment|"
+    r"object-rest|optional-chaining|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
     r")\b"
 )
 
@@ -249,34 +249,10 @@ PHASES = [
 # Skip filter
 # ---------------------------------------------------------------------------
 
-UNSUPPORTED_PATTERN = re.compile(
-    r"features:\s*\[.*\b(?:"
-    r"proxy|BigInt|async|module|"
-    r"Reflect|SharedArrayBuffer|Atomics|Intl|"
-    r"TypedArray|DataView|Float32Array|Float64Array|Int8Array|Int16Array|"
-    r"Int32Array|Uint8Array|Uint16Array|Uint32Array|Uint8ClampedArray|"
-    r"FinalizationRegistry|WeakRef|structured-clone|import\.meta|"
-    r"dynamic-import|"
-    # Class features not yet implemented
-    r"class-methods-private|class-static-methods-private|"
-    r"class-fields-private|class-fields-public|"
-    r"class-static-fields-private|class-static-fields-public|"
-    r"class-static-block|"
-    # Other unimplemented ES features
-    r"object-rest|explicit-resource-management|"
-    r"optional-chaining|logical-assignment|resizable-arraybuffer|"
-    r"array-grouping|upsert|set-methods|"
-    r"symbols-as-weakmap-keys|cross-realm|"
-    r"await-dictionary|"
-    r")\b"
-)
-
 
 # Match ANY test that declares feature flags — used by --es5 mode to skip
 # all post-ES5 tests.  Tests without `features:` are baseline ES5 behavior.
 ANY_FEATURES_PATTERN = re.compile(r"^features:\s*\[", re.MULTILINE)
-
-
 def should_skip(path, es5_only=False):
     """Check if a test should be skipped based on directory or header metadata."""
     # Skip tests in excluded directories
@@ -300,13 +276,9 @@ def should_skip(path, es5_only=False):
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return True
     return False
-
-
 # ---------------------------------------------------------------------------
 # Worker management
 # ---------------------------------------------------------------------------
-
-
 class Worker:
     """Manages a single batch_test_vm --worker subprocess."""
 
@@ -395,13 +367,9 @@ class Worker:
         )
         self._pending = None
         self._buf = b""
-
-
 # ---------------------------------------------------------------------------
 # Test262 runner
 # ---------------------------------------------------------------------------
-
-
 def build_phase_tests(phase_idx, es5_only=False):
     """Collect test files for a phase, applying skip filter. Recurses into subdirs."""
     phase = PHASES[phase_idx]
@@ -421,8 +389,6 @@ def build_phase_tests(phase_idx, es5_only=False):
                     continue
                 tests.append(path)
     return tests, skipped
-
-
 def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     """Run a single phase and return (pass_count, fail_count, skip_count, total_count)."""
     phase = PHASES[phase_idx]
@@ -513,8 +479,6 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     pass_count = sum(1 for _, r in results if r == "PASS")
     fail_count = len(results) - pass_count
     return (pass_count, fail_count, skipped, total)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Run test262 tests in parallel worker mode."
@@ -588,7 +552,5 @@ def main():
         print(f"\nOverall: {grand_pass} pass / {grand_fail} fail ({pct:.1f}%)")
         if grand_skip > 0:
             print(f"Skipped: {grand_skip} tests")
-
-
 if __name__ == "__main__":
     main()
