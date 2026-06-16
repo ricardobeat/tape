@@ -4539,6 +4539,95 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
+        case Opcode.OBJSPRD: {
+            // A = target_obj_reg, B = 0 (unused), C = source_reg
+            // Copy all own enumerable properties from source to target,
+            // matching Object.assign semantics (§19.1.2.2).
+            if (!ra.is_object() || ra.get_heapptr() == null) break;
+            HObject* target = (HObject*)ra.get_heapptr();
+            TVal src_tv = *rc;
+
+            // null/undefined → no-op (Object.assign step 2)
+            if (src_tv.is_null() || src_tv.is_undefined()) break;
+
+            // Only objects have own enumerable properties; primitives are no-ops
+            if (!src_tv.is_object() || src_tv.get_heapptr() == null) break;
+            HObject* source = (HObject*)src_tv.get_heapptr();
+
+            // Copy enumerable own dense array indices (integer-keyed properties)
+            if (source.array_part() != null) {
+                char[12] digit_buf;
+                for (uint i = 0; i < source.array_size; i++) {
+                    if (!source.array_part()[i].is_undefined()) {
+                        int dlen = libc::snprintf(&digit_buf, 12, "%u", i);
+                        if (dlen > 0) {
+                            HString* key = intern_string(vm, digit_buf[:(uint)dlen]);
+                            if (key != null) {
+                                TVal val = source.array_part()[i];
+                                if (!target.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC)) {
+                                    return VM_ERROR~;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // STRING exotic: enumerate character indices via lazy access
+            if (source.flags.exotic_stringobj) {
+                HString* prim = (HString*)(*source.extra_ptr()).prim.primitive_value.get_heapptr();
+                if (prim != null) {
+                    for (uint ci = 0; ci < prim.char_length(); ci++) {
+                        HString* ik = vm.heap.int_to_hstring((long)ci);
+                        if (ik == null) continue;
+                        uint cp = prim.char_at(ci);
+                        char[4] cbuf;
+                        uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+                        HString* ch_str = intern_string(vm, cbuf[:cblen]);
+                        if (ch_str != null) {
+                            TVal ch_tv; ch_tv.set_string(ch_str);
+                            if (!target.put_prop((void*)ik, ch_tv, hobject::PROP_FLAGS_WEC)) {
+                                return VM_ERROR~;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Copy own named properties (enumerable only, insertion order)
+            for (uint i = 0; i < source.prop_count; i++) {
+                void* key = source.prop_key_at(i);
+                if (key == null) continue;
+                hobject::PropFlags flags = source.get_prop_flags(i);
+                if (!flags.enumerable) continue;
+
+                TVal val;
+                if (flags.is_accessor) {
+                    // Accessor property: invoke the getter ([[Get]] semantics)
+                    TVal gs_slot = source.prop_values()[i];
+                    TVal getter = hobject::hobject_access_getter(gs_slot);
+                    if (getter.is_undefined() || getter.is_null()) continue;
+                    // If call_fn is unavailable, skip (shouldn't happen in practice)
+                    if (vm.heap.call_fn == null) continue;
+                    TVal this_tv;
+                    this_tv.set_object(source);
+                    val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
+                    if (vm.heap.has_error) {
+                        vm.heap.has_error = false;
+                        continue;
+                    }
+                } else {
+                    // Data property: copy directly
+                    val = source.prop_values()[i];
+                }
+
+                if (!target.put_prop(key, val, hobject::PROP_FLAGS_WEC)) {
+                    return VM_ERROR~;
+                }
+            }
+            break;
+        }
+
         case Opcode.SPREAD_ARG: {
             // A = dest start reg, B = count out reg, C = source reg
             // Uses ES6 iterator protocol (§12.3.5.1 ArgumentListEvaluation SpreadElement)

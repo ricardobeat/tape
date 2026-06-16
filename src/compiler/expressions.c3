@@ -28,6 +28,68 @@ fn ushort? CompilerContext.expression(&self) {
 
 /// Parse an assignment expression.
 fn ushort? CompilerContext.assignment_expr(&self) {
+    // Check for destructuring assignment: [a, b] = expr or {x, y} = expr
+    TokenType first_tt = self.peek_type();
+    if (first_tt == TokenType.LBRACKET || first_tt == TokenType.LBRACE) {
+        bool is_array = (first_tt == TokenType.LBRACKET);
+
+        // Save lexer state to look ahead for '=' after the pattern
+        uint _pos   = self.lexer.pos;
+        uint _line  = self.lexer.line;
+        uint _col   = self.lexer.col;
+        Token _cur  = self.lexer.current;
+        Token _look = self.lexer.lookahead;
+        bool _haslk = self.lexer.has_lookahead;
+        Token _push = self.lexer.pushed_back;
+        bool _haspb = self.lexer.has_pushed_back;
+        bool _slt   = self.lexer.seen_line_term;
+        uint _pbc   = self.pushback_count;
+        Token[4] _pbs = self.pushback_stack;
+
+        // Skip past the pattern (match brackets/braces at any depth)
+        self.advance()!; // consume '[' or '{'
+        uint depth = 1;
+        while (depth > 0) {
+            Token? next_opt = self.lexer.next_token();
+            if (try next = next_opt) {
+                if (next.type == TokenType.LBRACKET || next.type == TokenType.LBRACE) {
+                    depth++;
+                } else if (next.type == TokenType.RBRACKET || next.type == TokenType.RBRACE) {
+                    depth--;
+                } else if (next.type == TokenType.EOF_TOKEN) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Check if '=' follows the pattern
+        bool has_assign = self.match(TokenType.ASSIGN);
+
+        // Restore lexer state
+        self.lexer.pos = _pos; self.lexer.line = _line; self.lexer.col = _col;
+        self.lexer.current = _cur; self.lexer.lookahead = _look;
+        self.lexer.has_lookahead = _haslk; self.lexer.pushed_back = _push;
+        self.lexer.has_pushed_back = _haspb; self.lexer.seen_line_term = _slt;
+        self.pushback_count = _pbc; self.pushback_stack = _pbs;
+
+        if (has_assign) {
+            // Destructuring assignment — parse pattern and RHS
+            self.last_was_getvar = false;
+            self.last_was_member = false;
+
+            if (is_array) {
+                self.advance()!; // consume '['
+                return self.array_destructure_assign()!;
+            } else {
+                self.advance()!; // consume '{'
+                return self.object_destructure_assign()!;
+            }
+        }
+        // Not destructuring assignment — fall through to normal expression parsing
+    }
+
     // Parse LHS with lhs_mode enabled — member_expr saves (obj, key) without GETPROP
     self.lhs_mode = true;
     self.last_was_member = false;
@@ -2015,6 +2077,16 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.advance()!;
                 key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;
+            } else if (self.match(TokenType.ELLIPSIS)) {
+                // Object spread: ...expr
+                ushort spread_reg = self.assignment_expr()!;
+                self.emit_abc(Opcode.OBJSPRD, (uint)obj_reg, 0, (uint)spread_reg);
+                self.free_reg(spread_reg);
+
+                if (!self.match(TokenType.COMMA)) {
+                    break;
+                }
+                continue;
             } else {
                 return COMPILE_ERROR~;
             }

@@ -12,7 +12,7 @@ Tasks are grouped by area but are otherwise independent.
 - [ ] Fix `try { return 42; } finally { ... }`: `RET` opcode must check for active `finally` catchers, save the return value, run the finally block, then complete the return (plan 026 bonus, `src/vm.c3:5659`)
 - [ ] Fix stale `call_prop_obj_reg` after `new X()[a.b].method()`: save/restore around `self.expression()` in the LBRACKET branch of trailing-access loop (plan 026 #8, `src/compiler/expressions.c3:1171`)
 - [x] Fix stack overflow: add proper RangeError when activation stack exceeds `MAX_CALLS` instead of producing `NaN` (plan 026 #5, `src/vm.c3`)
-- [ ] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
+- [x] Add complete Unicode code-point iteration for `String.prototype[Symbol.iterator]` (`src/builtins/iterator.c3:364` TODO)
 - [ ] Mark `CompiledFunction` constants during GC mark phase (`src/heap.c3:1549` TODO)
 - [ ] Implement peephole: extend the IF_TRUE optimization after compare instructions to cover all comparison opcodes (compiler/context.c3:392 TODO)
 - [x] Fix `arguments` object: callee, length, and indexed access for non-strict functions per ES5 §10.6
@@ -27,10 +27,10 @@ Tasks are grouped by area but are otherwise independent.
 These features are tracked as high-priority items. Tests for them are currently running (not skipped) in test262.
 
 - [x] Implement destructuring binding (`const [a, b] = arr` and `const {x, y} = obj`) — compiler/parser
-- [ ] Implement destructuring assignment (`[a, b] = arr` and `{x, y} = obj`) — compiler/parser
+- [x] Implement destructuring assignment (`[a, b] = arr` and `{x, y} = obj`) — compiler/parser
 - [x] Implement default parameters (`function f(x = 42) {}`) — compiler
 - [ ] Implement rest parameters (`function f(...args) {}`) — compiler
-- [ ] Implement object spread (`{...obj}`) — compiler + VM
+- [x] Implement object spread (`{...obj}`) — compiler + VM
 - [ ] Implement async/await — compiler + VM (requires Promise)
 - [ ] Implement class declaration / class expression — compiler (extends, constructor, methods, static fields)
 

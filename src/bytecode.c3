@@ -333,6 +333,11 @@ enum Opcode : char {
     /// runtime argument count (for spread arguments).
     /// ABC format: A=result_reg, B=callee_reg, C=nargs_reg.
     CALL_S,
+    /// `A = spread(C) into object` — copy all own enumerable properties
+    /// from source C into target object A.  null/undefined sources are
+    /// silently skipped (as in Object.assign).  ABC format:
+    /// A=target_obj_reg, B=0 (unused), C=source_reg.
+    OBJSPRD,
 
     // ---- ES6 Classes -----------------------------------------------------
 
@@ -474,6 +479,7 @@ fn OpFormat get_op_format(Opcode op) {
         case ARRSPRD:    return ABC;
         case SPREAD_ARG: return ABC;
         case CALL_S:     return ABC;
+        case OBJSPRD:    return ABC;
         case SETPROTO:   return ABC;
         case SUPER_CALL: return ABC;
         case NEWTARGET:  return ABC;
@@ -1070,6 +1076,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.ARRSPRD.ordinal]     = "ARRSPRD",
     [Opcode.SPREAD_ARG.ordinal]  = "SPREAD_ARG",
     [Opcode.CALL_S.ordinal]      = "CALL_S",
+    [Opcode.OBJSPRD.ordinal]     = "OBJSPRD",
     [Opcode.SETPROTO.ordinal]    = "SETPROTO",
     [Opcode.SUPER_CALL.ordinal]  = "SUPER_CALL",
     [Opcode.NEWTARGET.ordinal]   = "NEWTARGET",

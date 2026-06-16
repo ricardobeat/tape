@@ -126,6 +126,7 @@ struct ArrayBind {
     bool   is_hole;
     bool   has_default;
     ushort default_val_reg;  // register holding compiled default expression result
+    bool   is_resolved;      // for assignment mode: was var resolved locally?
 }
 
 /// Tracks a binding in an object destructuring pattern.
@@ -135,6 +136,7 @@ struct ObjBind {
     uint   key_idx;
     bool   has_default;
     ushort default_val_reg;  // register holding compiled default expression result
+    bool   is_resolved;      // for assignment mode: was var resolved locally?
 }
 
 // ============================================================================

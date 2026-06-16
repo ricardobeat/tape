@@ -360,8 +360,6 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
     uint idx = (*iter.extra_ptr()).iter.index;
     char[] data = str.get_data();
 
-    // Check if done — for simplicity, iterate by code units (bytes for ASCII)
-    // TODO: full Unicode support with code point iteration
     if (idx >= data.len) {
         // Done — return {value: undefined, done: true}
         HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -380,7 +378,15 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    (*iter.extra_ptr()).iter.index = idx + 1;
+    // Determine the byte length of the UTF-8 sequence starting at data[idx].
+    // Cap at remaining bytes to handle truncated sequences gracefully.
+    uint seq_len = hstring::utf8_seq_len(data[idx]);
+    usz remain = (usz)(data.len - (long)idx);
+    if ((usz)seq_len > remain) {
+        seq_len = (uint)remain;
+    }
+
+    (*iter.extra_ptr()).iter.index = idx + seq_len;
 
     // Create result object: {value: char, done: false}
     HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -388,13 +394,12 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
     HObject* result = result_raw;
     result.prototype = null;
 
-    // Set .value — single character string
+    // Set .value — code point string (1-4 bytes)
     HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
-    char[1] ch = { data[idx] };
-    HString* char_str = heap.str_intern(ch[:1]);
-    if (char_str != null) {
+    HString* cp_str = heap.str_intern(data[idx : seq_len]);
+    if (cp_str != null) {
         TVal value_tv;
-        value_tv.set_string(char_str);
+        value_tv.set_string(cp_str);
         result.put_prop(value_key, value_tv, hobject::PROP_FLAGS_WEC);
     }
 
