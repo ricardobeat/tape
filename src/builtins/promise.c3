@@ -616,6 +616,75 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Thenable coercion — ES6 Promise Resolution Procedure
+// ============================================================================
+
+/// If `val` is a non-Promise object with a callable `.then` method, create a
+/// new Promise, call `thenable.then(resolve, reject)`, and return the wrapper
+/// Promise. Returns `null` for non-thenables, in which case the caller should
+/// await the original value as a non-thenable (no-op).
+fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
+    if (!val.is_object() || val.get_heapptr() == null) return null;
+    HObject* obj = (HObject*)val.get_heapptr();
+    if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return null;
+
+    // Get .then property
+    HString* then_key = builtin_intern_string(heap, "then");
+    if (then_key == null) return null;
+    TVal? then_opt = obj.get_prop(then_key);
+    TVal then_method;
+    if (try tm = then_opt) {
+        then_method = tm;
+    } else {
+        return null;
+    }
+
+    bool then_callable = then_method.is_lightfunc() ||
+        (then_method.is_object() && then_method.get_heapptr() != null &&
+         ((HObject*)then_method.get_heapptr()).is_callable());
+    if (!then_callable) return null;
+
+    // Create wrapper Promise
+    HObject*? wrapper_raw = promise_create(heap);
+    if (catch err = wrapper_raw) return null;
+    HObject* wrapper = wrapper_raw;
+
+    // Hidden property key used by resolve/reject callbacks
+    HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
+
+    // Create resolve callback
+    HObject*? resolve_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = resolve_raw) return null;
+    HObject* resolve_fn = resolve_raw;
+    resolve_fn.flags.callable = true;
+    (*resolve_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
+    if (promise_key != null) {
+        TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+        resolve_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);
+    }
+    TVal resolve_tv; resolve_tv.set_object(resolve_fn);
+
+    // Create reject callback
+    HObject*? reject_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = reject_raw) return null;
+    HObject* reject_fn = reject_raw;
+    reject_fn.flags.callable = true;
+    (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
+    if (promise_key != null) {
+        TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+        reject_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);
+    }
+    TVal reject_tv; reject_tv.set_object(reject_fn);
+
+    // Call thenable.then(resolve, reject). The thenable is responsible for
+    // calling one of these to settle the wrapper Promise.
+    TVal[2] arg_arr = { resolve_tv, reject_tv };
+    heap.call_fn(vm, then_method, &arg_arr, 2, val);
+
+    return wrapper;
+}
+
+// ============================================================================
 // Promise.all(iterable) — ES6 §25.4.4.1
 // ============================================================================
 
@@ -1240,8 +1309,12 @@ fn void builtin_async_reject(BuiltinContext* ctx) {
     }
     gs.resume_kind = THROW;
 
+    // Signal the VM to resume from the saved state
     ctx.heap.resume_gen = gs;
 
+    // Build a callable TVal for the compiled function and invoke it directly.
+    // vm_call_fn_impl Case 3 checks resume_gen and restores the saved PC/regs.
+    // LOAD_RESUME will inject the throw via vm_throw_value.
     HObject*? func_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) {
         ctx.heap.resume_gen = null;
@@ -1250,15 +1323,22 @@ fn void builtin_async_reject(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_raw;
     func_obj.flags.callable = true;
-    (*func_obj.extra_ptr()).func.comp_func = (bytecode::CompiledFunction*)gs.func;
-    (*func_obj.extra_ptr()).func.var_env = (env::EnvRecord*)gs.var_env;
-    (*func_obj.extra_ptr()).func.lex_env = (env::EnvRecord*)gs.lex_env;
+    (*func_obj.extra_ptr()).func.comp_func = (CompiledFunction*)gs.func;
+    (*func_obj.extra_ptr()).func.var_env = (EnvRecord*)gs.var_env;
+    (*func_obj.extra_ptr()).func.lex_env = (EnvRecord*)gs.lex_env;
 
     TVal func_tv;
     func_tv.set_object(func_obj);
-    ctx.regs[ctx.base_reg - 2] = func_tv;
-    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
 
-    ctx.needs_re_dispatch = true;
-    ctx.re_nargs = 0;
+    // Call the compiled function directly — vm_call_fn_impl will detect
+    // resume_gen and restore the saved PC + registers.
+    TVal throw_arg;
+    throw_arg = gs.throw_value;
+    TVal result = ctx.heap.call_fn(ctx.vm, func_tv, &throw_arg, 1, gs.this_binding);
+
+    ctx.heap.resume_gen = null;
+
+    // If the function completed (returned a value — e.g. catch handled the
+    // rejection), store it in ctx.result so the downstream promise gets settled.
+    *ctx.result = result;
 }
