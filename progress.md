@@ -35,7 +35,6 @@
 
 ## Deferred Items
 
-- Async microtask scheduling (Promise tests)
 - Private class fields/methods
 - Nested/advanced destructuring patterns
 - Reflect, Proxy
