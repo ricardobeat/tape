@@ -460,6 +460,7 @@ union HObjectExtra {
     HObjectIterator              iter;
     HObjectRegExpStringIterator  regexp_iter;
     HObjectGetterSetter          gs;
+    uint                         array_length;  // For ARRAY objects: dense-element count.
 }
 
 /// The core ECMAScript object representation.
@@ -511,8 +512,7 @@ struct HObjectBase {
 /// by flags.obj_class.
 struct HObject {
     inline HObjectBase base;
-    HObjectExtra      extra;
-    uint              array_length;
+    HObjectExtra      extra;       // offset 64 — includes array_length for ARRAY objects
 }
 
 // ============================================================================
@@ -522,7 +522,7 @@ struct HObject {
 /// Pool size classes — derived from actual struct sizes plus inline prop space.
 const usz INLINE_EXTRA = INLINE_PROPS * PropValue::size;
 const usz OBJ_SIZE_PLAIN = HObjectBase::size + INLINE_EXTRA;                            // OBJECT, ERROR, ARGUMENTS, PROXY
-const usz OBJ_SIZE_ARRAY = HObjectBase::size + 8 + INLINE_EXTRA;                        // ARRAY
+const usz OBJ_SIZE_ARRAY = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // ARRAY (array_length now in union)
 const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // FUNCTION, REGEXP, etc.
 const usz OBJ_SIZE_GS    = HObjectBase::size + HObjectGetterSetter::size;                // GETTER_SETTER (no inline props)
 
@@ -530,7 +530,7 @@ const usz OBJ_SIZE_GS    = HObjectBase::size + HObjectGetterSetter::size;       
 /// Includes INLINE_PROPS slots at the tail for small objects (0-4 properties),
 /// eliminating a separate prop_alloc malloc for the common case.
 /// Plain objects: HObjectBase + inline props (136 bytes).
-/// ARRAY: HObjectBase + 8 + inline props (144 bytes).
+/// ARRAY: HObjectBase + HObjectExtra + inline props (array_length in union).
 /// Others: HObjectBase + HObjectExtra + inline props (168 bytes).
 fn usz alloc_size_for_class(ObjClass cls) @inline {
     switch (cls) {
@@ -556,10 +556,11 @@ fn HObjectExtra* HObject.extra_ptr(&self) @inline {
     return (HObjectExtra*)((char*)self + HObjectBase::size);
 }
 
-/// Accessor for array_length.  Returns a pointer to the uint at offset
-/// HObjectBase::size.  Only valid for ARRAY objects (flags.exotic_array).
+/// Accessor for array_length.  Returns a pointer to extra.array_length
+/// (first 4 bytes of the HObjectExtra union at offset HObjectBase::size).
+/// Only valid for ARRAY objects (flags.exotic_array).
 fn uint* HObject.array_len_ptr(&self) @inline {
-    return (uint*)((char*)self + HObjectBase::size);
+    return &self.extra.array_length;
 }
 
 // ============================================================================
