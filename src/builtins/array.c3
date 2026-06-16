@@ -170,6 +170,9 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
 /// Returns the next downstream index after all elements are inserted.
 fn uint flatten_into(HObject* downstream, HObject* source, uint source_len, uint downstream_idx, double depth, Heap* heap) {
     for (uint i = 0; i < source_len; i++) {
+        if (!arr_has_prop(source, i, heap)) {
+            continue;
+        }
         TVal elem = array_get_elem(source, i, heap);
         if (elem.is_object() && elem.get_heapptr() != null &&
             ((HObject*)elem.get_heapptr()).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
@@ -201,7 +204,8 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
         return;
     }
 
-    uint len = array_get_length(obj, ctx.heap);
+    uint len;
+    if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
     double depth_num = 1.0;
     if (ctx.argc > 0) {
@@ -725,6 +729,20 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         obj = (HObject*)this_val.get_heapptr();
     } else if (this_val.is_null() || this_val.is_undefined()) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap,
+                "Array.prototype.toString called on null or undefined");
+            if (msg_str != null) {
+                TVal msg_val; msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            TVal err_tv; err_tv.set_object(err);
+            ctx.throw_value = err_tv;
+        }
+        ctx.should_throw = true;
         ctx.result.set_undefined();
         return;
     } else {
@@ -1082,12 +1100,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // Determine start
     double relative_start = 0.0;
     if (ctx.argc > 0) {
-        TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.is_fastint()) {
-            relative_start = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            relative_start = arg.get_number();
-        }
+        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg]);
     }
 
     uint k;
@@ -1101,12 +1114,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // Determine end
     double relative_end = (double)len;
     if (ctx.argc > 1) {
-        TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.is_fastint()) {
-            relative_end = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            relative_end = arg.get_number();
-        }
+        relative_end = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
     }
 
     uint final_val;
@@ -1128,9 +1136,13 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
 
     uint n = 0;
     for (uint i = k; i < final_val; i++) {
-        TVal elem = array_get_elem(obj, i, ctx.heap);
-        array_set_elem(result_arr, n, elem, ctx.heap);
-        n++;
+        if (arr_has_prop(obj, i, ctx.heap)) {
+            TVal v;
+            if (arr_get_elem_vm(obj, i, ctx.heap, ctx.vm, &v)) {
+                array_set_elem(result_arr, n, v, ctx.heap);
+                n++;
+            }
+        }
     }
     array_set_length(result_arr, n, ctx.heap);
 
@@ -1279,12 +1291,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     // Get relativeStart (argument 0)
     double relative_start = 0.0;
     if (ctx.argc > 0) {
-        TVal* arg = &ctx.regs[ctx.base_reg];
-        if (arg.is_fastint()) {
-            relative_start = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            relative_start = arg.get_number();
-        }
+        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg]);
     }
 
     uint actual_start;
@@ -1300,15 +1307,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     if (ctx.argc <= 1) {
         actual_delete_count = len - actual_start;
     } else {
-        TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        double delete_count;
-        if (arg.is_fastint()) {
-            delete_count = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            delete_count = arg.get_number();
-        } else {
-            delete_count = 0;
-        }
+        double delete_count = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
 
         if (delete_count < 0) delete_count = 0;
         uint dc = (uint)(long)delete_count;
@@ -1325,8 +1324,12 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     result.prototype = ctx.heap.array_proto;
 
     for (uint i = 0; i < actual_delete_count; i++) {
-        TVal elem = array_get_elem(obj, actual_start + i, ctx.heap);
-        array_set_elem(result, i, elem, ctx.heap);
+        TVal elem;
+        if (arr_has_prop(obj, actual_start + i, ctx.heap)) {
+            if (arr_get_elem_vm(obj, actual_start + i, ctx.heap, ctx.vm, &elem)) {
+                array_set_elem(result, i, elem, ctx.heap);
+            }
+        }
     }
     array_set_length(result, actual_delete_count, ctx.heap);
 
@@ -1340,8 +1343,12 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     if (item_count < actual_delete_count) {
         uint shift_len = len - actual_start - actual_delete_count;
         for (uint k = 0; k < shift_len; k++) {
-            TVal elem = array_get_elem(obj, actual_start + actual_delete_count + k, ctx.heap);
-            array_set_elem(obj, actual_start + item_count + k, elem, ctx.heap);
+            TVal elem;
+            if (arr_has_prop(obj, actual_start + actual_delete_count + k, ctx.heap)) {
+                if (arr_get_elem_vm(obj, actual_start + actual_delete_count + k, ctx.heap, ctx.vm, &elem)) {
+                    array_set_elem(obj, actual_start + item_count + k, elem, ctx.heap);
+                }
+            }
         }
         uint new_len = len - actual_delete_count + item_count;
         for (uint k = new_len; k < len; k++) {
@@ -1353,8 +1360,12 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         for (uint k = shift_len; k > 0; k--) {
             uint from = actual_start + actual_delete_count + k - 1;
             uint to = actual_start + item_count + k - 1;
-            TVal elem = array_get_elem(obj, from, ctx.heap);
-            array_set_elem(obj, to, elem, ctx.heap);
+            TVal elem;
+            if (arr_has_prop(obj, from, ctx.heap)) {
+                if (arr_get_elem_vm(obj, from, ctx.heap, ctx.vm, &elem)) {
+                    array_set_elem(obj, to, elem, ctx.heap);
+                }
+            }
         }
         array_set_length(obj, len - actual_delete_count + item_count, ctx.heap);
     }
@@ -1722,12 +1733,7 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     // Get fromIndex (default 0)
     double relative_start = 0.0;
     if (ctx.argc > 1) {
-        TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.is_fastint()) {
-            relative_start = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            relative_start = arg.get_number();
-        }
+        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
     }
 
     uint k;
@@ -1771,12 +1777,7 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     // Get fromIndex (default len - 1)
     double relative_start = (double)(len - 1);
     if (ctx.argc > 1) {
-        TVal* arg = &ctx.regs[ctx.base_reg + 1];
-        if (arg.is_fastint()) {
-            relative_start = (double)arg.get_fastint();
-        } else if (arg.is_number()) {
-            relative_start = arg.get_number();
-        }
+        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
     }
 
     int k;
@@ -1821,9 +1822,13 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     // First, copy 'this' elements
     uint this_len = array_get_length(obj, ctx.heap);
     for (uint i = 0; i < this_len; i++) {
-        TVal elem = array_get_elem(obj, i, ctx.heap);
-        array_set_elem(result, n, elem, ctx.heap);
-        n++;
+        if (arr_has_prop(obj, i, ctx.heap)) {
+            TVal elem;
+            if (arr_get_elem_vm(obj, i, ctx.heap, ctx.vm, &elem)) {
+                array_set_elem(result, n, elem, ctx.heap);
+                n++;
+            }
+        }
     }
 
     // Get the @@isConcatSpreadable symbol key (cached on heap)
@@ -1859,9 +1864,13 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
                 // Spread elements from the argument
                 uint arg_len = array_get_length(arg_obj, ctx.heap);
                 for (uint i = 0; i < arg_len; i++) {
-                    TVal elem = array_get_elem(arg_obj, i, ctx.heap);
-                    array_set_elem(result, n, elem, ctx.heap);
-                    n++;
+                    if (arr_has_prop(arg_obj, i, ctx.heap)) {
+                        TVal elem;
+                        if (arr_get_elem_vm(arg_obj, i, ctx.heap, ctx.vm, &elem)) {
+                            array_set_elem(result, n, elem, ctx.heap);
+                            n++;
+                        }
+                    }
                 }
             } else {
                 // Add as single element
@@ -2899,7 +2908,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "findLastIndex", BUILTIN_ARRAY_PROTO_FINDLASTINDEX)) return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
     if (!register_compiled_proto_method(proto, heap, global_env, "flatMap",
-        "(callback,thisArg){var O=Object(this);var len=O.length;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;while(j<mapped.length){A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;
+        "(callback,thisArg){if(this==null)throw new TypeError('flatMap called on null or undefined');var O=Object(this);var len=O.length>>>0;if(len>>>0!==len)len=0;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;var mLen=mapped.length>>>0;if(mLen>>>0!==mLen)mLen=0;while(j<mLen){if(j in mapped)A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;
     if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
     if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
     if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;
@@ -2923,7 +2932,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     // Array.prototype.toLocaleString — ES5 §15.4.4.3
     // Delegates to Object.prototype.toLocaleString for each element, then joins with ", ".
     if (!register_compiled_proto_method(proto, heap, global_env, "toLocaleString",
-        "(){var O=Object(this);var len=O.length;var separator=\",\";var elements=[];for(var k=0;k<len;k++){if(k in O){var nextElement=O[k];var s=(nextElement!=null)?nextElement.toLocaleString():String(nextElement);elements.push(s)}}return elements.join(separator)}", 0)) return false;
+        "(){if(this==null)throw new TypeError('toLocaleString called on null or undefined');var O=Object(this);var len=O.length>>>0;if(len>>>0!==len)len=0;var separator=\",\";var elements=[];for(var k=0;k<len;k++){if(k in O){var nextElement=O[k];var s=(nextElement===null||nextElement===void 0)?\"\":nextElement.toLocaleString();elements.push(s)}}return elements.join(separator)}", 0)) return false;
 
     // Register Array.prototype[@@iterator] (ES6 §22.1.3.30)
     {
