@@ -26,13 +26,13 @@ Tasks are grouped by area but are otherwise independent.
 
 These features are tracked as high-priority items. Tests for them are currently running (not skipped) in test262.
 
-- [ ] Implement destructuring binding (`const [a, b] = arr` and `const {x, y} = obj`) — compiler/parser
+- [x] Implement destructuring binding (`const [a, b] = arr` and `const {x, y} = obj`) — compiler/parser
 - [ ] Implement destructuring assignment (`[a, b] = arr` and `{x, y} = obj`) — compiler/parser
-- [ ] Implement default parameters (`function f(x = 42) {}`) — compiler
+- [x] Implement default parameters (`function f(x = 42) {}`) — compiler
 - [ ] Implement rest parameters (`function f(...args) {}`) — compiler
 - [ ] Implement object spread (`{...obj}`) — compiler + VM
 - [ ] Implement async/await — compiler + VM (requires Promise)
-- [ ] Implement generators (`function*`) — compiler + VM
+- [ ] Implement class declaration / class expression — compiler (extends, constructor, methods, static fields)
 
 ---
 
