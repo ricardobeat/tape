@@ -41,6 +41,18 @@ build-noshape t="test_vm":
 build t="duktape_c3":
     c3c build "{{t}}"
 
+# Build the C3 Duktape CLI with debug symbols (-O0) for lldb debugging
+build-debug t="duktape_c3":
+    c3c -O0 build "{{t}}"
+
+# ── Debugging ─────────────────────────────────────────────────────────────────
+
+# Build duktape_c3 with -O0 and launch lldb
+# Usage: just lldb test/simple.js    (basic run + bt on crash)
+lldb file="test/simple.js":
+    c3c -O0 build duktape_c3
+    lldb ./out/duktape_c3 -b -o "run {{file}}" -o "bt"
+
 # Build with NaN-boxing disabled (`-D NONANBOX`)
 build-nonanbox t="test_vm":
     c3c -D NONANBOX build "{{t}}"

@@ -53,7 +53,7 @@ These features are tracked as high-priority items. Tests for them are currently 
 
 ## Conformance: Built-in Prototype Methods (Plan 023)
 
-- [ ] Implement `String.prototype.normalize(form)` — NFC/NFD/NFKC/NFKD normalization per ES6 §21.1.3.12 (~30 test262 tests)
+- [x] Implement `String.prototype.normalize(form)` — NFC/NFD/NFKC/NFKD normalization per ES6 §21.1.3.12 (~30 test262 tests)
 - [x] Fix `Array.prototype.find` / `findIndex` to accept a `thisArg` second argument and call callback correctly per ES6 §22.1.3.8 (`src/builtins/array.c3`)
 - [x] Implement `Array.prototype.flat` and `Array.prototype.flatMap` per ES2019 (~20 tests, phase 6)
 - [x] Implement `Array.prototype.at` per ES2022 (~10 tests)

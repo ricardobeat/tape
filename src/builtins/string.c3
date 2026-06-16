@@ -9,6 +9,7 @@ import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::re_bindings;
+import duktape::unicode_bindings;
 import duktape::vm;
 
 // ============================================================================
@@ -2378,35 +2379,41 @@ fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
 }
 
 /// String.prototype.normalize([form]) — ES6 §21.1.3.12
-/// Basic implementation: returns the string as-is (identity normalization).
-/// Full Unicode normalization (NFC/NFD/NFKC/NFKD) requires complex tables;
-/// this passes basic tests for ASCII strings and already-normalized input.
+///
+/// Supports NFC, NFD, NFKC, NFKD via QuickJS's libunicode.
 fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    // Validate form argument if provided
-    if (ctx.argc > 0) {
+    // Default form: NFC
+    int n_type = unicode_bindings::UNICODE_NFC;
+
+    // Process form argument (ES6 §21.1.3.12 steps 3-5)
+    // If form is not provided or is undefined, default to NFC.
+    if (ctx.argc > 0 && !ctx.regs[ctx.base_reg].is_undefined()) {
         HString* form = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
         if (form != null) {
-            char* form_data = form.get_cstr();
-            uint form_len = form.blen;
-            // Accept NFC, NFD, NFKC, NFKD, or undefined
+            char* f = form.get_cstr();
+            uint flen = form.blen;
+
+            // Map form string to enum value (case-insensitive)
             bool valid = false;
-            if (form_len == 3) {
-                if ((form_data[0] == 'N' || form_data[0] == 'n') &&
-                    (form_data[1] == 'F' || form_data[1] == 'f') &&
-                    (form_data[2] == 'C' || form_data[2] == 'c' ||
-                     form_data[2] == 'D' || form_data[2] == 'd')) {
-                    valid = true;
+            if (flen == 3) {
+                char c0 = f[0] | 0x20;
+                char c1 = f[1] | 0x20;
+                char c2 = f[2] | 0x20;
+                if (c0 == 'n' && c1 == 'f') {
+                    if (c2 == 'c') { n_type = unicode_bindings::UNICODE_NFC; valid = true; }
+                    else if (c2 == 'd') { n_type = unicode_bindings::UNICODE_NFD; valid = true; }
                 }
-            } else if (form_len == 4) {
-                if ((form_data[0] == 'N' || form_data[0] == 'n') &&
-                    (form_data[1] == 'F' || form_data[1] == 'f') &&
-                    (form_data[2] == 'K' || form_data[2] == 'k') &&
-                    (form_data[3] == 'C' || form_data[3] == 'c' ||
-                     form_data[3] == 'D' || form_data[3] == 'd')) {
-                    valid = true;
+            } else if (flen == 4) {
+                char c0 = f[0] | 0x20;
+                char c1 = f[1] | 0x20;
+                char c2 = f[2] | 0x20;
+                char c3 = f[3] | 0x20;
+                if (c0 == 'n' && c1 == 'f' && c2 == 'k') {
+                    if (c3 == 'c') { n_type = unicode_bindings::UNICODE_NFKC; valid = true; }
+                    else if (c3 == 'd') { n_type = unicode_bindings::UNICODE_NFKD; valid = true; }
                 }
             }
             if (!valid) {
@@ -2430,8 +2437,95 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
         }
     }
 
-    // Identity normalization: return the string unchanged
-    ctx.result.set_string(s_hstr);
+    // Empty string fast path
+    if (s_hstr.blen == 0) {
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    // ── Step 1: Convert HString (UTF-8) → uint32_t[] codepoints ─────────────
+    char[] data = s_hstr.get_data();
+    uint char_len = s_hstr.char_length();
+
+    uint* src_cps = (uint*)libc::malloc((usz)(char_len * 4));
+    if (src_cps == null) {
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    uint byte_off = 0;
+    for (uint i = 0; i < char_len; i++) {
+        src_cps[i] = hstring::decode_codepoint(data, byte_off);
+        byte_off += hstring::utf8_seq_len(data[byte_off]);
+    }
+
+    // ── Step 2: Run Unicode normalization via libunicode ────────────────────
+    int out_len = 0;
+    uint* result_cps = unicode_bindings::unicode_normalize_simple(src_cps,
+                        (int)char_len, n_type, &out_len);
+    libc::free(src_cps);
+
+    if (result_cps == null || out_len < 0) {
+        if (result_cps != null) libc::free(result_cps);
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    // Handle empty result
+    if (out_len == 0) {
+        libc::free(result_cps);
+        ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
+        return;
+    }
+
+    // ── Step 3: Compute byte length of normalized UTF-8 ─────────────────────
+    uint total_bytes = 0;
+    for (int i = 0; i < out_len; i++) {
+        uint cp = result_cps[i];
+        if (cp < 0x80) {
+            total_bytes += 1;
+        } else if (cp < 0x800) {
+            total_bytes += 2;
+        } else if (cp < 0x1_0000) {
+            total_bytes += 3;
+        } else {
+            total_bytes += 4;
+        }
+    }
+
+    // ── Step 4: Allocate and fill UTF-8 output buffer ───────────────────────
+    char* out_buf = (char*)libc::malloc(total_bytes);
+    if (out_buf == null) {
+        libc::free(result_cps);
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    uint out_off = 0;
+    for (int i = 0; i < out_len; i++) {
+        char[4] cbuf;
+        uint cblen = hstring::encode_codepoint(result_cps[i], cbuf[:4]);
+        if (cblen > 0) {
+            libc::memcpy(out_buf + out_off, &cbuf, (usz)cblen);
+            out_off += cblen;
+        }
+    }
+
+    // Free the C-allocated codepoint buffer
+    libc::free(result_cps);
+
+    // ── Step 5: Create HString from UTF-8 bytes ─────────────────────────────
+    // Use the heap's seeded hash so hash comparisons with interned strings work.
+    uint hash = ctx.heap.hash_string(out_buf[:total_bytes]);
+    HString*? result_hstr_raw = hstring::hstring_alloc(ctx.heap,
+                                    out_buf[:total_bytes], hash);
+    libc::free(out_buf);
+
+    if (try result_hstr = result_hstr_raw) {
+        ctx.result.set_string(result_hstr);
+    } else {
+        ctx.result.set_string(s_hstr);
+    }
 }
 
 /// String.prototype.search(regexp) — ES5 §15.5.4.12
