@@ -1399,40 +1399,65 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
         case TokenType.LPAREN: {
             // Try arrow function with parens: (params) => ...
-            // Strategy: parse paren content as potential params, check for => after ),
-            // pushback all tokens and re-parse as grouping if not arrow.
+            // Strategy: save lexer state, speculatively scan params, and check for =>.
+            // If it's not an arrow, restore the lexer and parse as grouping expression.
             Token lparen = self.advance()!;
-            bool try_grouping = false;
+
+            // Save lexer state before speculative scan
+            uint saved_pos    = self.lexer.pos;
+            uint saved_line   = self.lexer.line;
+            uint saved_col    = self.lexer.col;
+            Token saved_cur   = self.lexer.current;
+            Token saved_look  = self.lexer.lookahead;
+            bool  saved_haslk = self.lexer.has_lookahead;
+            Token saved_push  = self.lexer.pushed_back;
+            bool  saved_haspb = self.lexer.has_pushed_back;
+            bool  saved_slt   = self.lexer.seen_line_term;
 
             // Check for empty parens: () => ...
             if (self.check(TokenType.RPAREN)) {
-                Token rparen = self.advance()!;
+                self.advance()!;  // consume ')'
                 if (self.check(TokenType.ARROW)) {
                     // No-param arrow: () => ...
-                    char[]* no_params = null;
-                    return self.parse_arrow_function(no_params, 0, false)!;
+                    // Restore lexer to right after '(' — parse_arrow_function_reparse
+                    // will re-parse from source.
+                    self.lexer.pos             = saved_pos;
+                    self.lexer.line            = saved_line;
+                    self.lexer.col             = saved_col;
+                    self.lexer.current         = saved_cur;
+                    self.lexer.lookahead       = saved_look;
+                    self.lexer.has_lookahead   = saved_haslk;
+                    self.lexer.pushed_back     = saved_push;
+                    self.lexer.has_pushed_back = saved_haspb;
+                    self.lexer.seen_line_term  = saved_slt;
+                    return self.parse_arrow_function_reparse()!;
                 }
-                // Not an arrow: pushback and fall through to grouping
-                self.pushback(rparen);
-                self.pushback(lparen);
-                try_grouping = true;
+                // Not an arrow: restore lexer and parse as grouping expression
+                self.lexer.pos             = saved_pos;
+                self.lexer.line            = saved_line;
+                self.lexer.col             = saved_col;
+                self.lexer.current         = saved_cur;
+                self.lexer.lookahead       = saved_look;
+                self.lexer.has_lookahead   = saved_haslk;
+                self.lexer.pushed_back     = saved_push;
+                self.lexer.has_pushed_back = saved_haspb;
+                self.lexer.seen_line_term  = saved_slt;
+                ushort inner2 = self.expression()!;
+                self.expect(TokenType.RPAREN)!;
+                return inner2;
             }
             // Check for arrow with params: (id) => or (id, id, ...) => ...
-            else if ((self.check(TokenType.IDENTIFIER) || self.check(TokenType.ELLIPSIS)) && !try_grouping) {
+            else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.ELLIPSIS)) {
                 char[][8] param_names;
                 ushort pc = 0;
-                Token[16] saved;  // save tokens for backtracking
-                ushort sc = 0;
                 bool has_rest = false;
-
                 bool is_arrow = false;
+
                 for (;;) {
                     // Check for rest parameter
                     if (self.check(TokenType.ELLIPSIS)) {
-                        Token ellipsis = self.advance()!;
-                        saved[sc++] = ellipsis;
+                        self.advance()!;  // consume '...'
                         Token t = self.advance()!;
-                        saved[sc++] = t;
                         if (t.type != TokenType.IDENTIFIER) {
                             break;  // not a valid rest param, can't be arrow
                         }
@@ -1440,8 +1465,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         has_rest = true;
 
                         if (self.check(TokenType.RPAREN)) {
-                            Token rp = self.advance()!;
-                            saved[sc++] = rp;
+                            self.advance()!;  // consume ')'
                             if (self.check(TokenType.ARROW)) {
                                 is_arrow = true;
                             }
@@ -1450,15 +1474,20 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
 
                     Token t = self.advance()!;
-                    saved[sc++] = t;
                     if (t.type != TokenType.IDENTIFIER) {
                         break;  // not a param name, can't be arrow
                     }
                     param_names[pc++] = t.str_value;
 
+                    // Skip default value if present: = <expression>
+                    if (self.check(TokenType.ASSIGN)) {
+                        self.advance()!;  // consume '='
+                        // Skip the default expression using the token scanner
+                        self.skip_expression();
+                    }
+
                     if (self.check(TokenType.RPAREN)) {
-                        Token rp = self.advance()!;
-                        saved[sc++] = rp;
+                        self.advance()!;  // consume ')'
                         if (self.check(TokenType.ARROW)) {
                             is_arrow = true;
                         }
@@ -1467,36 +1496,43 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     if (!self.check(TokenType.COMMA)) {
                         break;  // unexpected token, not arrow
                     }
-                    // Consume comma
-                    Token comma = self.advance()!;
-                    saved[sc++] = comma;
+                    self.advance()!;  // consume ','
                 }
 
                 if (is_arrow) {
-                    return self.parse_arrow_function(&param_names[0], pc, has_rest)!;
+                    // Restore lexer to right after '(' — compile_arrow_inner
+                    // will re-parse params from source (handling defaults).
+                    self.lexer.pos             = saved_pos;
+                    self.lexer.line            = saved_line;
+                    self.lexer.col             = saved_col;
+                    self.lexer.current         = saved_cur;
+                    self.lexer.lookahead       = saved_look;
+                    self.lexer.has_lookahead   = saved_haslk;
+                    self.lexer.pushed_back     = saved_push;
+                    self.lexer.has_pushed_back = saved_haspb;
+                    self.lexer.seen_line_term  = saved_slt;
+                    return self.parse_arrow_function_reparse()!;
                 }
 
-                // Not an arrow: pushback saved tokens + lparen
-                for (ushort si = sc; si > 0; si--) {
-                    self.pushback(saved[si - 1]);
-                }
-                self.pushback(lparen);
-                try_grouping = true;
-            } else if (!try_grouping) {
-                // Not arrow: pushback lparen
-                self.pushback(lparen);
-                try_grouping = true;
-            }
-
-            // Grouping expression
-            if (try_grouping) {
-                self.advance()!;  // (
+                // Not an arrow: restore lexer state and parse as grouping expression
+                self.lexer.pos             = saved_pos;
+                self.lexer.line            = saved_line;
+                self.lexer.col             = saved_col;
+                self.lexer.current         = saved_cur;
+                self.lexer.lookahead       = saved_look;
+                self.lexer.has_lookahead   = saved_haslk;
+                self.lexer.pushed_back     = saved_push;
+                self.lexer.has_pushed_back = saved_haspb;
+                self.lexer.seen_line_term  = saved_slt;
+                ushort inner2 = self.expression()!;
+                self.expect(TokenType.RPAREN)!;
+                return inner2;
+            } else {
+                // Not arrow: parse as grouping expression
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
                 return inner2;
             }
-            // unreachable
-            return COMPILE_ERROR~;
         }
 
         case TokenType.LBRACE:

@@ -695,6 +695,200 @@ fn ushort? CompilerContext.function_expr_body(&self) {
     return result;
 }
 
+/// Parse an arrow function by re-parsing the parameter list from source.
+/// The lexer is positioned right after '(' when called. This function
+/// re-parses params (including defaults) and compiles the body.
+/// Called from primary_expr after the arrow detection scan confirms '=>' follows.
+fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
+    // Create inner CompiledFunction for the arrow
+    CompiledFunction* inner = self.compile_arrow_inner_reparse()!;
+
+    // Add to inner functions table
+    uint inner_idx = 0;
+    if (self.inner_func_count < MAX_INNER_FUNCS) {
+        inner_idx = self.inner_func_count;
+        self.inner_funcs[inner_idx] = inner;
+        self.inner_func_count++;
+        self.has_closures = true;
+    }
+
+    ushort result = self.alloc_reg();
+    self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
+    return result;
+}
+
+/// Compile an inner arrow function by re-parsing params from source.
+/// The lexer is positioned right after '(' when called. This function
+/// parses '(params) => body', handling defaults, rest params, etc.
+fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
+    // Create a new CompilerContext for the arrow function
+    CompilerContext arrow_ctx;
+    arrow_ctx.init(self.lexer, self.heap);
+
+    // Strict-only engine: always strict
+    arrow_ctx.is_strict = true;
+    arrow_ctx.lexer.set_strict(true);
+
+    // Arrow functions use the parent scope — no fresh env needed.
+    arrow_ctx.is_arrow = true;
+
+    // Propagate class context (for super expressions)
+    arrow_ctx.in_class_body = self.in_class_body;
+    arrow_ctx.has_super_binding = self.has_super_binding;
+
+    // Parse parameter list from source (including defaults and rest)
+    // Note: lexer is already past '(' when called from parse_arrow_function_reparse
+    ushort arg_count = 0;
+
+    if (!arrow_ctx.check(TokenType.RPAREN)) {
+        for (;;) {
+            // Check for rest parameter
+            if (arrow_ctx.match(TokenType.ELLIPSIS)) {
+                Token rest_param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
+                ushort rest_reg = arrow_ctx.declare_var(rest_param.str_value, VAR);
+                uint rest_name_idx = arrow_ctx.add_string_constant(rest_param.str_value);
+                arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+                arg_count++;
+                arrow_ctx.has_rest = true;
+                arrow_ctx.rest_formal_count = arg_count - 1;
+                arrow_ctx.num_args = arg_count;
+                break;
+            }
+
+            Token param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
+            ushort param_reg = arrow_ctx.declare_var(param.str_value, VAR);
+            uint param_name_idx = arrow_ctx.add_string_constant(param.str_value);
+            arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
+            arg_count++;
+
+            // Check for default value
+            if (arrow_ctx.check(TokenType.ASSIGN)) {
+                arrow_ctx.advance()!; // consume '='
+
+                // Compile the default expression as an inner function
+                CompiledFunction* default_func = arrow_ctx.compile_default_expr()!;
+
+                // Add to inner functions table
+                if (arrow_ctx.inner_func_count < MAX_INNER_FUNCS
+                    && arrow_ctx.default_count < MAX_PARAMS) {
+                    uint def_idx = arrow_ctx.inner_func_count;
+                    arrow_ctx.inner_funcs[def_idx] = default_func;
+                    arrow_ctx.defaults[arrow_ctx.default_count].param_reg = param_reg;
+                    arrow_ctx.defaults[arrow_ctx.default_count].param_name_idx = param_name_idx;
+                    arrow_ctx.defaults[arrow_ctx.default_count].default_func_idx = def_idx;
+                    arrow_ctx.default_count++;
+                    arrow_ctx.inner_func_count++;
+                }
+            }
+
+            if (!arrow_ctx.match(TokenType.COMMA)) {
+                break;
+            }
+        }
+    }
+
+    if (!arrow_ctx.has_rest) {
+        arrow_ctx.num_args = arg_count;
+    }
+
+    arrow_ctx.expect(TokenType.RPAREN)!;
+
+    // Consume the => token
+    arrow_ctx.expect(TokenType.ARROW)!;
+
+    // Push a function-level lexical scope
+    bool has_func_lex = arrow_ctx.default_count > 0;
+    if (has_func_lex) {
+        arrow_ctx.emit_simple(Opcode.PUSH_LEX);
+    }
+
+    // Emit default parameter checks (must run before body, after PUSH_LEX)
+    for (ushort di = 0; di < arrow_ctx.default_count; di++) {
+        ushort pr = arrow_ctx.defaults[di].param_reg;
+        uint name_idx = arrow_ctx.defaults[di].param_name_idx;
+        uint func_idx = arrow_ctx.defaults[di].default_func_idx;
+
+        // Check if param != undefined; if so, skip default evaluation
+        ushort undef_reg = arrow_ctx.alloc_reg();
+        arrow_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+        ushort cmp_reg = arrow_ctx.alloc_reg();
+        arrow_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)pr, (uint)undef_reg);
+        arrow_ctx.free_reg(undef_reg);
+
+        // IF_TRUE: skip past default evaluation (will be patched)
+        uint skip_addr = arrow_ctx.code_count;
+        arrow_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+        arrow_ctx.free_reg(cmp_reg);
+
+        // CLOSURE for default function
+        ushort closure_reg = arrow_ctx.alloc_reg();
+        arrow_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
+
+        // Set up call: consecutive registers for callee + this
+        ushort call_base = arrow_ctx.alloc_reg();
+        if (arrow_ctx.next_reg <= call_base + 1) {
+            arrow_ctx.next_reg = call_base + 2;
+        }
+        arrow_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+        arrow_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+
+        arrow_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+
+        // Copy result directly to the parameter register.
+        arrow_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
+        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
+
+        arrow_ctx.free_regs_to(call_base);
+
+        // Patch the skip jump to land after default evaluation
+        int skip_off = (int)arrow_ctx.code_count - (int)skip_addr - 1;
+        arrow_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+    }
+
+    // Determine if body is block or expression
+    if (arrow_ctx.check(TokenType.LBRACE)) {
+        // Block body: { ... }
+        arrow_ctx.advance()!;
+        while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {
+            arrow_ctx.statement()!;
+        }
+        arrow_ctx.expect(TokenType.RBRACE)!;
+        // No implicit return for block body
+        bool has_explicit_return = false;
+        if (arrow_ctx.code_count > 0) {
+            Opcode last_op = arrow_ctx.code[arrow_ctx.code_count - 1].op;
+            if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF ||
+                last_op == Opcode.RET_GEN || last_op == Opcode.RETUNDEF_GEN) {
+                has_explicit_return = true;
+            }
+        }
+        if (!has_explicit_return) {
+            arrow_ctx.emit_simple(Opcode.RETUNDEF);
+        }
+    } else {
+        // Expression body: implicitly return the expression value
+        ushort expr_reg = arrow_ctx.assignment_expr()!;
+        arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+    }
+
+    // Pop the function-level lexical scope
+    if (has_func_lex) {
+        arrow_ctx.emit_simple(Opcode.POP_LEX);
+    }
+
+    // Set rest and formal counts before finish()
+    arrow_ctx.num_args = arg_count;
+    if (arrow_ctx.has_rest) {
+        arrow_ctx.rest_formal_count = arg_count - 1;
+    }
+
+    CompiledFunction* func = arrow_ctx.finish()!;
+    func.flags.is_arrow = true;
+
+    return func;
+}
+
 /// Parse an arrow function: `(params) => expr` or `(params) => { body }`
 /// or `param => expr`.  The caller has already consumed the leading `(`
 /// or the single identifier.

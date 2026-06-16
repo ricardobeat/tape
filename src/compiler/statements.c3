@@ -686,42 +686,269 @@ fn void? CompilerContext.for_statement(&self) {
         // Check for destructuring: [pattern] or {pattern}
         TokenType after_decl = self.peek_type();
         if (after_decl == TokenType.LBRACKET || after_decl == TokenType.LBRACE) {
-            // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
-            if (after_decl == TokenType.LBRACKET) {
-                self.advance()!; // consume '['
-                self.array_destructure(decl_kind, is_lexical, is_const)!;
-            } else {
-                self.advance()!; // consume '{'
-                self.object_destructure(decl_kind, is_lexical, is_const)!;
-            }
+            // Check if this is a for-of or for-in with destructuring
+            // We need to look ahead past the pattern to see if 'of' or 'in' follows
+            bool is_forof_destr = false;
+            bool is_forin_destr = false;
 
-            // More declarations? (var [a]=x, b=y)
-            while (self.match(TokenType.COMMA)) {
-                TokenType nt = self.peek_type();
-                if (nt == TokenType.LBRACKET) {
-                    self.advance()!;
-                    self.array_destructure(decl_kind, is_lexical, is_const)!;
-                } else if (nt == TokenType.LBRACE) {
-                    self.advance()!;
-                    self.object_destructure(decl_kind, is_lexical, is_const)!;
-                } else {
-                    Token extra_name = self.expect(TokenType.IDENTIFIER)!;
-                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
-                    if (self.match(TokenType.ASSIGN)) {
-                        ushort extra_val = self.assignment_expr()!;
-                        if (extra_val != extra_reg) {
-                            self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
-                        }
-                        self.free_reg(extra_val);
-                    } else {
-                        self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+            // Save lexer state to look ahead
+            uint saved_pos = self.lexer.pos;
+            uint saved_line = self.lexer.line;
+            uint saved_col = self.lexer.col;
+            Token saved_cur = self.lexer.current;
+            Token saved_look = self.lexer.lookahead;
+            bool saved_haslk = self.lexer.has_lookahead;
+            Token saved_push = self.lexer.pushed_back;
+            bool saved_haspb = self.lexer.has_pushed_back;
+            bool saved_slt = self.lexer.seen_line_term;
+
+            // Skip past the pattern tokens to find 'of' or 'in'
+            self.advance()!; // consume '[' or '{'
+            uint depth = 1;
+            while (depth > 0) {
+                Token? next_opt = self.lexer.next_token();
+                if (try next = next_opt) {
+                    if (next.type == TokenType.LBRACKET || next.type == TokenType.LBRACE) {
+                        depth++;
+                    } else if (next.type == TokenType.RBRACKET || next.type == TokenType.RBRACE) {
+                        depth--;
+                    } else if (next.type == TokenType.EOF_TOKEN) {
+                        break;
                     }
-                    uint extra_name_idx = self.add_string_constant(extra_name.str_value);
-                    self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                } else {
+                    break;
                 }
             }
 
-            self.expect(TokenType.SEMICOLON)!;
+            // Now check what follows the pattern
+            Token? peek_tok = self.lexer.peek();
+            if (try pt = peek_tok) {
+                if (pt.type == TokenType.IDENTIFIER && str_eq(pt.str_value, "of")) {
+                    is_forof_destr = true;
+                } else if (pt.type == TokenType.IN) {
+                    is_forin_destr = true;
+                }
+            }
+
+            // Restore lexer state
+            self.lexer.pos = saved_pos;
+            self.lexer.line = saved_line;
+            self.lexer.col = saved_col;
+            self.lexer.current = saved_cur;
+            self.lexer.lookahead = saved_look;
+            self.lexer.has_lookahead = saved_haslk;
+            self.lexer.pushed_back = saved_push;
+            self.lexer.has_pushed_back = saved_haspb;
+            self.lexer.seen_line_term = saved_slt;
+
+            if (is_forof_destr) {
+                // for (let [a, b] of arr) or for (let {x, y} of arr)
+                bool is_array_pattern = (after_decl == TokenType.LBRACKET);
+                ushort iter_reg = 0;
+
+                if (is_array_pattern) {
+                    self.advance()!; // consume '['
+                    self.expect(TokenType.RBRACKET)!;
+                } else {
+                    self.advance()!; // consume '{'
+                    self.expect(TokenType.RBRACE)!;
+                }
+
+                // Consume "of" (contextual keyword - lexed as IDENTIFIER)
+                {
+                    Token of_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (!str_eq(of_tok.str_value, "of")) {
+                        return COMPILE_ERROR~;
+                    }
+                }
+
+                iter_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+
+                // Set up iterator protocol (same as emit_forof_loop but with destructure)
+                // Get Symbol.iterator method from iterable
+                ushort sym_reg = self.alloc_reg();
+                self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+
+                ushort iter_key_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+
+                ushort symbol_val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+                self.free_reg(iter_key_reg);
+                self.free_reg(sym_reg);
+
+                // Get the iterator method from the iterable
+                ushort method_reg = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
+                self.free_reg(symbol_val_reg);
+
+                // Call iterable[Symbol.iterator]() to get the iterator object
+                ushort this_slot = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
+                self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+                self.free_reg(this_slot);
+                // method_reg now holds the iterator object
+
+                // Get .next method from iterator
+                ushort next_reg = self.alloc_reg();
+                ushort next_key_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+                self.free_reg(next_key_reg);
+
+                // Set up callee + this pair for .next() calls
+                ushort callee_reg = self.alloc_reg();
+                ushort callee_this_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+                self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+
+                // Loop start
+                uint loop_start = self.code_count;
+                self.push_loop(loop_start, true);
+
+                // Call .next() each iteration
+                ushort result_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
+
+                // Extract .done
+                ushort done_key_reg = self.alloc_reg();
+                ushort done_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+                uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+                // Extract .value
+                ushort value_key_reg = self.alloc_reg();
+                ushort val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
+
+                // Destructure the value using the pattern
+                self.destructure_for_value(val_reg, decl_kind, is_lexical, is_const, is_array_pattern)!;
+
+                // Free loop-iteration temps
+                self.free_reg(val_reg);
+                self.free_reg(value_key_reg);
+                self.free_reg(done_reg);
+                self.free_reg(done_key_reg);
+                self.free_reg(result_reg);
+
+                // Compile body
+                self.statement()!;
+
+                // Continue target
+                self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+
+                // Jump back to loop start
+                int back_offset = (int)loop_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+                self.patch_jump(exit_jump);
+                self.pop_loop();
+
+                // Free loop-overhead registers
+                self.free_reg(callee_this_reg);
+                self.free_reg(callee_reg);
+                self.free_reg(next_reg);
+                self.free_reg(method_reg);
+                self.free_reg(iter_reg);
+                self.pop_scope_to(saved_scope);
+                self.free_regs_to(saved_reg);
+                return;
+            } else if (is_forin_destr) {
+                // for-in with destructuring: for (let {x, y} in obj)
+                bool is_array_pattern = (after_decl == TokenType.LBRACKET);
+                ushort obj_reg = 0;
+
+                if (is_array_pattern) {
+                    self.advance()!; // consume '['
+                    self.expect(TokenType.RBRACKET)!;
+                } else {
+                    self.advance()!; // consume '{'
+                    self.expect(TokenType.RBRACE)!;
+                }
+
+                self.expect(TokenType.IN)!;
+
+                obj_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+
+                if (is_lexical) {
+                    self.emit_simple(Opcode.PUSH_LEX);
+                }
+
+                ushort iter_state = self.alloc_reg();
+                self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
+
+                uint loop_start = self.code_count;
+                self.push_loop(loop_start, true);
+
+                ushort key_reg = self.alloc_reg();
+                ushort has_next = self.alloc_reg();
+                self.emit_abc(Opcode.NEXTFOR, (uint)key_reg, (uint)has_next, (uint)iter_state);
+
+                // Destructure the key string
+                self.destructure_for_value(key_reg, decl_kind, is_lexical, is_const, is_array_pattern)!;
+
+                uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
+                self.free_reg(has_next);
+
+                self.statement()!;
+
+                int back_offset = (int)loop_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+                self.patch_jump(exit_jump);
+                self.pop_loop();
+
+                if (is_lexical) {
+                    self.emit_simple(Opcode.POP_LEX);
+                }
+
+                self.free_reg(iter_state);
+                self.free_reg(obj_reg);
+                self.pop_scope_to(saved_scope);
+                self.free_regs_to(saved_reg);
+                return;
+            } else {
+                // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
+                if (after_decl == TokenType.LBRACKET) {
+                    self.advance()!; // consume '['
+                    self.array_destructure(decl_kind, is_lexical, is_const)!;
+                } else {
+                    self.advance()!; // consume '{'
+                    self.object_destructure(decl_kind, is_lexical, is_const)!;
+                }
+
+                // More declarations? (var [a]=x, b=y)
+                while (self.match(TokenType.COMMA)) {
+                    TokenType nt = self.peek_type();
+                    if (nt == TokenType.LBRACKET) {
+                        self.advance()!;
+                        self.array_destructure(decl_kind, is_lexical, is_const)!;
+                    } else if (nt == TokenType.LBRACE) {
+                        self.advance()!;
+                        self.object_destructure(decl_kind, is_lexical, is_const)!;
+                    } else {
+                        Token extra_name = self.expect(TokenType.IDENTIFIER)!;
+                        ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                        if (self.match(TokenType.ASSIGN)) {
+                            ushort extra_val = self.assignment_expr()!;
+                            if (extra_val != extra_reg) {
+                                self.emit_abc(Opcode.LDREG, (uint)extra_reg, (uint)extra_val, 0);
+                            }
+                            self.free_reg(extra_val);
+                        } else {
+                            self.emit_abc(Opcode.LDUNDEF, (uint)extra_reg, 0, 0);
+                        }
+                        uint extra_name_idx = self.add_string_constant(extra_name.str_value);
+                        self.emit_var_store(extra_reg, extra_name_idx, is_lexical, is_const);
+                    }
+                }
+
+                self.expect(TokenType.SEMICOLON)!;
+            }
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
 

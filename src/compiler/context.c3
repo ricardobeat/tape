@@ -124,6 +124,8 @@ struct ArrayBind {
     uint   name_idx;
     bool   is_rest;
     bool   is_hole;
+    bool   has_default;
+    ushort default_val_reg;  // register holding compiled default expression result
 }
 
 /// Tracks a binding in an object destructuring pattern.
@@ -131,6 +133,8 @@ struct ObjBind {
     ushort reg;
     uint   name_idx;
     uint   key_idx;
+    bool   has_default;
+    ushort default_val_reg;  // register holding compiled default expression result
 }
 
 // ============================================================================

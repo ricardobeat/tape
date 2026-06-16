@@ -6057,7 +6057,7 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(&new_regs2[i], &old_args2[i]);
                 }
                 if (nargs < new_nregs2) {
-                    libc::memset(&new_regs2[nargs], 0, (usz)(new_nregs2 - nargs) * TVal::size);
+                    zero_regs_undefined(new_regs2, nargs, new_nregs2);
                 }
             }
 
