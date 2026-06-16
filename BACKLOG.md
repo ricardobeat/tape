@@ -195,8 +195,8 @@ These features are tracked as high-priority items. Tests for them are currently 
 - [x] Add a test for `JSON.parse` array then `.push()` regression (plan 026 #1)
 - [x] Add a Rosetta test for function/var hoisting once compiler fix lands
 - [x] Add a Rosetta test for `try { return } finally { }` once RET fix lands
-- [ ] Add phase 3 failure analysis script that groups failures by root cause keyword (writable/configurable/seal/freeze/enumerable)
+- [x] Add phase 3 failure analysis script that groups failures by root cause keyword (writable/configurable/seal/freeze/enumerable)
 - [x] Add `bench_date.js` benchmark covering `new Date()` construction and formatting methods
 - [x] Add `bench_regexp.js` benchmark covering `exec` / `match` / `replace` hot paths
 - [x] Write a test for `typeof undeclaredVar` returning `"undefined"` without error
-- [ ] Automate test262 phase delta reporting: show pass/fail delta vs last run automatically on each build
+- [x] Automate test262 phase delta reporting: show pass/fail delta vs last run automatically on each build
