@@ -210,7 +210,12 @@ const uint BUILTIN_UINT32ARRAY               = 322;
 const uint BUILTIN_FLOAT32ARRAY              = 323;
 const uint BUILTIN_FLOAT64ARRAY              = 324;
 
-const uint BUILTIN_COUNT                         = 325;
+const uint BUILTIN_REGEXP_PROTO_SYMBOL_MATCH   = 325;
+const uint BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH  = 326;
+const uint BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE = 327;
+const uint BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT   = 328;
+
+const uint BUILTIN_COUNT                       = 329;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1280,6 +1285,10 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 296: return { "reduce", 1 };
         case 297: return { "reduceRight", 1 };
         case 312: return { "toString", 0 };
+        case 325: return { "[Symbol.match]", 1 };
+        case 326: return { "[Symbol.search]", 1 };
+        case 327: return { "[Symbol.replace]", 2 };
+        case 328: return { "[Symbol.split]", 2 };
         default: return { "", -1 };
     }
 }
@@ -1831,6 +1840,10 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REGEXP_PROTO_GET_SOURCE] = &builtin_regexp_proto_get_source,
     [BUILTIN_REGEXP_PROTO_GET_STICKY] = &builtin_regexp_proto_get_sticky,
     [BUILTIN_REGEXP_PROTO_GET_UNICODE] = &builtin_regexp_proto_get_unicode,
+    [BUILTIN_REGEXP_PROTO_SYMBOL_MATCH] = &builtin_regexp_proto_symbol_match,
+    [BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH] = &builtin_regexp_proto_symbol_search,
+    [BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE] = &builtin_regexp_proto_symbol_replace,
+    [BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT] = &builtin_regexp_proto_symbol_split,
     [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
     [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
     [BUILTIN_REFLECT_OWNKEYS] = &builtin_reflect_ownKeys,

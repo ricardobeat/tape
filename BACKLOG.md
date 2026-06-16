@@ -100,7 +100,7 @@ These features are tracked as high-priority items. Tests for them are currently 
 - [x] Fix `RegExp` constructor called with regex argument: should copy pattern+flags, not re-parse as string
 - [x] Fix `RegExp.prototype.source` to return the original pattern text, not stringified form
 - [x] Fix `RegExp.prototype.flags` getter to return flags in alphabetical order `gimsuy` per ES2015
-- [ ] Add `RegExp.prototype[Symbol.replace]` and `[Symbol.split]` for protocol correctness
+- [x] Add `RegExp.prototype[Symbol.replace]`, `[Symbol.split]`, `[Symbol.match]`, `[Symbol.search]` for protocol correctness
 - [x] Fix named capture groups: ensure `exec` result has `.groups` property with `undefined` for missing captures
 
 ---
@@ -141,9 +141,9 @@ These features are tracked as high-priority items. Tests for them are currently 
 
 ## Conformance: Error Handling
 
-- [ ] Fix `TypeError` message to include the offending value/type in property access on null/undefined
+- [x] Fix `TypeError` message to include the offending value/type in property access on null/undefined
 - [x] Fix `RangeError` for `Array` constructor with invalid length (non-integer or > 2^32-1)
-- [ ] Fix `SyntaxError` from `eval()` to propagate as a catchable exception
+- [x] Fix `SyntaxError` from `eval()` to propagate as a catchable exception
 - [x] Fix `try/catch/finally` with `break`/`continue` inside: finally must still run and value must be correct
 - [x] Implement `Error.captureStackTrace` stub (returns undefined) so Node.js-style code doesn't crash
 - [x] Fix error `stack` property to be a string (currently missing or undefined on thrown errors)

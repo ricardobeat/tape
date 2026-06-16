@@ -1,67 +1,158 @@
 // eval() tests — ES5 §15.1.2.1
-// Tests basic eval functionality
+//
+// NOTE: function definitions currently have a pre-existing compiler bug,
+// so tests are written with inline code instead of helper functions.
 
-// --- Helper ---
-function assert(actual, expected, msg) {
-    if (actual === expected) {
-        print("PASS: " + msg);
-    } else {
-        print("FAIL: " + msg + " — expected " + expected + ", got " + actual);
-    }
-}
+var pass = 0;
+var fail = 0;
 
 // --- Test 1: eval with no argument ---
-assert(eval(), undefined, "eval() returns undefined");
+var r1 = eval();
+if (r1 === undefined) { print("PASS: eval() returns undefined"); pass++; }
+else { print("FAIL: eval() expected undefined got " + r1); fail++; }
 
 // --- Test 2: eval with non-string argument ---
-assert(eval(42), 42, "eval(42) returns 42");
-assert(eval(true), true, "eval(true) returns true");
-assert(eval(null), null, "eval(null) returns null");
+var r2a = eval(42);
+if (r2a === 42) { print("PASS: eval(42) returns 42"); pass++; }
+else { print("FAIL: eval(42) expected 42 got " + r2a); fail++; }
+
+var r2b = eval(true);
+if (r2b === true) { print("PASS: eval(true) returns true"); pass++; }
+else { print("FAIL: eval(true) expected true got " + r2b); fail++; }
+
+var r2c = eval(null);
+if (r2c === null) { print("PASS: eval(null) returns null"); pass++; }
+else { print("FAIL: eval(null) expected null got " + r2c); fail++; }
 
 // --- Test 3: eval with simple numeric expression ---
-assert(eval("1 + 2"), 3, "eval('1 + 2') === 3");
+var r3 = eval("1 + 2");
+if (r3 === 3) { print("PASS: eval('1+2') === 3"); pass++; }
+else { print("FAIL: eval('1+2') expected 3 got " + r3); fail++; }
 
 // --- Test 4: eval with string ---
-assert(eval('"hello"'), "hello", "eval('\"hello\"') === 'hello'");
+var r4 = eval('"hello"');
+if (r4 === "hello") { print("PASS: eval string literal"); pass++; }
+else { print("FAIL: eval string literal expected hello got " + r4); fail++; }
 
 // --- Test 5: eval with boolean expression ---
-assert(eval("1 < 2"), true, "eval('1 < 2') === true");
+var r5 = eval("1 < 2");
+if (r5 === true) { print("PASS: eval('1<2') === true"); pass++; }
+else { print("FAIL: eval('1<2') expected true"); fail++; }
 
 // --- Test 6: eval with variable declaration (global) ---
 eval("var eval_x = 42");
-assert(eval_x, 42, "global var from eval accessible");
+if (eval_x === 42) { print("PASS: global var from eval"); pass++; }
+else { print("FAIL: global var from eval expected 42 got " + eval_x); fail++; }
 
 // --- Test 7: eval returns last expression value ---
-assert(eval("1; 2; 3"), 3, "eval returns last expression value");
+var r7 = eval("1; 2; 3");
+if (r7 === 3) { print("PASS: eval returns last expression"); pass++; }
+else { print("FAIL: eval last expr expected 3 got " + r7); fail++; }
 
-// --- Test 8: eval with arithmetic operations ---
-assert(eval("10 * 5"), 50, "eval('10 * 5') === 50");
+// --- Test 8: eval with arithmetic ---
+var r8 = eval("10 * 5");
+if (r8 === 50) { print("PASS: eval('10*5') === 50"); pass++; }
+else { print("FAIL: eval('10*5') expected 50 got " + r8); fail++; }
 
 // --- Test 9: eval with nested expressions ---
-assert(eval("(1 + 2) * 3"), 9, "eval('(1 + 2) * 3') === 9");
+var r9 = eval("(1 + 2) * 3");
+if (r9 === 9) { print("PASS: eval('(1+2)*3') === 9"); pass++; }
+else { print("FAIL: eval('(1+2)*3') expected 9 got " + r9); fail++; }
 
 // --- Test 10: eval with function expression ---
 var fn = eval("(function(a, b) { return a + b; })");
-assert(typeof fn, "function", "eval returns function");
-assert(fn(3, 4), 7, "eval-created function works");
+if (typeof fn === "function") { print("PASS: eval returns function"); pass++; }
+else { print("FAIL: eval returns function expected function"); fail++; }
+
+var r10 = fn(3, 4);
+if (r10 === 7) { print("PASS: eval-created function works"); pass++; }
+else { print("FAIL: eval-created fn expected 7 got " + r10); fail++; }
 
 // --- Test 11: eval with if statement ---
-var if_result = eval("if (true) { 99 } else { 0 }");
-// note: if-statement doesn't produce a value for eval return
+var r11 = eval("if (true) { 99 } else { 0 }");
+// if-statement doesn't produce a value for eval return — just check no error
 
 // --- Test 12: eval with variable in expression ---
 eval("var eval_y = 100");
-assert(eval_y, 100, "var from eval");
+if (eval_y === 100) { print("PASS: var from eval"); pass++; }
+else { print("FAIL: var from eval expected 100 got " + eval_y); fail++; }
 
 // --- Test 13: empty eval ---
-assert(eval(""), undefined, "eval('') returns undefined");
+var r13 = eval("");
+if (r13 === undefined) { print("PASS: eval('') returns undefined"); pass++; }
+else { print("FAIL: eval('') expected undefined"); fail++; }
 
 // --- Test 14: eval only whitespace ---
-assert(eval("   "), undefined, "eval('   ') returns undefined");
+var r14 = eval("   ");
+if (r14 === undefined) { print("PASS: eval('   ') returns undefined"); pass++; }
+else { print("FAIL: eval('   ') expected undefined"); fail++; }
 
-// --- Test 15: indirect eval via (0, eval) ---
-// This should also work as a basic eval call
+// --- Test 15: indirect eval ---
 var indirect_eval = eval;
-assert(indirect_eval("1 + 2"), 3, "indirect eval via var");
+var r15 = indirect_eval("1 + 2");
+if (r15 === 3) { print("PASS: indirect eval === 3"); pass++; }
+else { print("FAIL: indirect eval expected 3 got " + r15); fail++; }
 
-print("=== All eval tests done ===");
+// --- Test 16: eval SyntaxError catchable via try/catch ---
+try {
+    eval("var @#$");
+    print("FAIL: eval syntax error should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: eval SyntaxError caught"); pass++; }
+    else { print("FAIL: eval SyntaxError missing message"); fail++; }
+}
+
+// --- Test 17: eval SyntaxError via indirect eval ---
+try {
+    indirect_eval("if (true) { ");
+    print("FAIL: indirect eval syntax error should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: indirect eval SyntaxError caught"); pass++; }
+    else { print("FAIL: indirect eval SyntaxError missing message"); fail++; }
+}
+
+// --- Test 18: eval via Function.prototype.call ---
+try {
+    eval.call(null, "var @#$");
+    print("FAIL: eval.call should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: eval.call SyntaxError caught"); pass++; }
+    else { print("FAIL: eval.call SyntaxError missing message"); fail++; }
+}
+
+// --- Test 19: eval via Function.prototype.apply ---
+try {
+    eval.apply(null, ["var @#$"]);
+    print("FAIL: eval.apply should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: eval.apply SyntaxError caught"); pass++; }
+    else { print("FAIL: eval.apply SyntaxError missing message"); fail++; }
+}
+
+// --- Test 20: eval via bind ---
+var bound_eval = eval.bind(null);
+try {
+    bound_eval("var @#$");
+    print("FAIL: bound eval should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: bound eval SyntaxError caught"); pass++; }
+    else { print("FAIL: bound eval SyntaxError missing message"); fail++; }
+}
+
+// --- Test 21: eval via double bind (nested bound function) ---
+var double_bound = eval.bind(null).bind(null);
+try {
+    double_bound("var @#$");
+    print("FAIL: double-bound eval should throw");
+    fail++;
+} catch(e) {
+    if (e.message !== undefined) { print("PASS: double-bound eval SyntaxError caught"); pass++; }
+    else { print("FAIL: double-bound eval SyntaxError missing message"); fail++; }
+}
+
+print("=== All eval tests done: " + pass + " passed, " + fail + " failed ===");

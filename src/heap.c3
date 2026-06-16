@@ -276,6 +276,12 @@ struct Heap {
     // Cached Symbol.hasInstance (lazily created, rooted via this field).
     HString*            hasinstance_symbol;
 
+    // Cached well-known symbols for @@match, @@search, @@replace, @@split protocols.
+    HString*            match_symbol;
+    HString*            search_symbol;
+    HString*            replace_symbol;
+    HString*            split_symbol;
+
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
 
@@ -1117,6 +1123,10 @@ fn void Heap.reset(&self) {
     self.toprimitive_symbol = null;
     self.concatspreadable_symbol = null;
     self.hasinstance_symbol = null;
+    self.match_symbol = null;
+    self.search_symbol = null;
+    self.replace_symbol = null;
+    self.split_symbol = null;
 
     // Reset shape system — free all shapes and transition table, then reinit
     if (self.trans_table != null) {
@@ -1714,6 +1724,12 @@ fn void Heap.mark_roots(&self) {
     if (self.hasinstance_symbol != null) {
         ((HeapHeader*)self.hasinstance_symbol).set_reachable();
     }
+
+    // Mark cached @@match, @@search, @@replace, @@split symbols
+    if (self.match_symbol != null)   { ((HeapHeader*)self.match_symbol).set_reachable(); }
+    if (self.search_symbol != null)  { ((HeapHeader*)self.search_symbol).set_reachable(); }
+    if (self.replace_symbol != null) { ((HeapHeader*)self.replace_symbol).set_reachable(); }
+    if (self.split_symbol != null)   { ((HeapHeader*)self.split_symbol).set_reachable(); }
 
     // Mark global checkpoint keys
     for (uint i = 0; i < self.checkpoint_count; i++) {

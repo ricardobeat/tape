@@ -940,6 +940,43 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     if (downstream.is_object()) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null && tobj.is_callable()) {
+            // Handle nested bound functions directly (avoid needs_re_dispatch crash)
+            if (tobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
+                int bfn_idx2 = (*tobj.extra_ptr()).func.builtin_fn_index;
+                if (bfn_idx2 >= 0) {
+                    // Place the inner bound function in the callee slot and dispatch
+                    ctx.regs[ctx.base_reg - 2] = downstream;
+                    ctx.regs[ctx.base_reg - 1] = bound_this;
+                    for (uint i = 0; i < total_argc && i < 65535; i++) {
+                        ctx.regs[ctx.base_reg + i] = all_args[i];
+                    }
+                    builtins::BuiltinContext inner;
+                    inner.vm = ctx.vm;
+                    inner.regs = ctx.regs;
+                    inner.base_reg = ctx.base_reg;
+                    inner.argc = (ushort)total_argc;
+                    inner.result = ctx.result;
+                    inner.heap = ctx.heap;
+                    inner.this_val = bound_this;
+                    inner.is_constructor = ctx.is_constructor;
+                    inner.needs_re_dispatch = false;
+                    inner.re_nargs = 0;
+                    inner.global_env = ctx.global_env;
+                    inner.should_throw = false;
+                    inner.callee_obj = tobj;
+                    builtins::dispatch_builtin((uint)bfn_idx2, &inner);
+                    if (inner.should_throw) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = inner.throw_value;
+                    }
+                    if (inner.needs_re_dispatch) {
+                        ctx.needs_re_dispatch = true;
+                        ctx.re_nargs = inner.re_nargs;
+                    }
+                    return;
+                }
+            }
+            // Compiled function or BUILTIN_FN — use re-dispatch
             ctx.regs[ctx.base_reg - 2] = downstream;
             ctx.regs[ctx.base_reg - 1] = bound_this;
             for (uint i = 0; i < total_argc && i < 65535; i++) {

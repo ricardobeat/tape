@@ -230,6 +230,79 @@ fn HString* ensure_hasinstance_symbol(Heap* heap) {
     return sym;
 }
 
+/// Ensure the well-known @@match symbol exists in the global registry.
+/// Returns the symbol HString* (usable as a property key).
+fn HString* ensure_match_symbol(Heap* heap) {
+    if (heap.match_symbol != null) return heap.match_symbol;
+    char[] desc = "match";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.match_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.match_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
+/// Ensure the well-known @@search symbol exists in the global registry.
+fn HString* ensure_search_symbol(Heap* heap) {
+    if (heap.search_symbol != null) return heap.search_symbol;
+    char[] desc = "search";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.search_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.search_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
+/// Ensure the well-known @@replace symbol exists in the global registry.
+fn HString* ensure_replace_symbol(Heap* heap) {
+    if (heap.replace_symbol != null) return heap.replace_symbol;
+    char[] desc = "replace";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.replace_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.replace_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
+/// Ensure the well-known @@split symbol exists in the global registry.
+fn HString* ensure_split_symbol(Heap* heap) {
+    if (heap.split_symbol != null) return heap.split_symbol;
+    char[] desc = "split";
+    HString* existing = symbol_registry_get(heap, desc);
+    if (existing != null) {
+        heap.split_symbol = existing;
+        ((types::HeapHeader*)existing).refcount = heap::STRING_PINNED_REFCOUNT;
+        return existing;
+    }
+    HString* sym = create_symbol_string(heap, desc);
+    if (sym == null) return null;
+    symbol_registry_put(heap, desc, sym);
+    heap.split_symbol = sym;
+    ((types::HeapHeader*)sym).refcount = heap::STRING_PINNED_REFCOUNT;
+    return sym;
+}
+
 // ============================================================================
 // Symbol constructor (ES6 §19.4.1)
 // ============================================================================
@@ -640,6 +713,50 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             TVal hasinst_val;
             hasinst_val.set_string(hasinst_sym);
             ctor.put_prop(hasinst_key, hasinst_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.match as a well-known symbol property
+    HString* match_sym = ensure_match_symbol(heap);
+    if (match_sym != null) {
+        HString* match_key = builtin_intern_string(heap, "match");
+        if (match_key != null) {
+            TVal match_val;
+            match_val.set_string(match_sym);
+            ctor.put_prop(match_key, match_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.search as a well-known symbol property
+    HString* search_sym = ensure_search_symbol(heap);
+    if (search_sym != null) {
+        HString* search_key = builtin_intern_string(heap, "search");
+        if (search_key != null) {
+            TVal search_val;
+            search_val.set_string(search_sym);
+            ctor.put_prop(search_key, search_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.replace as a well-known symbol property
+    HString* replace_sym = ensure_replace_symbol(heap);
+    if (replace_sym != null) {
+        HString* replace_key = builtin_intern_string(heap, "replace");
+        if (replace_key != null) {
+            TVal replace_val;
+            replace_val.set_string(replace_sym);
+            ctor.put_prop(replace_key, replace_val, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Register Symbol.split as a well-known symbol property
+    HString* split_sym = ensure_split_symbol(heap);
+    if (split_sym != null) {
+        HString* split_key = builtin_intern_string(heap, "split");
+        if (split_key != null) {
+            TVal split_val;
+            split_val.set_string(split_sym);
+            ctor.put_prop(split_key, split_val, hobject::PROP_FLAGS_NWC);
         }
     }
 

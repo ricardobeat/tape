@@ -755,6 +755,35 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
 
     TVal* sep_val = &ctx.regs[ctx.base_reg];
 
+    // ── Check for @@split protocol (ES6 §21.1.3.17 step 2) ───────────────
+    if (!sep_val.is_null() && !sep_val.is_undefined()) {
+        if (sep_val.is_object() && sep_val.get_heapptr() != null) {
+            HObject* sep_obj = (HObject*)sep_val.get_heapptr();
+            HString* split_sym = ensure_split_symbol(ctx.heap);
+            if (split_sym != null) {
+                if (try splitter = sep_obj.get_prop_proto(split_sym)) {
+                    if (splitter.is_lightfunc() ||
+                        (splitter.is_object() && splitter.get_heapptr() != null &&
+                         ((HObject*)splitter.get_heapptr()).is_callable())) {
+                        TVal[2] fn_args;
+                        fn_args[0].set_string(s_hstr);  // O
+                        // limit is already computed; pass it as the second argument
+                        if (ctx.argc > 1) {
+                            fn_args[1] = ctx.regs[ctx.base_reg + 1];
+                        } else {
+                            fn_args[1].set_undefined();
+                        }
+                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, this_val);
+                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        *ctx.result = res;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // ── RegExp separator ─────────────────────────────────────────────────
     if (is_regexp_object(sep_val)) {
         HObject* rx = (HObject*)sep_val.get_heapptr();
@@ -1084,6 +1113,34 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     TVal* search_val = &ctx.regs[ctx.base_reg];
     char* input = s_hstr.get_cstr();
     int input_len = (int)s_hstr.blen;
+
+    // ── Check for @@replace protocol (ES6 §21.1.3.14 step 2) ─────────────
+    if (ctx.argc >= 1 && !search_val.is_null() && !search_val.is_undefined()) {
+        if (search_val.is_object() && search_val.get_heapptr() != null) {
+            HObject* search_obj = (HObject*)search_val.get_heapptr();
+            HString* replace_sym = ensure_replace_symbol(ctx.heap);
+            if (replace_sym != null) {
+                if (try replacer = search_obj.get_prop_proto(replace_sym)) {
+                    if (replacer.is_lightfunc() ||
+                        (replacer.is_object() && replacer.get_heapptr() != null &&
+                         ((HObject*)replacer.get_heapptr()).is_callable())) {
+                        TVal[2] fn_args;
+                        fn_args[0].set_string(s_hstr);  // O
+                        if (ctx.argc > 1) {
+                            fn_args[1] = ctx.regs[ctx.base_reg + 1];  // replaceValue
+                        } else {
+                            fn_args[1].set_undefined();
+                        }
+                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
+                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        *ctx.result = res;
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     // ── RegExp searchValue ────────────────────────────────────────────────
     if (is_regexp_object(search_val)) {
@@ -1920,6 +1977,29 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
 
     TVal* regexp_arg = &ctx.regs[ctx.base_reg];
 
+    // ── Check for @@match protocol (ES6 §21.1.3.11 step 2) ───────────────
+    if (!regexp_arg.is_null() && !regexp_arg.is_undefined()) {
+        if (regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
+            HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
+            HString* match_sym = ensure_match_symbol(ctx.heap);
+            if (match_sym != null) {
+                if (try matcher = arg_obj.get_prop_proto(match_sym)) {
+                    if (matcher.is_lightfunc() ||
+                        (matcher.is_object() && matcher.get_heapptr() != null &&
+                         ((HObject*)matcher.get_heapptr()).is_callable())) {
+                        TVal[1] args;
+                        args[0].set_string(s_hstr);
+                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
+                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        *ctx.result = res;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // If arg is a RegExp object, use it directly
     if (is_regexp_object(regexp_arg)) {
         HObject* rx = (HObject*)regexp_arg.get_heapptr();
@@ -2460,6 +2540,29 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
     }
 
     TVal* regexp_arg = &ctx.regs[ctx.base_reg];
+
+    // ── Check for @@search protocol (ES6 §21.1.3.15 step 2) ──────────────
+    if (!regexp_arg.is_null() && !regexp_arg.is_undefined()) {
+        if (regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
+            HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
+            HString* search_sym = ensure_search_symbol(ctx.heap);
+            if (search_sym != null) {
+                if (try searcher = arg_obj.get_prop_proto(search_sym)) {
+                    if (searcher.is_lightfunc() ||
+                        (searcher.is_object() && searcher.get_heapptr() != null &&
+                         ((HObject*)searcher.get_heapptr()).is_callable())) {
+                        TVal[1] args;
+                        args[0].set_string(s_hstr);
+                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal res = ctx.heap.call_fn(ctx.vm, searcher, &args[0], 1, this_val);
+                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        *ctx.result = res;
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     // If arg is a RegExp object, use it directly
     if (is_regexp_object(regexp_arg)) {
