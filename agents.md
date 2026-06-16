@@ -49,6 +49,16 @@ When calling a function with zero formal parameters but actual arguments (e.g. `
 
 The 43 rosetta tests cover 22+ JS language features and proved highly effective at finding real engine bugs. The pattern: minimize the failing test to a single-line repro, check if the issue is in the compiler (compile failed) or VM (VM_ERROR / wrong value), then trace through the bytecode. For VM issues, adding `io::printfn` debug prints to the relevant opcode handler was the fastest way to pinpoint the problem.
 
+### async/await (vm.c3, compiler, builtins)
+
+Async/await uses **resumable execution** (same approach as QuickJS and V8). Async functions compile with `is_generator=true` so they can use the generator state save/restore infrastructure. The `AWAIT` opcode checks if the value is a settled Promise (extract result) or pending (suspend). Suspension saves registers/PC/env to a `GeneratorState`, creates resume/reject builtin callbacks, adds a reaction to the Promise, and pops the activation. When the Promise settles, the resume callback calls `vm_call_fn_impl` which detects `resume_gen` and restores the saved state.
+
+**Key decision**: async generators (`async function*`) will NOT be implemented.
+
+**Compiler gotcha**: `function_declaration()` and `function_expr()` save+reset `is_async` before calling `compile_inner_function`. The async flag must be restored before the call so the inner function gets `is_async=true`, then immediately reset after to prevent nested functions from inheriting it. The `hoist_decls`/`hoist_global_fn_decls` pre-scans detect `async function` by peeking past IDENTIFIER("async") for FUNCTION, then pushing FUNCTION back and setting `is_async=true` for the next iteration.
+
+**skip_function_body bug (pre-existing)**: The paren/brace depth tracking had a bug where `paren_depth--` and `brace_depth--` didn't check if depth reached 0 after decrement, causing the skip to consume the entire rest of the file. Fixed by adding `if (depth == 0) break;` after each decrement.
+
 ### try/catch/finally with break/continue (vm.c3)
 
 **Problem**: `break`/`continue` inside a `try` block with a `finally` clause bypassed the `finally` block entirely. The compiler emitted plain `JUMP` instructions for break/continue, which jumped directly to the loop exit without running finally. Additionally, `return` inside a `finally` block caused an infinite loop because `RET` always redirected to `finally_pc` even when already inside the finally block.
