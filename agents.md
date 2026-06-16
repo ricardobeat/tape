@@ -61,3 +61,36 @@ The 43 rosetta tests cover 22+ JS language features and proved highly effective 
 5. **compiler/statements.c3**: `break_statement`/`continue_statement` emit `BREAK`/`CONTINUE` opcodes.
 
 **Key flags**: `CATCHER_FLAG_PENDING_BREAK` (1<<3), `CATCHER_FLAG_PENDING_CONTINUE` (1<<4), `CATCHER_FLAG_IN_FINALLY` (1<<5).
+
+## CLI Debug Flags (`duktape_c3`)
+
+The CLI runner at `benchmarks/duktape_c3.c3` supports these flags (zero perf impact on release builds — all paths guarded by simple bool checks, trace is `@unlikely`):
+
+| Flag | Function | Implementation |
+|------|----------|----------------|
+| `-c`, `--compile-only` | Disassemble bytecode, skip execution | Calls `dump_function()` per CompiledFunction, exits before `Vm.execute()`. |
+| `-t`, `--trace-vm` | Print every instruction + register values before dispatch (to stderr) | Sets `Vm.trace = true`. Hook in `Vm.run()` dispatch loop before `switch(op)`. Output: `[0x0042] ADD r3 = r1, r2  \| r1=5 r2=3 r3=4`. |
+| `--dump-constants` | Show constant pool after bytecode dump | `dump_constants_pool()` iterates `constants[]` and prints each `TVal` via `print_tval_stdout()`. |
+| `-d`, `--debug` | Stage-level timing (load, heap create, vm create, compile, execute) | Wraps each section in `time::now()` diff, prints microseconds. |
+| `--format json` | Structured bytecode as JSON array (implies `-c`) | `dump_function_json()` outputs `{"idx","op","a","b","c","text"}` per instruction. |
+| `--help` | Show usage | — |
+
+### Printing TVal values (C3 gotcha)
+
+`io::printf("%s", char*)` prints the **pointer as hex** (`0x...`), not the string content. For string TVal output, iterate bytes with `io::printf("%c", d[i])`:
+```
+case STRING:
+    char[] d = s.get_data();
+    io::printf("\"");
+    for (usz i = 0; i < d.len; i++) { io::printf("%c", d[i]); }
+    io::printf("\"");
+```
+Same pattern for stderr (`io::eprintf("%c", ...)`).
+
+### `just lldb <file>`
+
+Builds with `-O0` and launches lldb with automatic backtrace on crash. Use when a JS file triggers a VM fault — lldb will stop at the crash site.
+
+### Crash dump
+
+On `VM_ERROR`, the CLI dumps the current activation's instruction pointer, instruction text, and register file (first 32 slots) to stderr via `dump_vm_state()`.
