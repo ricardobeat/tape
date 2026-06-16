@@ -632,7 +632,7 @@ fn void Heap.init_transition_table(&self) {
     self.trans_mask = SHAPE_TRANS_INITIAL - 1;
     self.trans_count = 0;
     usz bytes = (usz)SHAPE_TRANS_INITIAL * TransitionEntry::size;
-    self.trans_table = (TransitionEntry*)libc::malloc(bytes);
+    self.trans_table = (TransitionEntry*)self.alloc_func(self.heap_udata, bytes);
     libc::memset(self.trans_table, 0xFF, bytes);
 }
 
@@ -664,7 +664,7 @@ fn void Heap.transition_table_grow(&self) {
     uint new_cap = (old_mask + 1) * 2;
     uint new_mask = new_cap - 1;
     usz bytes = (usz)new_cap * TransitionEntry::size;
-    TransitionEntry* new_table = (TransitionEntry*)libc::malloc(bytes);
+    TransitionEntry* new_table = (TransitionEntry*)self.alloc_func(self.heap_udata, bytes);
     libc::memset(new_table, 0xFF, bytes);
     TransitionEntry* old_table = self.trans_table;
     for (uint i = 0; i <= old_mask; i++) {
@@ -675,7 +675,7 @@ fn void Heap.transition_table_grow(&self) {
         while (new_table[slot].parent_id != SHAPE_NONE) slot = (slot + 1) & new_mask;
         new_table[slot] = *e;
     }
-    libc::free(old_table);
+    self.free_func(self.heap_udata, old_table);
     self.trans_table = new_table;
     self.trans_mask = new_mask;
 }
@@ -704,7 +704,7 @@ fn void Heap.init_shapes(&self) {
     self.shape_gen      = 0;
     // Allocate pointer array
     usz bytes = (usz)SHAPE_INITIAL_CAP * (void*::size);
-    self.shapes = (hobject::Shape**)libc::malloc(bytes);
+    self.shapes = (hobject::Shape**)self.alloc_func(self.heap_udata, bytes);
     libc::memset(self.shapes, 0, bytes);
     // Allocate root shape: 0 properties, minimum hash (mask=0 → 2 slots)
     self.shapes[0] = hobject::shape_create(0, 0, SHAPE_NONE, null);
@@ -717,7 +717,7 @@ fn void Heap.init_shapes(&self) {
 fn uint Heap.alloc_shape_slot(&self) {
     if (self.shape_count >= self.shape_capacity) {
         uint new_cap = self.shape_capacity * 2;
-        void* new_raw = libc::realloc(self.shapes, (usz)new_cap * (void*::size));
+        void* new_raw = self.realloc_func(self.heap_udata, self.shapes, (usz)new_cap * (void*::size));
         if (new_raw == null) return SHAPE_NONE;
         // Zero new slots
         usz old_bytes = (usz)self.shape_capacity * (void*::size);
@@ -858,7 +858,7 @@ fn void Heap.destroy(&self) {
         void* b = self.env_pool_blocks;
         while (b != null) {
             void* next = *(void**)b;  // next pointer is first field
-            libc::free(b);
+            self.free_func(self.heap_udata, b);
             b = next;
         }
         self.env_pool_blocks = null;
@@ -872,16 +872,16 @@ fn void Heap.destroy(&self) {
         for (uint i = 0; i < self.compiled_func_count; i++) {
             bytecode::CompiledFunction* cf = (bytecode::CompiledFunction*)self.compiled_funcs[i];
             if (cf != null) {
-                if (cf.code != null) { libc::free(cf.code); }
-                if (cf.constants != null) { libc::free(cf.constants); }
-                if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
-                if (cf.line_table != null) { libc::free(cf.line_table); }
-                if (cf.ic_entries != null) { libc::free(cf.ic_entries); }
-                if (cf.var_ic_entries != null) { libc::free(cf.var_ic_entries); }
-                libc::free(cf);
+                if (cf.code != null) { self.free_func(self.heap_udata, cf.code); }
+                if (cf.constants != null) { self.free_func(self.heap_udata, cf.constants); }
+                if (cf.inner_funcs != null) { self.free_func(self.heap_udata, cf.inner_funcs); }
+                if (cf.line_table != null) { self.free_func(self.heap_udata, cf.line_table); }
+                if (cf.ic_entries != null) { self.free_func(self.heap_udata, cf.ic_entries); }
+                if (cf.var_ic_entries != null) { self.free_func(self.heap_udata, cf.var_ic_entries); }
+                self.free_func(self.heap_udata, cf);
             }
         }
-        libc::free(self.compiled_funcs);
+        self.free_func(self.heap_udata, self.compiled_funcs);
         self.compiled_funcs = null;
     }
 
@@ -900,25 +900,25 @@ fn void Heap.destroy(&self) {
 
     // Free microtask queue
     if (self.microtask_queue != null) {
-        libc::free(self.microtask_queue);
+        self.free_func(self.heap_udata, self.microtask_queue);
         self.microtask_queue = null;
     }
 
     // Free gray stack
     if (self.gray_objects != null) {
-        libc::free(self.gray_objects);
+        self.free_func(self.heap_udata, self.gray_objects);
         self.gray_objects = null;
     }
 
     // Free promise resolve stack
     if (self.promise_resolve_stack != null) {
-        libc::free(self.promise_resolve_stack);
+        self.free_func(self.heap_udata, self.promise_resolve_stack);
         self.promise_resolve_stack = null;
     }
 
     // Free shape system
     if (self.trans_table != null) {
-        libc::free(self.trans_table);
+        self.free_func(self.heap_udata, self.trans_table);
         self.trans_table = null;
     }
     if (self.shapes != null) {
@@ -927,7 +927,7 @@ fn void Heap.destroy(&self) {
                 hobject::shape_free(self.shapes[i], null);
             }
         }
-        libc::free(self.shapes);
+        self.free_func(self.heap_udata, self.shapes);
         self.shapes = null;
     }
 
@@ -971,13 +971,13 @@ fn void Heap.reset(&self) {
     for (uint i = 0; i < self.compiled_func_count; i++) {
         bytecode::CompiledFunction* cf = (bytecode::CompiledFunction*)self.compiled_funcs[i];
         if (cf != null) {
-            if (cf.code != null) { libc::free(cf.code); }
-            if (cf.constants != null) { libc::free(cf.constants); }
-            if (cf.inner_funcs != null) { libc::free(cf.inner_funcs); }
-            if (cf.line_table != null) { libc::free(cf.line_table); }
-            if (cf.ic_entries != null) { libc::free(cf.ic_entries); }
-            if (cf.var_ic_entries != null) { libc::free(cf.var_ic_entries); }
-            libc::free(cf);
+            if (cf.code != null) { self.free_func(self.heap_udata, cf.code); }
+            if (cf.constants != null) { self.free_func(self.heap_udata, cf.constants); }
+            if (cf.inner_funcs != null) { self.free_func(self.heap_udata, cf.inner_funcs); }
+            if (cf.line_table != null) { self.free_func(self.heap_udata, cf.line_table); }
+            if (cf.ic_entries != null) { self.free_func(self.heap_udata, cf.ic_entries); }
+            if (cf.var_ic_entries != null) { self.free_func(self.heap_udata, cf.var_ic_entries); }
+            self.free_func(self.heap_udata, cf);
         }
     }
     self.compiled_func_count = 0;
@@ -1008,11 +1008,11 @@ fn void Heap.reset(&self) {
 
     // Free symbol registry
     if (self.symbol_registry_keys != null) {
-        libc::free(self.symbol_registry_keys);
+        self.free_func(self.heap_udata, self.symbol_registry_keys);
         self.symbol_registry_keys = null;
     }
     if (self.symbol_registry_syms != null) {
-        libc::free(self.symbol_registry_syms);
+        self.free_func(self.heap_udata, self.symbol_registry_syms);
         self.symbol_registry_syms = null;
     }
     self.symbol_registry_count = 0;
@@ -1034,11 +1034,11 @@ fn void Heap.reset(&self) {
 
     // Free checkpoint state
     if (self.checkpoint_keys != null) {
-        libc::free(self.checkpoint_keys);
+        self.free_func(self.heap_udata, self.checkpoint_keys);
         self.checkpoint_keys = null;
     }
     if (self.checkpoint_vals != null) {
-        libc::free(self.checkpoint_vals);
+        self.free_func(self.heap_udata, self.checkpoint_vals);
         self.checkpoint_vals = null;
     }
     self.checkpoint_count = 0;
@@ -1130,7 +1130,7 @@ fn void Heap.reset(&self) {
 
     // Reset shape system — free all shapes and transition table, then reinit
     if (self.trans_table != null) {
-        libc::free(self.trans_table);
+        self.free_func(self.heap_udata, self.trans_table);
         self.trans_table = null;
     }
     if (self.shapes != null) {
@@ -1171,15 +1171,15 @@ fn void Heap.reset(&self) {
 
 /**
  * Register a CompiledFunction* for cleanup when the heap is destroyed.
- * The compiler allocates CompiledFunctions via libc::malloc and they are not
- * tracked by the GC object array, so we need a separate list.
+ * The compiler allocates CompiledFunctions via the heap's alloc_func and
+ * they are not tracked by the GC object array, so we need a separate list.
  */
 fn void Heap.track_compiled_func(&self, void* cf) {
     if (cf == null) { return; }
     if (self.compiled_func_count >= self.compiled_func_cap) {
         uint new_cap = self.compiled_func_cap == 0 ? 64 : self.compiled_func_cap * 2;
         usz new_bytes = (usz)new_cap * void*::size;
-        void* new_arr = libc::realloc(self.compiled_funcs, new_bytes);
+        void* new_arr = self.realloc_func(self.heap_udata, self.compiled_funcs, new_bytes);
         if (new_arr == null) { return; }
         self.compiled_funcs = (void**)new_arr;
         self.compiled_func_cap = new_cap;
@@ -1454,7 +1454,7 @@ fn void Heap.gray_push(&self, HObject* obj) {
         usz new_cap = self.gray_capacity > 0
                       ? (usz)self.gray_capacity * 2
                       : (usz)GRAY_STACK_INITIAL_CAP;
-        void* new_arr = libc::realloc(self.gray_objects, void*::size * new_cap);
+        void* new_arr = self.realloc_func(self.heap_udata, self.gray_objects, void*::size * new_cap);
         if (new_arr == null) {
             self.fatal_func(self.heap_udata, "gray stack OOM during GC marking");
             return;
@@ -1789,7 +1789,7 @@ fn void Heap.sweep(&self) {
                 if (cur.is_object()) {
                     hobject::hobject_free((HObject*)cur, (void*)self);
                 } else if (cur.is_string()) {
-                    libc::free(cur);
+                    self.free_func(self.heap_udata, cur);
                 } else {
                     self.free_func(self.heap_udata, cur);
                 }
@@ -2217,7 +2217,7 @@ fn void Heap.enqueue_microtask(&self, TVal handler, TVal arg, TVal downstream) {
     if (needed > self.microtask_capacity) {
         uint new_cap = self.microtask_capacity == 0 ? 16 : self.microtask_capacity * 2;
         usz new_bytes = (usz)new_cap * TVal::size * 3;
-        TVal* new_q = (TVal*)libc::realloc(self.microtask_queue, new_bytes);
+        TVal* new_q = (TVal*)self.realloc_func(self.heap_udata, self.microtask_queue, new_bytes);
         if (new_q == null) { return; }
         // Zero the new slots
         libc::memset(new_q + self.microtask_capacity * 3, 0,

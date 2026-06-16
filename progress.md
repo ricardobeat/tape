@@ -1,9 +1,9 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 193 (array ToObject, step ordering, defineProperties SameValue, TypedArray, GOPD, globals, test262 skip pattern fix)
+**Last Updated:** Session 194 (compiler hoisting fixes, array_length in union)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 193, 2026-06-15)
+## Summary (after Session 194, 2026-06-16)
 
 | Metric | Value |
 |---|---|
@@ -51,6 +51,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 194 | Compiler hoisting fixes (4 bugs): (1) `hoist_global_fn_decls` stopped at first non-function token (`var pass`), missing `namedFunc` declared after statements; (2) `hoist_decls` global-mode stopped identically, missing interspersed declarations; (3) function-level `hoist_decls` leaked into outer scope after `}`, hoisting outer vars into inner functions; (4) `var` at any brace depth not found — removed `brace_depth==0` guard (ES5 var is function-scoped). Also `skip_function_body` had reversed break condition (broke on unmatched `)`/`}`, not matched), causing it to consume all remaining tokens. Added lexer save/restore in `compile()`/`compile_eval()` around pre-processing so statement loop starts from pos=0. Merged `worktree-fix-array-length-union` (move `array_length` into `HObjectExtra` union). | Neutral (rosetta: 45→45) |
 | 193 | array_proto_get_this ToObject for primitives; forEach/map/every/filter/some/reduce/reduceRight step ordering; defineProperties SameValue check; TypedArray constructors; GOPD fixes; global immutable props (undefined/Infinity/NaN); Array/Number.prototype.toLocaleString | +228 (Phase 2: +2, Phase 3: +85, Phase 4: +10, Phase 5: +89, Phase 6: +37, Phase 7: +1, Phase 15: +3)
 | 192 | indexOf/lastIndexOf ToLength (no RangeError for -0/NaN); defineProperties enumerable filter (skip non-enumerable props like Error.stack) | +83 (Phase 3: +33, Phase 5: +33, Phase 6: +17)
 | 191 | String.prototype.trim UTF-8 aware whitespace; Function.prototype.apply/call this-value coercion; Object.keys temp buffer; test harness nativeFunctionMatcher + isConstructor | +163 (Phase 0-1: +1, Phase 3: +35, Phase 5: +81, Phase 6: +46) |

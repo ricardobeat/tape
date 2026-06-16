@@ -2447,7 +2447,7 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     char[] data = s_hstr.get_data();
     uint char_len = s_hstr.char_length();
 
-    uint* src_cps = (uint*)libc::malloc((usz)(char_len * 4));
+    uint* src_cps = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(char_len * 4));
     if (src_cps == null) {
         ctx.result.set_string(s_hstr);
         return;
@@ -2463,7 +2463,7 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     int out_len = 0;
     uint* result_cps = unicode_bindings::unicode_normalize_simple(src_cps,
                         (int)char_len, n_type, &out_len);
-    libc::free(src_cps);
+    ctx.heap.free_func(ctx.heap.heap_udata, src_cps);
 
     if (result_cps == null || out_len < 0) {
         if (result_cps != null) libc::free(result_cps);
@@ -2494,7 +2494,7 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     }
 
     // ── Step 4: Allocate and fill UTF-8 output buffer ───────────────────────
-    char* out_buf = (char*)libc::malloc(total_bytes);
+    char* out_buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total_bytes);
     if (out_buf == null) {
         libc::free(result_cps);
         ctx.result.set_string(s_hstr);
@@ -2519,7 +2519,7 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     uint hash = ctx.heap.hash_string(out_buf[:total_bytes]);
     HString*? result_hstr_raw = hstring::hstring_alloc(ctx.heap,
                                     out_buf[:total_bytes], hash);
-    libc::free(out_buf);
+    ctx.heap.free_func(ctx.heap.heap_udata, out_buf);
 
     if (try result_hstr = result_hstr_raw) {
         ctx.result.set_string(result_hstr);

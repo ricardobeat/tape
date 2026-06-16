@@ -16,8 +16,8 @@ import std::io;
 /// Create a default constructor CompiledFunction without using the lexer.
 /// has_super: if true, creates `constructor(...args) { super(...args); }`
 /// otherwise creates `constructor() {}`.
-fn CompiledFunction*? make_default_constructor(bool has_super) {
-    void* raw = libc::malloc(CompiledFunction::size);
+fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super) {
+    void* raw = hp.alloc_func(hp.heap_udata, CompiledFunction::size);
     if (raw == null) return COMPILE_ERROR~;
     libc::memset(raw, 0, CompiledFunction::size);
 
@@ -37,8 +37,8 @@ fn CompiledFunction*? make_default_constructor(bool has_super) {
         // Registers: r0 = rest args, r1 = __super__, r2 = callee_base,
         //            r3 = this slot, r4..r13 = spread dest, r14 = count
         usz code_bytes = 10 * Instruction::size;
-        void* code_raw = libc::malloc(code_bytes);
-        if (code_raw == null) { libc::free(raw); return COMPILE_ERROR~; }
+        void* code_raw = hp.alloc_func(hp.heap_udata, code_bytes);
+        if (code_raw == null) { hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
         func.code = (Instruction*)code_raw;
         func.code_count = 10;
 
@@ -51,8 +51,8 @@ fn CompiledFunction*? make_default_constructor(bool has_super) {
         // We need a constant index for "__super__". Since we can't use the compiler
         // context, we'll store it as a constant.
         usz const_bytes = 1 * TVal::size;
-        void* const_raw = libc::malloc(const_bytes);
-        if (const_raw == null) { libc::free(code_raw); libc::free(raw); return COMPILE_ERROR~; }
+        void* const_raw = hp.alloc_func(hp.heap_udata, const_bytes);
+        if (const_raw == null) { hp.free_func(hp.heap_udata, code_raw); hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
         func.constants = (TVal*)const_raw;
         func.const_count = 1;
 
@@ -64,8 +64,8 @@ fn CompiledFunction*? make_default_constructor(bool has_super) {
         // when using extends for now.
 
         // Fall back: just return a simple empty constructor even for extends
-        libc::free(code_raw);
-        libc::free(const_raw);
+        hp.free_func(hp.heap_udata, code_raw);
+        hp.free_func(hp.heap_udata, const_raw);
         func.code = null;
         func.code_count = 0;
         func.constants = null;
@@ -77,8 +77,8 @@ fn CompiledFunction*? make_default_constructor(bool has_super) {
 
         // Simple empty constructor
         code_bytes = 3 * Instruction::size;
-        code_raw = libc::malloc(code_bytes);
-        if (code_raw == null) { libc::free(raw); return COMPILE_ERROR~; }
+        code_raw = hp.alloc_func(hp.heap_udata, code_bytes);
+        if (code_raw == null) { hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
         func.code = (Instruction*)code_raw;
         func.code_count = 3;
 
@@ -93,8 +93,8 @@ fn CompiledFunction*? make_default_constructor(bool has_super) {
         func.num_regs = 1;
 
         usz code_bytes = 3 * Instruction::size;
-        void* code_raw = libc::malloc(code_bytes);
-        if (code_raw == null) { libc::free(raw); return COMPILE_ERROR~; }
+        void* code_raw = hp.alloc_func(hp.heap_udata, code_bytes);
+        if (code_raw == null) { hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
         func.code = (Instruction*)code_raw;
         func.code_count = 3;
 
@@ -335,13 +335,13 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
 
     // If no constructor was specified, create a default one
     if (ctor_inner_idx == MAX_INNER_FUNCS) {
-        CompiledFunction*? ctor_func_raw = make_default_constructor(self.has_super_binding);
+        heap::Heap* hp = (heap::Heap*)self.heap;
+        CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding);
         if (catch err = ctor_func_raw) {
             return COMPILE_ERROR~;
         }
         CompiledFunction* ctor_func = ctor_func_raw;
         // Track for heap cleanup
-        heap::Heap* hp = (heap::Heap*)self.heap;
         hp.track_compiled_func((void*)ctor_func);
         if (self.inner_func_count < MAX_INNER_FUNCS) {
             ctor_inner_idx = self.inner_func_count;

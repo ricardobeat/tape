@@ -20,16 +20,36 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     ctx.init(lex, heap);
     ctx.is_global = true;
 
+    // ── Save lexer state before any pre-processing ───────────────────
+    uint saved_pos    = lex.pos;
+    uint saved_line   = lex.line;
+    uint saved_col    = lex.col;
+    Token saved_cur   = lex.current;
+    Token saved_look  = lex.lookahead;
+    bool  saved_haslk = lex.has_lookahead;
+    Token saved_push  = lex.pushed_back;
+    bool  saved_haspb = lex.has_pushed_back;
+    bool  saved_slt   = lex.seen_line_term;
+
     // Check for "use strict" directive prologue at program level
     ctx.parse_directives()!;
 
     // Hoist function declarations at the global level (ES5 §10.2.1.1).
-    // This implements function declaration hoisting by pre-scanning the source
-    // and compiling function declarations before any statements are parsed.
     ctx.hoist_global_fn_decls()!;
 
     // Hoist var declarations at the global level.
     ctx.hoist_decls(true)!;
+
+    // ── Restore lexer to beginning for statement parsing ────────────
+    lex.pos             = saved_pos;
+    lex.line            = saved_line;
+    lex.col             = saved_col;
+    lex.current         = saved_cur;
+    lex.lookahead       = saved_look;
+    lex.has_lookahead   = saved_haslk;
+    lex.pushed_back     = saved_push;
+    lex.has_pushed_back = saved_haspb;
+    lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
     while (!ctx.is_at_end()) {
@@ -55,6 +75,17 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     // Initialize eval result accumulator to undefined (for empty eval)
     ctx.emit_abc(Opcode.LDUNDEF, (uint)ctx.eval_acc_reg, 0, 0);
 
+    // ── Save lexer state before any pre-processing ───────────────────
+    uint saved_pos    = lex.pos;
+    uint saved_line   = lex.line;
+    uint saved_col    = lex.col;
+    Token saved_cur   = lex.current;
+    Token saved_look  = lex.lookahead;
+    bool  saved_haslk = lex.has_lookahead;
+    Token saved_push  = lex.pushed_back;
+    bool  saved_haspb = lex.has_pushed_back;
+    bool  saved_slt   = lex.seen_line_term;
+
     // Check for "use strict" directive prologue at eval level
     ctx.parse_directives()!;
 
@@ -63,6 +94,17 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
 
     // Hoist var declarations at the eval level.
     ctx.hoist_decls(true)!;
+
+    // ── Restore lexer to beginning for statement parsing ────────────
+    lex.pos             = saved_pos;
+    lex.line            = saved_line;
+    lex.col             = saved_col;
+    lex.current         = saved_cur;
+    lex.lookahead       = saved_look;
+    lex.has_lookahead   = saved_haslk;
+    lex.pushed_back     = saved_push;
+    lex.has_pushed_back = saved_haspb;
+    lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
     while (!ctx.is_at_end()) {

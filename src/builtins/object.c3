@@ -260,10 +260,10 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
 
     // Maximum number of keys we'll collect
     uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)libc::malloc((usz)(max_keys * HString*::size));
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
     if (key_buf == null) { ctx.result.set_undefined(); return; }
     uint key_count = 0;
-    defer libc::free(key_buf);
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
     // STRING exotic: integer indices [0, clen) are enumerable own properties
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
@@ -286,7 +286,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
             }
         }
         if (int_count > 0) {
-            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
             if (sort_buf != null) {
                 uint p = 0;
                 for (uint i = 0; i < obj.prop_count; i++) {
@@ -319,7 +319,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
                         key_buf[key_count++] = key;
                     }
                 }
-                libc::free(sort_buf);
+                ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
             }
         }
     }
@@ -455,10 +455,10 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // for-in + result[stringKey] all work correctly on the result array.
 
     uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)libc::malloc((usz)(max_keys * HString*::size));
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
     if (key_buf == null) { ctx.result.set_undefined(); return; }
     uint key_count = 0;
-    defer libc::free(key_buf);
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
     // STRING exotic: integer indices [0, clen) are own properties (enumerable by spec).
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
@@ -481,7 +481,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
             }
         }
         if (int_count > 0) {
-            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
             if (sort_buf != null) {
                 uint p = 0;
                 for (uint i = 0; i < obj.prop_count; i++) {
@@ -512,7 +512,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                     HString* key = (HString*)obj.prop_key_at(si);
                     key_buf[key_count++] = key;
                 }
-                libc::free(sort_buf);
+                ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
             }
         }
     }
@@ -693,7 +693,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
             }
         }
         if (int_count > 0) {
-            uint* sort_buf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
             if (sort_buf != null) {
                 uint p = 0;
                 for (uint i = 0; i < obj.prop_count; i++) {
@@ -727,7 +727,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
                     array_set_elem(arr, idx, key_tv, ctx.heap);
                     idx++;
                 }
-                libc::free(sort_buf);
+                ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
             }
         }
     }

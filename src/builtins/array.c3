@@ -880,7 +880,7 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     if (len <= STACK_THRESHOLD) {
         elem_strs = elem_strs_stack[:len];
     } else {
-        elem_strs_heap = (HString**)libc::malloc(HString*::size * len);
+        elem_strs_heap = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, HString*::size * len);
         if (elem_strs_heap == null) {
             if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
             ctx.result.set_undefined();
@@ -916,13 +916,13 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     }
 
     // PASS 2: Allocate a single buffer and copy all pieces using memcpy.
-    char* result_buf = (char*)libc::malloc(total_len);
+    char* result_buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total_len);
     if (result_buf == null) {
         if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
         for (uint i = 0; i < len; i++) {
             ctx.heap.decref((types::HeapHeader*)elem_strs[i]);
         }
-        if (elem_strs_heap != null) libc::free(elem_strs_heap);
+        if (elem_strs_heap != null) ctx.heap.free_func(ctx.heap.heap_udata, elem_strs_heap);
         ctx.result.set_undefined();
         return;
     }
@@ -945,13 +945,13 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
 
     // Intern the result, then release the held references and buffers.
     HString* result = builtin_intern_string(ctx.heap, result_buf[:total_len]);
-    libc::free(result_buf);
+    ctx.heap.free_func(ctx.heap.heap_udata, result_buf);
     if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
     for (uint i = 0; i < len; i++) {
         ctx.heap.decref((types::HeapHeader*)elem_strs[i]);
     }
     if (elem_strs_heap != null) {
-        libc::free(elem_strs_heap);
+        ctx.heap.free_func(ctx.heap.heap_udata, elem_strs_heap);
     }
 
     if (result == null) {

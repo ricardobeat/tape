@@ -1434,7 +1434,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                     }
                                     if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                                         TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
-                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
+                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys); return; }
                                         else if (res.is_string()) {
                                             str_key = (HString*)res.get_heapptr();
                                         }
@@ -1459,7 +1459,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                     }
                                     if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                                         TVal res = ctx.heap.call_fn(ctx.vm, toString_fn, null, 0, elem);
-                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) libc::free(prop_keys); return; }
+                                        if (ctx.heap.has_error) { ctx.should_throw = true; if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys); return; }
                                         else if (res.is_string()) {
                                             str_key = (HString*)res.get_heapptr();
                                         } else if (res.is_fastint() || res.is_number()) {
@@ -1499,7 +1499,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                 }
 
                 if (count > 0) {
-                    prop_keys = (HString**)libc::malloc(count * HString*::size);
+                    prop_keys = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, count * HString*::size);
                     if (prop_keys != null) {
                         libc::memcpy(prop_keys, &temp_keys[0], count * HString*::size);
                         prop_key_count = count;
@@ -1540,7 +1540,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                 ctx.throw_value = ctx.heap.error_value;
                                 ctx.heap.has_error = false;
                                 ctx.should_throw = true;
-                                if (prop_keys != null) libc::free(prop_keys);
+                                if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
                                 return;
                             }
                             else { space_arg = res; }
@@ -1568,7 +1568,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                                 ctx.throw_value = ctx.heap.error_value;
                                 ctx.heap.has_error = false;
                                 ctx.should_throw = true;
-                                if (prop_keys != null) libc::free(prop_keys);
+                                if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
                                 return;
                             }
                             else { space_arg = res; }
@@ -1628,7 +1628,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
     HObject*? wrapper_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch werr = wrapper_raw) {
         ctx.result.set_undefined();
-        if (prop_keys != null) libc::free(prop_keys);
+        if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
         return;
     }
     HObject* wrapper = wrapper_raw;
@@ -1666,13 +1666,13 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         ctx.should_throw = true;
         ctx.throw_value = ctx.heap.error_value;
         ctx.heap.has_error = false;
-        if (prop_keys != null) libc::free(prop_keys);
+        if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
         return;
     }
 
     if (root_omit) {
         ctx.result.set_undefined();
-        if (prop_keys != null) libc::free(prop_keys);
+        if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
         return;
     }
 
@@ -1683,11 +1683,11 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
         ctx.should_throw = true;
         ctx.throw_value = ctx.heap.error_value;
         ctx.heap.has_error = false;
-        if (prop_keys != null) libc::free(prop_keys);
+        if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
         return;
     }
 
-    if (prop_keys != null) libc::free(prop_keys);
+    if (prop_keys != null) ctx.heap.free_func(ctx.heap.heap_udata, prop_keys);
 
     if (result != 0) {
         ctx.result.set_undefined();

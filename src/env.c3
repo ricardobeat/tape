@@ -32,7 +32,7 @@ fn EnvRecord*? env_pool_alloc(Heap* h) {
 
     // Allocate a new block
     usz block_sz = EnvPoolBlock::size + EnvRecord::size * ENV_POOL_BLOCK_SIZE;
-    void* raw = libc::malloc(block_sz);
+    void* raw = h.alloc_func(h.heap_udata, block_sz);
     if (raw == null) return null;
     libc::memset(raw, 0, block_sz);
 

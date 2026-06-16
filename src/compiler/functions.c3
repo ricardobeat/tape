@@ -39,8 +39,8 @@ fn void CompilerContext.skip_function_body(&self) {
         if (tt == TokenType.EOF_TOKEN) return;
         if (tt == TokenType.LPAREN) { paren_depth++; }
         else if (tt == TokenType.RPAREN) {
-            if (paren_depth == 0) break; // found the matching ')'
             paren_depth--;
+            if (paren_depth == 0) break; // found the matching ')'
         }
     }
     // Skip '{' ... '}'
@@ -53,8 +53,8 @@ fn void CompilerContext.skip_function_body(&self) {
         if (tt == TokenType.EOF_TOKEN) return;
         if (tt == TokenType.LBRACE) { brace_depth++; }
         else if (tt == TokenType.RBRACE) {
-            if (brace_depth == 0) break; // found matching '}'
             brace_depth--;
+            if (brace_depth == 0) break; // found matching '}'
         }
     }
 }
@@ -140,6 +140,9 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
         if (tt == TokenType.RBRACE) {
             if (!is_global && brace_depth == 0) break;
             brace_depth--;
+            // For function-level hoisting, stop when the function body's
+            // closing '}' returns brace_depth to 0 (end of scanned scope).
+            if (!is_global && brace_depth == 0) break;
             continue;
         }
 
@@ -223,8 +226,8 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
 
             // Lexer is now past the function body. Continue scanning.
-        } else if (brace_depth == 0 && tt == TokenType.VAR) {
-            // var declarations
+        } else if (tt == TokenType.VAR) {
+            // var declarations (any brace depth: hoisted to function scope)
             for (;;) {
                 Token? name_opt2 = self.lexer.next_token();
                 if (catch _err = name_opt2) break;
@@ -247,6 +250,23 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                     break;
                 }
             }
+        } else if (!is_global && brace_depth == 0) {
+            // Top-level token that isn't a declaration (function/var) — the
+            // remaining program is real code (statements). Restore the lexer
+            // to before this token and stop pre-scanning; the main statement()
+            // loop will parse it.
+            // Only applied for function-level hoisting (is_global=false).
+            // Global hoisting must scan the entire source for interspersed declarations.
+            self.lexer.pos             = pos_before;
+            self.lexer.line            = line_before;
+            self.lexer.col             = col_before;
+            self.lexer.current         = cur_before;
+            self.lexer.lookahead       = look_before;
+            self.lexer.has_lookahead   = haslk_before;
+            self.lexer.pushed_back     = push_before;
+            self.lexer.has_pushed_back = haspb_before;
+            self.lexer.seen_line_term  = slt_before;
+            break;
         }
     }
 
@@ -743,6 +763,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
         int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
         inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
     }
+
+    // Hoist var and function declarations to the top of the inner function scope.
+    inner_ctx.hoist_decls(false)!;
 
     // Compile function body
     inner_ctx.block(true)!;

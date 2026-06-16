@@ -413,7 +413,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     uint actual_count = 0;
     TVal* extracted_args = null;
     if (max_extract > 0) {
-        extracted_args = (TVal*)libc::malloc(TVal::size * max_extract);
+        extracted_args = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * max_extract);
     }
     bool is_dense_array = (arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null);
     for (uint i = 0; i < max_extract; i++) {
@@ -466,7 +466,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
         }
 
-        if (extracted_args != null) libc::free(extracted_args);
+        if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
         builtins::dispatch_builtin(fn_idx, &inner_ctx);
         if (inner_ctx.should_throw) {
             ctx.should_throw = true;
@@ -481,11 +481,11 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         for (uint i = 0; i < actual_count; i++) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
         }
-        if (extracted_args != null) libc::free(extracted_args);
+        if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
         ctx.needs_re_dispatch = true;
         ctx.re_nargs = (ushort)actual_count;
     } else {
-        if (extracted_args != null) libc::free(extracted_args);
+        if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
         ctx.result.set_undefined();
     }
 }
@@ -554,7 +554,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     TVal* bound_args_arr = null;
 
     if (bound_argc > 0) {
-        bound_args_arr = (TVal*)libc::malloc(TVal::size * bound_argc);
+        bound_args_arr = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * bound_argc);
         if (bound_args_arr == null) {
             ctx.result.set_undefined();
             return;
@@ -567,7 +567,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     // Create bound function object
     HObject*? bound_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = bound_raw) {
-        if (bound_args_arr != null) libc::free(bound_args_arr);
+        if (bound_args_arr != null) ctx.heap.free_func(ctx.heap.heap_udata, bound_args_arr);
         ctx.result.set_undefined();
         return;
     }
@@ -625,7 +625,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
         }
     }
 
-    if (bound_args_arr != null) libc::free(bound_args_arr);
+    if (bound_args_arr != null) ctx.heap.free_func(ctx.heap.heap_udata, bound_args_arr);
 
     TVal args_tv;
     if (args_arr != null) {
@@ -881,9 +881,10 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
     TVal* all_args = null;
     uint max_total = bound_argc + ctx.argc;
     if (max_total > 0) {
-        all_args = (TVal*)libc::malloc(TVal::size * max_total);
+        all_args = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * max_total);
         if (all_args == null) { ctx.result.set_undefined(); return; }
     }
+    defer if (all_args != null) ctx.heap.free_func(ctx.heap.heap_udata, all_args);
     uint actual_total = 0;
 
     // Copy bound args from stored array

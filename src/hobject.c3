@@ -796,7 +796,13 @@ fn void HObject.ensure_prop_hash(&self) {
     if (self.prop_hash != null && self.prop_hash.count == self.prop_count && self.prop_hash.mask == new_mask) return;
 
     usz new_bytes = (usz)(new_mask + 1) * 16;
-    void* new_table = libc::malloc(new_bytes);
+    void* new_table;
+    if (_active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        new_table = h.alloc_func(h.heap_udata, new_bytes);
+    } else {
+        new_table = libc::malloc(new_bytes);
+    }
     if (new_table == null) return;
     libc::memset(new_table, 0, new_bytes);
 
@@ -822,13 +828,32 @@ fn void HObject.ensure_prop_hash(&self) {
     }
 
     if (self.prop_hash != null) {
-        libc::free(self.prop_hash.table);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            h.free_func(h.heap_udata, self.prop_hash.table);
+        } else {
+            libc::free(self.prop_hash.table);
+        }
         self.prop_hash.mask = new_mask;
         self.prop_hash.count = self.prop_count;
         self.prop_hash.table = new_table;
     } else {
-        PropHashInfo* phi = (PropHashInfo*)libc::malloc(PropHashInfo::size);
-        if (phi == null) { libc::free(new_table); return; }
+        PropHashInfo* phi;
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            phi = (PropHashInfo*)h.alloc_func(h.heap_udata, PropHashInfo::size);
+        } else {
+            phi = (PropHashInfo*)libc::malloc(PropHashInfo::size);
+        }
+        if (phi == null) {
+            if (_active_heap != null) {
+                heap::Heap* h = (heap::Heap*)_active_heap;
+                h.free_func(h.heap_udata, new_table);
+            } else {
+                libc::free(new_table);
+            }
+            return;
+        }
         phi.table = new_table;
         phi.mask = new_mask;
         phi.count = self.prop_count;
@@ -1222,8 +1247,14 @@ fn bool HObject.delete_prop(&self, void* key) {
     // Indexes after the deleted slot shifted down by one, so rebuild the
     // hash table from the new shape.
     if (self.prop_hash != null) {
-        libc::free(self.prop_hash.table);
-        libc::free(self.prop_hash);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            h.free_func(h.heap_udata, self.prop_hash.table);
+            h.free_func(h.heap_udata, self.prop_hash);
+        } else {
+            libc::free(self.prop_hash.table);
+            libc::free(self.prop_hash);
+        }
         self.prop_hash = null;
         self.ensure_prop_hash();
     }
@@ -1323,7 +1354,12 @@ fn void HObject.grow_props(&self) {
     void* new_raw;
     if (self.prop_alloc == null) {
         // Transition from inline to heap: allocate and copy inline data.
-        new_raw = libc::malloc(new_size);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            new_raw = h.alloc_func(h.heap_udata, new_size);
+        } else {
+            new_raw = libc::malloc(new_size);
+        }
         if (new_raw == null) return;
         PropValue* inline_src = self.inline_props_ptr();
         libc::memcpy(new_raw, inline_src, (usz)self.prop_count * PropValue::size);
@@ -1331,7 +1367,12 @@ fn void HObject.grow_props(&self) {
         usz old_size = self.prop_alloc_size();
         usz old_prop_bytes = (usz)self.prop_capacity * PropValue::size;
         new_size = old_size - old_prop_bytes + new_prop_bytes;
-        new_raw = libc::realloc(self.prop_alloc, new_size);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            new_raw = h.realloc_func(h.heap_udata, self.prop_alloc, new_size);
+        } else {
+            new_raw = libc::realloc(self.prop_alloc, new_size);
+        }
     }
     if (new_raw == null) return;
 
@@ -1380,12 +1421,22 @@ fn void HObject.grow_array(&self, uint new_size) {
     void* new_raw;
     if (self.prop_alloc == null) {
         // Transition from inline to heap: allocate and copy inline props.
-        new_raw = libc::malloc(new_bytes);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            new_raw = h.alloc_func(h.heap_udata, new_bytes);
+        } else {
+            new_raw = libc::malloc(new_bytes);
+        }
         if (new_raw == null) return;
         PropValue* inline_src = self.inline_props_ptr();
         libc::memcpy(new_raw, inline_src, (usz)self.prop_count * PropValue::size);
     } else {
-        new_raw = libc::realloc(self.prop_alloc, new_bytes);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            new_raw = h.realloc_func(h.heap_udata, self.prop_alloc, new_bytes);
+        } else {
+            new_raw = libc::realloc(self.prop_alloc, new_bytes);
+        }
     }
     if (new_raw == null) return;
 
@@ -1490,7 +1541,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 ///
 /// Pool-allocated objects (flags.pool_fallback == false) are returned to
 /// their FixedBlockPool for reuse.  Malloc-allocated objects are freed
-/// via libc::free.
+/// via the heap's allocator (libc::free fallback when heap is inactive).
 fn void hobject_free(HObject* obj, void* heap_ptr) {
     if (obj == null) { return; }
 
@@ -1501,8 +1552,14 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
 
     // Free the per-object property hash table.
     if (obj.prop_hash != null) {
-        libc::free(obj.prop_hash.table);
-        libc::free(obj.prop_hash);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            h.free_func(h.heap_udata, obj.prop_hash.table);
+            h.free_func(h.heap_udata, obj.prop_hash);
+        } else {
+            libc::free(obj.prop_hash.table);
+            libc::free(obj.prop_hash);
+        }
     }
 
     // Decref getter/setter inside GetterSetter cells.
@@ -1537,19 +1594,34 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
     // Free the unified property allocation block (prop_values + array_part).
     // Shape is shared and managed by the heap — do NOT free it here.
     if (obj.prop_alloc != null) {
-        libc::free(obj.prop_alloc);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            h.free_func(h.heap_udata, obj.prop_alloc);
+        } else {
+            libc::free(obj.prop_alloc);
+        }
         obj.prop_alloc = null;
     }
 
     // Route the HObject header to pool or malloc depending on allocation source.
     if (obj.flags.pool_fallback) {
-        libc::free(obj);
+        if (_active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            h.free_func(h.heap_udata, obj);
+        } else {
+            libc::free(obj);
+        }
     } else {
         void* pool = pool_for_class(heap_ptr, obj.flags.obj_class);
         if (pool != null) {
             ((mem::mempool::FixedBlockPool*)pool).dealloc(obj);
         } else {
-            libc::free(obj);
+            if (_active_heap != null) {
+                heap::Heap* h = (heap::Heap*)_active_heap;
+                h.free_func(h.heap_udata, obj);
+            } else {
+                libc::free(obj);
+            }
         }
     }
 }
@@ -1702,7 +1774,13 @@ fn usz shape_alloc_size(uint own_count) {
 /// `parent_shape` is the parent shape pointer (null for root).
 fn Shape* shape_create(uint own_count, uint offset, uint parent_id, Shape* parent_shape) {
     usz bytes = shape_alloc_size(own_count);
-    void* raw = libc::malloc(bytes);
+    void* raw;
+    if (_active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        raw = h.alloc_func(h.heap_udata, bytes);
+    } else {
+        raw = libc::malloc(bytes);
+    }
     if (raw == null) return null;
     libc::memset(raw, 0, bytes);
 
@@ -1749,7 +1827,12 @@ fn void shape_free(Shape* sh, void* heap_ptr) {
             }
         }
     }
-    libc::free(sh);
+    if (_active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        h.free_func(h.heap_udata, sh);
+    } else {
+        libc::free(sh);
+    }
 }
 
 // ============================================================================

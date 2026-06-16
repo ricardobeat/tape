@@ -193,7 +193,7 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                     while ((Catcher*)search_act.cat != cat) {
                         Catcher* skip = (Catcher*)search_act.cat;
                         search_act.cat = (void*)skip.parent;
-                        libc::free(skip);
+                        vm.heap.free_func(vm.heap.heap_udata, skip);
                     }
                 }
                 vm.heap.tval_copy_ref(&cat.thrown_val, &thrown_val);
@@ -251,7 +251,7 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
             if (cat.flags & CATCHER_FLAG_IN_FINALLY) {
                 Catcher* next = (Catcher*)cat.parent;
                 search_act.cat = (void*)next;
-                libc::free(cat);
+                vm.heap.free_func(vm.heap.heap_udata, cat);
                 cat = next;
                 continue;
             }
@@ -384,7 +384,7 @@ fn bool ensure_valstack_grow(Vm* vm, uint needed) {
     while (new_size < used + needed) {
         new_size *= 2;
     }
-    void* new_raw = libc::realloc(vm.valstack, (usz)new_size * TVal::size);
+    void* new_raw = vm.heap.realloc_func(vm.heap.heap_udata, vm.valstack, (usz)new_size * TVal::size);
     if (new_raw == null) {
         return false;
     }
@@ -976,10 +976,10 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
 const uint FORIN_INITIAL_CAP = 64;
 
 /// Grow an HString** array if needed.
-fn bool forin_ensure_cap(HString*** arr, uint* cap, uint need) {
+fn bool forin_ensure_cap(Heap* h, HString*** arr, uint* cap, uint need) {
     if (need >= *cap) {
         uint new_cap = *cap * 2;
-        HString** new_arr = (HString**)libc::realloc(*arr, new_cap * HString*::size);
+        HString** new_arr = (HString**)h.realloc_func(h.heap_udata, *arr, new_cap * HString*::size);
         if (new_arr == null) return false;
         *arr = new_arr;
         *cap = new_cap;
@@ -988,14 +988,14 @@ fn bool forin_ensure_cap(HString*** arr, uint* cap, uint need) {
 }
 
 /// Add a key if not already in the seen set (pointer compare for interned strings).
-fn bool forin_add_key(HString*** keys, uint* count,
+fn bool forin_add_key(Heap* h, HString*** keys, uint* count,
                       HString*** seen, uint* seen_cnt, uint* cap,
                       HString* key) {
     for (uint j = 0; j < *seen_cnt; j++) {
         if ((*seen)[j] == key) return true;
     }
-    if (!forin_ensure_cap(keys, cap, *count + 1)) return false;
-    if (!forin_ensure_cap(seen, cap, *seen_cnt + 1)) return false;
+    if (!forin_ensure_cap(h, keys, cap, *count + 1)) return false;
+    if (!forin_ensure_cap(h, seen, cap, *seen_cnt + 1)) return false;
     (*keys)[*count] = key;
     (*count)++;
     (*seen)[*seen_cnt] = key;
@@ -1007,16 +1007,17 @@ fn bool forin_add_key(HString*** keys, uint* count,
 /// chain, de-duplicated (own keys shadow prototype keys).
 ///
 /// Returns a malloc'd ForInState, or null if allocation fails.
-/// The caller (NEXTFOR) is responsible for freeing via `libc::free`.
+/// The caller (NEXTFOR) is responsible for freeing via `heap.free_func`.
 fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 
     uint cap = FORIN_INITIAL_CAP;
-    HString** keys = (HString**)libc::malloc(cap * HString*::size);
+    Heap* h = vm.heap;
+    HString** keys = (HString**)h.alloc_func(h.heap_udata, cap * HString*::size);
     if (keys == null) return null;
     uint count = 0;
 
-    HString** seen = (HString**)libc::malloc(cap * HString*::size);
-    if (seen == null) { libc::free(keys); return null; }
+    HString** seen = (HString**)h.alloc_func(h.heap_udata, cap * HString*::size);
+    if (seen == null) { h.free_func(h.heap_udata, keys); return null; }
     uint seen_cnt = 0;
 
     HObject* cur = obj;
@@ -1030,9 +1031,9 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 for (uint i = 0; i < prim.char_length(); i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
                     if (k == null) continue;
-                    if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                        libc::free(keys);
-                        libc::free(seen);
+                    if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                        h.free_func(h.heap_udata, keys);
+                        h.free_func(h.heap_udata, seen);
                         return null;
                     }
                 }
@@ -1044,9 +1045,9 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             if (!cur.array_part()[i].is_undefined()) {
                 HString* k = vm.heap.int_to_hstring((long)i);
                 if (k == null) continue;
-                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                    libc::free(keys);
-                    libc::free(seen);
+                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
                     return null;
                 }
             }
@@ -1062,7 +1063,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 }
             }
             if (int_count > 0) {
-                uint* sbuf = (uint*)libc::malloc((usz)(int_count * 2 * 4));
+                uint* sbuf = (uint*)h.alloc_func(h.heap_udata, (usz)(int_count * 2 * 4));
                 if (sbuf != null) {
                     uint p = 0;
                     for (uint i = 0; i < cur.prop_count; i++) {
@@ -1091,14 +1092,14 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                     for (uint i = 0; i < int_count; i++) {
                         uint si = sbuf[i * 2 + 1];
                         HString* k = (HString*)cur.prop_key_at(si);
-                        if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                            libc::free(sbuf);
-                            libc::free(keys);
-                            libc::free(seen);
+                        if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                            h.free_func(h.heap_udata, sbuf);
+                            h.free_func(h.heap_udata, keys);
+                            h.free_func(h.heap_udata, seen);
                             return null;
                         }
                     }
-                    libc::free(sbuf);
+                    h.free_func(h.heap_udata, sbuf);
                 }
             }
         }
@@ -1109,9 +1110,9 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 if (k.is_arridx()) continue;
                 if (k.is_symbol()) continue;
                 if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
-                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                    libc::free(keys);
-                    libc::free(seen);
+                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
                     return null;
                 }
             }
@@ -1121,9 +1122,9 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
                 if (!k.is_symbol()) continue;
-                if (!forin_add_key(&keys, &count, &seen, &seen_cnt, &cap, k)) {
-                    libc::free(keys);
-                    libc::free(seen);
+                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
                     return null;
                 }
             }
@@ -1133,10 +1134,10 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         depth++;
     }
 
-    libc::free(seen);
+    h.free_func(h.heap_udata, seen);
 
-    ForInState* state = (ForInState*)libc::malloc(ForInState::size);
-    if (state == null) { libc::free(keys); return null; }
+    ForInState* state = (ForInState*)h.alloc_func(h.heap_udata, ForInState::size);
+    if (state == null) { h.free_func(h.heap_udata, keys); return null; }
     state.keys = keys;
     state.count = count;
     state.index = 0;
@@ -1596,7 +1597,7 @@ fn TVal handle_return(Vm* vm, TVal val) @inline {
 
 /// Create and initialise a new VM.
 fn Vm*? vm_create(Heap* heap) {
-    void* raw = libc::malloc(Vm::size);
+    void* raw = heap.alloc_func(heap.heap_udata, Vm::size);
     if (raw == null) {
         return VM_ERROR~;
     }
@@ -1606,9 +1607,9 @@ fn Vm*? vm_create(Heap* heap) {
     vm.heap = heap;
 
     // Allocate value stack
-    void* vs_raw = libc::malloc((usz)INITIAL_VALSTACK * TVal::size);
+    void* vs_raw = heap.alloc_func(heap.heap_udata, (usz)INITIAL_VALSTACK * TVal::size);
     if (vs_raw == null) {
-        libc::free(raw);
+        heap.free_func(heap.heap_udata, raw);
         return VM_ERROR~;
     }
     vm.valstack = (TVal*)vs_raw;
@@ -1625,8 +1626,8 @@ fn Vm*? vm_create(Heap* heap) {
     // Create global environment
     EnvRecord*? global = env::env_create(heap, null);
     if (catch err = global) {
-        libc::free(vs_raw);
-        libc::free(raw);
+        heap.free_func(heap.heap_udata, vs_raw);
+        heap.free_func(heap.heap_udata, raw);
         return VM_ERROR~;
     }
     vm.global_env = global;
@@ -1638,8 +1639,8 @@ fn Vm*? vm_create(Heap* heap) {
     // Register built-ins
     if (!builtins::register_builtins(global, heap)) {
         env::env_destroy(heap, global);
-        libc::free(vs_raw);
-        libc::free(raw);
+        heap.free_func(heap.heap_udata, vs_raw);
+        heap.free_func(heap.heap_udata, raw);
         return VM_ERROR~;
     }
 
@@ -1663,12 +1664,12 @@ fn void vm_destroy(Vm* vm) {
     // in the heap_allocated linked list and freed by heap.destroy().
     // Calling env_destroy would double-free those tracked objects.
     if (vm.valstack != null) {
-        libc::free(vm.valstack);
+        vm.heap.free_func(vm.heap.heap_udata, vm.valstack);
     }
     // Clear heap's valstack GC root pointers
     vm.heap.valstack_base = null;
     vm.heap.valstack_top_ptr = null;
-    libc::free(vm);
+    vm.heap.free_func(vm.heap.heap_udata, vm);
 }
 
 /// Reset a VM for reuse with a freshly-reset heap.
@@ -2258,7 +2259,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (total <= 544) {
                             buf = &stack_buf;
                         } else {
-                            buf = (char*)libc::malloc(total);
+                            buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
                             if (buf == null) { ra.set_undefined(); break; }
                             heap_allocated = true;
                         }
@@ -2275,7 +2276,7 @@ fn TVal? Vm.run(Vm* vm) {
                         if (is_accum) {
                             uint hash = vm.heap.hash_string(buf[:total]);
                             HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
-                            if (heap_allocated) libc::free(buf);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
                             if (try s = maybe_s) {
                                 vm.heap.set_reg_string(ra, s);
                             } else {
@@ -2283,7 +2284,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                         } else {
                             HString* interned = intern_string(vm, buf[:total]);
-                            if (heap_allocated) libc::free(buf);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
                             vm.heap.set_reg_string(ra, interned);
                         }
                         break;
@@ -2325,7 +2326,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (total <= 512) {
                         buf = &stack_buf;
                     } else {
-                        buf = (char*)libc::malloc(total);
+                        buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
                         if (buf == null) { ra.set_undefined(); break; }
                         heap_allocated = true;
                     }
@@ -2344,7 +2345,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (is_accum) {
                         uint hash = vm.heap.hash_string(buf[:total]);
                         HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
-                        if (heap_allocated) libc::free(buf);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
                         if (try s = maybe_s) {
                             vm.heap.set_reg_string(ra, s);
                         } else {
@@ -2352,7 +2353,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                     } else {
                         HString* interned = intern_string(vm, buf[:total]);
-                        if (heap_allocated) libc::free(buf);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
                         vm.heap.set_reg_string(ra, interned);
                     }
                 } else {
@@ -7420,8 +7421,8 @@ fn TVal? Vm.run(Vm* vm) {
             if (state == null || state.index >= state.count) {
                 // No more keys — clean up and signal done
                 if (state != null) {
-                    libc::free(state.keys);
-                    libc::free(state);
+                    vm.heap.free_func(vm.heap.heap_udata, state.keys);
+                    vm.heap.free_func(vm.heap.heap_udata, state);
                 }
                 rb.set_boolean(false);
                 ra.set_undefined();
@@ -7458,7 +7459,7 @@ fn TVal? Vm.run(Vm* vm) {
                 : null;
 
             // Allocate catcher
-            Catcher* cat = (Catcher*)libc::malloc(Catcher::size);
+            Catcher* cat = (Catcher*)vm.heap.alloc_func(vm.heap.heap_udata, Catcher::size);
             if (cat == null) {
                 // Out of memory — skip catcher creation, try block will run unprotected
                 break;
@@ -7478,7 +7479,7 @@ fn TVal? Vm.run(Vm* vm) {
             Catcher* cat = (Catcher*)act.cat;
             if (cat != null) {
                 act.cat = (void*)cat.parent;
-                libc::free(cat);
+                vm.heap.free_func(vm.heap.heap_udata, cat);
             }
             break;
         }
@@ -7517,7 +7518,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // re-throws in the catch block are handled by the finally handler.
                 if (cat.finally_pc == null) {
                     act.cat = (void*)cat.parent;
-                    libc::free(cat);
+                    vm.heap.free_func(vm.heap.heap_udata, cat);
                 }
             } else {
                 ra.set_undefined();
@@ -7554,7 +7555,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // Pop the finally catcher
                 act.cat = (void*)parent_cat;
-                libc::free(cat);
+                vm.heap.free_func(vm.heap.heap_udata, cat);
 
                 if (has_pending_ret) {
                     // Check if the parent catcher also has a finally — if so,

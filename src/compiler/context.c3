@@ -300,8 +300,9 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
 fn CompiledFunction*? CompilerContext.finish(&self) {
+    Heap* h = (Heap*)self.heap;
     // Allocate the CompiledFunction struct
-    void* raw = libc::malloc(CompiledFunction::size);
+    void* raw = h.alloc_func(h.heap_udata, CompiledFunction::size);
     if (raw == null) {
         return COMPILE_ERROR~;
     }
@@ -852,9 +853,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
         // Step 4: copy compacted instruction stream (skip non-kept NOPs).
         usz code_bytes = (usz)new_count * Instruction::size;
-        void* code_raw = libc::malloc(code_bytes);
+        void* code_raw = h.alloc_func(h.heap_udata, code_bytes);
         if (code_raw == null) {
-            libc::free(raw);
+            h.free_func(h.heap_udata, raw);
             return COMPILE_ERROR~;
         }
         Instruction* dst_code = (Instruction*)code_raw;
@@ -871,10 +872,10 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Copy constant pool
     if (self.const_count > 0) {
         usz const_bytes = (usz)self.const_count * TVal::size;
-        void* const_raw = libc::malloc(const_bytes);
+        void* const_raw = h.alloc_func(h.heap_udata, const_bytes);
         if (const_raw == null) {
-            if (func.code != null) { libc::free(func.code); }
-            libc::free(raw);
+            if (func.code != null) { h.free_func(h.heap_udata, func.code); }
+            h.free_func(h.heap_udata, raw);
             return COMPILE_ERROR~;
         }
         libc::memcpy(const_raw, &self.constants[0], const_bytes);
@@ -885,11 +886,11 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Copy inner functions
     if (self.inner_func_count > 0) {
         usz inner_bytes = (usz)self.inner_func_count * CompiledFunction*::size;
-        void* inner_raw = libc::malloc(inner_bytes);
+        void* inner_raw = h.alloc_func(h.heap_udata, inner_bytes);
         if (inner_raw == null) {
-            if (func.code != null) { libc::free(func.code); }
-            if (func.constants != null) { libc::free(func.constants); }
-            libc::free(raw);
+            if (func.code != null) { h.free_func(h.heap_udata, func.code); }
+            if (func.constants != null) { h.free_func(h.heap_udata, func.constants); }
+            h.free_func(h.heap_udata, raw);
             return COMPILE_ERROR~;
         }
         libc::memcpy(inner_raw, &self.inner_funcs[0], inner_bytes);
@@ -932,7 +933,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Allocate Inline Cache array — one entry per instruction, zeroed.
     if (func.code_count > 0) {
         usz ic_bytes = (usz)func.code_count * hobject::ICEntry::size;
-        void* ic_raw = libc::malloc(ic_bytes);
+        void* ic_raw = h.alloc_func(h.heap_udata, ic_bytes);
         if (ic_raw != null) {
             libc::memset(ic_raw, 0, ic_bytes);
             func.ic_entries = ic_raw;
@@ -941,7 +942,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
         // Allocate Variable IC array — one entry per instruction, zeroed.
         usz vic_bytes = (usz)func.code_count * hobject::VarICEntry::size;
-        void* vic_raw = libc::malloc(vic_bytes);
+        void* vic_raw = h.alloc_func(h.heap_udata, vic_bytes);
         if (vic_raw != null) {
             libc::memset(vic_raw, 0, vic_bytes);
             func.var_ic_entries = vic_raw;
