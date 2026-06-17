@@ -1531,7 +1531,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
     TVal key_val = ctx.regs[ctx.base_reg + 1];
-    HString* key_hstr = builtin_to_string(ctx.heap, &key_val);
+    HString* key_hstr = builtin_to_string_vm(ctx, &key_val);
     if (key_hstr == null) { ctx.result.set_undefined(); return; }
     void* key = key_hstr;
 
@@ -3119,7 +3119,7 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         ctx.result.set_boolean(false);
         return;
     }
-    HString* key = builtin_to_string(ctx.heap, &prop_val);
+    HString* key = builtin_to_string_vm(ctx, &prop_val);
     if (key == null) {
         ctx.result.set_boolean(false);
         return;
@@ -3228,9 +3228,6 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
     HString* iter_sym = ensure_iterator_symbol(ctx.heap);
     bool use_iter = false;
     TVal iterator;
-
-    // DEBUG: force fallback path
-    use_iter = false;
 
     if (false && iter_sym != null) {
         TVal? iter_method_opt = iterable.get_prop_proto(iter_sym);
@@ -3494,7 +3491,7 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     } else {
         arg.set_undefined();
     }
-    HString* key = builtin_to_string(ctx.heap, &arg);
+    HString* key = builtin_to_string_vm(ctx, &arg);
     if (key == null) {
         ctx.result.set_boolean(false);
         return;
@@ -3545,7 +3542,7 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     } else {
         arg.set_undefined();
     }
-    HString* key = builtin_to_string(ctx.heap, &arg);
+    HString* key = builtin_to_string_vm(ctx, &arg);
     if (key == null) {
         ctx.result.set_boolean(false);
         return;
