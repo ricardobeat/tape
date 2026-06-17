@@ -121,6 +121,8 @@ struct GeneratorState {
     // yield* delegation state
     void* delegated_iter;     // HObject* — iterator being delegated to
     uint delegated_index;     // current index in delegation loop
+    // async state
+    void* async_promise;      // HObject* — the async function's outer Promise (null for generators)
 }
 
 // --- Heap struct ----------------------------------------------------------
@@ -1570,6 +1572,16 @@ fn void Heap.drain_gray(&self) {
                     self.mark_hobject((*obj.extra_ptr()).gen.lex_env.bindings);
                 }
                 break;
+            case ObjClass.PROMISE:
+                // Mark the resolved value/rejection reason and the linked list
+                // of pending reaction records.
+                self.mark_tval(&(*obj.extra_ptr()).promise.result);
+                HObject* reaction = (*obj.extra_ptr()).promise.reactions_head;
+                while (reaction != null) {
+                    self.mark_hobject(reaction);
+                    reaction = (HObject*)reaction.next;
+                }
+                break;
             case ObjClass.BOOLEAN:
             case ObjClass.NUMBER:
             case ObjClass.STRING:
@@ -2237,16 +2249,17 @@ fn void Heap.enqueue_microtask(&self, TVal handler, TVal arg, TVal downstream) {
 /// (e.g. a handler resolves another promise).  Uses a re-entrancy guard
 /// to prevent infinite loops.
 fn void Heap.drain_microtasks(&self, void* vm) {
-    if (self.microtask_draining) return;
-    if (self.microtask_count == 0) return;
+    if (self.microtask_draining) { return; }
+    if (self.microtask_count == 0) { return; }
     self.microtask_draining = true;
     defer self.microtask_draining = false;
 
+    // Snapshot the current count and process those tasks. New tasks enqueued
+    // during processing are added to the end of the queue and processed in
+    // subsequent batches (matches ES2015+ microtask ordering).
     for (;;) {
         uint count = self.microtask_count;
         if (count == 0) break;
-
-        // Snapshot current count — new entries may be added during processing
         self.microtask_count = 0;
 
         for (uint i = 0; i < count; i++) {
@@ -2255,7 +2268,6 @@ fn void Heap.drain_microtasks(&self, void* vm) {
             TVal arg        = self.microtask_queue[base + 1];
             TVal downstream = self.microtask_queue[base + 2];
 
-            // Call handler(arg) through the VM
             TVal result;
             if (self.call_handler_fn != null && vm != null) {
                 result = self.call_handler_fn(vm, handler, &arg);
@@ -2263,12 +2275,10 @@ fn void Heap.drain_microtasks(&self, void* vm) {
                 result = arg;
             }
 
-            // Resolve downstream promise with handler's return value
             if (downstream.is_object() && downstream.get_heapptr() != null &&
                 self.microtask_after_fn != null && vm != null) {
                 self.microtask_after_fn((void*)self, vm, result, downstream);
             }
         }
-        // Loop continues if new microtasks were enqueued during processing
     }
 }

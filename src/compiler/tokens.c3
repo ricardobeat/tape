@@ -111,6 +111,38 @@ fn void CompilerContext.pushback(&self, Token tok) {
     }
 }
 
+/// Detect the `async` prefix for function declarations/expressions.
+/// Returns true and consumes the `async` token if the current token is
+/// the identifier "async" and the next token is "function" (not a
+/// function call like `async(x) => ...` or a method like `async(x)`).
+/// Returns false and leaves the input untouched otherwise.
+fn bool CompilerContext.match_async_function(&self) {
+    if (self.peek_type() != TokenType.IDENTIFIER) return false;
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    // Check the identifier name is "async"
+    if (cur.str_value.len != 5) {
+        self.pushback(cur);
+        return false;
+    }
+    if (cur.str_value[0] != 'a' || cur.str_value[1] != 's' ||
+        cur.str_value[2] != 'y' || cur.str_value[3] != 'n' ||
+        cur.str_value[4] != 'c') {
+        self.pushback(cur);
+        return false;
+    }
+    // Peek the next token: must be `function`
+    TokenType next = self.peek_type();
+    if (next != TokenType.FUNCTION) {
+        // `async` was used as a regular identifier (e.g., variable or arrow param)
+        self.pushback(cur);
+        return false;
+    }
+    // Consume was the `async`; next call to advance() will return `function`.
+    return true;
+}
+
 /// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
 /// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
 /// Used by loop rotation to skip over the for-loop increment without emitting code.

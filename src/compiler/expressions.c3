@@ -1407,6 +1407,15 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.IDENTIFIER:
             // Check for arrow function: IDENTIFIER ARROW => single param
             {
+                // Detect `async function ...` expression: consume the async
+                // identifier and delegate to function_expr with is_async set.
+                if (self.peek_type() == TokenType.IDENTIFIER &&
+                    self.match_async_function()) {
+                    self.is_async = true;
+                    ushort r = self.function_expr()!;
+                    self.is_async = false;
+                    return r;
+                }
                 Token id_tok = self.advance()!;
 
                 // Check for literal keywords tokenized as identifiers
@@ -1719,6 +1728,21 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.free_reg(val_reg);
                 return result;
             }
+        }
+
+        // `await expr` — contextual keyword, only valid in async functions.
+        // Emits AWAIT + LOAD_RESUME so the VM can suspend/resume at this point.
+        case TokenType.AWAIT:
+        {
+            self.advance()!;  // consume 'await'
+            if (!self.is_async) {
+                return COMPILE_ERROR~;
+            }
+            ushort operand = self.unary_expr()!;
+            // AWAIT suspends the async function; LOAD_RESUME loads the settled value
+            self.emit_abc(Opcode.AWAIT, (uint)operand, 0, 0);
+            self.emit_abc(Opcode.LOAD_RESUME, (uint)operand, 0, 0);
+            return operand;
         }
 
         case TokenType.CLASS:

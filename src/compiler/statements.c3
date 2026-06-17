@@ -70,7 +70,21 @@ fn void? CompilerContext.statement(&self) {
                     self.labeled_statement(id_tok.str_value)!;
                     break;
                 }
-                // Not a label — push the identifier back and fall through
+
+                // `async function name() {}` — treat as function declaration
+                if (self.peek_type() == TokenType.FUNCTION &&
+                    id_tok.str_value.len == 5 &&
+                    id_tok.str_value[0] == 'a' && id_tok.str_value[1] == 's' &&
+                    id_tok.str_value[2] == 'y' && id_tok.str_value[3] == 'n' &&
+                    id_tok.str_value[4] == 'c') {
+                    // id_tok was `async`; next token is `function`
+                    self.is_async = true;
+                    self.function_declaration()!;
+                    self.is_async = false;
+                    break;
+                }
+
+                // Not a label or async function — push the identifier back and fall through
                 self.lexer.pushback(id_tok);
             }
             self.expression_statement()!;
@@ -1831,10 +1845,10 @@ fn void? CompilerContext.return_statement(&self) {
     TokenType next = self.peek_type();
     if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
         next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
-        self.emit_simple(self.is_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        self.emit_simple((self.is_generator && !self.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
-        self.emit_abc(self.is_generator ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
+        self.emit_abc((self.is_generator && !self.is_async) ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
         // Note: do NOT free_reg(val_reg) here.  The return value register may
         // be a live local variable (e.g. `return i` inside a for-loop body).
         // Calling free_reg would let the allocator reuse it for subsequent
@@ -2341,6 +2355,11 @@ fn void? CompilerContext.function_declaration(&self) {
     bool saved_is_generator = self.is_generator;
     self.is_generator = false;
 
+    // Save and reset async state: nested function declarations
+    // inside an async function do not inherit the async flag.
+    bool saved_is_async = self.is_async;
+    self.is_async = false;
+
     // Check for generator star: function* name() {}
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
@@ -2349,10 +2368,14 @@ fn void? CompilerContext.function_declaration(&self) {
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
     ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
-    // Compile the function into a nested CompiledFunction
+    // Compile the function into a nested CompiledFunction.
+    // Restore is_async so compile_inner_function propagates the flag,
+    // then immediately reset to prevent nested functions from inheriting it.
+    self.is_async = saved_is_async;
     CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+    self.is_async = false;
 
-    // Restore generator flag
+    // Restore generator flag (async already reset above)
     self.is_generator = saved_is_generator;
 
     // Add to inner functions table
