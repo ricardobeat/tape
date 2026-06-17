@@ -437,6 +437,12 @@ enum Opcode : char {
     /// Fused `GE rB, rC` + `IF_TRUE`: branch if (rB >= rC) is TRUE.
     JMP_GE,
 
+    /// Fused two-hop property access: A=dst_temp, B=src, C=key1_const_idx.
+    /// The second key and final register are stored in the NEXT instruction slot (which becomes NOP).
+    /// Format: insn[i]  = GETPROPC2 A=dst_temp, B=src, C=key1
+    ///         insn[i+1] = (data: A=dst_final, C=key2, repurposed as storage)
+    GETPROPC2,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -518,6 +524,7 @@ fn OpFormat get_op_format(Opcode op) {
         case DEC:        return NONE;
         case INC_VAR:    return A_BC;
         case DEC_VAR:    return A_BC;
+        case GETPROPC2:  return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -788,6 +795,7 @@ bitstruct FuncFlags : uint {
     /// Function never creates local bindings — the CALL fast path can
     /// skip `env_create_function_scope` and reuse the parent env directly.
     bool  needs_env       : 17;
+    bool  is_global       : 18;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -920,6 +928,11 @@ macro bool CompiledFunction.is_constructable(&self) {
 /// path can skip `env_create_function_scope`.
 macro bool CompiledFunction.needs_env(&self) {
     return self.flags.needs_env;
+}
+
+/// Returns `true` for the top-level program or eval scope.
+macro bool CompiledFunction.is_global_fn(&self) {
+    return self.flags.is_global;
 }
 
 /// Returns `true` when the function uses `arguments`.
@@ -1106,6 +1119,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.JMP_LE.ordinal]       = "JMP_LE",
     [Opcode.JMP_GT.ordinal]       = "JMP_GT",
     [Opcode.JMP_GE.ordinal]       = "JMP_GE",
+    [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
