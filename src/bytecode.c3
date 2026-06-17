@@ -451,6 +451,12 @@ enum Opcode : char {
     /// key comparison. Falls back to GETPROPC if shape_id or prop_alloc changed.
     GETPROPC_CACHED,
 
+    /// Fused two-hop property access: A=dst_temp, B=src, C=key1_const_idx.
+    /// The second key and final register are stored in the NEXT instruction slot (which becomes NOP).
+    /// Format: insn[i]  = GETPROPC2 A=dst_temp, B=src, C=key1
+    ///         insn[i+1] = (data: A=dst_final, C=key2, repurposed as storage)
+    GETPROPC2,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -510,6 +516,7 @@ fn OpFormat get_op_format(Opcode op) {
         case YIELD:      return ABC;
         case YIELD_STAR: return ABC;
         case GETPROPC_CACHED: return ABC;
+        case GETPROPC2:  return ABC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -1139,6 +1146,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.JMP_GE.ordinal]       = "JMP_GE",
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
+    [Opcode.GETPROPC2.ordinal] = "GETPROPC2",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
