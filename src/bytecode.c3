@@ -447,6 +447,10 @@ enum Opcode : char {
     ///         insn[i+1] = (data: A=dst_final, C=key2, repurposed as storage)
     GETPROPC2,
 
+    /// Specialized GETPROPC: IC is known-warm. Skips ic_base null check and
+    /// key comparison. Falls back to GETPROPC if shape_id or prop_alloc changed.
+    GETPROPC_CACHED,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -505,6 +509,7 @@ fn OpFormat get_op_format(Opcode op) {
         case LOAD_RESUME:  return ABC;
         case YIELD:      return ABC;
         case YIELD_STAR: return ABC;
+        case GETPROPC_CACHED: return ABC;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -1133,6 +1138,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.JMP_GT.ordinal]       = "JMP_GT",
     [Opcode.JMP_GE.ordinal]       = "JMP_GE",
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
+    [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 
