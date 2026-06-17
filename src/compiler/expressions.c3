@@ -666,10 +666,29 @@ fn ushort? CompilerContext.unary_expr(&self) {
         case TokenType.INC:
             // Prefix ++
             self.advance()!;
+            self.lhs_mode = true;
             ushort op_inc = self.postfix_expr()!;
+            self.lhs_mode = false;
+            // postfix_expr leaves self.last_was_getvar / self.last_was_member
+            // (and the member obj/prop registers) set so we can inspect the
+            // LHS shape here. Member takes priority over getvar because for
+            // `obj.prop` both flags can be true: member_expr keeps the
+            // obj/prop registers alive, and the trailing GETPROP for the
+            // value leaves the last emitted instruction as GETPROP (not
+            // GETVAR), so the GETVAR branch would also miss its target.
             bool inc_was_getvar = self.last_was_getvar;
             uint inc_getvar_name_idx = self.last_getvar_name_idx;
-            if (inc_was_getvar && self.code_count > 0
+            bool inc_was_member = self.last_was_member;
+            ushort inc_member_obj = self.last_member_obj_reg;
+            ushort inc_member_prop = self.last_member_prop_reg;
+
+            if (inc_was_member) {
+                // INC + PUTPROP for member access (e.g. ++obj.prop).
+                self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
+                self.emit_abc(Opcode.PUTPROP, (uint)inc_member_obj, (uint)inc_member_prop, (uint)op_inc);
+                self.free_reg(inc_member_prop);
+                self.free_reg(inc_member_obj);
+            } else if (inc_was_getvar && self.code_count > 0
                 && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                 // Replace GETVAR with INC_VAR: 1 dispatch instead of 3
                 uint name_idx = self.code[self.code_count - 1].get_bc();
@@ -681,15 +700,30 @@ fn ushort? CompilerContext.unary_expr(&self) {
                     self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
                 }
             }
+            self.last_was_getvar = false;
+            self.last_was_member = false;
             return op_inc;
 
         case TokenType.DEC:
             // Prefix --
             self.advance()!;
+            self.lhs_mode = true;
             ushort op_dec = self.postfix_expr()!;
+            self.lhs_mode = false;
+            // See INC case above for why member takes priority over getvar.
             bool dec_was_getvar = self.last_was_getvar;
             uint dec_getvar_name_idx = self.last_getvar_name_idx;
-            if (dec_was_getvar && self.code_count > 0
+            bool dec_was_member = self.last_was_member;
+            ushort dec_member_obj = self.last_member_obj_reg;
+            ushort dec_member_prop = self.last_member_prop_reg;
+
+            if (dec_was_member) {
+                // DEC + PUTPROP for member access (e.g. --obj.prop).
+                self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
+                self.emit_abc(Opcode.PUTPROP, (uint)dec_member_obj, (uint)dec_member_prop, (uint)op_dec);
+                self.free_reg(dec_member_prop);
+                self.free_reg(dec_member_obj);
+            } else if (dec_was_getvar && self.code_count > 0
                 && self.code[self.code_count - 1].op == Opcode.GETVAR) {
                 uint name_idx = self.code[self.code_count - 1].get_bc();
                 uint getvar_reg = self.code[self.code_count - 1].a;
@@ -700,6 +734,8 @@ fn ushort? CompilerContext.unary_expr(&self) {
                     self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
                 }
             }
+            self.last_was_getvar = false;
+            self.last_was_member = false;
             return op_dec;
 
         case TokenType.NEW:
@@ -712,11 +748,18 @@ fn ushort? CompilerContext.unary_expr(&self) {
 
 /// Parse postfix expressions (++, --).
 fn ushort? CompilerContext.postfix_expr(&self) {
+    self.lhs_mode = true;
     ushort operand = self.call_expr()!;
 
-    // Save LHS info for write-back if the operand was a global variable
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
+    bool lhs_was_member = self.last_was_member;
+    ushort lhs_member_obj = self.last_member_obj_reg;
+    ushort lhs_member_prop = self.last_member_prop_reg;
+
+    // Note: self.last_was_getvar / self.last_was_member remain set so that
+    // outer callers (e.g. unary_expr INC/DEC) can read the LHS info. The
+    // INC/DEC handlers below clear these after consuming the LHS info.
 
     TokenType tt = self.peek_type();
     if (tt == TokenType.INC) {
@@ -725,14 +768,20 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        if (lhs_was_getvar) {
+        if (lhs_was_member) {
+            self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
+            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)operand);
+            self.free_reg(lhs_member_prop);
+            self.free_reg(lhs_member_obj);
+        } else if (lhs_was_getvar) {
             // Replace INC + PUTVAR with INC_VAR + NOP
             self.emit_a_bc(Opcode.INC_VAR, 0, lhs_getvar_name_idx);
             self.emit_abc(Opcode.NOP, 0, 0, 0);
         } else {
             self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
         }
-
+        self.last_was_getvar = false;
+        self.last_was_member = false;
         return saved;
     }
 
@@ -742,16 +791,24 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
 
-        if (lhs_was_getvar) {
+        if (lhs_was_member) {
+            self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
+            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)operand);
+            self.free_reg(lhs_member_prop);
+            self.free_reg(lhs_member_obj);
+        } else if (lhs_was_getvar) {
             self.emit_a_bc(Opcode.DEC_VAR, 0, lhs_getvar_name_idx);
             self.emit_abc(Opcode.NOP, 0, 0, 0);
         } else {
             self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
         }
-
+        self.last_was_getvar = false;
+        self.last_was_member = false;
         return saved;
     }
 
+    // No postfix INC/DEC: leave self.last_was_member etc. set so outer
+    // callers (e.g. unary_expr INC/DEC) can inspect the LHS shape.
     return operand;
 }
 
