@@ -340,6 +340,8 @@ struct Lexer {
     /// the current brace_balance is pushed and restored on return.
     uint[MAX_TEMPLATE_DEPTH] template_balance_stack;
     uint template_balance_stack_depth;
+
+    char[256] ident_buf;
 }
 
 // ============================================================================
@@ -943,31 +945,99 @@ fn Token? Lexer.scan_string(&self) {
 // ============================================================================
 
 /// Parse an identifier or keyword.
+/// Unicode escapes (\uXXXX, \u{H+}) are decoded. Escaped identifiers
+/// are never recognised as keywords.
 fn Token? Lexer.scan_identifier(&self) {
     uint start_line = self.line;
     uint start_col = self.col;
     uint start_pos = self.pos;
 
-    // First character is already validated as identifier start
-    self.read_codepoint();
-
-    // Continue consuming identifier part characters
+    // Fast path: consume first char, scan for backslash.
+    // Check the first character for backslash before consuming.
+    bool has_escape = (self.peek_char() == 0x5C);
+    if (!has_escape) {
+        self.read_codepoint();
+    }
     while (!self.at_end()) {
         uint cp = self.peek_codepoint();
+        if (cp == 0x5C) { has_escape = true; break; }
         if (!is_identifier_part(cp)) break;
         self.read_codepoint();
     }
 
-    char[] name = self.source[start_pos..self.pos-1];
-
-    // Check if this identifier is a keyword
-    if (try kw = lookup_keyword(name, self.strict_mode)) {
-        Token tok = make_token(kw, start_line, start_col);
+    if (!has_escape) {
+        char[] name = self.source[start_pos..self.pos-1];
+        if (try kw = lookup_keyword(name, self.strict_mode)) {
+            Token tok = make_token(kw, start_line, start_col);
+            tok.str_value = name;
+            return tok;
+        }
+        Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
         tok.str_value = name;
         return tok;
     }
 
-    // Regular identifier
+    // Slow path: rewind and decode into ident_buf.
+    self.pos = start_pos;
+    uint buf_len = 0;
+    bool first = true;
+
+    while (!self.at_end() && buf_len < 250) {
+        uint cp = self.peek_codepoint();
+        if (cp == 0x5C) {
+            self.read_codepoint();
+            if (self.at_end() || self.peek_char() != 'u') return LEX_ERROR~;
+            self.advance_char();
+            uint ucp;
+            if (!self.at_end() && self.peek_char() == '{') {
+                self.advance_char();
+                ucp = 0;
+                uint udigits = 0;
+                while (!self.at_end() && self.peek_char() != '}') {
+                    char hc = self.peek_char();
+                    if (!is_hex_digit(hc)) return LEX_ERROR~;
+                    ucp = ucp * 16 + hex_value(hc);
+                    self.advance_char();
+                    udigits++;
+                    if (ucp > 0x10FFFF) return LEX_ERROR~;
+                }
+                if (self.at_end() || udigits == 0) return LEX_ERROR~;
+                self.advance_char();
+            } else {
+                if (self.remaining() < 4) return LEX_ERROR~;
+                ucp = 0;
+                for (int i = 0; i < 4; i++) {
+                    char hc = self.advance_char();
+                    if (!is_hex_digit(hc)) return LEX_ERROR~;
+                    ucp = ucp * 16 + hex_value(hc);
+                }
+            }
+            if (first) { if (!is_identifier_start(ucp)) return LEX_ERROR~; }
+            else { if (!is_identifier_part(ucp)) return LEX_ERROR~; }
+            if (ucp < 0x80) { self.ident_buf[buf_len++] = (char)ucp; }
+            else if (ucp < 0x800) { self.ident_buf[buf_len]=(char)(0xC0|(ucp>>6)); self.ident_buf[buf_len+1]=(char)(0x80|(ucp&0x3F)); buf_len+=2; }
+            else if (ucp < 0x10000) { self.ident_buf[buf_len]=(char)(0xE0|(ucp>>12)); self.ident_buf[buf_len+1]=(char)(0x80|((ucp>>6)&0x3F)); self.ident_buf[buf_len+2]=(char)(0x80|(ucp&0x3F)); buf_len+=3; }
+            else { self.ident_buf[buf_len]=(char)(0xF0|(ucp>>18)); self.ident_buf[buf_len+1]=(char)(0x80|((ucp>>12)&0x3F)); self.ident_buf[buf_len+2]=(char)(0x80|((ucp>>6)&0x3F)); self.ident_buf[buf_len+3]=(char)(0x80|(ucp&0x3F)); buf_len+=4; }
+        } else if (is_identifier_part(cp)) {
+            self.read_codepoint();
+            if (cp < 0x80) { self.ident_buf[buf_len++] = (char)cp; }
+            else if (cp < 0x800) { self.ident_buf[buf_len]=(char)(0xC0|(cp>>6)); self.ident_buf[buf_len+1]=(char)(0x80|(cp&0x3F)); buf_len+=2; }
+            else if (cp < 0x10000) { self.ident_buf[buf_len]=(char)(0xE0|(cp>>12)); self.ident_buf[buf_len+1]=(char)(0x80|((cp>>6)&0x3F)); self.ident_buf[buf_len+2]=(char)(0x80|(cp&0x3F)); buf_len+=3; }
+            else { self.ident_buf[buf_len]=(char)(0xF0|(cp>>18)); self.ident_buf[buf_len+1]=(char)(0x80|((cp>>12)&0x3F)); self.ident_buf[buf_len+2]=(char)(0x80|((cp>>6)&0x3F)); self.ident_buf[buf_len+3]=(char)(0x80|(cp&0x3F)); buf_len+=4; }
+        } else {
+            break;
+        }
+        first = false;
+    }
+
+    // Build name slice. C3's .. is inclusive, so [0..buf_len-1] gives buf_len bytes.
+    char[] name;
+    if (buf_len > 0) {
+        name = self.ident_buf[0..buf_len-1];
+    } else {
+        name = {};
+    }
+
     Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
     tok.str_value = name;
     return tok;
@@ -1639,7 +1709,7 @@ fn Token? Lexer.next_token(&self) {
 
     // Identifier or keyword
     uint cp = self.peek_codepoint();
-    if (is_identifier_start(cp)) {
+    if (is_identifier_start(cp) || cp == '\\') {
         Token tok = self.scan_identifier()!;
         self.current = tok;
         return tok;
