@@ -101,8 +101,9 @@ fn void builtin_build_data_descriptor(Heap* heap, HObject** out, TVal value, boo
 /// If value is already an Object, returns it.
 /// Otherwise, wraps the primitive (boolean/number/string) in a wrapper object.
 fn void builtin_object(BuiltinContext* ctx) {
-    // Handle object prototype method calls (this-value dispatch)
-    if (!ctx.is_constructor && ctx.argc == 0) {
+    // Object() with no args — create and return new empty object
+    // Both Object() function call and new Object() with no args.
+    if (ctx.argc == 0) {
         // Object() with no args — create and return new empty object
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err = obj_raw) {
