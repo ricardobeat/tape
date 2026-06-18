@@ -9,8 +9,8 @@
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 19,107 |
-| Currently failing (phases 0-21) | 11,768 |
+| Currently passing (phases 0-21) | 19,110 |
+| Currently failing (phases 0-21) | 11,765 |
 | Overall pass rate | 61.9% (corrected — old pattern skipped too many tests) |
 
 ## Per-Phase Status
@@ -18,7 +18,7 @@
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
 | 0-1: Core VM | 2185 | 723 | 406 | 1056 |
-| 1: Calling Convention | 426 | 105 | 235 | 86 |
+| 1: Calling Convention | 426 | 108 | 232 | 86 |
 | 2: Basic Operators | 1969 | 1153 | 253 | 563 |
 | 3: Object System | 7766 | 5141 | 1881 | 744 |
 | 4: Error Handling | 402 | 141 | 166 | 95 |
@@ -51,7 +51,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
-| 196 | Class early-error compiler checks + default constructor fix: static prototype/get/set → SyntaxError; get/set constructor → SyntaxError; duplicate constructor → SyntaxError; super() in non-constructor methods → SyntaxError (via is_constructable propagation to inner function context); static constructor() now valid; make_default_constructor generates proper bytecode with SUPER_CALL_S + SPREAD_ARG; static inheritance via SETPROTO; keyword method names. Pure class tests: 149/237 pass (62.9%). | TBD (Phase 15) |
+| 196 | Merge ralph-loop (class improvements: SUPER_CALL_S, early-error checks, static inheritance, make_default_constructor) + Phase 1 default param TDZ: later-param reference, arguments in defaults, function.length fix. Rosetta: 44/44, Phase 1: 105→108 pass. | +3 (Phase 1) |
 | 195 | Phase 1-2: (1) Phase 2 — escaped IDs in lexer, assignment eval order, compound/postfix/prefix ++/-- member writeback via GETPROP patching; (2) Phase 1 — trailing commas in params/calls/new per ES2017, default param self-reference TDZ (deferred DECLVAR + INITTZ/PUTLEX + needs_lex_bridge flag). Rosetta: 44/44, quick.sh: 283/0/56. | +189 (Phase 2: +184 pass; Phase 1: +5 pass) |
 | 194 | Compiler hoisting fixes (4 bugs): (1) `hoist_global_fn_decls` stopped at first non-function token (`var pass`), missing `namedFunc` declared after statements; (2) `hoist_decls` global-mode stopped identically, missing interspersed declarations; (3) function-level `hoist_decls` leaked into outer scope after `}`, hoisting outer vars into inner functions; (4) `var` at any brace depth not found — removed `brace_depth==0` guard (ES5 var is function-scoped). Also `skip_function_body` had reversed break condition (broke on unmatched `)`/`}`, not matched), causing it to consume all remaining tokens. Added lexer save/restore in `compile()`/`compile_eval()` around pre-processing so statement loop starts from pos=0. Merged `worktree-fix-array-length-union` (move `array_length` into `HObjectExtra` union). | Neutral (rosetta: 45→45) |
 | 193 | array_proto_get_this ToObject for primitives; forEach/map/every/filter/some/reduce/reduceRight step ordering; defineProperties SameValue check; TypedArray constructors; GOPD fixes; global immutable props (undefined/Infinity/NaN); Array/Number.prototype.toLocaleString | +228 (Phase 2: +2, Phase 3: +85, Phase 4: +10, Phase 5: +89, Phase 6: +37, Phase 7: +1, Phase 15: +3)
