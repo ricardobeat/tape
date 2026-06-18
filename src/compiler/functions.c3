@@ -742,6 +742,8 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     // Propagate class context (for super expressions)
     inner_ctx.in_class_body = self.in_class_body;
     inner_ctx.has_super_binding = self.has_super_binding;
+    // Propagate constructable flag: super() only valid in constructors
+    inner_ctx.is_constructable = self.is_constructable;
 
     // Parse parameter list
     inner_ctx.expect(TokenType.LPAREN)!;

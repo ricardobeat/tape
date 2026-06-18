@@ -5862,12 +5862,27 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
-        case Opcode.SUPER_CALL: {
+        case Opcode.SUPER_CALL:
+        case Opcode.SUPER_CALL_S: {
             // A = super(B, args...) — call superclass constructor
+            // SUPER_CALL: C = immediate arg count
+            // SUPER_CALL_S: C = register holding runtime arg count
             // Uses current activation's new.target
             uint result_reg = insn.a;
             uint callee_reg = insn.b;
-            uint nargs = insn.c;
+            uint nargs;
+            if (op == Opcode.SUPER_CALL_S) {
+                TVal* nargs_slot = regs_base + insn.c;
+                if (nargs_slot.is_fastint()) {
+                    nargs = (uint)nargs_slot.get_fastint();
+                } else if (nargs_slot.is_number()) {
+                    nargs = (uint)nargs_slot.get_number();
+                } else {
+                    nargs = 0;
+                }
+            } else {
+                nargs = insn.c;
+            }
 
             TVal* super_slot = regs_base + callee_reg;
             TVal super_val = *super_slot;

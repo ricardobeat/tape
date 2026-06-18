@@ -13,7 +13,8 @@ parser.add_argument("--workers", type=int, default=3)
 parser.add_argument("--timeout", type=int, default=8)
 args = parser.parse_args()
 
-tests, skipped = run_test262.build_phase_tests(args.phase, es5_only=False)
+phase_idx = run_test262.resolve_phase_num(args.phase)
+tests, skipped = run_test262.build_phase_tests(phase_idx, es5_only=False)
 print(f"Phase {args.phase}: {len(tests)} tests, {skipped} skipped", file=sys.stderr)
 
 workers = []

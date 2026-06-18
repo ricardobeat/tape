@@ -246,6 +246,26 @@ PHASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Phase number → array index mapping
+# ---------------------------------------------------------------------------
+# Build from labels like "Phase 0-1: Core VM" → accepts 0 and 1, maps to index 0.
+# "Phase 21: Generators" → accepts 21, maps to index 14.
+_PHASE_NUM_TO_IDX = {}
+for _i, _p in enumerate(PHASES):
+    _m = re.match(r'Phase (\d+)(?:-(\d+))?', _p["label"])
+    if _m:
+        _start = int(_m.group(1))
+        _end = int(_m.group(2)) if _m.group(2) else _start
+        for _num in range(_start, _end + 1):
+            _PHASE_NUM_TO_IDX[_num] = _i
+
+def resolve_phase_num(n):
+    """Convert a phase label number (e.g. 15 for Classes) to array index."""
+    idx = _PHASE_NUM_TO_IDX.get(n)
+    if idx is None:
+        raise ValueError(f"Unknown phase number {n}. Valid: {sorted(_PHASE_NUM_TO_IDX.keys())}")
+    return idx
+# ---------------------------------------------------------------------------
 # Skip filter
 # ---------------------------------------------------------------------------
 
@@ -486,8 +506,8 @@ def main():
     parser.add_argument(
         "--phase",
         type=int,
-        choices=range(len(PHASES)),
-        help="Run only this phase (0-8)",
+        choices=sorted(_PHASE_NUM_TO_IDX.keys()),
+        help="Run only this phase by number (0, 1, 2, … 15, 17, 21)",
     )
     parser.add_argument(
         "--workers",
@@ -526,7 +546,7 @@ def main():
             print("Build failed.", file=sys.stderr)
             sys.exit(1)
 
-    phases = [args.phase] if args.phase is not None else range(len(PHASES))
+    phases = [resolve_phase_num(args.phase)] if args.phase is not None else range(len(PHASES))
     grand_pass = grand_fail = grand_skip = grand_total = 0
 
     if args.es5:
