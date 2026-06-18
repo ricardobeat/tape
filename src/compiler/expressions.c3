@@ -747,15 +747,25 @@ fn ushort? CompilerContext.unary_expr(&self) {
 }
 
 /// Parse postfix expressions (++, --).
+///
+/// NOTE: We deliberately do NOT set `self.lhs_mode = true` here. Doing so
+/// would change how `member_expr` behaves for ALL nested member expressions
+/// inside `call_expr` — including callees of method calls like `foo.bar()` —
+/// keeping their obj/prop registers alive and marking them as LHS members,
+/// which breaks unrelated code. Instead we let `member_expr` always track
+/// `last_was_member` (and save obj/prop registers), let `call_expr` clear
+/// `last_was_member` after emitting a call, and then inspect the flag here
+/// to decide whether to emit INC/DEC + PUTPROP for a member LHS.
+///
+/// For a member LHS (e.g. `obj.prop++`), the GETPROP emitted by member_expr
+/// is still in the bytecode stream. We NOP it (its result is now in `saved`
+/// and we will overwrite `operand` with INC) and use the saved obj/prop
+/// registers to emit a follow-up PUTPROP that writes the new value back.
 fn ushort? CompilerContext.postfix_expr(&self) {
-    self.lhs_mode = true;
     ushort operand = self.call_expr()!;
 
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
-    bool lhs_was_member = self.last_was_member;
-    ushort lhs_member_obj = self.last_member_obj_reg;
-    ushort lhs_member_prop = self.last_member_prop_reg;
 
     // Note: self.last_was_getvar / self.last_was_member remain set so that
     // outer callers (e.g. unary_expr INC/DEC) can read the LHS info. The
@@ -764,21 +774,46 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     TokenType tt = self.peek_type();
     if (tt == TokenType.INC) {
         self.advance()!;
-        // Save original value
+        // Save original value and convert to ToNumber (ES5 §11.3.1)
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
+        self.emit_abc(Opcode.UNP, (uint)saved, (uint)saved, 0);
 
-        if (lhs_was_member) {
+        // If the LHS was a member expression (e.g. obj.prop), NOP the
+        // GETPROP emitted by member_expr and emit INC + PUTPROP to write
+        // the new value back. The obj/prop register indices are saved in
+        // last_member_obj_reg / last_member_prop_reg by member_expr.
+        bool handled = false;
+        if (self.last_was_member) {
+            // Search backward past the LDREG/UNP we just emitted to find
+            // the GETPROP and NOP it.
+            int idx = (int)self.code_count;
+            while (idx > 0) {
+                idx--;
+                if (self.code[idx].op == Opcode.GETPROP) {
+                    self.code[idx] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    break;
+                }
+            }
+            ushort obj_reg = self.last_member_obj_reg;
+            ushort prop_reg = self.last_member_prop_reg;
+            // INC the operand (the property value already in the register).
             self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
-            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)operand);
-            self.free_reg(lhs_member_prop);
-            self.free_reg(lhs_member_obj);
-        } else if (lhs_was_getvar) {
-            // Replace INC + PUTVAR with INC_VAR + NOP
-            self.emit_a_bc(Opcode.INC_VAR, 0, lhs_getvar_name_idx);
-            self.emit_abc(Opcode.NOP, 0, 0, 0);
-        } else {
-            self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
+            // Write back to the property.
+            self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)prop_reg, (uint)operand);
+            // free_reg is a no-op for registers below the top, but emit
+            // them for clarity / future-proofing if the allocator changes.
+            self.free_reg(prop_reg);
+            self.free_reg(obj_reg);
+            handled = true;
+        }
+        if (!handled) {
+            if (lhs_was_getvar) {
+                self.emit_a_bc(Opcode.INC_VAR, 0, lhs_getvar_name_idx);
+                self.emit_abc(Opcode.NOP, 0, 0, 0);
+            } else {
+                self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
+            }
         }
         self.last_was_getvar = false;
         self.last_was_member = false;
@@ -787,20 +822,36 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 
     if (tt == TokenType.DEC) {
         self.advance()!;
-        // Save original value
+        // Save original value and convert to ToNumber (ES5 §11.3.1)
         ushort saved = self.alloc_reg();
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
+        self.emit_abc(Opcode.UNP, (uint)saved, (uint)saved, 0);
 
-        if (lhs_was_member) {
+        bool handled = false;
+        if (self.last_was_member) {
+            int idx = (int)self.code_count;
+            while (idx > 0) {
+                idx--;
+                if (self.code[idx].op == Opcode.GETPROP) {
+                    self.code[idx] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    break;
+                }
+            }
+            ushort obj_reg = self.last_member_obj_reg;
+            ushort prop_reg = self.last_member_prop_reg;
             self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
-            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)operand);
-            self.free_reg(lhs_member_prop);
-            self.free_reg(lhs_member_obj);
-        } else if (lhs_was_getvar) {
-            self.emit_a_bc(Opcode.DEC_VAR, 0, lhs_getvar_name_idx);
-            self.emit_abc(Opcode.NOP, 0, 0, 0);
-        } else {
-            self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
+            self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)prop_reg, (uint)operand);
+            self.free_reg(prop_reg);
+            self.free_reg(obj_reg);
+            handled = true;
+        }
+        if (!handled) {
+            if (lhs_was_getvar) {
+                self.emit_a_bc(Opcode.DEC_VAR, 0, lhs_getvar_name_idx);
+                self.emit_abc(Opcode.NOP, 0, 0, 0);
+            } else {
+                self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
+            }
         }
         self.last_was_getvar = false;
         self.last_was_member = false;
@@ -828,6 +879,19 @@ fn ushort? CompilerContext.call_expr(&self) {
     for (;;) {
         if (self.check(TokenType.LPAREN)) {
             callee = self.emit_call(callee)!;
+            // The result of a call is not a member expression and not a
+            // direct variable reference. member_expr may have set
+            // last_was_member for the callee (e.g. obj.prop) and
+            // primary_expr may have set last_was_getvar for the base of
+            // the member chain (e.g. obj in obj.prop). Both flags are
+            // stale after a call: the call result is in a new register
+            // and is not a referenceable member or variable. Clear both
+            // flags so postfix_expr (and unary_expr for prefix ++/--)
+            // correctly treat the result as a non-member non-variable.
+            // If the call is followed by a member access (e.g. foo().bar),
+            // the DOT/LBRACKET branch below will set the flags again.
+            self.last_was_member = false;
+            self.last_was_getvar = false;
             // Free the property object used as 'this' (if any)
             if (self.call_prop_obj_reg != MAX_REGISTERS) {
                 self.free_reg(self.call_prop_obj_reg);
@@ -835,6 +899,9 @@ fn ushort? CompilerContext.call_expr(&self) {
             }
         } else if (self.is_next_template()) {
             callee = self.emit_tagged_template(callee)!;
+            // See comment in the LPAREN branch above.
+            self.last_was_member = false;
+            self.last_was_getvar = false;
             // Free the property object used as 'this' (if any)
             if (self.call_prop_obj_reg != MAX_REGISTERS) {
                 self.free_reg(self.call_prop_obj_reg);
@@ -880,6 +947,9 @@ fn ushort? CompilerContext.call_expr(&self) {
             // Simplified: treat as regular property access for now
             if (self.check(TokenType.LPAREN)) {
                 callee = self.emit_call(callee)!;
+                // See comment in the LPAREN branch above.
+                self.last_was_member = false;
+                self.last_was_getvar = false;
             } else {
                 char[] prop_str = self.read_property_name()!;
                 uint prop_const = self.add_string_constant(prop_str);
@@ -1331,6 +1401,10 @@ fn ushort? CompilerContext.new_expr(&self) {
 /// Parse member expression: property accesses and computed accesses.
 fn ushort? CompilerContext.member_expr(&self) {
     self.callee_is_eval = false;  // Reset before each callee resolution
+    // Reset last_was_member: if the loop runs, it will be set to true.
+    // This ensures that a non-member result (simple variable, literal) does
+    // not inherit a stale true value from a prior expression.
+    self.last_was_member = false;
     ushort obj = self.primary_expr()!;
 
     for (;;) {
@@ -1360,11 +1434,18 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)prop_reg);
 
+            // Always track if the result is a member expression. The saved
+            // obj/prop registers are used by postfix_expr (and by unary_expr
+            // for prefix ++/--) to emit PUTPROP after INC/DEC. The values in
+            // those registers are preserved even in non-lhs/del mode because
+            // the result register sits on top of the stack and free_reg is a
+            // no-op for registers below the top.
+            self.last_was_member = true;
+            self.last_member_obj_reg = obj;
+            self.last_member_prop_reg = prop_reg;
+
             if (self.del_mode || self.lhs_mode) {
                 // LHS / delete mode: keep obj/prop alive for possible PUTPROP/DELPROP
-                self.last_was_member = true;
-                self.last_member_obj_reg = obj;
-                self.last_member_prop_reg = prop_reg;
                 // Also set up for potential method call 'this'
                 if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
@@ -1394,10 +1475,12 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)idx_reg);
 
+            // See DOT branch above for why we always track the member.
+            self.last_was_member = true;
+            self.last_member_obj_reg = obj;
+            self.last_member_prop_reg = idx_reg;
+
             if (self.del_mode || self.lhs_mode) {
-                self.last_was_member = true;
-                self.last_member_obj_reg = obj;
-                self.last_member_prop_reg = idx_reg;
                 if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 }
