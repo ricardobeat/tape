@@ -518,9 +518,6 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             ushort param_reg = self.declare_var(param.str_value, VAR);
             uint param_name_idx = self.add_string_constant(param.str_value);
             arg_count++;
-            formal_count++;
-
-            bool has_default_param = false;
 
             // Check for default value
             if (self.check(TokenType.ASSIGN)) {
@@ -540,24 +537,19 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                     self.default_count++;
                     self.inner_func_count++;
                     self.has_closures = true;
-                    has_default_param = true;
                 }
-                // Params after the first default don't count toward .length.
-                // We've already counted this one in formal_count; roll it back.
-                formal_count--;
 
                 // Track first default index (0-based arg index)
                 if (first_default_idx == 0xFFFF) {
                     first_default_idx = arg_count - 1;
                 }
             }
+            // Params after the first default don't count toward .length (ES6 §14.1.6).
+            // Only increment formal_count if no default has been seen yet.
+            if (first_default_idx == 0xFFFF) { formal_count++; }
 
-            if (!has_default_param) {
-                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
-                // For params WITH defaults, binding is created by PUTVAR in the
-                // default check loop, ensuring self-references throw ReferenceError.
-                self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
-            }
+            // DECLVAR creates binding in var_env.
+            self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
 
             // Store name index for TDZ (all params when defaults exist).
             param_name_indices[arg_count - 1] = param_name_idx;
@@ -736,6 +728,16 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
     def_ctx.emit_simple(Opcode.POP_LEX);
 
     CompiledFunction* func = def_ctx.finish()!;
+
+    // If the default expression references 'arguments', clear the thunk's
+    // flag (prevent VM from creating a thunk-specific arguments object that
+    // shadows the parent's) and propagate to the enclosing function so the
+    // VM creates the parent's arguments object.
+    if (def_ctx.uses_arguments) {
+        func.flags.uses_arguments = false;
+        self.uses_arguments = true;
+    }
+
     // Default thunks need their parent's lex scope bridged into the
     // activation so TDZ sentinels for params are visible via GETVAR.
     func.flags.needs_lex_bridge = true;
@@ -826,9 +828,8 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
             ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
             arg_count++;
-            formal_count++;
-
-            bool has_default_param = false;
+            // DECLVAR creates binding in var_env.
+            inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
 
             // Check for default value
             if (inner_ctx.check(TokenType.ASSIGN)) {
@@ -847,23 +848,15 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                     inner_ctx.defaults[inner_ctx.default_count].default_func_idx = def_idx;
                     inner_ctx.default_count++;
                     inner_ctx.inner_func_count++;
-                    has_default_param = true;
                 }
-                // Params after the first default don't count toward .length.
-                formal_count--;
 
                 // Track first default index (0-based arg index)
                 if (first_default_idx == 0xFFFF) {
                     first_default_idx = arg_count - 1;
                 }
             }
-
-            if (!has_default_param) {
-                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
-                // For params WITH defaults, binding is created by PUTVAR in the
-                // default check loop, ensuring self-references throw ReferenceError.
-                inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
-            }
+            // Params after the first default don't count toward .length (ES6 §14.1.6).
+            if (first_default_idx == 0xFFFF) { formal_count++; }
 
             // Store name index for TDZ (all params when defaults exist).
             param_name_indices[arg_count - 1] = param_name_idx;
@@ -1155,9 +1148,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             ushort param_reg = arrow_ctx.declare_var(param.str_value, VAR);
             uint param_name_idx = arrow_ctx.add_string_constant(param.str_value);
             arg_count++;
-            formal_count++;
-
-            bool has_default_param = false;
+            // DECLVAR creates binding in var_env.
+            arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
 
             // Check for default value
             if (arrow_ctx.check(TokenType.ASSIGN)) {
@@ -1176,23 +1168,15 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                     arrow_ctx.defaults[arrow_ctx.default_count].default_func_idx = def_idx;
                     arrow_ctx.default_count++;
                     arrow_ctx.inner_func_count++;
-                    has_default_param = true;
                 }
-                // Params after the first default don't count toward .length.
-                formal_count--;
 
                 // Track first default index (0-based arg index)
                 if (first_default_idx == 0xFFFF) {
                     first_default_idx = arg_count - 1;
                 }
             }
-
-            if (!has_default_param) {
-                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
-                // For params WITH defaults, binding is created by PUTVAR in the
-                // default check loop, ensuring self-references throw ReferenceError.
-                arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
-            }
+            // Params after the first default don't count toward .length (ES6 §14.1.6).
+            if (first_default_idx == 0xFFFF) { formal_count++; }
 
             // Store name index for TDZ (all params when defaults exist).
             param_name_indices[arg_count - 1] = param_name_idx;
