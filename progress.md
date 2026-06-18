@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 194 (compiler hoisting fixes, array_length in union)
+**Last Updated:** Session 195 (Phase 2 Basic Operators: escaped IDs, assignment eval order, compound/postfix/prefix ++/--)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 194, 2026-06-16)
+## Summary (after Session 195, 2026-06-18)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-8) | ~18,302 |
-| Currently failing (phases 0-8) | ~12,573 |
-| Overall pass rate | ~59.3% (corrected — old pattern skipped too many tests) |
+| Currently passing (phases 0-21) | 19,102 |
+| Currently failing (phases 0-21) | 11,773 |
+| Overall pass rate | 61.9% (corrected — old pattern skipped too many tests) |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2,185 | 608 | 280 | 1,297 |
-| 1: Calling Convention | 426 | 68 | 272 | 338 |
-| 2: Basic Operators | 1,969 | 969 | 175 | 825 |
-| 3: Object System | 7,766 | 4,941 | 2,081 | 1,967 |
-| 4: Error Handling | 402 | 126 | 75 | 201 |
-| 5: Built-in Constructors | 8,615 | 6,047 | 1,899 | 1,525 |
-| 6: Prototype Methods | 4,713 | 3,052 | 1,361 | 936 |
-| 7: ES5 Features | 1,240 | 198 | 95 | 947 |
-| 8: ES5 Built-in Objects | 2,747 | 1,226 | 521 | 1,463 |
-| 11: Arrow/Templates | 427 | 62 | 41 | 324 |
-| 12-13: Destructuring | 19 | 0 | 0 | 19 |
-| 14: for-of | 751 | 22 | 560 | 719 |
-| 15: Classes | 8,520 | 67 | 195 | 8,258 |
-| 17-20: Map/Set/Symbol/Promise | 1,614 | 360 | 280 | 974 |
-| 21: Generators | 619 | 0 | 2 | 617 |
+| 0-1: Core VM | 2185 | 723 | 406 | 1056 |
+| 1: Calling Convention | 426 | 100 | 240 | 86 |
+| 2: Basic Operators | 1969 | 1153 | 253 | 563 |
+| 3: Object System | 7766 | 5141 | 1881 | 744 |
+| 4: Error Handling | 402 | 141 | 166 | 95 |
+| 5: Built-in Constructors | 8615 | 6112 | 1834 | 669 |
+| 6: Prototype Methods | 4713 | 3107 | 1306 | 300 |
+| 7: ES5 Features | 1240 | 280 | 325 | 635 |
+| 8: ES5 Built-in Objects | 2747 | 1267 | 480 | 1000 |
+| 11: Arrow/Templates | 427 | 81 | 204 | 142 |
+| 12-13: Destructuring | 19 | 0 | 17 | 2 |
+| 14: for-of | 751 | 110 | 472 | 169 |
+| 15: Classes | 8520 | 359 | 3020 | 5141 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 501 | 707 | 406 |
+| 21: Generators | 619 | 27 | 462 | 130 |
 
 ## Deferred Items
 
@@ -51,6 +51,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 195 | Phase 2 Basic Operators fixes: (1) Unicode escapes in identifiers — `scan_identifier()` decodes `\uXXXX`/`\u{H+}` into `ident_buf[256]`, escaped IDs never keywords (41 tests); (2) simple assignment eval order — NOP-out GETPROP before RHS so `null.prop = count++` increments count before TypeError (ES5 §11.13.1); (3) compound assignment member writeback — `obj.prop op= val` emits PUTPROP after compound op, strict-mode non-writable TypeError; (4) postfix ++/-- ToNumber + member writeback — `x++` returns ToNumber of original value (ES5 §11.3.1/11.3.2), `obj.prop++` writes back via backward GETPROP scan + NOP + PUTPROP; (5) prefix ++/-- member-first priority + writeback; (6) bugfix: reverted `lhs_mode=true` in postfix_expr that froze property access causing 19 rosetta VM_ERROR crashes. Rosetta: 44/44, quick.sh: 283/0/56. | +184 (Phase 2: 969→1153 pass) |
 | 194 | Compiler hoisting fixes (4 bugs): (1) `hoist_global_fn_decls` stopped at first non-function token (`var pass`), missing `namedFunc` declared after statements; (2) `hoist_decls` global-mode stopped identically, missing interspersed declarations; (3) function-level `hoist_decls` leaked into outer scope after `}`, hoisting outer vars into inner functions; (4) `var` at any brace depth not found — removed `brace_depth==0` guard (ES5 var is function-scoped). Also `skip_function_body` had reversed break condition (broke on unmatched `)`/`}`, not matched), causing it to consume all remaining tokens. Added lexer save/restore in `compile()`/`compile_eval()` around pre-processing so statement loop starts from pos=0. Merged `worktree-fix-array-length-union` (move `array_length` into `HObjectExtra` union). | Neutral (rosetta: 45→45) |
 | 193 | array_proto_get_this ToObject for primitives; forEach/map/every/filter/some/reduce/reduceRight step ordering; defineProperties SameValue check; TypedArray constructors; GOPD fixes; global immutable props (undefined/Infinity/NaN); Array/Number.prototype.toLocaleString | +228 (Phase 2: +2, Phase 3: +85, Phase 4: +10, Phase 5: +89, Phase 6: +37, Phase 7: +1, Phase 15: +3)
 | 192 | indexOf/lastIndexOf ToLength (no RangeError for -0/NaN); defineProperties enumerable filter (skip non-enumerable props like Error.stack) | +83 (Phase 3: +33, Phase 5: +33, Phase 6: +17)
