@@ -6,20 +6,21 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 
 ## Infrastructure — Enable Phase 15+ Testing
 
-- [ ] Add Phase 15-21 choices to `scripts/run_test262.py` `--phase` argparse (currently restricted to 0-14)
-- [ ] Add Phase 15-21 support to `scripts/phase_runner.py`
-- [ ] Verify `just build-batch` produces working `out/batch_test_vm` for batch testing
+- [x] Add Phase 15-21 choices to `scripts/run_test262.py` `--phase` argparse (currently restricted to 0-14)
+- [x] Add Phase 15-21 support to `scripts/phase_runner.py`
+- [x] Verify `just build-batch` produces working `out/batch_test_vm` for batch testing
 
 ## Classes (Phase 15) — 359/8520 pass (4.2%), 3020 failures
 
-- [ ] Fix `make_default_constructor()` `has_super` fallback (`class.c3:60-76`): allocates `__super__` constant string then falls through to empty constructor instead of generating `super(...args)` call
-- [ ] Verify method compilation (`class.c3:308`, `compile_inner_function`) produces correct CLOSURE+PUTPROP bytecode per method
-- [ ] Fix prototype chain setup for `extends`: verify SETPROTO after constructor returns
-- [ ] Ensure `constructor()` returns correct `this` binding (default constructor should return `this`, not `undefined`)
+- [x] Fix `make_default_constructor()` `has_super` fallback (`class.c3:60-76`): now generates `constructor(...args) { super(...args); }` bytecode with SPREAD_ARG + SUPER_CALL_S
+- [x] Verify method compilation produces correct CLOSURE+PUTPROP bytecode
+- [x] Fix prototype chain setup for `extends`: SETPROTO after constructor returns
+- [x] Ensure `constructor()` returns correct `this` binding
 - [ ] Check computed property keys in class methods: `class { [expr]() {} }` — ensure expression is evaluated per-instance, not shared
-- [ ] Fix static method installation: static methods go on constructor, prototype methods go on `.prototype`
-- [ ] Fix getter/setter in class bodies: `get x() {}` / `set x(v) {}` should install accessor descriptors, not data descriptors
-- [ ] Run pure-class test suite: ~238 tests with only `features: [class]` — establish baseline pass/fail
+- [x] Fix static method installation: static methods go on constructor, prototype methods go on `.prototype`
+- [x] Fix getter/setter in class bodies: INITGET/INITSET opcodes work, OPUTPROP uses WEC flags (enumerable issue pre-existing)
+- [x] Fix early-error SyntaxError checks: static prototype, get/set constructor, duplicate constructor, super() in non-constructor methods
+- [x] Run pure-class test suite: 149/237 pass (62.9%), 34 correctly rejected at compile time
 - [ ] Run full Phase 15 after fixes to measure delta
 
 ## Generators (Phase 21) — 27/619 pass (4.4%), 462 failures

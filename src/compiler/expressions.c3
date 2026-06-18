@@ -1897,6 +1897,10 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (!self.has_super_binding) {
                     return COMPILE_ERROR~;  // super() only valid with extends
                 }
+                // super() only valid in constructors, not in methods/getters/setters
+                if (!self.is_constructable) {
+                    return COMPILE_ERROR~;
+                }
                 uint super_name_idx = self.add_string_constant("__super__");
                 ushort super_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_reg, super_name_idx));

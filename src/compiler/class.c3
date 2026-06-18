@@ -258,9 +258,25 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                     } else {
                         return COMPILE_ERROR~;
                     }
+                    // Early error: getter/setter named "constructor" (non-static only)
+                    if (!is_static && method_name.str_value.len == 11
+                        && method_name.str_value[0] == 'c'
+                        && method_name.str_value[1] == 'o'
+                        && method_name.str_value[2] == 'n'
+                        && method_name.str_value[3] == 's'
+                        && method_name.str_value[4] == 't'
+                        && method_name.str_value[5] == 'r'
+                        && method_name.str_value[6] == 'u'
+                        && method_name.str_value[7] == 'c'
+                        && method_name.str_value[8] == 't'
+                        && method_name.str_value[9] == 'o'
+                        && method_name.str_value[10] == 'r') {
+                        return COMPILE_ERROR~;
+                    }
                 }
             }
-            if (!is_getter && !is_setter && !is_static && method_name.str_value.len == 11
+            // Check for constructor name and related early errors
+            if (method_name.str_value.len == 11
                 && method_name.str_value[0] == 'c'
                 && method_name.str_value[1] == 'o'
                 && method_name.str_value[2] == 'n'
@@ -272,18 +288,36 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                 && method_name.str_value[8] == 't'
                 && method_name.str_value[9] == 'o'
                 && method_name.str_value[10] == 'r') {
-                is_constructor = true;
+                if (!is_static && (is_getter || is_setter)) {
+                    // getter/setter named "constructor" — already handled above
+                    return COMPILE_ERROR~;
+                }
+                if (ctor_inner_idx != MAX_INNER_FUNCS) {
+                    // duplicate constructor is a SyntaxError
+                    return COMPILE_ERROR~;
+                }
+                if (!is_static) {
+                    is_constructor = true;
+                }
+            }
+            // Early error: static method/getter/setter named "prototype"
+            if (is_static && method_name.str_value.len == 9
+                && method_name.str_value[0] == 'p'
+                && method_name.str_value[1] == 'r'
+                && method_name.str_value[2] == 'o'
+                && method_name.str_value[3] == 't'
+                && method_name.str_value[4] == 'o'
+                && method_name.str_value[5] == 't'
+                && method_name.str_value[6] == 'y'
+                && method_name.str_value[7] == 'p'
+                && method_name.str_value[8] == 'e') {
+                return COMPILE_ERROR~;
             }
         } else if (self.check(TokenType.STRING)) {
             method_name = self.advance()!;
         } else if (self.check(TokenType.NUMBER)) {
             method_name = self.advance()!;
         } else {
-            return COMPILE_ERROR~;
-        }
-
-        if (is_static && is_constructor) {
-            // static constructor is a SyntaxError
             return COMPILE_ERROR~;
         }
 
