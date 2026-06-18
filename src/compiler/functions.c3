@@ -513,10 +513,10 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             }
             ushort param_reg = self.declare_var(param.str_value, VAR);
             uint param_name_idx = self.add_string_constant(param.str_value);
-            // DECLVAR declares the parameter in the immediate var_env only.
-            self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
             formal_count++;
+
+            bool has_default_param = false;
 
             // Check for default value
             if (self.check(TokenType.ASSIGN)) {
@@ -536,10 +536,18 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                     self.default_count++;
                     self.inner_func_count++;
                     self.has_closures = true;
+                    has_default_param = true;
                 }
                 // Params after the first default don't count toward .length.
                 // We've already counted this one in formal_count; roll it back.
                 formal_count--;
+            }
+
+            if (!has_default_param) {
+                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
+                // For params WITH defaults, binding is created by PUTVAR in the
+                // default check loop, ensuring self-references throw ReferenceError.
+                self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
 
             if (!self.match(TokenType.COMMA)) {
@@ -568,6 +576,14 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     bool has_func_lex = self.default_count > 0;
     if (has_func_lex) {
         self.emit_simple(Opcode.PUSH_LEX);
+
+        // TDZ: initialize all params with sentinels in the parameter scope.
+        // Default params keep their TZ until the default check loop clears it.
+        // Non-default params are immediately cleared (already initialized by arguments).
+        for (ushort di = 0; di < self.default_count; di++) {
+            uint ni = self.defaults[di].param_name_idx;
+            self.emit_a_bc(Opcode.INITTZ, 0, ni);
+        }
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -603,18 +619,21 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
 
         self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
 
-        // Copy result directly to the parameter register.
-        // Also update the environment so closures can access the value.
-        // GETVAR reloads from env to pr in case PUTVAR cleared it.
+        // Copy default result to parameter register.
         self.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
-        self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
-        self.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
 
         self.free_regs_to(call_base);
 
-        // Patch the skip jump to land after default evaluation
+        // Patch the skip jump to land AFTER free_regs_to but BEFORE PUTVAR.
+        // This ensures PUTVAR runs for BOTH branches (argument passed or default used).
         int skip_off = (int)self.code_count - (int)skip_addr - 1;
         self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+
+        // Write to lex scope first (clears TDZ sentinel), then var_env.
+        // GETVAR reloads from env in case PUTVAR cleared it.
+        self.emit_a_bc(Opcode.PUTLEX, (uint)pr, name_idx);
+        self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        self.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
     }
 
     // Hoist var and function declarations to the top of the function scope.
@@ -672,6 +691,9 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
     def_ctx.emit_simple(Opcode.POP_LEX);
 
     CompiledFunction* func = def_ctx.finish()!;
+    // Default thunks need their parent's lex scope bridged into the
+    // activation so TDZ sentinels for params are visible via GETVAR.
+    func.flags.needs_lex_bridge = true;
 
     return func;
 }
@@ -751,11 +773,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 return COMPILE_ERROR~;
             }
             ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
-            // Store parameter in the immediate var_env only (DECLVAR).
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
-            inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
             formal_count++;
+
+            bool has_default_param = false;
 
             // Check for default value
             if (inner_ctx.check(TokenType.ASSIGN)) {
@@ -774,9 +796,17 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                     inner_ctx.defaults[inner_ctx.default_count].default_func_idx = def_idx;
                     inner_ctx.default_count++;
                     inner_ctx.inner_func_count++;
+                    has_default_param = true;
                 }
                 // Params after the first default don't count toward .length.
                 formal_count--;
+            }
+
+            if (!has_default_param) {
+                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
+                // For params WITH defaults, binding is created by PUTVAR in the
+                // default check loop, ensuring self-references throw ReferenceError.
+                inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
 
             if (!inner_ctx.match(TokenType.COMMA)) {
@@ -802,6 +832,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     bool inner_has_func_lex = inner_ctx.default_count > 0;
     if (inner_has_func_lex) {
         inner_ctx.emit_simple(Opcode.PUSH_LEX);
+
+        // TDZ: initialize all params with sentinels in the parameter scope.
+        for (ushort di = 0; di < inner_ctx.default_count; di++) {
+            uint ni = inner_ctx.defaults[di].param_name_idx;
+            inner_ctx.emit_a_bc(Opcode.INITTZ, 0, ni);
+        }
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -840,14 +876,16 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
         // Assign result to parameter register and sync to environment.
         // GETVAR reloads from env to pr because PUTVAR clears its source register.
         inner_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
-        inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
-        inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
 
         inner_ctx.free_regs_to(call_base);
 
-        // Patch the skip jump to land after default evaluation
+        // Patch the skip jump to land AFTER free_regs_to but BEFORE PUTVAR.
         int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
         inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+
+        // Write to var_env — always executed (creates binding if deferred).
+        inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
     }
 
     // Hoist var and function declarations to the top of the inner function scope.
@@ -1018,9 +1056,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             Token param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
             ushort param_reg = arrow_ctx.declare_var(param.str_value, VAR);
             uint param_name_idx = arrow_ctx.add_string_constant(param.str_value);
-            arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
             formal_count++;
+
+            bool has_default_param = false;
 
             // Check for default value
             if (arrow_ctx.check(TokenType.ASSIGN)) {
@@ -1039,9 +1078,17 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                     arrow_ctx.defaults[arrow_ctx.default_count].default_func_idx = def_idx;
                     arrow_ctx.default_count++;
                     arrow_ctx.inner_func_count++;
+                    has_default_param = true;
                 }
                 // Params after the first default don't count toward .length.
                 formal_count--;
+            }
+
+            if (!has_default_param) {
+                // DECLVAR for params WITHOUT defaults — creates binding in var_env.
+                // For params WITH defaults, binding is created by PUTVAR in the
+                // default check loop, ensuring self-references throw ReferenceError.
+                arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
 
             if (!arrow_ctx.match(TokenType.COMMA)) {
@@ -1068,6 +1115,12 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     bool has_func_lex = arrow_ctx.default_count > 0;
     if (has_func_lex) {
         arrow_ctx.emit_simple(Opcode.PUSH_LEX);
+
+        // TDZ: initialize all params with sentinels in the parameter scope.
+        for (ushort di = 0; di < arrow_ctx.default_count; di++) {
+            uint ni = arrow_ctx.defaults[di].param_name_idx;
+            arrow_ctx.emit_a_bc(Opcode.INITTZ, 0, ni);
+        }
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -1104,14 +1157,16 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
 
         // Copy result directly to the parameter register.
         arrow_ctx.emit_abc(Opcode.LDREG, (uint)pr, (uint)call_base, 0);
-        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
-        arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
 
         arrow_ctx.free_regs_to(call_base);
 
-        // Patch the skip jump to land after default evaluation
+        // Patch the skip jump to land AFTER free_regs_to but BEFORE PUTVAR.
         int skip_off = (int)arrow_ctx.code_count - (int)skip_addr - 1;
         arrow_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+
+        // Write to var_env — always executed (creates binding if deferred).
+        arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
+        arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
     }
 
     // Determine if body is block or expression

@@ -4999,6 +4999,17 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.func = target_fast;
                     new_act.var_env = fast_var_env;
                     new_act.lex_env = fast_var_env;
+                    // Bridge captured lex scope for default thunks that need
+                    // to see TDZ sentinels in the parent's param scope.
+                    if (target_fast.needs_lex_bridge()) {
+                        EnvRecord* cap_lex = (*hobj_fast.extra_ptr()).func.lex_env;
+                        if (cap_lex != null && cap_lex != fast_var_env) {
+                            EnvRecord*? bridge = env::env_create_declarative(vm.heap, cap_lex);
+                            if (try b = bridge) {
+                                new_act.lex_env = b;
+                            }
+                        }
+                    }
                     new_act.cat = null;
                     new_act.curr_pc = target_fast.code;
                     new_act.bottom = new_bottom;

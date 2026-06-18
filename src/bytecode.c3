@@ -796,6 +796,10 @@ bitstruct FuncFlags : uint {
     /// skip `env_create_function_scope` and reuse the parent env directly.
     bool  needs_env       : 17;
     bool  is_global       : 18;
+    /// Function needs the CALL fast path to create a lex_env bridge
+    /// connecting the new activation to the function's captured lex scope.
+    /// Required for default parameter thunks capturing a parent param scope.
+    bool  needs_lex_bridge: 19;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -933,6 +937,9 @@ macro bool CompiledFunction.needs_env(&self) {
 /// Returns `true` for the top-level program or eval scope.
 macro bool CompiledFunction.is_global_fn(&self) {
     return self.flags.is_global;
+}
+macro bool CompiledFunction.needs_lex_bridge(&self) {
+    return self.flags.needs_lex_bridge;
 }
 
 /// Returns `true` when the function uses `arguments`.
