@@ -485,6 +485,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Parse parameter list
     self.expect(TokenType.LPAREN)!;
     ushort arg_count = 0;
+    ushort formal_count = 0;  // params that count toward function.length
 
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
@@ -501,6 +502,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 self.has_rest = true;
                 self.rest_formal_count = arg_count - 1;
                 self.num_args = arg_count;
+                self.formal_count = formal_count;
                 // Rest parameter must be last
                 break;
             }
@@ -514,6 +516,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             // DECLVAR declares the parameter in the immediate var_env only.
             self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
+            formal_count++;
 
             // Check for default value
             if (self.check(TokenType.ASSIGN)) {
@@ -534,9 +537,16 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                     self.inner_func_count++;
                     self.has_closures = true;
                 }
+                // Params after the first default don't count toward .length.
+                // We've already counted this one in formal_count; roll it back.
+                formal_count--;
             }
 
             if (!self.match(TokenType.COMMA)) {
+                break;
+            }
+            // Trailing comma: ',)' is valid per ES2017
+            if (self.check(TokenType.RPAREN)) {
                 break;
             }
         }
@@ -546,6 +556,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     if (!self.has_rest) {
         self.num_args = arg_count;
     }
+    self.formal_count = formal_count;
 
     self.expect(TokenType.RPAREN)!;
 
@@ -713,6 +724,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     // Parse parameter list
     inner_ctx.expect(TokenType.LPAREN)!;
     ushort arg_count = 0;
+    ushort formal_count = 0;  // params that count toward function.length
 
     if (!inner_ctx.check(TokenType.RPAREN)) {
         for (;;) {
@@ -729,6 +741,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 inner_ctx.has_rest = true;
                 inner_ctx.rest_formal_count = arg_count - 1;
                 inner_ctx.num_args = arg_count;
+                inner_ctx.formal_count = formal_count;
                 // Rest parameter must be last
                 break;
             }
@@ -742,6 +755,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
             inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
+            formal_count++;
 
             // Check for default value
             if (inner_ctx.check(TokenType.ASSIGN)) {
@@ -761,9 +775,15 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                     inner_ctx.default_count++;
                     inner_ctx.inner_func_count++;
                 }
+                // Params after the first default don't count toward .length.
+                formal_count--;
             }
 
             if (!inner_ctx.match(TokenType.COMMA)) {
+                break;
+            }
+            // Trailing comma: ',)' is valid per ES2017
+            if (inner_ctx.check(TokenType.RPAREN)) {
                 break;
             }
         }
@@ -773,6 +793,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     if (!inner_ctx.has_rest) {
         inner_ctx.num_args = arg_count;
     }
+    inner_ctx.formal_count = formal_count;
 
     inner_ctx.expect(TokenType.RPAREN)!;
 
@@ -909,6 +930,7 @@ fn ushort? CompilerContext.function_expr(&self) {
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
+
     return result;
 }
 
@@ -975,6 +997,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
     ushort arg_count = 0;
+    ushort formal_count = 0;  // params that count toward function.length
 
     if (!arrow_ctx.check(TokenType.RPAREN)) {
         for (;;) {
@@ -988,6 +1011,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                 arrow_ctx.has_rest = true;
                 arrow_ctx.rest_formal_count = arg_count - 1;
                 arrow_ctx.num_args = arg_count;
+                arrow_ctx.formal_count = formal_count;
                 break;
             }
 
@@ -996,6 +1020,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             uint param_name_idx = arrow_ctx.add_string_constant(param.str_value);
             arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             arg_count++;
+            formal_count++;
 
             // Check for default value
             if (arrow_ctx.check(TokenType.ASSIGN)) {
@@ -1015,9 +1040,15 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                     arrow_ctx.default_count++;
                     arrow_ctx.inner_func_count++;
                 }
+                // Params after the first default don't count toward .length.
+                formal_count--;
             }
 
             if (!arrow_ctx.match(TokenType.COMMA)) {
+                break;
+            }
+            // Trailing comma: ',)' is valid per ES2017
+            if (arrow_ctx.check(TokenType.RPAREN)) {
                 break;
             }
         }
@@ -1026,6 +1057,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     if (!arrow_ctx.has_rest) {
         arrow_ctx.num_args = arg_count;
     }
+    arrow_ctx.formal_count = formal_count;
 
     arrow_ctx.expect(TokenType.RPAREN)!;
 

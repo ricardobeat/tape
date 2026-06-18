@@ -233,6 +233,8 @@ struct CompilerContext {
     bool has_rest;
     ushort rest_formal_count;   // number of formals before rest parameter
     ushort num_args;            // total parameter count (including rest)
+    ushort formal_count;        // params that count toward function.length
+                                 // (= num_args, or count before first default/rest)
 
     // Class-related tracking
     bool is_constructable;      // true when compiling a class constructor
@@ -929,6 +931,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.num_args = self.num_args;
     if (self.has_rest) {
         func.num_formals = self.rest_formal_count;
+    } else if (self.default_count > 0) {
+        // First default param doesn't count toward .length; formals before it do.
+        func.num_formals = self.formal_count;
     } else {
         func.num_formals = self.num_args;
     }

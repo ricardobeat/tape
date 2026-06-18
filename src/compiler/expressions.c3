@@ -1088,6 +1088,10 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
             if (!self.match(TokenType.COMMA)) {
                 break;
             }
+            // Trailing comma: ',)' is valid per ES2017
+            if (self.check(TokenType.RPAREN)) {
+                break;
+            }
         }
     }
 
@@ -1332,6 +1336,10 @@ fn ushort? CompilerContext.new_expr(&self) {
                 arg_count++;
 
                 if (!self.match(TokenType.COMMA)) {
+                    break;
+                }
+                // Trailing comma: ',)' is valid per ES2017
+                if (self.check(TokenType.RPAREN)) {
                     break;
                 }
             }
@@ -1727,6 +1735,15 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         break;  // unexpected token, not arrow
                     }
                     self.advance()!;  // consume ','
+
+                    // Trailing comma: ',)' is valid per ES2017
+                    if (self.check(TokenType.RPAREN)) {
+                        self.advance()!;  // consume ')'
+                        if (self.check(TokenType.ARROW)) {
+                            is_arrow = true;
+                        }
+                        break;
+                    }
                 }
 
                 if (is_arrow) {
