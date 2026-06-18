@@ -487,6 +487,10 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     ushort arg_count = 0;
     ushort formal_count = 0;  // params that count toward function.length
 
+    // Track all param name indices for TDZ (needed when defaults exist).
+    uint[MAX_PARAMS] param_name_indices;
+    ushort first_default_idx = 0xFFFF;
+
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
@@ -541,6 +545,11 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 // Params after the first default don't count toward .length.
                 // We've already counted this one in formal_count; roll it back.
                 formal_count--;
+
+                // Track first default index (0-based arg index)
+                if (first_default_idx == 0xFFFF) {
+                    first_default_idx = arg_count - 1;
+                }
             }
 
             if (!has_default_param) {
@@ -549,6 +558,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 // default check loop, ensuring self-references throw ReferenceError.
                 self.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
+
+            // Store name index for TDZ (all params when defaults exist).
+            param_name_indices[arg_count - 1] = param_name_idx;
 
             if (!self.match(TokenType.COMMA)) {
                 break;
@@ -577,13 +589,25 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     if (has_func_lex) {
         self.emit_simple(Opcode.PUSH_LEX);
 
-        // TDZ: initialize all params with sentinels in the parameter scope.
-        // Default params keep their TZ until the default check loop clears it.
-        // Non-default params are immediately cleared (already initialized by arguments).
-        for (ushort di = 0; di < self.default_count; di++) {
-            uint ni = self.defaults[di].param_name_idx;
+        // TDZ: initialize ALL params with sentinels in the parameter scope.
+        // When defaults exist, every param is in TDZ until its default check
+        // completes (for default params) or until it becomes visible (non-default).
+        for (ushort ai = 0; ai < arg_count; ai++) {
+            uint ni = param_name_indices[ai];
             self.emit_a_bc(Opcode.INITTZ, 0, ni);
         }
+
+        // Emit PUTLEX for pre-default params only.
+        // Pre-default params are not in TDZ — they're already initialized by arguments.
+        ushort ai = 0;
+        while (ai < first_default_idx) {
+            uint ni = param_name_indices[ai];
+            self.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            ai++;
+        }
+
+        // After all default checks complete, emit PUTLEX for non-default params
+        // that appear after the first default (they were in TDZ but should now be visible).
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -634,6 +658,27 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         self.emit_a_bc(Opcode.PUTLEX, (uint)pr, name_idx);
         self.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
         self.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
+    }
+
+    // Emit PUTLEX for non-default params that appear after the first default.
+    // These were in TDZ but should now be visible once all defaults are evaluated.
+    if (has_func_lex && first_default_idx != 0xFFFF) {
+        ushort ai = first_default_idx;
+        while (ai < arg_count) {
+            uint ni = param_name_indices[ai];
+            // Check if this param has a default (was already handled above).
+            bool is_default_param = false;
+            for (ushort di = 0; di < self.default_count; di++) {
+                if (self.defaults[di].param_name_idx == ni) {
+                    is_default_param = true;
+                    break;
+                }
+            }
+            if (!is_default_param) {
+                self.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            }
+            ai++;
+        }
     }
 
     // Hoist var and function declarations to the top of the function scope.
@@ -750,6 +795,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     ushort arg_count = 0;
     ushort formal_count = 0;  // params that count toward function.length
 
+    // Track all param name indices for TDZ (needed when defaults exist).
+    uint[MAX_PARAMS] param_name_indices;
+    ushort first_default_idx = 0xFFFF;
+
     if (!inner_ctx.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
@@ -802,6 +851,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 }
                 // Params after the first default don't count toward .length.
                 formal_count--;
+
+                // Track first default index (0-based arg index)
+                if (first_default_idx == 0xFFFF) {
+                    first_default_idx = arg_count - 1;
+                }
             }
 
             if (!has_default_param) {
@@ -810,6 +864,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 // default check loop, ensuring self-references throw ReferenceError.
                 inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
+
+            // Store name index for TDZ (all params when defaults exist).
+            param_name_indices[arg_count - 1] = param_name_idx;
 
             if (!inner_ctx.match(TokenType.COMMA)) {
                 break;
@@ -835,11 +892,25 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     if (inner_has_func_lex) {
         inner_ctx.emit_simple(Opcode.PUSH_LEX);
 
-        // TDZ: initialize all params with sentinels in the parameter scope.
-        for (ushort di = 0; di < inner_ctx.default_count; di++) {
-            uint ni = inner_ctx.defaults[di].param_name_idx;
+        // TDZ: initialize ALL params with sentinels in the parameter scope.
+        // When defaults exist, every param is in TDZ until its default check
+        // completes (for default params) or until it becomes visible (non-default).
+        for (ushort ai = 0; ai < arg_count; ai++) {
+            uint ni = param_name_indices[ai];
             inner_ctx.emit_a_bc(Opcode.INITTZ, 0, ni);
         }
+
+        // Emit PUTLEX for pre-default params only.
+        // Pre-default params are not in TDZ — they're already initialized by arguments.
+        ushort ai = 0;
+        while (ai < first_default_idx) {
+            uint ni = param_name_indices[ai];
+            inner_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            ai++;
+        }
+
+        // After all default checks complete, emit PUTLEX for non-default params
+        // that appear after the first default (they were in TDZ but should now be visible).
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -888,6 +959,27 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
         // Write to var_env — always executed (creates binding if deferred).
         inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
         inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
+    }
+
+    // Emit PUTLEX for non-default params that appear after the first default.
+    // These were in TDZ but should now be visible once all defaults are evaluated.
+    if (inner_has_func_lex && first_default_idx != 0xFFFF) {
+        ushort ai = first_default_idx;
+        while (ai < arg_count) {
+            uint ni = param_name_indices[ai];
+            // Check if this param has a default (was already handled above).
+            bool is_default_param = false;
+            for (ushort di = 0; di < inner_ctx.default_count; di++) {
+                if (inner_ctx.defaults[di].param_name_idx == ni) {
+                    is_default_param = true;
+                    break;
+                }
+            }
+            if (!is_default_param) {
+                inner_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            }
+            ai++;
+        }
     }
 
     // Hoist var and function declarations to the top of the inner function scope.
@@ -1039,6 +1131,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     ushort arg_count = 0;
     ushort formal_count = 0;  // params that count toward function.length
 
+    // Track all param name indices for TDZ (needed when defaults exist).
+    uint[MAX_PARAMS] param_name_indices;
+    ushort first_default_idx = 0xFFFF;
+
     if (!arrow_ctx.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
@@ -1084,6 +1180,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                 }
                 // Params after the first default don't count toward .length.
                 formal_count--;
+
+                // Track first default index (0-based arg index)
+                if (first_default_idx == 0xFFFF) {
+                    first_default_idx = arg_count - 1;
+                }
             }
 
             if (!has_default_param) {
@@ -1092,6 +1193,9 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                 // default check loop, ensuring self-references throw ReferenceError.
                 arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)param_reg, param_name_idx);
             }
+
+            // Store name index for TDZ (all params when defaults exist).
+            param_name_indices[arg_count - 1] = param_name_idx;
 
             if (!arrow_ctx.match(TokenType.COMMA)) {
                 break;
@@ -1118,11 +1222,25 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     if (has_func_lex) {
         arrow_ctx.emit_simple(Opcode.PUSH_LEX);
 
-        // TDZ: initialize all params with sentinels in the parameter scope.
-        for (ushort di = 0; di < arrow_ctx.default_count; di++) {
-            uint ni = arrow_ctx.defaults[di].param_name_idx;
+        // TDZ: initialize ALL params with sentinels in the parameter scope.
+        // When defaults exist, every param is in TDZ until its default check
+        // completes (for default params) or until it becomes visible (non-default).
+        for (ushort ai = 0; ai < arg_count; ai++) {
+            uint ni = param_name_indices[ai];
             arrow_ctx.emit_a_bc(Opcode.INITTZ, 0, ni);
         }
+
+        // Emit PUTLEX for pre-default params only.
+        // Pre-default params are not in TDZ — they're already initialized by arguments.
+        ushort ai = 0;
+        while (ai < first_default_idx) {
+            uint ni = param_name_indices[ai];
+            arrow_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            ai++;
+        }
+
+        // After all default checks complete, emit PUTLEX for non-default params
+        // that appear after the first default (they were in TDZ but should now be visible).
     }
 
     // Emit default parameter checks (must run before body, after PUSH_LEX)
@@ -1169,6 +1287,27 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
         // Write to var_env — always executed (creates binding if deferred).
         arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)pr, name_idx);
         arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)pr, name_idx);
+    }
+
+    // Emit PUTLEX for non-default params that appear after the first default.
+    // These were in TDZ but should now be visible once all defaults are evaluated.
+    if (has_func_lex && first_default_idx != 0xFFFF) {
+        ushort ai = first_default_idx;
+        while (ai < arg_count) {
+            uint ni = param_name_indices[ai];
+            // Check if this param has a default (was already handled above).
+            bool is_default_param = false;
+            for (ushort di = 0; di < arrow_ctx.default_count; di++) {
+                if (arrow_ctx.defaults[di].param_name_idx == ni) {
+                    is_default_param = true;
+                    break;
+                }
+            }
+            if (!is_default_param) {
+                arrow_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            }
+            ai++;
+        }
     }
 
     // Determine if body is block or expression
