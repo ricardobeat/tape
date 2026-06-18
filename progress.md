@@ -39,6 +39,20 @@
 - Nested/advanced destructuring patterns
 - Reflect, Proxy
 
+## VM Performance Optimizations (Session ~197, 2026-06-19)
+
+Three novel optimizations backported from the `worktree-copy-and-patch-poc` branch:
+
+| Optimization | Technique | Source |
+|---|---|---|
+| Megamorphic global property cache | 512-entry (shape_id, key_ptr) → value hash table shared across all GETPROP/GETPROPC sites | SpiderMonkey/V8 (2022-2023) |
+| GETPROPC_CACHED adaptive opcode | In-place bytecode specialization after IC warmup | CPython PEP 659 (3.11, 2022) |
+| GETPROPC2 chain fusion | Superinstruction fusing consecutive GETPROPC pairs (obj.a.b) into single dispatch | VMIL 2024 |
+
+**Impact**: Modest improvement on property-heavy micro-benchmarks (+5-9% on bench_ic_monomorphic, bench_ic_proto). The full +40% seen on the worktree branch depends on LOOP_COMPILED trace-compiled loops which are not yet on main.
+
+**No test262 regression** — pass rate stable at 59.6%.
+
 ## Test Infrastructure
 
 - **Phase runner**: `python3 scripts/phase_runner.py 2 --workers 2 --timeout 10` (detailed failures) 
@@ -51,6 +65,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 197 | Backport three VM optimizations from worktree branch: (1) Megamorphic global property cache — 512-entry hash table for cross-site property lookups; (2) GETPROPC_CACHED adaptive opcode — in-place bytecode specialization after IC warmup; (3) GETPROPC2 chain-fusion superinstruction — fuses consecutive GETPROPC pairs (obj.a.b) into single dispatch. Wired jit_scan into compiler finish(). +5-9% on property-heavy bench-fast tests. No test262 regression (59.6%). | none |
 | 196 | Merge ralph-loop (class improvements: SUPER_CALL_S, early-error checks, static inheritance, make_default_constructor) + Phase 1 default param TDZ: later-param reference, arguments in defaults, function.length fix. Rosetta: 44/44, Phase 1: 105→108 pass. | +3 (Phase 1) |
 | 195 | Phase 1-2: (1) Phase 2 — escaped IDs in lexer, assignment eval order, compound/postfix/prefix ++/-- member writeback via GETPROP patching; (2) Phase 1 — trailing commas in params/calls/new per ES2017, default param self-reference TDZ (deferred DECLVAR + INITTZ/PUTLEX + needs_lex_bridge flag). Rosetta: 44/44, quick.sh: 283/0/56. | +189 (Phase 2: +184 pass; Phase 1: +5 pass) |
 | 194 | Compiler hoisting fixes (4 bugs): (1) `hoist_global_fn_decls` stopped at first non-function token (`var pass`), missing `namedFunc` declared after statements; (2) `hoist_decls` global-mode stopped identically, missing interspersed declarations; (3) function-level `hoist_decls` leaked into outer scope after `}`, hoisting outer vars into inner functions; (4) `var` at any brace depth not found — removed `brace_depth==0` guard (ES5 var is function-scoped). Also `skip_function_body` had reversed break condition (broke on unmatched `)`/`}`, not matched), causing it to consume all remaining tokens. Added lexer save/restore in `compile()`/`compile_eval()` around pre-processing so statement loop starts from pos=0. Merged `worktree-fix-array-length-union` (move `array_length` into `HObjectExtra` union). | Neutral (rosetta: 45→45) |

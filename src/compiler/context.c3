@@ -7,6 +7,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
 import libc;
+import duktape::jit;
 import std::io;
 
 // ============================================================================
@@ -961,6 +962,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Track the CompiledFunction for cleanup when the heap is destroyed
     heap::Heap* hp = (heap::Heap*)self.heap;
     hp.track_compiled_func(raw);
+
+    // Run JIT optimizations (GETPROPC2 chain fusion, etc.)
+    jit::jit_scan(func, hp);
 
     return func;
 }
