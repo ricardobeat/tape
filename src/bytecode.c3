@@ -349,6 +349,10 @@ enum Opcode : char {
     /// Uses the current activation's `new.target` as the new object's constructor.
     /// ABC format: A=result_reg, B=super_ctor_reg, C=arg_count.
     SUPER_CALL,
+    /// `A = super(B, args[C..])` — same as SUPER_CALL but C is a register
+    /// holding the runtime argument count (for spread arguments in default
+    /// constructors).  ABC format: A=result_reg, B=super_ctor_reg, C=nargs_reg.
+    SUPER_CALL_S,
     /// `A = new.target` — load `new.target` into register A.
     /// Returns undefined if not in a constructor call.
     /// A-only format: A=result_reg, B=0, C=0.
@@ -495,6 +499,7 @@ fn OpFormat get_op_format(Opcode op) {
         case OBJSPRD:    return ABC;
         case SETPROTO:   return ABC;
         case SUPER_CALL: return ABC;
+        case SUPER_CALL_S: return ABC;
         case NEWTARGET:  return ABC;
 
         case LOAD_RESUME:  return ABC;
@@ -1100,6 +1105,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.OBJSPRD.ordinal]     = "OBJSPRD",
     [Opcode.SETPROTO.ordinal]    = "SETPROTO",
     [Opcode.SUPER_CALL.ordinal]  = "SUPER_CALL",
+    [Opcode.SUPER_CALL_S.ordinal] = "SUPER_CALL_S",
     [Opcode.NEWTARGET.ordinal]   = "NEWTARGET",
     [Opcode.LOAD_RESUME.ordinal] = "LOAD_RESUME",
     [Opcode.YIELD.ordinal]       = "YIELD",

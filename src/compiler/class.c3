@@ -29,63 +29,52 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super) {
     if (has_super) {
         // constructor(...args) { super(...args); }
         func.flags.has_rest = true;
-        func.num_args = 1;
+        func.num_args = 0;
         func.num_formals = 0;   // rest param doesn't count toward length
-        func.num_regs = 15;     // enough for GETVAR + SPREAD_ARG + SUPER_CALL
+        func.num_regs = 24;     // r0=rest, r1=__super__, r2=this, r3..r22=spread, r23=count
 
-        // Build bytecode manually
-        // Registers: r0 = rest args, r1 = __super__, r2 = callee_base,
-        //            r3 = this slot, r4..r13 = spread dest, r14 = count
-        usz code_bytes = 10 * Instruction::size;
-        void* code_raw = hp.alloc_func(hp.heap_udata, code_bytes);
-        if (code_raw == null) { hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
-        func.code = (Instruction*)code_raw;
-        func.code_count = 10;
+        // Create interned string constant for "__super__"
+        HString* super_str = hp.str_intern("__super__");
+        if (super_str == null) {
+            hp.free_func(hp.heap_udata, raw);
+            return COMPILE_ERROR~;
+        }
+        func.const_count = 1;
+        usz const_bytes = (usz)func.const_count * TVal::size;
+        func.constants = (TVal*)hp.alloc_func(hp.heap_udata, const_bytes);
+        if (func.constants == null) {
+            hp.free_func(hp.heap_udata, raw);
+            return COMPILE_ERROR~;
+        }
+        TVal super_tv;
+        super_tv.set_string(super_str);
+        func.constants[0] = super_tv;
+
+        // Build bytecode:
+        //   PUSH_LEX                      ; allocate lexical env
+        //   GETVAR  r1, __super__          ; load superclass
+        //   LDTHIS  r2                     ; load this
+        //   SPREAD_ARG r3, r23, r0         ; spread rest args, count→r23
+        //   SUPER_CALL_S r2, r1, r23       ; super(r1=superclass), result→r2
+        //   POP_LEX
+        //   RET r2
+        func.code_count = 7;
+        usz code_bytes = (usz)func.code_count * Instruction::size;
+        func.code = (Instruction*)hp.alloc_func(hp.heap_udata, code_bytes);
+        if (func.code == null) {
+            hp.free_func(hp.heap_udata, func.constants);
+            hp.free_func(hp.heap_udata, raw);
+            return COMPILE_ERROR~;
+        }
 
         Instruction* c = func.code;
-
-        // PUSH_LEX
         c[0] = bytecode::make_abc(Opcode.PUSH_LEX, 0, 0, 0);
-
-        // GETVAR __super__ → r1
-        // We need a constant index for "__super__". Since we can't use the compiler
-        // context, we'll store it as a constant.
-        usz const_bytes = 1 * TVal::size;
-        void* const_raw = hp.alloc_func(hp.heap_udata, const_bytes);
-        if (const_raw == null) { hp.free_func(hp.heap_udata, code_raw); hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
-        func.constants = (TVal*)const_raw;
-        func.const_count = 1;
-
-        // For the constant, we need an interned string. We can't access the heap here.
-        // Instead, let's use a different approach: emit bytecode that the VM can handle.
-        // Actually, we need a proper string constant for "__super__".
-        // The simplest workaround: for default constructors with extends, we won't
-        // emit the default constructor here. Instead, we'll require explicit constructors
-        // when using extends for now.
-
-        // Fall back: just return a simple empty constructor even for extends
-        hp.free_func(hp.heap_udata, code_raw);
-        hp.free_func(hp.heap_udata, const_raw);
-        func.code = null;
-        func.code_count = 0;
-        func.constants = null;
-        func.const_count = 0;
-        func.flags.has_rest = false;
-        func.num_args = 0;
-        func.num_formals = 0;
-        func.num_regs = 1;
-
-        // Simple empty constructor
-        code_bytes = 3 * Instruction::size;
-        code_raw = hp.alloc_func(hp.heap_udata, code_bytes);
-        if (code_raw == null) { hp.free_func(hp.heap_udata, raw); return COMPILE_ERROR~; }
-        func.code = (Instruction*)code_raw;
-        func.code_count = 3;
-
-        c = func.code;
-        c[0] = bytecode::make_abc(Opcode.PUSH_LEX, 0, 0, 0);
-        c[1] = bytecode::make_abc(Opcode.POP_LEX, 0, 0, 0);
-        c[2] = bytecode::make_abc(Opcode.RETUNDEF, 0, 0, 0);
+        c[1] = bytecode::make_a_bc(Opcode.GETVAR, 1, 0);   // r1, constant idx 0
+        c[2] = bytecode::make_abc(Opcode.LDTHIS, 2, 0, 0);  // r2 = this
+        c[3] = bytecode::make_abc(Opcode.SPREAD_ARG, 3, 23, 0);  // r3.. = spread dest, r23 = count
+        c[4] = bytecode::make_abc(Opcode.SUPER_CALL_S, 2, 1, 23); // result=r2, callee=r1, nargs_reg=r23
+        c[5] = bytecode::make_abc(Opcode.POP_LEX, 0, 0, 0);
+        c[6] = bytecode::make_abc(Opcode.RET, 2, 0, 0);
     } else {
         // constructor() {}
         func.num_args = 0;
@@ -229,7 +218,9 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
 
             // Still need a method name for compile_inner_function (used as debug name)
             method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
-        } else if (self.check(TokenType.IDENTIFIER)) {
+        } else if (self.check(TokenType.IDENTIFIER)
+               || lexer::keyword_to_string(self.peek_type()).len > 0) {
+            // IDENTIFIER or any keyword (extends, class, if, return, etc.) as method name
             method_name = self.advance()!;
             // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
             if ((method_name.str_value.len == 3
@@ -259,7 +250,8 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                             self.has_closures = true;
                         }
                         method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
-                    } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)) {
+                    } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)
+                               || lexer::keyword_to_string(self.peek_type()).len > 0) {
                         method_name = self.advance()!;
                     } else if (self.check(TokenType.NUMBER)) {
                         method_name = self.advance()!;
@@ -375,6 +367,8 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             self.free_reg(base_proto_key_reg);
         }
         self.emit_abc(Opcode.SETPROTO, (uint)proto_reg, (uint)base_proto_reg, 0);
+        // ctor.__proto__ = Base (static inheritance)
+        self.emit_abc(Opcode.SETPROTO, (uint)ctor_reg, (uint)base_reg, 0);
         self.free_reg(base_proto_reg);
     }
 
