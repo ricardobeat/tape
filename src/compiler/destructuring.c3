@@ -35,7 +35,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
 
         if (self.match(TokenType.ELLIPSIS)) {
             Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg = self.declare_var(rest_tok.str_value, kind);
                 binds[bind_count].reg = reg;
@@ -57,7 +57,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             // We'll handle this by parsing the inner bindings and later destructure from temp reg
             // For now, just parse as identifier (simple case)
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg = self.declare_var(name_tok.str_value, kind);
                 binds[bind_count].reg = reg;
@@ -72,7 +72,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             // Nested object pattern: [a, {x, y}] = rhs
             self.advance()!; // consume '{'
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg = self.declare_var(name_tok.str_value, kind);
                 binds[bind_count].reg = reg;
@@ -85,7 +85,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             self.expect(TokenType.RBRACE)!;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg = self.declare_var(name_tok.str_value, kind);
                 binds[bind_count].reg = reg;
@@ -222,7 +222,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                 self.advance()!; // consume '{'
                 // Parse the nested binding name
                 Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
 
                 // Check for colon (key: pattern) or just shorthand
                 if (self.match(TokenType.COLON)) {
@@ -231,7 +231,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         self.advance()!; // consume '{'
                         // Parse nested object pattern
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(nested_name.str_value, kind);
                             binds[bind_count].reg = reg;
@@ -244,10 +244,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
                             Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
                                 if (bind_count < 32) {
                                     ushort reg = self.declare_var(nested_bind.str_value, kind);
                                     binds[bind_count].reg = reg;
@@ -271,7 +271,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     } else if (self.check(TokenType.LBRACKET)) {
                         self.advance()!; // consume '['
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(nested_name.str_value, kind);
                             binds[bind_count].reg = reg;
@@ -284,7 +284,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACKET)) break;
                             Token nested_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_el.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_el.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg = self.declare_var(nested_el.str_value, kind);
                                 binds[bind_count].reg = reg;
@@ -298,7 +298,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     } else {
                         // Simple key: value
                         Token val_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(val_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(val_tok.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(val_tok.str_value, kind);
                             binds[bind_count].reg = reg;
@@ -317,7 +317,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     }
                 } else {
                     // Shorthand: {name}  →  key="name", binding=name
-                    if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg = self.declare_var(bind_tok.str_value, kind);
                         binds[bind_count].reg = reg;
@@ -334,7 +334,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                 // Nested array pattern: {a: [x, y]} = rhs
                 self.advance()!; // consume '['
                 Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
                 self.expect(TokenType.RBRACKET)!;
 
                 // Check for colon (key: pattern)
@@ -370,12 +370,12 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         self.advance()!; // consume '{'
                         // Parse first property of nested object
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
 
                         if (self.match(TokenType.COLON)) {
                             // {a: {x: y}} - keyed
                             Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg = self.declare_var(nested_bind.str_value, kind);
                                 binds[bind_count].reg = reg;
@@ -407,10 +407,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
                             Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind2 = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
                                 if (bind_count < 32) {
                                     ushort reg = self.declare_var(nested_bind2.str_value, kind);
                                     binds[bind_count].reg = reg;
@@ -435,7 +435,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         // Nested array pattern: {a: [x, y]}
                         self.advance()!; // consume '['
                         Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
 
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(bind_tok.str_value, kind);
@@ -450,7 +450,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACKET)) break;
                             Token arr_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg = self.declare_var(arr_el.str_value, kind);
                                 binds[bind_count].reg = reg;
@@ -464,7 +464,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     } else {
                         // Simple key: value
                         Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(bind_tok.str_value, kind);
                             binds[bind_count].reg = reg;
@@ -483,7 +483,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     }
                 } else {
                     // Shorthand: {name}  →  key="name", binding=name
-                    if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg = self.declare_var(prop_tok.str_value, kind);
                         binds[bind_count].reg = reg;
@@ -583,7 +583,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
 
         if (self.match(TokenType.ELLIPSIS)) {
             Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg;
                 if (try existing = self.resolve_var(rest_tok.str_value)) {
@@ -608,7 +608,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!; // consume '['
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg;
                 if (try existing = self.resolve_var(name_tok.str_value)) {
@@ -629,7 +629,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
         } else if (self.check(TokenType.LBRACE)) {
             self.advance()!; // consume '{'
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg;
                 if (try existing = self.resolve_var(name_tok.str_value)) {
@@ -649,7 +649,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
             self.expect(TokenType.RBRACE)!;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg;
                 if (try existing = self.resolve_var(name_tok.str_value)) {
@@ -768,13 +768,13 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             if (self.check(TokenType.LBRACE)) {
                 self.advance()!; // consume '{'
                 Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
 
                 if (self.match(TokenType.COLON)) {
                     if (self.check(TokenType.LBRACE)) {
                         self.advance()!; // consume '{'
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg;
                             if (try existing = self.resolve_var(nested_name.str_value)) {
@@ -793,10 +793,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
                             Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
                                 if (bind_count < 32) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_bind.str_value)) {
@@ -834,7 +834,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     } else if (self.check(TokenType.LBRACKET)) {
                         self.advance()!; // consume '['
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg;
                             if (try existing = self.resolve_var(nested_name.str_value)) {
@@ -853,7 +853,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACKET)) break;
                             Token nested_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_el.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_el.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(nested_el.str_value)) {
@@ -873,7 +873,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         self.expect(TokenType.RBRACKET)!;
                     } else {
                         Token val_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(val_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(val_tok.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg;
                             if (try existing = self.resolve_var(val_tok.str_value)) {
@@ -898,7 +898,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     }
                 } else {
                     // Shorthand: {name}
-                    if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg;
                         if (try existing = self.resolve_var(bind_tok.str_value)) {
@@ -919,7 +919,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             } else if (self.check(TokenType.LBRACKET)) {
                 self.advance()!; // consume '['
                 Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
                 self.expect(TokenType.RBRACKET)!;
 
                 if (self.match(TokenType.COLON)) {
@@ -963,11 +963,11 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     if (self.check(TokenType.LBRACE)) {
                         self.advance()!; // consume '{'
                         Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
 
                         if (self.match(TokenType.COLON)) {
                             Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(nested_bind.str_value)) {
@@ -1010,10 +1010,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
                             Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind2 = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
                                 if (bind_count < 32) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_bind2.str_value)) {
@@ -1051,7 +1051,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     } else if (self.check(TokenType.LBRACKET)) {
                         self.advance()!; // consume '['
                         Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
 
                         if (bind_count < 32) {
                             ushort reg;
@@ -1072,7 +1072,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACKET)) break;
                             Token arr_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(arr_el.str_value)) {
@@ -1093,7 +1093,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     } else {
                         // Simple key: value
                         Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg;
                             if (try existing = self.resolve_var(bind_tok.str_value)) {
@@ -1118,7 +1118,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     }
                 } else {
                     // Shorthand: {name}  →  key="name", binding=name
-                    if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg;
                         if (try existing = self.resolve_var(prop_tok.str_value)) {
@@ -1216,7 +1216,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
 
             if (self.match(TokenType.ELLIPSIS)) {
                 Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
                 if (bind_count < 32) {
                     ushort reg = self.declare_var(rest_tok.str_value, kind);
                     binds[bind_count].reg = reg;
@@ -1231,7 +1231,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
             }
 
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
             if (bind_count < 32) {
                 ushort reg = self.declare_var(name_tok.str_value, kind);
                 binds[bind_count].reg = reg;
@@ -1413,7 +1413,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
 
                 if (self.match(TokenType.COLON)) {
                     Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg = self.declare_var(bind_tok.str_value, kind);
                         binds[bind_count].reg = reg;
@@ -1430,7 +1430,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                         bind_count++;
                     }
                 } else {
-                    if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg = self.declare_var(prop_tok.str_value, kind);
                         binds[bind_count].reg = reg;

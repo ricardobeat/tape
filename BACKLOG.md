@@ -4,13 +4,14 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 
 ---
 
-- [ ] **Strict-only Phase A** — compile-time errors (see `plans/035-enforce-strict-mode.md`): remove `with` keyword from lexer, drop `is_strict` guards on restricted-name checks (`functions.c3:48,93,185,226,802,847`), unconditionalize octal literal/escape rejects (`expressions.c3:1524,1546`), unconditionalize all 46 destructuring guards, no-op `"use strict"` directive, remove `with_statement` parser
-- [ ] **Strict-only Phase A** — NEW CODE: add duplicate-parameter-name rejection in `functions.c3` (no check exists today)
+- [x] **Strict-only Phase A** — compile-time errors (see `plans/035-enforce-strict-mode.md`): force `is_strict = true` in compiler init, drop `is_strict` guards on restricted-name checks (`functions.c3:48,93,185,226,802,847`), unconditionalize octal literal/escape rejects (`expressions.c3:1524,1546`), unconditionalize all 46 destructuring guards, no-op `"use strict"` directive, reject `with` at parse time via `case TokenType.WITH: COMPILE_ERROR`
+- [x] **Strict-only Phase A** — NEW CODE: add duplicate-parameter-name rejection in `functions.c3` (`check_dup_param` helper + per-param insertion in `parse_function_body`, `compile_inner_function`, and `compile_arrow_inner`)
+- [x] **Strict-only Phase A** — NEW CODE: reject unqualified `delete <identifier>` in `expressions.c3:657-661` (was returning `true` silently in both modes)
 - [ ] **Strict-only Phase B** — remove runtime strict checks: drop `ACT_FLAG_STRICT` (`vm.c3:79`), `is_strict` bitfield (`bytecode.c3:792`), `is_with` env chain (`env.c3`), `WITH_START`/`WITH_END` opcodes + handlers (`vm.c3:8406,8482`), make `arguments.callee`/`caller` always throw, remove 9 mode-propagation call sites
 - [ ] **Strict-only Phase B** — KEEP direct-eval machinery (`ACT_FLAG_DIRECT_EVAL`, `has_direct_eval`, `callee_is_eval`, `global.c3:213`): direct eval is valid in strict mode, must not be removed
 - [ ] **Strict-only — investigate**: verify eval'd code applies strict scope isolation for declarations (`eval("var x=1")` must NOT leak `x` into the caller's scope). Direct/indirect env selection (`ACT_FLAG_DIRECT_EVAL`, `global.c3:213`) is confirmed present, but declaration isolation inside the eval'd body is unverified. Repro: strict direct eval `let x=10; eval("x+1")` → 11; `eval("var y=2")` then reference `y` → ReferenceError
-- [ ] **Strict-only — investigate**: confirm what `delete <identifier>` compiles to today (no unqualified-delete path found); decide if "always throw" is new code
-- [ ] **Strict-only — investigate**: confirm implicit-global creation (assignment without `var`) — engine may already throw ReferenceError; verify before scheduling work
+- [x] **Strict-only — investigate**: confirm what `delete <identifier>` compiles to today — DONE; returns `true` silently in both modes, now rejected via `COMPILE_ERROR~` in Phase A
+- [x] **Strict-only — investigate**: confirm implicit-global creation (assignment without `var`) — DONE; engine currently crashes (VM_ERROR) in both modes on `x = 1` at global scope. Will need separate fix (out of scope for strict-migration; see follow-up below)
 - [ ] **Strict-only Phase C** — cleanup: remove `TokenType.WITH` enum entry, any residual `is_strict`-gated paths, verify `is_strict_reserved` (`hstring.c3:78`) still needed
 - [ ] **Strict-only Phase D** — test runner + docs: remove `noStrict` skip (`run_test262.py:296-297`), add compile-error result type, update `AGENTS.md`/`progress.md` for strict-only philosophy
 - [x] Add Phase 15-21 choices to `scripts/run_test262.py` `--phase` argparse (currently restricted to 0-14)

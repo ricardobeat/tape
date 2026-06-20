@@ -31,6 +31,25 @@ struct DestructBind {
     ushort parent_idx;     // index of the binding whose value is the source for this one (0xFFFF = direct from arg)
 }
 
+/// Check if a candidate param name already exists in the seen-params table.
+/// Used for ES5 §13.1 strict-mode duplicate-parameter rejection (strict-only
+/// engine: always rejects).
+fn bool check_dup_param(char[] name, char[64][] seen, ushort[] seen_lens, uint count) {
+    for (uint i = 0; i < count; i++) {
+        if (seen_lens[i] == name.len) {
+            bool match = true;
+            for (usz j = 0; j < name.len; j++) {
+                if (seen[i][j] != name[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+    }
+    return false;
+}
+
 /// Parse an object destructuring pattern within a function parameter list.
 /// The '{' token has already been consumed.
 /// Collects all leaf-level binding names into the provided arrays.
@@ -45,7 +64,7 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
         // Rest element: {...rest}
         if (self.match(TokenType.ELLIPSIS)) {
             Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(rest_tok.str_value)) {
+            if (is_restricted_name(rest_tok.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (*count < binds.len) {
@@ -90,7 +109,7 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                 }
             } else {
                 Token bind = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(bind.str_value)) {
+                if (is_restricted_name(bind.str_value)) {
                     return COMPILE_ERROR~;
                 }
                 if (*count < binds.len) {
@@ -182,7 +201,7 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
                 }
             } else {
                 Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(rest_tok.str_value)) {
+                if (is_restricted_name(rest_tok.str_value)) {
                     return COMPILE_ERROR~;
                 }
                 if (*count < binds.len) {
@@ -223,7 +242,7 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
             }
         } else {
             Token bind = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(bind.str_value)) {
+            if (is_restricted_name(bind.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (*count < binds.len) {
@@ -771,6 +790,12 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     uint[MAX_PARAMS] param_name_indices;
     ushort first_default_idx = 0xFFFF;
 
+    // Track seen param names for duplicate-param rejection (strict mode ES5 §13.1,
+    // strict-only engine). Each entry stores name bytes; comparison is byte-wise.
+    char[64][MAX_PARAMS] seen_param_names;
+    ushort[MAX_PARAMS]    seen_param_lens;
+    uint seen_param_count = 0;
+
     // Destructured parameter binding tracking
     DestructBind[MAX_DESTRUCT_BINDS] destruct_binds;
     uint destruct_count = 0;
@@ -799,8 +824,18 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 }
 
                 if (rest_param.str_value.len > 0) {
-                    if (self.is_strict && is_restricted_name(rest_param.str_value)) {
+                    if (is_restricted_name(rest_param.str_value)) {
                         return COMPILE_ERROR~;
+                    }
+                    if (check_dup_param(rest_param.str_value, seen_param_names[..], seen_param_lens[..], seen_param_count)) {
+                        return COMPILE_ERROR~;
+                    }
+                    if (seen_param_count < MAX_PARAMS && rest_param.str_value.len < 64) {
+                        for (usz k = 0; k < rest_param.str_value.len; k++) {
+                            seen_param_names[seen_param_count][k] = rest_param.str_value[k];
+                        }
+                        seen_param_lens[seen_param_count] = (ushort)rest_param.str_value.len;
+                        seen_param_count++;
                     }
                     ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
                     uint rest_name_idx = self.add_string_constant(rest_param.str_value);
@@ -844,8 +879,18 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             }
 
             Token param = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(param.str_value)) {
+            if (is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
+            }
+            if (check_dup_param(param.str_value, seen_param_names[..], seen_param_lens[..], seen_param_count)) {
+                return COMPILE_ERROR~;
+            }
+            if (seen_param_count < MAX_PARAMS && param.str_value.len < 64) {
+                for (usz k = 0; k < param.str_value.len; k++) {
+                    seen_param_names[seen_param_count][k] = param.str_value[k];
+                }
+                seen_param_lens[seen_param_count] = (ushort)param.str_value.len;
+                seen_param_count++;
             }
             ushort param_reg = self.declare_var(param.str_value, VAR);
             uint param_name_idx = self.add_string_constant(param.str_value);
@@ -1238,6 +1283,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     uint[MAX_PARAMS] param_name_indices;
     ushort first_default_idx = 0xFFFF;
 
+    // Track seen param names for duplicate-param rejection (strict-only engine).
+    char[64][MAX_PARAMS] inner_seen_names;
+    ushort[MAX_PARAMS]    inner_seen_lens;
+    uint inner_seen_count = 0;
+
     // Destructured parameter binding tracking
     DestructBind[MAX_DESTRUCT_BINDS] inner_destruct_binds;
     uint inner_destruct_count = 0;
@@ -1266,8 +1316,18 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 }
 
                 if (rest_param.str_value.len > 0) {
-                    if (inner_ctx.is_strict && is_restricted_name(rest_param.str_value)) {
+                    if (is_restricted_name(rest_param.str_value)) {
                         return COMPILE_ERROR~;
+                    }
+                    if (check_dup_param(rest_param.str_value, inner_seen_names[..], inner_seen_lens[..], inner_seen_count)) {
+                        return COMPILE_ERROR~;
+                    }
+                    if (inner_seen_count < MAX_PARAMS && rest_param.str_value.len < 64) {
+                        for (usz k = 0; k < rest_param.str_value.len; k++) {
+                            inner_seen_names[inner_seen_count][k] = rest_param.str_value[k];
+                        }
+                        inner_seen_lens[inner_seen_count] = (ushort)rest_param.str_value.len;
+                        inner_seen_count++;
                     }
                     ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
                     uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
@@ -1311,8 +1371,18 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
             }
 
             Token param = inner_ctx.expect(TokenType.IDENTIFIER)!;
-            if (inner_ctx.is_strict && is_restricted_name(param.str_value)) {
+            if (is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
+            }
+            if (check_dup_param(param.str_value, inner_seen_names[..], inner_seen_lens[..], inner_seen_count)) {
+                return COMPILE_ERROR~;
+            }
+            if (inner_seen_count < MAX_PARAMS && param.str_value.len < 64) {
+                for (usz k = 0; k < param.str_value.len; k++) {
+                    inner_seen_names[inner_seen_count][k] = param.str_value[k];
+                }
+                inner_seen_lens[inner_seen_count] = (ushort)param.str_value.len;
+                inner_seen_count++;
             }
             ushort param_reg = inner_ctx.declare_var(param.str_value, VAR);
             uint param_name_idx = inner_ctx.add_string_constant(param.str_value);
@@ -2111,8 +2181,18 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     }
     for (ushort i = 0; i < param_count; i++) {
         char[] name = params[i];
-        if (arrow_ctx.is_strict && is_restricted_name(name)) {
+        if (is_restricted_name(name)) {
             return COMPILE_ERROR~;
+        }
+        for (ushort j = 0; j < i; j++) {
+            char[] prev = params[j];
+            if (prev.len == name.len) {
+                bool match = true;
+                for (usz k = 0; k < name.len; k++) {
+                    if (prev[k] != name[k]) { match = false; break; }
+                }
+                if (match) return COMPILE_ERROR~;
+            }
         }
         ushort param_reg = arrow_ctx.declare_var(name, VAR);
         uint param_name_idx = arrow_ctx.add_string_constant(name);

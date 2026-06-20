@@ -656,11 +656,9 @@ fn ushort? CompilerContext.unary_expr(&self) {
                 return op_del;
             } else {
                 // Delete of a non-reference (variable, literal, etc.).
-                // In non-strict mode, always returns true.
-                self.free_reg(op_del);
-                ushort res_del = self.alloc_reg();
-                self.emit_abc(Opcode.LDTRUE, (uint)res_del, 0, 0);
-                return res_del;
+                // ES5 §11.4.1 / ES6 §12.5.3: SyntaxError in strict mode.
+                // Strict-only engine: always reject (early SyntaxError).
+                return COMPILE_ERROR~;
             }
 
         case TokenType.INC:
@@ -1519,9 +1517,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
             Token num_tok = self.advance()!;
 
             // Legacy octal integer literal (0 followed by octal digit 0-7)
-            // is a SyntaxError in strict mode per ES5 §7.8.3 + B.1.1.
+            // is a SyntaxError (strict mode per ES5 §7.8.3 + B.1.1).
             char[] nsrc = num_tok.str_value;
-            if (self.is_strict && nsrc.len >= 2 && nsrc[0] == '0' && nsrc[1] >= '0' && nsrc[1] <= '7') {
+            if (nsrc.len >= 2 && nsrc[0] == '0' && nsrc[1] >= '0' && nsrc[1] <= '7') {
                 return COMPILE_ERROR~;
             }
 
@@ -1542,8 +1540,8 @@ fn ushort? CompilerContext.primary_expr(&self) {
             Token str_tok = self.advance()!;
 
             // Legacy octal escape sequences in strings are SyntaxErrors
-            // in strict mode per ES5 §7.8.4 + Annex B.1.2.
-            if (self.is_strict && str_tok.has_octal_escape) {
+            // per ES5 §7.8.4 + Annex B.1.2.
+            if (str_tok.has_octal_escape) {
                 return COMPILE_ERROR~;
             }
 
@@ -2269,20 +2267,18 @@ fn ushort? CompilerContext.object_literal(&self) {
                 }
 
                 // Regular property (not getter/setter)
-                // Duplicate data property check in strict mode
-                if (self.is_strict) {
-                    for (usz i = 0; i < seen_count; i++) {
-                        if (str_eq(seen_key_buf[i][:seen_key_len[i]], key_tok.str_value)) {
-                            return COMPILE_ERROR~;
-                        }
+                // Duplicate data property check (strict mode only — strict-only engine)
+                for (usz i = 0; i < seen_count; i++) {
+                    if (str_eq(seen_key_buf[i][:seen_key_len[i]], key_tok.str_value)) {
+                        return COMPILE_ERROR~;
                     }
-                    if (seen_count < 16 && key_tok.str_value.len < 64) {
-                        for (usz j = 0; j < key_tok.str_value.len; j++) {
-                            seen_key_buf[seen_count][j] = key_tok.str_value[j];
-                        }
-                        seen_key_len[seen_count] = key_tok.str_value.len;
-                        seen_count++;
+                }
+                if (seen_count < 16 && key_tok.str_value.len < 64) {
+                    for (usz j = 0; j < key_tok.str_value.len; j++) {
+                        seen_key_buf[seen_count][j] = key_tok.str_value[j];
                     }
+                    seen_key_len[seen_count] = key_tok.str_value.len;
+                    seen_count++;
                 }
 
                 uint key_idx = self.add_string_constant(key_tok.str_value);
@@ -2291,10 +2287,10 @@ fn ushort? CompilerContext.object_literal(&self) {
             } else if (key_tt == TokenType.NUMBER) {
                 Token key_tok = self.advance()!;
 
-                // Duplicate data property check in strict mode.
+                // Duplicate data property check (strict mode only — strict-only engine).
                 // Convert number to canonical string via %.17g to match
                 // vm_number_to_string runtime behavior.
-                if (self.is_strict && seen_count < 16) {
+                if (seen_count < 16) {
                     int len = libc::snprintf(&seen_key_buf[seen_count], 64, "%.17g", key_tok.num_value);
                     char[] num_str = seen_key_buf[seen_count][:len];
                     for (usz i = 0; i < seen_count; i++) {

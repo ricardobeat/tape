@@ -43,7 +43,7 @@ fn void? CompilerContext.statement(&self) {
         case TokenType.SWITCH:
             self.switch_statement()!;
         case TokenType.WITH:
-            self.with_statement()!;
+            return COMPILE_ERROR~;
         case TokenType.BREAK:
             self.break_statement()!;
         case TokenType.CONTINUE:
@@ -132,10 +132,8 @@ fn void? CompilerContext.parse_directives(&self) {
                         break;
                     }
                 }
-                if (is_use_strict && !self.is_strict) {
-                    self.is_strict = true;
-                    self.lexer.set_strict(true);
-                }
+                // Strict-only engine: "use strict" directive is parsed and ignored
+                // (no-op for source compatibility).
             }
         } else {
             self.lexer.pushback(str_tok);
@@ -342,7 +340,7 @@ fn void? CompilerContext.var_declaration(&self) {
             self.object_destructure(kind, is_lexical, is_const)!;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) {
+            if (is_restricted_name(name_tok.str_value)) {
                 return COMPILE_ERROR~;
             }
             ushort reg;
@@ -813,7 +811,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                         if (self.match(TokenType.ELLIPSIS)) {
                             Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg = self.declare_var(rest_tok.str_value, decl_kind);
                                 arr_binds[bind_count].reg = reg;
@@ -828,7 +826,7 @@ fn void? CompilerContext.for_statement(&self) {
                         }
 
                         Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
                         if (bind_count < 32) {
                             ushort reg = self.declare_var(name_tok.str_value, decl_kind);
                             arr_binds[bind_count].reg = reg;
@@ -854,11 +852,11 @@ fn void? CompilerContext.for_statement(&self) {
                     if (!self.check(TokenType.RBRACE)) {
                         for (;;) {
                             Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
 
                             if (self.match(TokenType.COLON)) {
                                 Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                                 if (bind_count < 32) {
                                     ushort reg = self.declare_var(bind_tok.str_value, decl_kind);
                                     obj_binds[bind_count].reg = reg;
@@ -1162,7 +1160,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                         if (self.match(TokenType.ELLIPSIS)) {
                             Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
                             if (fbind_count < 32) {
                                 ushort reg = self.declare_var(rest_tok.str_value, decl_kind);
                                 fin_binds[fbind_count].reg = reg;
@@ -1177,7 +1175,7 @@ fn void? CompilerContext.for_statement(&self) {
                         }
 
                         Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (self.is_strict && is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                        if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
                         if (fbind_count < 32) {
                             ushort reg = self.declare_var(name_tok.str_value, decl_kind);
                             fin_binds[fbind_count].reg = reg;
@@ -1203,11 +1201,11 @@ fn void? CompilerContext.for_statement(&self) {
                     if (!self.check(TokenType.RBRACE)) {
                         for (;;) {
                             Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
-                            if (self.is_strict && is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                            if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
 
                             if (self.match(TokenType.COLON)) {
                                 Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                                if (self.is_strict && is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
                                 if (fbind_count < 32) {
                                     ushort reg = self.declare_var(bind_tok.str_value, decl_kind);
                                     fobj_binds[fbind_count].reg = reg;
@@ -1916,7 +1914,7 @@ fn void? CompilerContext.try_statement(&self) {
 
         if (self.match(TokenType.LPAREN)) {
             Token catch_param = self.expect(TokenType.IDENTIFIER)!;
-            if (self.is_strict && is_restricted_name(catch_param.str_value)) {
+            if (is_restricted_name(catch_param.str_value)) {
                 return COMPILE_ERROR~;
             }
             self.expect(TokenType.RPAREN)!;
@@ -1995,27 +1993,19 @@ fn void? CompilerContext.try_statement(&self) {
 ///   WITH_START A                        — A = register holding the with-object
 ///   <statement>
 ///   WITH_END                            — pop the with-env from the scope chain
-fn void? CompilerContext.with_statement(&self) {
-    if (self.is_strict) {
-        return COMPILE_ERROR~;
-    }
+fn void? CompilerContext.with_statement(&self) @if(false) {
+    // Strict-only engine: `with` is rejected at parse time. Kept as a stub
+    // so existing references compile; the `case TokenType.WITH` arm above
+    // short-circuits with COMPILE_ERROR.
     self.expect(TokenType.WITH)!;
 
-    // Parse `(expr)`
     self.expect(TokenType.LPAREN)!;
     ushort obj_reg = self.expression()!;
     self.expect(TokenType.RPAREN)!;
 
-    // Emit WITH_START — pushes a new object env-record wrapping obj_reg
     self.emit_a_bc(Opcode.WITH_START, (uint)obj_reg, 0);
-
-    // Compile the body
     self.statement()!;
-
-    // Emit WITH_END — restores the previous env chain
     self.emit_simple(Opcode.WITH_END);
-
-    // Free the object register
     self.free_reg(obj_reg);
 }
 

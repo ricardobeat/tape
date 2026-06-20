@@ -296,10 +296,9 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
 
-    // Default to non-strict mode for top-level scripts (ES5 §10.4.1).
-    // Strict mode is enabled per-function when "use strict" directive is present.
-    self.is_strict = false;
-    self.lexer.set_strict(false);
+    // Strict-only engine: always strict from init.
+    self.is_strict = true;
+    self.lexer.set_strict(true);
 }
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
