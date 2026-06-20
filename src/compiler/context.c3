@@ -219,9 +219,6 @@ struct CompilerContext {
     bool   eval_mode;
     ushort eval_acc_reg;
 
-    // Strict mode: set by "use strict" directive prologue.
-    bool is_strict;
-
     // Token pushback buffer for limited backtracking (used by arrow function parsing).
     Token[4] pushback_stack;
     uint pushback_count;
@@ -296,8 +293,8 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
 
-    // Strict-only engine: always strict from init.
-    self.is_strict = true;
+    // Strict-only engine: lexer always in strict mode (affects FutureReservedWord
+    // keyword recognition — implements/interface/package/private/protected/public).
     self.lexer.set_strict(true);
 }
 
@@ -902,7 +899,6 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     }
 
     func.num_regs = self.max_reg;
-    func.flags.is_strict = self.is_strict;
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
     func.flags.is_generator = self.is_generator;

@@ -76,12 +76,11 @@ struct Activation {
     TVal* caller_valstack_top;
 }
 
-const uint ACT_FLAG_STRICT         = 1u << 0;
-const uint ACT_FLAG_TAILCALLED     = 1u << 1;
-const uint ACT_FLAG_CONSTRUCT      = 1u << 2;
-const uint ACT_FLAG_PREVENT_YIELD  = 1u << 3;
-const uint ACT_FLAG_DIRECT_EVAL    = 1u << 4;
-const uint ACT_FLAG_ASYNC          = 1u << 5;
+const uint ACT_FLAG_TAILCALLED     = 1u << 0;
+const uint ACT_FLAG_CONSTRUCT      = 1u << 1;
+const uint ACT_FLAG_PREVENT_YIELD  = 1u << 2;
+const uint ACT_FLAG_DIRECT_EVAL    = 1u << 3;
+const uint ACT_FLAG_ASYNC          = 1u << 4;
 
 // ============================================================================
 // Catcher — exception handler chain entry
@@ -1349,9 +1348,6 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     new_act.bottom = new_bottom;
     new_act.retval = null;
     uint act_flags = 0;
-    if (target_func != null && target_func.is_strict()) {
-        act_flags |= ACT_FLAG_STRICT;
-    }
     if (target_func != null && target_func.has_direct_eval()) {
         act_flags |= ACT_FLAG_DIRECT_EVAL;
     }
@@ -1480,7 +1476,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.curr_pc = target.code;
     new_act.bottom = new_bottom;
     new_act.retval = act.bottom + result_reg;
-    new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+    new_act.flags = 0;
     if (target.has_direct_eval()) {
         new_act.flags |= ACT_FLAG_DIRECT_EVAL;
     }
@@ -1886,8 +1882,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.retval = null;
             // Preserve any flags already set (e.g. ACT_FLAG_ASYNC for resumed async fns)
             uint preserved_flags = act.flags;
-            act.flags = ACT_FLAG_STRICT
-                      | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
+            act.flags = (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
                       | preserved_flags;
             act.max_heap_reg = 0;
             act.caller_valstack_top = frame + nregs;
@@ -2056,19 +2051,15 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.curr_pc = func.code;  // Points into bytecode
     entry_act.bottom = vm.valstack;
     entry_act.retval = null;
-    // ES5 §10.4.1: at the top level of a script, the global `this` is the
-    // global object in non-strict mode, and `undefined` in strict mode.
-    entry_act.flags = func.is_strict() ? ACT_FLAG_STRICT : 0;
+    // ES5 §10.4.1: at the top level of a script in strict mode, the global `this`
+    // is `undefined` (strict-only engine: always undefined).
+    entry_act.flags = 0;
     if (func.has_direct_eval()) {
         entry_act.flags |= ACT_FLAG_DIRECT_EVAL;
     }
 
     TVal this_val;
-    if (func.is_strict()) {
-        this_val.set_undefined();
-    } else {
-        this_val.set_object(vm.global_env.bindings);
-    }
+    this_val.set_undefined();
     vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
 
     // Allocate value stack slots for the function (nregs = total register count)
@@ -3451,9 +3442,9 @@ fn TVal? Vm.run(Vm* vm) {
 
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
-                    // ES5 strict mode: arguments.callee throws TypeError
+                    // ES5 strict mode: arguments.callee throws TypeError.
+                    // Strict-only engine: always throws.
                     if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
-                        && (act.flags & ACT_FLAG_STRICT) != 0
                         && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
                         HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                         if (try err = err_raw) {
@@ -3789,9 +3780,9 @@ fn TVal? Vm.run(Vm* vm) {
 
                     void* key = (void*)key_hstr;
                     if (key != null) {
-                        // ES5 strict mode: arguments.callee throws TypeError
+                        // ES5 strict mode: arguments.callee throws TypeError.
+                        // Strict-only engine: always throws.
                         if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
-                            && (act.flags & ACT_FLAG_STRICT) != 0
                             && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
                             HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                             if (try err = err_raw) {
@@ -4408,7 +4399,7 @@ fn TVal? Vm.run(Vm* vm) {
                                         new_act.curr_pc = target.code;
                                         new_act.bottom = new_bottom;
                                         new_act.retval = null;  // setter return value is discarded
-                                        new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+                                        new_act.flags = 0;
                                         if (target.has_direct_eval()) {
                                             new_act.flags |= ACT_FLAG_DIRECT_EVAL;
                                         }
@@ -4429,23 +4420,22 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                             }
                         } else if (!exist_flags.writable) {
-                            if (act.flags & ACT_FLAG_STRICT) {
-                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                                if (try err = err_raw) {
-                                    err.prototype = vm.heap.type_err_proto;
-                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    HString* msg_val = intern_string(vm, "Cannot assign to read only property");
-                                    TVal msg_tv;
-                                    msg_tv.set_string(msg_val);
-                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                    TVal err_val;
-                                    err_val.set_object(err);
-                                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                        return VM_ERROR~;
-                                    }
-                                } else {
+                            // Strict-only engine: non-writable property assignment always throws.
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Cannot assign to read only property");
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val;
+                                err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                     return VM_ERROR~;
                                 }
+                            } else {
+                                return VM_ERROR~;
                             }
                             break;
                         } else {
@@ -4494,7 +4484,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     new_act.curr_pc = target.code;
                                     new_act.bottom = new_bottom;
                                     new_act.retval = null;  // setter return value is discarded
-                                    new_act.flags = target.is_strict() ? ACT_FLAG_STRICT : 0;
+                                    new_act.flags = 0;
                                     if (target.has_direct_eval()) {
                                         new_act.flags |= ACT_FLAG_DIRECT_EVAL;
                                     }
@@ -4517,8 +4507,9 @@ fn TVal? Vm.run(Vm* vm) {
                             // No accessor: insert new property
                             if (hobj.flags.extensible) {
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
-                            } else if (act.flags & ACT_FLAG_STRICT) {
-                                // ES5 §9.1.2 step 5b: if O is not extensible, throw TypeError
+                            } else {
+                                // ES5 §9.1.2 step 5b: if O is not extensible, throw TypeError.
+                                // Strict-only engine: always throws.
                                 HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                                 if (try err = err_raw) {
                                     err.prototype = vm.heap.type_err_proto;
@@ -4589,23 +4580,22 @@ fn TVal? Vm.run(Vm* vm) {
                 if (key != null) {
                     if (!hobj.es_delete_prop(key)) {
                         ra.set_boolean(false);
-                        if (act.flags & ACT_FLAG_STRICT) {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "Delete failed: property is non-configurable");
-                                TVal msg_tv;
-                                msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
-                                }
-                            } else {
+                        // Strict-only engine: non-configurable delete always throws.
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            HString* msg_val = intern_string(vm, "Delete failed: property is non-configurable");
+                            TVal msg_tv;
+                            msg_tv.set_string(msg_val);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
                                 return VM_ERROR~;
                             }
+                        } else {
+                            return VM_ERROR~;
                         }
                     } else {
                         ra.set_boolean(true);
@@ -5234,7 +5224,7 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.curr_pc = target_fast.code;
                     new_act.bottom = new_bottom;
                     new_act.retval = regs_base + result_reg;
-                    new_act.flags = target_fast.is_strict() ? ACT_FLAG_STRICT : 0;
+                    new_act.flags = 0;
                     if (target_fast.has_direct_eval()) {
                         new_act.flags |= ACT_FLAG_DIRECT_EVAL;
                     }
@@ -5705,7 +5695,7 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act_r.curr_pc = gs.saved_pc;
                     new_act_r.bottom = new_bottom_r;
                     new_act_r.retval = regs_base + result_reg;
-                    new_act_r.flags = ACT_FLAG_STRICT | ACT_FLAG_PREVENT_YIELD
+                    new_act_r.flags = ACT_FLAG_PREVENT_YIELD
                                     | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
                     vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);
 
@@ -5891,8 +5881,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            bool is_strict = target.is_arrow() ? (act.flags & ACT_FLAG_STRICT) != 0 : target.is_strict();
-            new_act.flags = is_strict ? ACT_FLAG_STRICT : 0;
+            new_act.flags = 0;
             if (target.has_direct_eval()) {
                 new_act.flags |= ACT_FLAG_DIRECT_EVAL;
             }
@@ -5913,61 +5902,14 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.async_promise = p;
                 }
             }
-            // Arrow functions use lexical this (inherited from enclosing scope)
+            // Arrow functions use lexical this (inherited from enclosing scope).
+            // Strict-only engine: non-arrow functions always use raw `this` (no
+            // sloppy-mode null/undefined→global or primitive→ToObject coercion).
             if (target.is_arrow()) {
                 vm.heap.tval_copy_ref(&new_act.this_binding, &act.this_binding);
             } else {
-                // ES5 §10.4.3: non-strict mode this coercion
                 TVal raw_this = regs_base[callee_reg + 1];
-                if (!is_strict) {
-                    // null or undefined → global object
-                    if (raw_this.is_null() || raw_this.is_undefined()) {
-                        TVal global_this;
-                        global_this.set_object(vm.global_env.bindings);
-                        vm.heap.tval_copy_ref(&new_act.this_binding, &global_this);
-                    }
-                    // Primitives → ToObject wrapper
-                    else if (raw_this.is_boolean()) {
-                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
-                        if (try w = wrapped) {
-                            w.prototype = vm.heap.bool_proto;
-                            (*w.extra_ptr()).prim.primitive_value.set_boolean(raw_this.get_boolean());
-                            TVal boxed; boxed.set_object(w);
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
-                        } else {
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
-                        }
-                    } else if (raw_this.is_string()) {
-                        HString* prim_str = (HString*)raw_this.get_heapptr();
-                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
-                        if (try w = wrapped) {
-                            w.flags.exotic_stringobj = true;
-                            w.prototype = vm.heap.string_proto;
-                            (*w.extra_ptr()).prim.primitive_value.set_string(prim_str);
-                            HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                            TVal len_tv; len_tv.set_fastint((long)prim_str.char_length());
-                            w.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-                            TVal boxed; boxed.set_object(w);
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
-                        } else {
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
-                        }
-                    } else if (raw_this.is_number() || raw_this.is_fastint()) {
-                        HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
-                        if (try w = wrapped) {
-                            w.prototype = vm.heap.number_proto;
-                            vm.heap.tval_copy_ref(&(*w.extra_ptr()).prim.primitive_value, &raw_this);
-                            TVal boxed; boxed.set_object(w);
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &boxed);
-                        } else {
-                            vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
-                        }
-                    } else {
-                        vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
-                    }
-                } else {
-                    vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
-                }
+                vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
             }
 
             TVal* new_regs = new_act.bottom;
@@ -6242,7 +6184,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | (super_target.is_strict() ? ACT_FLAG_STRICT : 0)
+            new_act.flags = ACT_FLAG_CONSTRUCT
                           | (super_target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &regs_base[callee_reg + 1]);
             new_act.new_target = new_target;  // Pass through new.target
@@ -6623,7 +6565,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
             new_act.retval = regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT | (target.is_strict() ? ACT_FLAG_STRICT : 0)
+            new_act.flags = ACT_FLAG_CONSTRUCT
                           | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
@@ -8401,96 +8343,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.CSVARI:
             break;
 
-        // === WITH STATEMENT ===
-
-        case Opcode.WITH_START: {
-            // Register A holds the with-object.  Call ToObject
-            // (primitives are wrapped), then push a new env record onto
-            // the current activation's var_env chain.
-            TVal obj_val = *ra;
-            HObject* obj;
-
-            if (obj_val.is_object()) {
-                obj = (HObject*)obj_val.get_heapptr();
-            } else if (obj_val.is_null() || obj_val.is_undefined()) {
-                // TypeError: with cannot be applied to null/undefined
-                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[80] buf;
-                    int len = libc::snprintf(&buf, 80,
-                        "Cannot use 'with' on %s",
-                        (obj_val.is_null() ? "null" : "undefined"));
-                    if (len > 0 && len < 80) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
-                    }
-                } else {
-                    return VM_ERROR~;
-                }
-                break;
-            } else if (obj_val.is_boolean()) {
-                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.BOOLEAN);
-                if (catch _err = wrapped) { break; }
-                obj = wrapped;
-                obj.prototype = vm.heap.bool_proto;
-                (*obj.extra_ptr()).prim.primitive_value.set_boolean(obj_val.get_boolean());
-            } else if (obj_val.is_string()) {
-                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.STRING);
-                if (catch _err = wrapped) { break; }
-                obj = wrapped;
-                obj.flags.exotic_stringobj = true;
-                obj.prototype = vm.heap.string_proto;
-                HString* prim_str = (HString*)obj_val.get_heapptr();
-                (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
-                // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable.
-                // Indexed character properties are served lazily via exotic_stringobj during enumeration.
-                HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                TVal len_tv;
-                len_tv.set_fastint((long)prim_str.char_length());
-                obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
-            } else if (obj_val.is_number() || obj_val.is_fastint()) {
-                HObject*? wrapped = vm.heap.alloc_object(hobject::ObjClass.NUMBER);
-                if (catch _err = wrapped) { break; }
-                obj = wrapped;
-                obj.prototype = vm.heap.number_proto;
-                vm.heap.tval_copy_ref(&(*obj.extra_ptr()).prim.primitive_value, &obj_val);
-            } else {
-                // POINTER or BUFFER
-                break;
-            }
-
-            // Create a with-env record wrapping the object and push it
-            // onto the current activation's var_env.
-            EnvRecord*? env_raw = env::env_create_with_object(vm.heap, act.var_env, obj);
-            if (try new_env = env_raw) {
-                act.var_env = new_env;
-            } else {
-                return VM_ERROR~;
-            }
-            break;
-        }
-
-        case Opcode.WITH_END: {
-            // Pop the current with-env from the scope chain.
-            // NOTE: we do NOT free the env record here because a closure
-            // created inside the `with` block may have captured it via
-            // (*func_obj.extra_ptr()).func.var_env = act.var_env (see CLOSURE opcode).
-            // Freeing it would leave a dangling pointer in the closure
-            // and crash on subsequent env_get calls.
-            if (act.var_env != null && act.var_env.parent != null) {
-                act.var_env = act.var_env.parent;
-            }
-            break;
-        }
+        // === WITH STATEMENT REMOVED IN STRICT-ONLY MODE ===
 
         case Opcode.PUSH_LEX: {
             // Push a new declarative environment record onto act.lex_env.

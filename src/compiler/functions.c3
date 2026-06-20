@@ -1192,7 +1192,6 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
     def_ctx.init(self.lexer, self.heap);
 
     // Strict-only engine: always strict
-    def_ctx.is_strict = true;
     def_ctx.lexer.set_strict(true);
 
     // Propagate class context (for super expressions)
@@ -1233,7 +1232,6 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
 fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
     CompilerContext key_ctx;
     key_ctx.init(self.lexer, self.heap);
-    key_ctx.is_strict = true;
     key_ctx.lexer.set_strict(true);
     key_ctx.in_class_body = self.in_class_body;
     key_ctx.has_super_binding = self.has_super_binding;
@@ -1254,7 +1252,6 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     inner_ctx.init(self.lexer, self.heap);
 
     // Strict-only engine: always strict, no propagation needed
-    inner_ctx.is_strict = true;
     inner_ctx.lexer.set_strict(true);
 
     // Propagate generator flag: if the caller is compiling a generator,
@@ -1760,7 +1757,6 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     arrow_ctx.init(self.lexer, self.heap);
 
     // Strict-only engine: always strict
-    arrow_ctx.is_strict = true;
     arrow_ctx.lexer.set_strict(true);
 
     // Arrow functions use the parent scope — no fresh env needed.
@@ -2164,7 +2160,6 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.init(self.lexer, self.heap);
 
     // Strict-only engine: always strict
-    arrow_ctx.is_strict = true;
     arrow_ctx.lexer.set_strict(true);
 
     // Arrow functions use the parent scope — no fresh env needed.

@@ -284,15 +284,7 @@ enum Opcode : char {
     /// Create the `arguments` exotic object for the current activation.
     CSVARI,
 
-    // ---- with statement ---------------------------------------------------
-
-    /// `with_start A`  — begin a `with` block.  Register A holds the
-    /// object that becomes the new scope's binding object.  The runtime
-    /// pushes a new object env-record onto `act.var_env`.
-    WITH_START,
-    /// End the current `with` block — pop the with-scope from the
-    /// environment chain.
-    WITH_END,
+    // ---- with statement REMOVED in strict-only mode -----------------------
 
     // ---- Lexical scoping (let/const) ----------------------------------
 
@@ -497,8 +489,7 @@ fn OpFormat get_op_format(Opcode op) {
         case TRY:       return A_BC;
         case BREAK:     return WIDE_SABC;
         case CONTINUE:  return WIDE_SABC;
-        case WITH_START: return A_BC;
-        case PUTLEX:     return A_BC;
+case PUTLEX:     return A_BC;
         case PUTLEX_C:   return A_BC;
         case INITTZ:     return A_BC;
         case NEWREGEXP:  return A_BC;
@@ -532,7 +523,6 @@ fn OpFormat get_op_format(Opcode op) {
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;
-        case WITH_END:  return NONE;
         case PUSH_LEX:   return NONE;
         case POP_LEX:    return NONE;
         case INC:        return NONE;
@@ -788,8 +778,6 @@ bitstruct FuncFlags : uint {
 
     // ---- Function-specific flags (bits 7+) ----
 
-    /// Function uses strict-mode semantics.
-    bool  is_strict     : 7;
     /// Function is a named function expression.
     bool  is_namebinding: 8;
     /// Function has a `...rest` parameter.
@@ -918,11 +906,6 @@ macro HeapHeader* CompiledFunction.as_header(&self) {
 // ============================================================================
 // CompiledFunction — flag accessors
 // ============================================================================
-
-/// Returns `true` when the function uses strict-mode semantics.
-macro bool CompiledFunction.is_strict(&self) {
-    return self.flags.is_strict;
-}
 
 /// Returns `true` when the function is an arrow function.
 macro bool CompiledFunction.is_arrow(&self) {
@@ -1109,8 +1092,6 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.INITGET.ordinal]     = "INITGET",
     [Opcode.INITSETI.ordinal]    = "INITSETI",
     [Opcode.CSVARI.ordinal]      = "CSVARI",
-    [Opcode.WITH_START.ordinal]  = "WITH_START",
-    [Opcode.WITH_END.ordinal]    = "WITH_END",
     [Opcode.PUSH_LEX.ordinal]    = "PUSH_LEX",
     [Opcode.POP_LEX.ordinal]     = "POP_LEX",
     [Opcode.PUTLEX.ordinal]      = "PUTLEX",

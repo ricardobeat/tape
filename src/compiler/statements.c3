@@ -1986,29 +1986,6 @@ fn void? CompilerContext.try_statement(&self) {
     }
 }
 
-/// Parse a `with` statement (ES5 §12.10).
-///
-/// Bytecode layout:
-///   <expr>                              — push object onto valstack (in a register)
-///   WITH_START A                        — A = register holding the with-object
-///   <statement>
-///   WITH_END                            — pop the with-env from the scope chain
-fn void? CompilerContext.with_statement(&self) @if(false) {
-    // Strict-only engine: `with` is rejected at parse time. Kept as a stub
-    // so existing references compile; the `case TokenType.WITH` arm above
-    // short-circuits with COMPILE_ERROR.
-    self.expect(TokenType.WITH)!;
-
-    self.expect(TokenType.LPAREN)!;
-    ushort obj_reg = self.expression()!;
-    self.expect(TokenType.RPAREN)!;
-
-    self.emit_a_bc(Opcode.WITH_START, (uint)obj_reg, 0);
-    self.statement()!;
-    self.emit_simple(Opcode.WITH_END);
-    self.free_reg(obj_reg);
-}
-
 /// Parse switch statement with correct fall-through (ES5 §12.11).
 ///
 /// Each case body ends with a fall-through redirect JUMP patched after all
