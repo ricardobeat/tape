@@ -20,6 +20,7 @@ import duktape::hstring;
 import duktape::hobject;
 import std::io;
 import std::time;
+import libc;
 
 fn void print_usage(String argv0) {
     io::eprintfn("Usage:  %s [flags] <js_file>", argv0);
@@ -161,9 +162,16 @@ fn int main(String[] args) {
     time::Time t4 = debug ? time::now() : (time::Time)0;
     TVal? res = v.execute(func);
     if (catch err = res) {
-        io::eprintfn("execute failed: %s", err);
-        // Crash dump: dump current instruction and register state
-        dump_vm_state(v);
+        // If the VM recorded an uncaught JS exception (set by vm_uncaught_error
+        // or the THROW opcode), print it as a clean "Uncaught: <message>" line.
+        // Otherwise it's a true VM-level fault — show the crash dump.
+        if (v.heap.has_error) {
+            print_uncaught_error(v.heap, &v.heap.error_value);
+        } else {
+            io::eprintfn("execute failed: %s", err);
+            // Crash dump: dump current instruction and register state
+            dump_vm_state(v);
+        }
         return 1;
     }
     if (debug) io::printfn("  execute:     %d us", (int)(time::now() - t4));
@@ -291,6 +299,74 @@ fn void dump_vm_state(Vm* v) {
         }
     }
     io::eprintf("--- End Crash Dump ---\n");
+}
+
+/// Extract and print the .message from an uncaught error TVal.
+/// If the value is an Error object with a .message string property, prints
+/// "Uncaught <ErrorName>: <message>". Otherwise prints a generic message.
+fn void print_uncaught_error(heap::Heap* h, TVal* err_val) {
+    if (err_val.is_object()) {
+        HObject* err_obj = (HObject*)err_val.get_heapptr();
+        if (err_obj != null) {
+            HString* msg_key = (HString*)h.strs[heap::BuiltinStr.MESSAGE];
+            HString* name_key = (HString*)h.strs[heap::BuiltinStr.NAME];
+
+            // Walk the shape chain to find properties by key. The shape
+            // stores the key for each property; prop_values() stores the values
+            // in the same order. This is the reliable way to look up a
+            // property by key when find_prop_idx's hash isn't populated.
+            char[64] name_buf = "Error";
+            usz name_len = 5;
+            char[types::ERROR_MSG_BUF] msg_buf;
+            usz msg_len = 0;
+            bool found_msg = false;
+            bool found_name = false;
+
+            // Walk shape chain (each shape has a range of properties)
+            hobject::Shape* sh = err_obj.get_shape();
+            uint global_offset = 0;
+            TVal* vals = err_obj.prop_values();
+            uint val_idx = 0;
+            while (sh != null) {
+                hobject::ShapeProperty* sp = sh.props();
+                for (uint i = 0; i < sh.own_count; i++) {
+                    if (val_idx >= err_obj.prop_count) break;
+                    TVal* v = &vals[val_idx];
+                    if (!found_name && sp[i].key == (void*)name_key && v.is_string()) {
+                        HString* s = (HString*)v.get_heapptr();
+                        if (s != null) {
+                            char[] d = s.get_data();
+                            usz copy_len = d.len < (name_buf.len - 1) ? d.len : (name_buf.len - 1);
+                            libc::memcpy(&name_buf[0], &d[0], copy_len);
+                            name_len = copy_len;
+                            found_name = true;
+                        }
+                    }
+                    if (!found_msg && sp[i].key == (void*)msg_key && v.is_string()) {
+                        HString* s = (HString*)v.get_heapptr();
+                        if (s != null) {
+                            char[] d = s.get_data();
+                            usz copy_len = d.len < (msg_buf.len - 1) ? d.len : (msg_buf.len - 1);
+                            libc::memcpy(&msg_buf[0], &d[0], copy_len);
+                            msg_len = copy_len;
+                            found_msg = true;
+                        }
+                    }
+                    val_idx++;
+                    if (found_name && found_msg) break;
+                }
+                if (found_name && found_msg) break;
+                sh = sh.parent_shape;
+            }
+            if (found_msg) {
+                io::eprintf("Uncaught %s: %s\n", (String)name_buf[:name_len], (String)msg_buf[:msg_len]);
+            } else {
+                io::eprintfn("Uncaught %s", (String)name_buf[:name_len]);
+            }
+            return;
+        }
+    }
+    io::eprintfn("Uncaught: <non-object error value>");
 }
 
 fn void print_tval_stderr(TVal* v) {

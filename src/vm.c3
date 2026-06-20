@@ -266,6 +266,21 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
     return false;
 }
 
+/// Record an uncaught exception in the VM and return the VM_ERROR~ sentinel.
+///
+/// When an opcode allocates an error and calls vm_throw_value but no catcher
+/// is found, the VM must surface the error to the embedder (CLI, batch
+/// runner, host app) rather than silently swallowing it. This helper mirrors
+/// the THROW opcode's uncaught-exception handling (vm.c3:8098-8107) so every
+/// opcode that can fail vm_throw_value behaves consistently.
+fn TVal? vm_uncaught_error(Vm* vm, TVal* err_val) {
+    vm.has_error = true;
+    vm.heap.has_error = true;
+    vm.heap.tval_copy_ref(&vm.heap.error_value, err_val);
+    vm.heap.tval_copy_ref(&vm.return_val, err_val);
+    return VM_ERROR~;
+}
+
 /// Helper to get index from valstack base to a pointer
 fn uint byte_offset(TVal* base, TVal* ptr) @inline {
     return (uint)(ptr - base);
@@ -2625,7 +2640,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal err_val;
                             err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -2651,7 +2666,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal err_val;
                             err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -2724,7 +2739,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal err_val;
                         err_val.set_object(err);
                         if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val);
                         }
                     } else {
                         return VM_ERROR~;
@@ -3200,7 +3215,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -3222,7 +3237,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -3292,7 +3307,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -3457,7 +3472,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                             TVal err_val; err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -3585,7 +3600,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -3802,7 +3817,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 }
                                 TVal err_val; err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &err_val);
                                 }
                             } else {
                                 return VM_ERROR~;
@@ -3907,7 +3922,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal err_val;
                         err_val.set_object(err);
                         if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val);
                         }
                     } else {
                         return VM_ERROR~;
@@ -4321,7 +4336,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                             TVal err_val; err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -4341,7 +4356,7 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                             TVal err_val; err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -4454,7 +4469,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 TVal err_val;
                                 err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &err_val);
                                 }
                             } else {
                                 return VM_ERROR~;
@@ -4543,7 +4558,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     TVal err_val;
                                     err_val.set_object(err);
                                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                        return VM_ERROR~;
+                                        return vm_uncaught_error(vm, &err_val);
                                     }
                                 } else {
                                     return VM_ERROR~;
@@ -4581,7 +4596,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -4614,7 +4629,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal err_val;
                             err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -4818,7 +4833,7 @@ fn TVal? Vm.run(Vm* vm) {
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &err_val);
                 } else { return VM_ERROR~; }
                 break;
             }
@@ -4867,7 +4882,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                     }
                     TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) { return VM_ERROR~; }
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &err_val);
                 } else { return VM_ERROR~; }
                 break;
             }
@@ -5028,7 +5043,7 @@ fn TVal? Vm.run(Vm* vm) {
                         err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
                     }
                     TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &err_val);
                 } else { return VM_ERROR~; }
                 break;
             }
@@ -5069,7 +5084,7 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                     }
                     TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return VM_ERROR~;
+                    if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &err_val);
                 } else { return VM_ERROR~; }
                 break;
             }
@@ -5197,7 +5212,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                                 TVal err_val; err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &err_val);
                                 }
                             } else {
                                 return VM_ERROR~;
@@ -5406,7 +5421,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 if (ctx.should_throw) {
                     if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &ctx.throw_value);
                     }
                     break;
                 }
@@ -5440,7 +5455,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -5469,7 +5484,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val2;
                     err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val2);
                     }
                 } else {
                     return VM_ERROR~;
@@ -5499,7 +5514,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         break;
                     }
@@ -5527,7 +5542,7 @@ fn TVal? Vm.run(Vm* vm) {
                             builtins::dispatch_builtin(lf_idx, &inner);
                             if (inner.should_throw) {
                                 if (!vm_throw_value(vm, inner.throw_value, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &inner.throw_value);
                                 }
                             }
                             break;
@@ -5565,7 +5580,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         break;
                     }
@@ -5594,7 +5609,7 @@ fn TVal? Vm.run(Vm* vm) {
                             builtins::dispatch_builtin(lf_idx, &inner);
                             if (inner.should_throw) {
                                 if (!vm_throw_value(vm, inner.throw_value, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &inner.throw_value);
                                 }
                             }
                             break;
@@ -5631,7 +5646,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal err_val2;
                         err_val2.set_object(err2);
                         if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val2);
                         }
                     } else {
                         return VM_ERROR~;
@@ -5694,7 +5709,7 @@ fn TVal? Vm.run(Vm* vm) {
                                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                                 TVal err_val; err_val.set_object(err);
                                 if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                    return VM_ERROR~;
+                                    return vm_uncaught_error(vm, &err_val);
                                 }
                             } else {
                                 return VM_ERROR~;
@@ -5877,7 +5892,7 @@ fn TVal? Vm.run(Vm* vm) {
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         TVal err_val; err_val.set_object(err);
                         if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val);
                         }
                     } else {
                         return VM_ERROR~;
@@ -6090,7 +6105,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 }
                 break;
@@ -6116,7 +6131,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val2;
                     err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val2);
                     }
                 }
                 break;
@@ -6182,7 +6197,7 @@ fn TVal? Vm.run(Vm* vm) {
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         TVal err_val; err_val.set_object(err);
                         if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val);
                         }
                     } else {
                         return VM_ERROR~;
@@ -6312,7 +6327,7 @@ fn TVal? Vm.run(Vm* vm) {
                         TVal err_val_nc;
                         err_val_nc.set_object(err_nc);
                         if (!vm_throw_value(vm, err_val_nc, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val_nc);
                         }
                     } else {
                         return VM_ERROR~;
@@ -6336,7 +6351,7 @@ fn TVal? Vm.run(Vm* vm) {
                 builtins::dispatch_builtin(fn_idx, &ctx);
                 if (ctx.should_throw) {
                     if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &ctx.throw_value);
                     }
                     break;
                 }
@@ -6362,7 +6377,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val;
                     err_val.set_object(err);
                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val);
                     }
                 } else {
                     return VM_ERROR~;
@@ -6390,7 +6405,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val2;
                     err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val2);
                     }
                 } else {
                     return VM_ERROR~;
@@ -6420,7 +6435,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         break;
                     }
@@ -6455,7 +6470,7 @@ fn TVal? Vm.run(Vm* vm) {
                     builtins::dispatch_builtin(fn_idx, &ctx);
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         break;
                     }
@@ -6480,7 +6495,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val2;
                     err_val2.set_object(err2);
                     if (!vm_throw_value(vm, err_val2, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val2);
                     }
                 } else {
                     return VM_ERROR~;
@@ -6509,7 +6524,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_val3;
                     err_val3.set_object(err3);
                     if (!vm_throw_value(vm, err_val3, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_val3);
                     }
                 } else {
                     return VM_ERROR~;
@@ -6563,7 +6578,7 @@ fn TVal? Vm.run(Vm* vm) {
                         err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
                         TVal err_val; err_val.set_object(err);
                         if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                            return VM_ERROR~;
+                            return vm_uncaught_error(vm, &err_val);
                         }
                     } else {
                         return VM_ERROR~;
@@ -7436,7 +7451,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     TVal err_val;
                                     err_val.set_object(err);
                                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                        return VM_ERROR~;
+                                        return vm_uncaught_error(vm, &err_val);
                                     }
                                     found = true; // prevent duplicate error
                                 } else {
@@ -7538,7 +7553,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal err_val;
                             err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -7619,7 +7634,7 @@ fn TVal? Vm.run(Vm* vm) {
                                     TVal err_val;
                                     err_val.set_object(err);
                                     if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                        return VM_ERROR~;
+                                        return vm_uncaught_error(vm, &err_val);
                                     }
                                 } else {
                                     return VM_ERROR~;
@@ -7745,7 +7760,7 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal err_val;
                             err_val.set_object(err);
                             if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
-                                return VM_ERROR~;
+                                return vm_uncaught_error(vm, &err_val);
                             }
                         } else {
                             return VM_ERROR~;
@@ -8258,7 +8273,7 @@ fn TVal? Vm.run(Vm* vm) {
                 if (has_pending_exc) {
                     // Re-throw the pending exception
                     if (!vm_throw_value(vm, pending_exc_val, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &pending_exc_val);
                     }
                 }
             }
@@ -8407,7 +8422,7 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal err_tv;
                     err_tv.set_object(err);
                     if (!vm_throw_value(vm, err_tv, act, &curr_pc, &needs_restart)) {
-                        return VM_ERROR~;
+                        return vm_uncaught_error(vm, &err_tv);
                     }
                 }
             }
