@@ -4194,6 +4194,20 @@ fn TVal? Vm.run(Vm* vm) {
                     } else {
                         ra2.set_undefined();
                     }
+                } else if (mid_val.is_lightfunc()) {
+                    // LIGHTFUNC intermediate: walk Function.prototype for .call/.apply/.bind
+                    // (mirrors the lightfunc handling in GETPROPC at vm.c3:3968-4021).
+                    if (key2_hstr != null && vm.heap.function_proto != null) {
+                        TVal? result = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra2, &v);
+                            track_heap_store(act, ra2, dst2_reg);
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
                 } else {
                     ra2.set_undefined();
                 }
