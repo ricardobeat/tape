@@ -1866,9 +1866,11 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
 
             // Check for generator/async resume: if heap.resume_gen is set
             // and matches this function, restore the saved PC and registers.
+            bool did_resume = false;
             if (vm.heap.resume_gen != null) {
                 GeneratorState* gs_r = vm.heap.resume_gen;
                 if ((CompiledFunction*)gs_r.func == target) {
+                    did_resume = true;
                     act.curr_pc = (Instruction*)gs_r.saved_pc;
                     act.var_env = (EnvRecord*)gs_r.var_env;
                     act.lex_env = (EnvRecord*)gs_r.lex_env;
@@ -1906,13 +1908,14 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             // restored verbatim below, so refcounts stay balanced.
             act.this_binding = this_val;
 
-            // Initialize registers and copy args (slots are fresh — raw init)
-            for (uint i = 0; i < nregs; i++) {
-                frame[i].set_undefined();
-            }
-            uint copy_n = nargs < nregs ? nargs : nregs;
-            for (uint i = 0; i < copy_n; i++) {
-                vm.heap.tval_copy_ref(&frame[i], &args[i]);
+            if (!did_resume) {
+                for (uint i = 0; i < nregs; i++) {
+                    frame[i].set_undefined();
+                }
+                uint copy_n = nargs < nregs ? nargs : nregs;
+                for (uint i = 0; i < copy_n; i++) {
+                    vm.heap.tval_copy_ref(&frame[i], &args[i]);
+                }
             }
             vm.valstack_top = frame + nregs;
             vm.valstack_bottom = frame;
@@ -6942,6 +6945,12 @@ fn TVal? Vm.run(Vm* vm) {
                 // 5. Pop activation (suspend the async function)
                 decref_callee_regs(vm, act);
                 vm.activation_count--;
+                if (vm.activation_count == 0) {
+                    TVal undef_val2;
+                    undef_val2.set_undefined();
+                    vm.heap.tval_copy_ref(&vm.return_val, &undef_val2);
+                    return vm.return_val;
+                }
 
                 // Restore caller state
                 if (vm.activation_count > 0) {

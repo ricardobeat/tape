@@ -44,8 +44,8 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [ ] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction)
 - [ ] Test async function without await (should return resolved Promise)
 - [ ] Test async function with single await (should suspend and resume)
-- [ ] Test async error handling: rejected promise inside async function should reject the returned promise
-- [ ] Test `await` in `for`/`while` loops (repeated suspend/resume)
+- [x] Test async error handling: rejected promise inside async function should reject the returned promise — `test/test_async_loops.js` `catchReject`/`loopWithReject` cases pass
+- [x] Test `await` in `for`/`while` loops (repeated suspend/resume) — see `test/test_async_loops.js`; `vm.c3` vm_call_fn_impl was clobbering the saved registers (loop var `i` etc. on resume), and the AWAIT handler crashed on second-or-later suspend because the outer dispatch loop indexed `activations[activation_count-1]` when count had reached 0
 - [ ] Fix remaining postfix `++`/`--` member writeback edge cases after GETPROP patching refactor
 - [x] **Follow-up — implicit-global crash**: `x = 1` at global scope (no `var`/`let`/`const`) raises `VM_ERROR` instead of creating a global (in strict mode this must be `ReferenceError`). Pre-existing in baseline (crashes in both modes); discovered during strict-mode investigation. FIXED in commit fdfbf8e — see the implicit-global investigation item above. The ReferenceError was always being thrown correctly; the fix was to surface it instead of dropping it.
 - [ ] Run full ES5 test262 suite and measure delta from 61.9% baseline
