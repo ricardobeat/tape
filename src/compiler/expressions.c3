@@ -1774,6 +1774,39 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
                 return inner2;
+            }
+            // Check for arrow with destructured params: ({a, b}) => or ([a, b]) =>
+            else if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                // Scan through the destructuring pattern to check for ') =>'
+                bool is_arrow = self.scan_destruct_param_to_arrow();
+
+                if (is_arrow) {
+                    // Restore lexer to right after '(' for re-parse
+                    self.lexer.pos             = saved_pos;
+                    self.lexer.line            = saved_line;
+                    self.lexer.col             = saved_col;
+                    self.lexer.current         = saved_cur;
+                    self.lexer.lookahead       = saved_look;
+                    self.lexer.has_lookahead   = saved_haslk;
+                    self.lexer.pushed_back     = saved_push;
+                    self.lexer.has_pushed_back = saved_haspb;
+                    self.lexer.seen_line_term  = saved_slt;
+                    return self.parse_arrow_function_reparse()!;
+                }
+
+                // Not an arrow: restore lexer and parse as grouping expression
+                self.lexer.pos             = saved_pos;
+                self.lexer.line            = saved_line;
+                self.lexer.col             = saved_col;
+                self.lexer.current         = saved_cur;
+                self.lexer.lookahead       = saved_look;
+                self.lexer.has_lookahead   = saved_haslk;
+                self.lexer.pushed_back     = saved_push;
+                self.lexer.has_pushed_back = saved_haspb;
+                self.lexer.seen_line_term  = saved_slt;
+                ushort inner2 = self.expression()!;
+                self.expect(TokenType.RPAREN)!;
+                return inner2;
             } else {
                 // Not arrow: parse as grouping expression
                 ushort inner2 = self.expression()!;

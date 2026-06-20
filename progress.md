@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 196 (class early-error SyntaxError checks + default constructor bytecode)
+**Last Updated:** Session 198 (destructuring in function parameters)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 195, 2026-06-18)
@@ -27,7 +27,7 @@
 | 7: ES5 Features | 1240 | 280 | 325 | 635 |
 | 8: ES5 Built-in Objects | 2747 | 1267 | 480 | 1000 |
 | 11: Arrow/Templates | 427 | 81 | 204 | 142 |
-| 12-13: Destructuring | 19 | 0 | 17 | 2 |
+| 12-13: Destructuring | 34 | 30 | 4 | 0 |
 | 14: for-of | 751 | 110 | 472 | 169 |
 | 15: Classes | 8520 | 359 | 3020 | 5141 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 501 | 707 | 406 |
@@ -62,6 +62,10 @@ Three novel optimizations backported from the `worktree-copy-and-patch-poc` bran
 - **Run full test262 suite**: `python3 scripts/run_test262.py` (multi-worker, parallel)
 
 ## Session Log (condensed, newest first, last 10 sessions)
+
+| Session | Summary | test262 impact |
+|---|---|---|
+| 198 | Destructuring in function parameters — architecture overhaul: (1) Added `REQUIRE_OBJ` opcode for null/undefined TypeError on destructured params (both object and array); (2) Fixed arrow function detection in `expressions.c3` to recognize `({a,b}) =>` and `([a,b]) =>` patterns via `scan_destruct_param_to_arrow` lexer helper; (3) Added `DestructBind.is_synthetic` field — synthetic intermediate bindings represent each nesting level's extraction point, forming a proper extraction tree; (4) Collection functions `collect_obj_param_binds`/`collect_arr_param_binds` now create synthetic bindings when entering nested `{prop: {nested}}` or `[pos, {nested}]` patterns, then recurse with `parent_idx` pointing to the synthetic; (5) Rewrote emission in all 3 function compilers to a single-pass loop: synthetics allocate temps and emit GETPROP+REQUIRE_OBJ, leaf bindings use parent's temp as source for GETPROP+default check (SNEQ/IF_TRUE/CLOSURE/CALL); (6) Default expressions compiled as thunks via `compile_default_expr()`; (7) Removed dead `emit_param_destruct` function. Rosetta: 42/44 (unchanged). Quick.sh: 278/5/56 (unchanged). No regressions. | Phase 12-13: 15+15 pass, 2+2 fail (pre-existing arguments.length) |
 
 | Session | Summary | test262 impact |
 |---|---|---|

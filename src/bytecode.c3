@@ -451,6 +451,11 @@ enum Opcode : char {
     /// key comparison. Falls back to GETPROPC if shape_id or prop_alloc changed.
     GETPROPC_CACHED,
 
+    /// Require that the value in register A is coercible to object (not null
+    /// or undefined).  Throws TypeError if the value is null or undefined.
+    /// Used for destructuring binding patterns.
+    REQUIRE_OBJ,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -535,6 +540,7 @@ fn OpFormat get_op_format(Opcode op) {
         case INC_VAR:    return A_BC;
         case DEC_VAR:    return A_BC;
         case GETPROPC2:  return ABC;
+        case REQUIRE_OBJ: return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -1139,6 +1145,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.JMP_GE.ordinal]       = "JMP_GE",
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
+    [Opcode.REQUIRE_OBJ.ordinal] = "REQUIRE_OBJ",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

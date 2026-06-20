@@ -13,6 +13,257 @@ import std::io;
 // Function compilation
 // ============================================================================
 
+/// Maximum number of bindings collected from destructuring function parameters.
+const uint MAX_DESTRUCT_BINDS = 64;
+
+/// Collected info for a single destructured binding from a function parameter.
+struct DestructBind {
+    uint name_idx;       // constant index of the binding name (0xFFFFFFFF for synthetic)
+    uint key_idx;        // constant index of the property key (for object patterns)
+    char[64] name_buf;   // binding name string buffer (for declare_var)
+    ushort name_len;     // length of the binding name
+    ushort arg_idx;      // which formal parameter index this belongs to
+    ushort index;        // for array patterns: the element index
+    bool is_object;      // true = object pattern, false = array pattern
+    bool has_default;    // has a default value expression
+    bool is_synthetic;   // true = intermediate extraction point (not a user variable)
+    uint   default_func_idx;  // index into inner_funcs for default thunk (0xFFFFFFFF if none)
+    ushort parent_idx;     // index of the binding whose value is the source for this one (0xFFFF = direct from arg)
+}
+
+/// Parse an object destructuring pattern within a function parameter list.
+/// The '{' token has already been consumed.
+/// Collects all leaf-level binding names into the provided arrays.
+fn void? CompilerContext.collect_obj_param_binds(&self,
+    DestructBind[] binds, uint* count, ushort src_reg, ushort parent_idx)
+{
+    if (self.match(TokenType.RBRACE)) return;  // empty pattern {}
+
+    for (;;) {
+        if (self.check(TokenType.RBRACE)) break;
+
+        // Rest element: {...rest}
+        if (self.match(TokenType.ELLIPSIS)) {
+            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(rest_tok.str_value)) {
+                return COMPILE_ERROR~;
+            }
+            if (*count < binds.len) {
+                binds[*count].name_idx = self.add_string_constant(rest_tok.str_value);
+                binds[*count].key_idx = 0xFFFF;
+                binds[*count].is_object = true;
+                binds[*count].arg_idx = src_reg;
+                binds[*count].parent_idx = parent_idx;
+                ushort nl = (ushort)(rest_tok.str_value.len < 63 ? rest_tok.str_value.len : 63);
+                binds[*count].name_len = nl;
+                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = rest_tok.str_value[j]; }
+                (*count)++;
+            }
+            while (self.match(TokenType.COMMA)) {}
+            break;
+        }
+
+        // Property name
+        Token prop = self.expect(TokenType.IDENTIFIER)!;
+        uint prop_key_idx = self.add_string_constant(prop.str_value);
+
+        if (self.match(TokenType.COLON)) {
+            // {source: target} — target can be identifier or nested pattern
+            if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                // Create a synthetic binding for the intermediate extraction
+                // e.g. {a: {x,y}} → synthetic for "a" extracts the nested object
+                bool is_obj = self.check(TokenType.LBRACE);
+                if (*count < binds.len) {
+                    binds[*count].key_idx = prop_key_idx;
+                    binds[*count].is_object = true;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    binds[*count].is_synthetic = true;
+                    (*count)++;
+                }
+                ushort synth_idx = (ushort)(*count - 1);
+                self.advance()!; // consume '{' or '['
+                if (is_obj) {
+                    self.collect_obj_param_binds(binds, count, src_reg, synth_idx)!;
+                } else {
+                    self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
+                }
+            } else {
+                Token bind = self.expect(TokenType.IDENTIFIER)!;
+                if (self.is_strict && is_restricted_name(bind.str_value)) {
+                    return COMPILE_ERROR~;
+                }
+                if (*count < binds.len) {
+                    binds[*count].name_idx = self.add_string_constant(bind.str_value);
+                    binds[*count].key_idx = prop_key_idx;
+                    binds[*count].is_object = true;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    ushort nl = (ushort)(bind.str_value.len < 63 ? bind.str_value.len : 63);
+                    binds[*count].name_len = nl;
+                    for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = bind.str_value[j]; }
+                    (*count)++;
+                }
+            }
+        } else {
+            // Shorthand: {a} — direct child of this destructuring param
+            if (*count < binds.len) {
+                binds[*count].name_idx = prop_key_idx;
+                binds[*count].key_idx = prop_key_idx;
+                binds[*count].is_object = true;
+                binds[*count].arg_idx = src_reg;
+                binds[*count].parent_idx = parent_idx;
+                ushort nl = (ushort)(prop.str_value.len < 63 ? prop.str_value.len : 63);
+                binds[*count].name_len = nl;
+                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = prop.str_value[j]; }
+                (*count)++;
+            }
+        }
+
+        // Default: {a = expr} — compile as a thunk function like regular defaults
+        if (self.match(TokenType.ASSIGN)) {
+            if (*count > 0) {
+                binds[*count - 1].has_default = true;
+                CompiledFunction* default_func = self.compile_default_expr()!;
+                if (self.inner_func_count < MAX_INNER_FUNCS) {
+                    uint def_idx = self.inner_func_count;
+                    self.inner_funcs[def_idx] = default_func;
+                    self.inner_func_count++;
+                    self.has_closures = true;
+                    binds[*count - 1].default_func_idx = def_idx;
+                }
+            }
+        }
+
+        if (!self.match(TokenType.COMMA)) break;
+        if (self.check(TokenType.RBRACE)) break;
+    }
+
+    self.expect(TokenType.RBRACE)!;
+    return;
+}
+
+/// Parse an array destructuring pattern within a function parameter list.
+/// The '[' token has already been consumed.
+/// Collects all leaf-level binding names into the provided arrays.
+fn void? CompilerContext.collect_arr_param_binds(&self,
+    DestructBind[] binds, uint* count, ushort src_reg, ushort parent_idx)
+{
+    ushort elem_idx = 0;
+
+    for (;;) {
+        if (self.check(TokenType.RBRACKET)) break;
+
+        if (self.match(TokenType.COMMA)) {
+            elem_idx++;
+            continue;
+        }
+
+        // Rest element: [...rest] or {...rest}
+        if (self.match(TokenType.ELLIPSIS)) {
+            // Nested rest pattern: create a synthetic for the rest then recurse
+            if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                bool is_obj = self.check(TokenType.LBRACE);
+                if (*count < binds.len) {
+                    binds[*count].key_idx = 0xFFFF;
+                    binds[*count].index = elem_idx;
+                    binds[*count].is_object = false;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    binds[*count].is_synthetic = true;
+                    (*count)++;
+                }
+                ushort synth_idx = (ushort)(*count - 1);
+                self.advance()!;
+                if (is_obj) {
+                    self.collect_obj_param_binds(binds, count, src_reg, synth_idx)!;
+                } else {
+                    self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
+                }
+            } else {
+                Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (self.is_strict && is_restricted_name(rest_tok.str_value)) {
+                    return COMPILE_ERROR~;
+                }
+                if (*count < binds.len) {
+                    binds[*count].name_idx = self.add_string_constant(rest_tok.str_value);
+                    binds[*count].key_idx = 0xFFFF;
+                    binds[*count].index = elem_idx;
+                    binds[*count].is_object = false;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    ushort nl = (ushort)(rest_tok.str_value.len < 63 ? rest_tok.str_value.len : 63);
+                    binds[*count].name_len = nl;
+                    for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = rest_tok.str_value[j]; }
+                    (*count)++;
+                }
+            }
+            while (self.match(TokenType.COMMA)) {}
+            break;
+        }
+
+        // Nested pattern: create a synthetic binding for the intermediate extraction
+        if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+            bool is_obj = self.check(TokenType.LBRACE);
+            if (*count < binds.len) {
+                binds[*count].key_idx = 0;
+                binds[*count].index = elem_idx;
+                binds[*count].is_object = false;
+                binds[*count].arg_idx = src_reg;
+                binds[*count].parent_idx = parent_idx;
+                binds[*count].is_synthetic = true;
+                (*count)++;
+            }
+            ushort synth_idx = (ushort)(*count - 1);
+            self.advance()!;
+            if (is_obj) {
+                self.collect_obj_param_binds(binds, count, src_reg, synth_idx)!;
+            } else {
+                self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
+            }
+        } else {
+            Token bind = self.expect(TokenType.IDENTIFIER)!;
+            if (self.is_strict && is_restricted_name(bind.str_value)) {
+                return COMPILE_ERROR~;
+            }
+            if (*count < binds.len) {
+                binds[*count].name_idx = self.add_string_constant(bind.str_value);
+                binds[*count].key_idx = 0;  // use index instead
+                binds[*count].index = elem_idx;
+                binds[*count].is_object = false;
+                binds[*count].arg_idx = src_reg;
+                binds[*count].parent_idx = parent_idx;
+                ushort nl = (ushort)(bind.str_value.len < 63 ? bind.str_value.len : 63);
+                binds[*count].name_len = nl;
+                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = bind.str_value[j]; }
+                (*count)++;
+            }
+        }
+
+        // Default: [a = expr] — compile as a thunk function like regular defaults
+        if (self.match(TokenType.ASSIGN)) {
+            if (*count > 0) {
+                binds[*count - 1].has_default = true;
+                CompiledFunction* default_func = self.compile_default_expr()!;
+                if (self.inner_func_count < MAX_INNER_FUNCS) {
+                    uint def_idx = self.inner_func_count;
+                    self.inner_funcs[def_idx] = default_func;
+                    self.inner_func_count++;
+                    self.has_closures = true;
+                    binds[*count - 1].default_func_idx = def_idx;
+                }
+            }
+        }
+
+        elem_idx++;
+
+        if (!self.match(TokenType.COMMA)) break;
+    }
+
+    self.expect(TokenType.RBRACKET)!;
+    return;
+}
+
 /// Skip past a braced block in the lexer without compiling.
 /// Assumes the lexer is positioned just after '{'. Advances past matching '}'.
 fn void CompilerContext.skip_braced_block(&self) {
@@ -57,6 +308,35 @@ fn void CompilerContext.skip_function_body(&self) {
             if (brace_depth == 0) break; // found matching '}'
         }
     }
+}
+
+/// Scan forward through a destructured parameter pattern from the current
+/// lexer position to find the matching closing ')' and check if '=>' follows.
+/// Returns true if this is an arrow function with destructured params.
+/// Assumes the outer '(' has already been consumed and the lexer is positioned
+/// at the start of the destructuring pattern ({ or [).
+fn bool CompilerContext.scan_destruct_param_to_arrow(&self) {
+    int paren_d = 1;   // outer '(' already consumed
+    int brace_d = 0;
+    int bracket_d = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) { break; }
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) { break; }
+        if (tt == TokenType.LPAREN) { paren_d++; }
+        else if (tt == TokenType.RPAREN) {
+            paren_d--;
+            if (paren_d == 0) {
+                return self.check(TokenType.ARROW);
+            }
+        }
+        else if (tt == TokenType.LBRACE) { brace_d++; }
+        else if (tt == TokenType.RBRACE) { brace_d--; }
+        else if (tt == TokenType.LBRACKET) { bracket_d++; }
+        else if (tt == TokenType.RBRACKET) { bracket_d--; }
+    }
+    return false;
 }
 
 /// Skip past an arbitrary expression in the lexer without compiling.
@@ -491,17 +771,41 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     uint[MAX_PARAMS] param_name_indices;
     ushort first_default_idx = 0xFFFF;
 
+    // Destructured parameter binding tracking
+    DestructBind[MAX_DESTRUCT_BINDS] destruct_binds;
+    uint destruct_count = 0;
+    ushort[MAX_DESTRUCT_BINDS] destruct_binding_regs;
+    ushort[MAX_DESTRUCT_BINDS] destruct_group_regs;
+
     if (!self.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
             if (self.match(TokenType.ELLIPSIS)) {
-                Token rest_param = self.expect(TokenType.IDENTIFIER)!;
-                if (self.is_strict && is_restricted_name(rest_param.str_value)) {
-                    return COMPILE_ERROR~;
+                Token rest_param;
+
+                // Check for destructured rest: ...[]
+                if (self.check(TokenType.LBRACE)) {
+                    self.advance()!;
+                    self.alloc_reg();
+                    self.collect_obj_param_binds(destruct_binds[..], &destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {}; // mark as destructured
+                } else if (self.check(TokenType.LBRACKET)) {
+                    self.advance()!;
+                    self.alloc_reg();
+                    self.collect_arr_param_binds(destruct_binds[..], &destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {};
+                } else {
+                    rest_param = self.expect(TokenType.IDENTIFIER)!;
                 }
-                ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
-                uint rest_name_idx = self.add_string_constant(rest_param.str_value);
-                self.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+
+                if (rest_param.str_value.len > 0) {
+                    if (self.is_strict && is_restricted_name(rest_param.str_value)) {
+                        return COMPILE_ERROR~;
+                    }
+                    ushort rest_reg = self.declare_var(rest_param.str_value, VAR);
+                    uint rest_name_idx = self.add_string_constant(rest_param.str_value);
+                    self.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+                }
                 arg_count++;
                 self.has_rest = true;
                 self.rest_formal_count = arg_count - 1;
@@ -509,6 +813,34 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 self.formal_count = formal_count;
                 // Rest parameter must be last
                 break;
+            }
+
+            // Check for destructuring pattern as parameter: {a, b} or [a, b]
+            if (self.check(TokenType.LBRACE)) {
+                self.advance()!;
+                // Reserve the formal parameter register slot so the incoming
+                // argument stays live through all destructuring extractions.
+                self.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                self.collect_obj_param_binds(destruct_binds[..], &destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!self.match(TokenType.COMMA)) break;
+                if (self.check(TokenType.RPAREN)) break;
+                continue;
+            } else if (self.check(TokenType.LBRACKET)) {
+                self.advance()!;
+                // Reserve the formal parameter register slot.
+                self.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                self.collect_arr_param_binds(destruct_binds[..], &destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!self.match(TokenType.COMMA)) break;
+                if (self.check(TokenType.RPAREN)) break;
+                continue;
             }
 
             Token param = self.expect(TokenType.IDENTIFIER)!;
@@ -571,6 +903,21 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     self.formal_count = formal_count;
 
     self.expect(TokenType.RPAREN)!;
+
+    // Declare destructured bindings as variables.
+    // Synthetics don't get variables — they're intermediate extraction points.
+    for (uint i = 0; i < destruct_count; i++) {
+        if (destruct_binds[i].is_synthetic) {
+            destruct_binding_regs[i] = 0xFFFF;
+            continue;
+        }
+        uint ni = destruct_binds[i].name_idx;
+        char[] name = destruct_binds[i].name_buf[0..destruct_binds[i].name_len];
+        ushort dreg = self.declare_var(name, VAR);
+        destruct_binding_regs[i] = dreg;
+        self.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
+    }
+
 
     // Push a function-level lexical scope for let/const at function top level.
     // This sits above the block-level PUSH_LEX emitted by block() so that
@@ -670,6 +1017,96 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 self.emit_a_bc(Opcode.PUTLEX, 0, ni);
             }
             ai++;
+        }
+    }
+
+    // Emit destructuring code for destructured function parameters.
+    // Walk bindings in declaration order:
+    //   Synthetics: GETPROP from parent's source → group_reg, REQUIRE_OBJ
+    //   Leaves:     GETPROP from parent's group_reg (or arg) → bind_reg
+    if (destruct_count > 0) {
+        for (uint di = 0; di < destruct_count; di++) {
+            // Resolve source register — either the argument slot or a parent group temp
+            ushort src_reg;
+            if (destruct_binds[di].parent_idx == 0xFFFF) {
+                src_reg = destruct_binds[di].arg_idx;
+            } else {
+                src_reg = destruct_group_regs[destruct_binds[di].parent_idx];
+            }
+
+            if (destruct_binds[di].is_synthetic) {
+                // Allocate a temp register for this intermediate extraction
+                ushort group_reg = self.alloc_reg();
+                destruct_group_regs[di] = group_reg;
+
+                // GETPROP/LDREG source → group_reg
+                if (destruct_binds[di].is_object) {
+                    ushort key_reg = self.alloc_reg();
+                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, destruct_binds[di].key_idx);
+                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    self.free_reg(key_reg);
+                } else {
+                    ushort key_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)destruct_binds[di].index));
+                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    self.free_reg(key_reg);
+                }
+
+                // REQUIRE_OBJ — TypeError if null/undefined nested target
+                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
+            } else {
+                // Leaf binding — a real variable
+                ushort bind_reg = destruct_binding_regs[di];
+                uint ni = destruct_binds[di].name_idx;
+
+                // GETPROP/LDREG source → bind_reg
+                if (destruct_binds[di].is_object) {
+                    ushort key_reg = self.alloc_reg();
+                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, destruct_binds[di].key_idx);
+                    self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                    self.free_reg(key_reg);
+                } else {
+                    if (destruct_binds[di].key_idx == 0xFFFF) {
+                        self.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
+                    } else {
+                        ushort key_reg = self.alloc_reg();
+                        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)destruct_binds[di].index));
+                        self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                        self.free_reg(key_reg);
+                    }
+                }
+
+                // Default value check: if bind_reg is undefined, use the default thunk
+                if (destruct_binds[di].has_default) {
+                    ushort undef_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                    ushort cmp_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
+                    self.free_reg(undef_reg);
+
+                    uint skip_addr = self.code_count;
+                    self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+                    self.free_reg(cmp_reg);
+
+                    ushort closure_reg = self.alloc_reg();
+                    self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, destruct_binds[di].default_func_idx);
+
+                    ushort call_base = self.alloc_reg();
+                    if (self.next_reg <= call_base + 1) { self.next_reg = call_base + 2; }
+                    self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+                    self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+                    self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+                    self.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
+                    self.free_regs_to(call_base);
+
+                    int skip_off = (int)self.code_count - (int)skip_addr - 1;
+                    self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+                }
+
+                // Sync binding to environment
+                self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                self.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+            }
         }
     }
 
@@ -801,17 +1238,41 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     uint[MAX_PARAMS] param_name_indices;
     ushort first_default_idx = 0xFFFF;
 
+    // Destructured parameter binding tracking
+    DestructBind[MAX_DESTRUCT_BINDS] inner_destruct_binds;
+    uint inner_destruct_count = 0;
+    ushort[MAX_DESTRUCT_BINDS] inner_destruct_binding_regs;
+    ushort[MAX_DESTRUCT_BINDS] inner_destruct_group_regs;
+
     if (!inner_ctx.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
             if (inner_ctx.match(TokenType.ELLIPSIS)) {
-                Token rest_param = inner_ctx.expect(TokenType.IDENTIFIER)!;
-                if (inner_ctx.is_strict && is_restricted_name(rest_param.str_value)) {
-                    return COMPILE_ERROR~;
+                Token rest_param;
+
+                // Check for destructured rest: ...{a, b} or ...[a, b]
+                if (inner_ctx.check(TokenType.LBRACE)) {
+                    inner_ctx.advance()!;
+                    inner_ctx.alloc_reg();
+                    inner_ctx.collect_obj_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {};
+                } else if (inner_ctx.check(TokenType.LBRACKET)) {
+                    inner_ctx.advance()!;
+                    inner_ctx.alloc_reg();
+                    inner_ctx.collect_arr_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {};
+                } else {
+                    rest_param = inner_ctx.expect(TokenType.IDENTIFIER)!;
                 }
-                ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
-                uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
-                inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+
+                if (rest_param.str_value.len > 0) {
+                    if (inner_ctx.is_strict && is_restricted_name(rest_param.str_value)) {
+                        return COMPILE_ERROR~;
+                    }
+                    ushort rest_reg = inner_ctx.declare_var(rest_param.str_value, VAR);
+                    uint rest_name_idx = inner_ctx.add_string_constant(rest_param.str_value);
+                    inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+                }
                 arg_count++;
                 inner_ctx.has_rest = true;
                 inner_ctx.rest_formal_count = arg_count - 1;
@@ -819,6 +1280,34 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 inner_ctx.formal_count = formal_count;
                 // Rest parameter must be last
                 break;
+            }
+
+            // Check for destructuring pattern as parameter: {a, b} or [a, b]
+            if (inner_ctx.check(TokenType.LBRACE)) {
+                inner_ctx.advance()!;
+                // Reserve the formal parameter register slot so the incoming
+                // argument stays live through all destructuring extractions.
+                inner_ctx.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                inner_ctx.collect_obj_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!inner_ctx.match(TokenType.COMMA)) break;
+                if (inner_ctx.check(TokenType.RPAREN)) break;
+                continue;
+            } else if (inner_ctx.check(TokenType.LBRACKET)) {
+                inner_ctx.advance()!;
+                // Reserve the formal parameter register slot.
+                inner_ctx.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                inner_ctx.collect_arr_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!inner_ctx.match(TokenType.COMMA)) break;
+                if (inner_ctx.check(TokenType.RPAREN)) break;
+                continue;
             }
 
             Token param = inner_ctx.expect(TokenType.IDENTIFIER)!;
@@ -878,6 +1367,19 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     inner_ctx.formal_count = formal_count;
 
     inner_ctx.expect(TokenType.RPAREN)!;
+
+    // Declare destructured bindings as variables (skip synthetics).
+    for (uint i = 0; i < inner_destruct_count; i++) {
+        if (inner_destruct_binds[i].is_synthetic) {
+            inner_destruct_binding_regs[i] = 0xFFFF;
+            continue;
+        }
+        uint ni = inner_destruct_binds[i].name_idx;
+        char[] bind_name = inner_destruct_binds[i].name_buf[0..inner_destruct_binds[i].name_len];
+        ushort dreg = inner_ctx.declare_var(bind_name, VAR);
+        inner_destruct_binding_regs[i] = dreg;
+        inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
+    }
 
     // Push a function-level lexical scope for let/const at function top level.
     // Skip when there are no default parameters.
@@ -972,6 +1474,85 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 inner_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
             }
             ai++;
+        }
+    }
+
+    // Emit destructuring code — single pass walking synthetics then leaves.
+    if (inner_destruct_count > 0) {
+        for (uint di = 0; di < inner_destruct_count; di++) {
+            ushort src_reg;
+            if (inner_destruct_binds[di].parent_idx == 0xFFFF) {
+                src_reg = inner_destruct_binds[di].arg_idx;
+            } else {
+                src_reg = inner_destruct_group_regs[inner_destruct_binds[di].parent_idx];
+            }
+
+            if (inner_destruct_binds[di].is_synthetic) {
+                ushort group_reg = inner_ctx.alloc_reg();
+                inner_destruct_group_regs[di] = group_reg;
+
+                if (inner_destruct_binds[di].is_object) {
+                    ushort key_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, inner_destruct_binds[di].key_idx);
+                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    inner_ctx.free_reg(key_reg);
+                } else {
+                    ushort key_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)inner_destruct_binds[di].index));
+                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    inner_ctx.free_reg(key_reg);
+                }
+
+                inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
+            } else {
+                ushort bind_reg = inner_destruct_binding_regs[di];
+                uint ni = inner_destruct_binds[di].name_idx;
+
+                if (inner_destruct_binds[di].is_object) {
+                    ushort key_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, inner_destruct_binds[di].key_idx);
+                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                    inner_ctx.free_reg(key_reg);
+                } else {
+                    if (inner_destruct_binds[di].key_idx == 0xFFFF) {
+                        inner_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
+                    } else {
+                        ushort key_reg = inner_ctx.alloc_reg();
+                        inner_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)inner_destruct_binds[di].index));
+                        inner_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                        inner_ctx.free_reg(key_reg);
+                    }
+                }
+
+                if (inner_destruct_binds[di].has_default) {
+                    ushort undef_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                    ushort cmp_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
+                    inner_ctx.free_reg(undef_reg);
+
+                    uint skip_addr = inner_ctx.code_count;
+                    inner_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+                    inner_ctx.free_reg(cmp_reg);
+
+                    ushort closure_reg = inner_ctx.alloc_reg();
+                    inner_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, inner_destruct_binds[di].default_func_idx);
+
+                    ushort call_base = inner_ctx.alloc_reg();
+                    if (inner_ctx.next_reg <= call_base + 1) { inner_ctx.next_reg = call_base + 2; }
+                    inner_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+                    inner_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+                    inner_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+                    inner_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
+                    inner_ctx.free_regs_to(call_base);
+
+                    int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
+                    inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+                }
+
+                inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+            }
         }
     }
 
@@ -1128,20 +1709,69 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     uint[MAX_PARAMS] param_name_indices;
     ushort first_default_idx = 0xFFFF;
 
+    // Destructured parameter binding tracking
+    DestructBind[MAX_DESTRUCT_BINDS] arrow_destruct_binds;
+    uint arrow_destruct_count = 0;
+    ushort[MAX_DESTRUCT_BINDS] arrow_destruct_binding_regs;
+    ushort[MAX_DESTRUCT_BINDS] arrow_destruct_group_regs;
+
     if (!arrow_ctx.check(TokenType.RPAREN)) {
         for (;;) {
             // Check for rest parameter
             if (arrow_ctx.match(TokenType.ELLIPSIS)) {
-                Token rest_param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
-                ushort rest_reg = arrow_ctx.declare_var(rest_param.str_value, VAR);
-                uint rest_name_idx = arrow_ctx.add_string_constant(rest_param.str_value);
-                arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+                Token rest_param;
+
+                // Check for destructured rest: ...{a, b} or ...[a, b]
+                if (arrow_ctx.check(TokenType.LBRACE)) {
+                    arrow_ctx.advance()!;
+                    arrow_ctx.alloc_reg();
+                    arrow_ctx.collect_obj_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {};
+                } else if (arrow_ctx.check(TokenType.LBRACKET)) {
+                    arrow_ctx.advance()!;
+                    arrow_ctx.alloc_reg();
+                    arrow_ctx.collect_arr_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                    rest_param.str_value = {};
+                } else {
+                    rest_param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
+                }
+
+                if (rest_param.str_value.len > 0) {
+                    ushort rest_reg = arrow_ctx.declare_var(rest_param.str_value, VAR);
+                    uint rest_name_idx = arrow_ctx.add_string_constant(rest_param.str_value);
+                    arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)rest_reg, rest_name_idx);
+                }
                 arg_count++;
                 arrow_ctx.has_rest = true;
                 arrow_ctx.rest_formal_count = arg_count - 1;
                 arrow_ctx.num_args = arg_count;
                 arrow_ctx.formal_count = formal_count;
                 break;
+            }
+
+            // Check for destructuring pattern as parameter: {a, b} or [a, b]
+            if (arrow_ctx.check(TokenType.LBRACE)) {
+                arrow_ctx.advance()!;
+                arrow_ctx.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                arrow_ctx.collect_obj_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!arrow_ctx.match(TokenType.COMMA)) break;
+                if (arrow_ctx.check(TokenType.RPAREN)) break;
+                continue;
+            } else if (arrow_ctx.check(TokenType.LBRACKET)) {
+                arrow_ctx.advance()!;
+                arrow_ctx.alloc_reg();
+                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
+                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                arrow_ctx.collect_arr_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                arg_count++;
+                if (first_default_idx == 0xFFFF) { formal_count++; }
+                if (!arrow_ctx.match(TokenType.COMMA)) break;
+                if (arrow_ctx.check(TokenType.RPAREN)) break;
+                continue;
             }
 
             Token param = arrow_ctx.expect(TokenType.IDENTIFIER)!;
@@ -1197,6 +1827,19 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     arrow_ctx.formal_count = formal_count;
 
     arrow_ctx.expect(TokenType.RPAREN)!;
+
+    // Declare destructured bindings as variables (skip synthetics).
+    for (uint i = 0; i < arrow_destruct_count; i++) {
+        if (arrow_destruct_binds[i].is_synthetic) {
+            arrow_destruct_binding_regs[i] = 0xFFFF;
+            continue;
+        }
+        uint ni = arrow_destruct_binds[i].name_idx;
+        char[] bind_name = arrow_destruct_binds[i].name_buf[0..arrow_destruct_binds[i].name_len];
+        ushort dreg = arrow_ctx.declare_var(bind_name, VAR);
+        arrow_destruct_binding_regs[i] = dreg;
+        arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
+    }
 
     // Consume the => token
     arrow_ctx.expect(TokenType.ARROW)!;
@@ -1291,6 +1934,85 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                 arrow_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
             }
             ai++;
+        }
+    }
+
+    // Emit destructuring code — single pass walking synthetics then leaves.
+    if (arrow_destruct_count > 0) {
+        for (uint di = 0; di < arrow_destruct_count; di++) {
+            ushort src_reg;
+            if (arrow_destruct_binds[di].parent_idx == 0xFFFF) {
+                src_reg = arrow_destruct_binds[di].arg_idx;
+            } else {
+                src_reg = arrow_destruct_group_regs[arrow_destruct_binds[di].parent_idx];
+            }
+
+            if (arrow_destruct_binds[di].is_synthetic) {
+                ushort group_reg = arrow_ctx.alloc_reg();
+                arrow_destruct_group_regs[di] = group_reg;
+
+                if (arrow_destruct_binds[di].is_object) {
+                    ushort key_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, arrow_destruct_binds[di].key_idx);
+                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    arrow_ctx.free_reg(key_reg);
+                } else {
+                    ushort key_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)arrow_destruct_binds[di].index));
+                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    arrow_ctx.free_reg(key_reg);
+                }
+
+                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
+            } else {
+                ushort bind_reg = arrow_destruct_binding_regs[di];
+                uint ni = arrow_destruct_binds[di].name_idx;
+
+                if (arrow_destruct_binds[di].is_object) {
+                    ushort key_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, arrow_destruct_binds[di].key_idx);
+                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                    arrow_ctx.free_reg(key_reg);
+                } else {
+                    if (arrow_destruct_binds[di].key_idx == 0xFFFF) {
+                        arrow_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
+                    } else {
+                        ushort key_reg = arrow_ctx.alloc_reg();
+                        arrow_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)arrow_destruct_binds[di].index));
+                        arrow_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                        arrow_ctx.free_reg(key_reg);
+                    }
+                }
+
+                if (arrow_destruct_binds[di].has_default) {
+                    ushort undef_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                    ushort cmp_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
+                    arrow_ctx.free_reg(undef_reg);
+
+                    uint skip_addr = arrow_ctx.code_count;
+                    arrow_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+                    arrow_ctx.free_reg(cmp_reg);
+
+                    ushort closure_reg = arrow_ctx.alloc_reg();
+                    arrow_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, arrow_destruct_binds[di].default_func_idx);
+
+                    ushort call_base = arrow_ctx.alloc_reg();
+                    if (arrow_ctx.next_reg <= call_base + 1) { arrow_ctx.next_reg = call_base + 2; }
+                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+                    arrow_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+                    arrow_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
+                    arrow_ctx.free_regs_to(call_base);
+
+                    int skip_off = (int)arrow_ctx.code_count - (int)skip_addr - 1;
+                    arrow_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+                }
+
+                arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+            }
         }
     }
 

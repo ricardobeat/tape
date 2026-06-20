@@ -8511,6 +8511,34 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
+        case Opcode.REQUIRE_OBJ: {
+            // Throw TypeError if the value in register A is null or undefined.
+            // Used for object destructuring pattern null/undefined check.
+            if (ra.is_null() || ra.is_undefined()) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    char[types::ERROR_MSG_BUF] buf;
+                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF,
+                        "Cannot destructure '%s'",
+                        (ra.is_null() ? "null" : "undefined"));
+                    if (len > 0 && len < types::ERROR_MSG_BUF) {
+                        HString* msg_str = intern_string(vm, buf[:len]);
+                        TVal msg_val;
+                        msg_val.set_string(msg_str);
+                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal err_tv;
+                    err_tv.set_object(err);
+                    if (!vm_throw_value(vm, err_tv, act, &curr_pc, &needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                }
+            }
+            break;
+        }
+
         default:
             return VM_ERROR~;
         }
