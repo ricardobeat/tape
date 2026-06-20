@@ -139,6 +139,8 @@ struct ObjBind {
     bool   has_default;
     ushort default_val_reg;  // register holding compiled default expression result
     bool   is_resolved;      // for assignment mode: was var resolved locally?
+    bool   is_nested;
+    uint   nested_key_idx;
 }
 
 // ============================================================================

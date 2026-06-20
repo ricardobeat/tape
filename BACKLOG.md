@@ -39,7 +39,7 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [ ] Debug destructuring with rest: `[a, ...rest] = arr`
 - [ ] Debug destructuring default values: `[a = 42] = arr`
 - [ ] Debug nested destructuring: `const {x: {y}} = obj`
-- [ ] Debug destructuring in for-of: `for (const [k, v] of pairs) {}`
+- [x] Debug destructuring in for-of: `for (const [k, v] of pairs) {}`
 - [ ] Verify `async function` compilation: `is_async` flag propagated through `compile_inner_function`
 - [ ] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction)
 - [ ] Test async function without await (should return resolved Promise)
