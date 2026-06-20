@@ -364,17 +364,27 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                     for (uint j = i + 2; j < self.code_count; j++) {
                         Instruction jns = self.code[j];
                         Opcode jop2 = jns.op;
-                        // IF_TRUE/IF_FALSE: field A is a READ, not a write.
-                        if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
-                            if ((uint)jns.a == rK) { rK_used_after = true; break; }
-                            continue;
-                        }
-                        // If rK is read as b or c (source operands), it's still live.
-                        if ((uint)jns.b == rK || (uint)jns.c == rK) {
-                            rK_used_after = true;
-                            break;
+                        OpFormat jfmt = bytecode::get_op_format(jop2);
+                        // Only ABC-format opcodes have register operands in b and c.
+                        // For A_BC (LDCONST, LDINT, GETVAR, PUTVAR, DECLVAR, ...),
+                        // A_SBX (IF_TRUE, IF_FALSE, LDINT), and wide/no-operand formats,
+                        // only field A is a register; the rest are immediate values or
+                        // branch offsets and must NOT be misread as register references.
+                        if (jfmt == bytecode::OpFormat.ABC) {
+                            // IF_TRUE/IF_FALSE: field A is a READ, not a write.
+                            if (jop2 == Opcode.IF_TRUE || jop2 == Opcode.IF_FALSE) {
+                                if ((uint)jns.a == rK) { rK_used_after = true; break; }
+                                continue;
+                            }
+                            // If rK is read as b or c (source operands), it's still live.
+                            if ((uint)jns.b == rK || (uint)jns.c == rK) {
+                                rK_used_after = true;
+                                break;
+                            }
                         }
                         // If rK is written (a is destination), it is no longer live.
+                        // For A_BC/A_SBX/wide formats, A is the only register operand;
+                        // for ABC, A is the destination (write) when not IF_TRUE/IF_FALSE.
                         if ((uint)jns.a == rK) { break; }
                     }
                     if (!rK_used_after) {
