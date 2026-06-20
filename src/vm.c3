@@ -1794,19 +1794,22 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
         if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
             uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
 
-            uint total = 1 + nargs;
-            if (total > 16) total = 16;
+            // Builtins may modify callee/this via base_reg-2 and base_reg-1.
+            // Layout: [callee, this, arg0, arg1, ...]
+            uint total = 2 + nargs;
+            if (total > 18) total = 18;
 
-            TVal[16] temp_regs;
-            temp_regs[0] = this_val;
+            TVal[18] temp_regs;
+            temp_regs[0] = func;       // callee at index 0 (base_reg - 2)
+            temp_regs[1] = this_val;   // this at index 1   (base_reg - 1)
             for (uint i = 0; i < nargs && i < 16; i++) {
-                temp_regs[1 + i] = args[i];
+                temp_regs[2 + i] = args[i];
             }
 
             builtins::BuiltinContext ctx;
             ctx.vm = vm;
             ctx.regs = &temp_regs;
-            ctx.base_reg = 1;
+            ctx.base_reg = 2;          // base_reg - 2 = 0 = callee, base_reg - 1 = 1 = this
             ctx.argc = (ushort)nargs;
             ctx.result = &temp_regs[0];
             ctx.heap = vm.heap;
@@ -1819,7 +1822,28 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             ctx.callee_obj = hobj;
 
             builtins::dispatch_builtin(fn_idx, &ctx);
-            return *ctx.result;
+
+            if (ctx.should_throw) {
+                vm.throw_pending = true;
+                vm.heap.tval_copy_ref(&vm.throw_value, &ctx.throw_value);
+                return undef;
+            }
+
+            if (ctx.needs_re_dispatch) {
+                // Builtin (e.g., generator .next()) modified the callee/this and
+                // expects the call to be re-dispatched.
+                func = temp_regs[0];
+                this_val = temp_regs[1];
+                // Rebuild args from temp_regs[2..] with the re-dispatched nargs
+                uint new_nargs = ctx.re_nargs;
+                for (uint i = 0; i < new_nargs && i < 16; i++) {
+                    if (2 + i < 18) args[i] = temp_regs[2 + i];
+                }
+                nargs = new_nargs;
+                // Fall through to Case 3
+            } else {
+                return *ctx.result;
+            }
         }
     }
 
@@ -1844,6 +1868,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             TVal* saved_valstack_top = vm.valstack_top;
             TVal* saved_valstack = vm.valstack;
             CompiledFunction* saved_current_func = vm.current_func;
+            void* saved_resume_gen = vm.heap.resume_gen;  // preserve across nested generator calls
 
             Activation[MAX_CALLS] saved_acts;
             libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
@@ -1988,6 +2013,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             libc::memcpy(&vm.activations, &saved_acts, saved_act_count * Activation::size);
             vm.valstack_bottom = saved_valstack_bottom;
             vm.valstack_top = saved_valstack_top;
+            vm.heap.resume_gen = (GeneratorState*)saved_resume_gen;  // restore after nested generator
 
             // Drain microtasks after callback execution
             vm.heap.drain_microtasks((void*)vm);
@@ -7122,10 +7148,263 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.YIELD_STAR: {
-            // yield* iterable — this opcode should NOT be reached in normal
-            // execution. The compiler transforms yield* into a loop of
-            // GETIDX + YIELD instructions. If we get here, just set undefined.
-            ra[0].set_undefined();
+            // yield* iterable — delegate to another iterable via the ES6 iterator protocol.
+            // A = result_reg, B = iterable_reg, C = 0.
+            TVal iterable_val = *rb;
+            GeneratorState* gs = vm.heap.resume_gen;
+            if (gs == null) { ra[0].set_undefined(); break; }
+
+            HObject* iterator = null;
+            TVal received_val;
+            received_val.set_undefined();
+            bool is_resuming = (gs.delegated_iter != null);
+
+            // State machine: YS_CALL_NEXT → call iterator.next().
+            // YS_YIELD → suspend and yield the value in `received_val`.
+            const uint YS_CALL_NEXT = 0;
+            const uint YS_YIELD     = 1;
+            uint ys_state = YS_CALL_NEXT;
+
+            if (is_resuming) {
+                iterator = (HObject*)gs.delegated_iter;
+
+                if (gs.resume_kind == THROW) {
+                    // ES6 §25.3.2.4 step 3.b: call iterator.throw(exception)
+                    HString* throw_key = intern_string(vm, "throw");
+                    TVal? throw_opt = iterator.get_prop_proto(throw_key);
+                    if (catch err = throw_opt) {
+                        // No .throw() — propagate the exception
+                        gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                        if (!vm_throw_value(vm, gs.throw_value, act, &curr_pc, &needs_restart)) {
+                            gs.delegated_iter = null; gs.state = GEN_COMPLETED;
+                            if (vm.activation_count > 0) {
+                                Activation* a2 = &vm.activations[vm.activation_count - 1];
+                                vm.activation_count--;
+                                if (vm.activation_count > 0) {
+                                    Activation* ca = &vm.activations[vm.activation_count - 1];
+                                    vm.valstack_bottom = ca.bottom;
+                                    if (ca.func != null) { CompiledFunction* cf = (CompiledFunction*)ca.func; vm.valstack_top = ca.bottom + cf.num_regs; }
+                                    TVal* rb2 = a2.retval;
+                                    if (rb2 != null) vm.heap.tval_copy_ref(rb2, &gs.throw_value);
+                                }
+                            }
+                            vm.heap.resume_gen = null;
+                        }
+                        needs_restart = true; break;
+                    }
+                    TVal thr_method = throw_opt;
+                    TVal itv; itv.set_object(iterator);
+                    TVal[1] targs; targs[0] = gs.throw_value;
+                    TVal tresult = vm.heap.call_fn(vm, thr_method, &targs, 1, itv);
+                    if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                    if (!tresult.is_object() || tresult.get_heapptr() == null) {
+                        HObject*? er = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try e = er) {
+                            e.prototype = vm.heap.type_err_proto;
+                            HString* ms = intern_string(vm, "IteratorResult is not an object"); TVal mt; mt.set_string(ms);
+                            HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e.put_prop(mk, mt, hobject::PROP_FLAGS_WEC);
+                            TVal ev; ev.set_object(e);
+                            if (!vm_throw_value(vm, ev, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &ev);
+                        } else { return VM_ERROR~; }
+                        needs_restart = true; break;
+                    }
+                    HObject* tro = (HObject*)tresult.get_heapptr();
+                    HString* dk = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                    HString* vk = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                    TVal? do_ = tro.get_prop_proto(dk); bool td = false; TVal tv; tv.set_undefined();
+                    if (try d = do_) td = builtins::builtin_to_boolean(&d);
+                    if (try v = tro.get_prop_proto(vk)) tv = v;
+                    gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                    if (td) { gs.delegated_iter = null; vm.heap.tval_copy_ref(&ra[0], &tv); break; }
+                    received_val = tv; ys_state = YS_YIELD;
+                }
+                else if (gs.resume_kind == RETURN) {
+                    // ES6 §25.3.2.4 step 3.c: call iterator.return(value)
+                    HString* ret_key = intern_string(vm, "return");
+                    TVal? ret_opt = iterator.get_prop_proto(ret_key);
+                    if (catch err = ret_opt) {
+                        // No .return() — complete the generator
+                        gs.delegated_iter = null; gs.state = GEN_COMPLETED; vm.heap.resume_gen = null;
+                        HObject*? rro = vm.heap.alloc_object(hobject::ObjClass.OBJECT); TVal wrv;
+                        if (try ro = rro) {
+                            ro.prototype = vm.heap.object_proto;
+                            HString* rvk = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                            if (rvk != null) ro.put_prop(rvk, gs.return_value, hobject::PROP_FLAGS_WEC);
+                            HString* rdk = (HString*)vm.heap.strs[heap::BuiltinStr.DONE]; TVal rdt; rdt.set_boolean(true);
+                            if (rdk != null) ro.put_prop(rdk, rdt, hobject::PROP_FLAGS_WEC); wrv.set_object(ro);
+                        } else { wrv = gs.return_value; }
+                        if (vm.activation_count > 0) {
+                            Activation* ya = &vm.activations[vm.activation_count - 1];
+                            vm.heap.tval_copy_ref(ya.retval, &wrv); vm.activation_count--;
+                            if (vm.activation_count > 0) {
+                                Activation* ca = &vm.activations[vm.activation_count - 1];
+                                vm.valstack_bottom = ca.bottom;
+                                if (ca.func != null) { CompiledFunction* cf = (CompiledFunction*)ca.func; vm.valstack_top = ca.bottom + cf.num_regs; }
+                            }
+                        }
+                        needs_restart = true; break;
+                    }
+                    TVal ret_method = ret_opt;
+                    TVal itv2; itv2.set_object(iterator);
+                    TVal[1] rargs; rargs[0] = gs.return_value;
+                    TVal rresult = vm.heap.call_fn(vm, ret_method, &rargs, 1, itv2);
+                    if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                    if (!rresult.is_object() || rresult.get_heapptr() == null) {
+                        HObject*? er2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try e2 = er2) {
+                            e2.prototype = vm.heap.type_err_proto;
+                            HString* ms2 = intern_string(vm, "IteratorResult is not an object"); TVal mt2; mt2.set_string(ms2);
+                            HString* mk2 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e2.put_prop(mk2, mt2, hobject::PROP_FLAGS_WEC);
+                            TVal ev2; ev2.set_object(e2);
+                            if (!vm_throw_value(vm, ev2, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &ev2);
+                        } else { return VM_ERROR~; }
+                        needs_restart = true; break;
+                    }
+                    HObject* rro2 = (HObject*)rresult.get_heapptr();
+                    HString* dk2 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                    HString* vk2 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                    TVal? do2 = rro2.get_prop_proto(dk2); bool rd = false; TVal rv; rv.set_undefined();
+                    if (try d2 = do2) rd = builtins::builtin_to_boolean(&d2);
+                    if (try v2 = rro2.get_prop_proto(vk2)) rv = v2;
+                    gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                    if (rd) { gs.delegated_iter = null; vm.heap.tval_copy_ref(&ra[0], &rv); break; }
+                    received_val = rv; ys_state = YS_YIELD;
+                }
+                else {
+                    // NEXT resume — use resume value for iterator.next()
+                    received_val = gs.resume_value; gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                }
+            } else {
+                // First entry: get iterator from iterable
+                HString* iter_sym = vm.heap.iterator_symbol;
+                if (iter_sym == null) iter_sym = builtins::ensure_iterator_symbol(vm.heap);
+                if (iter_sym == null) {
+                    HString* tstr = typeof_string(vm, &iterable_val);
+                    HObject*? er3 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try e3 = er3) {
+                        e3.prototype = vm.heap.type_err_proto;
+                        char[128] buf; int bl = libc::snprintf(&buf, 128, "%s is not iterable", tstr.get_cstr());
+                        if (bl > 0 && bl < 128) {
+                            HString* ms3 = intern_string(vm, buf[:bl]);
+                            if (ms3 != null) {
+                                TVal mt3; mt3.set_string(ms3);
+                                HString* mk3 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e3.put_prop(mk3, mt3, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                        TVal ev3; ev3.set_object(e3);
+                        if (!vm_throw_value(vm, ev3, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &ev3);
+                    } else { return VM_ERROR~; }
+                    needs_restart = true; break;
+                }
+                TVal iter_method; bool has_method = false;
+                {
+                    TVal? mopt;
+                    if (iterable_val.is_object() && iterable_val.get_heapptr() != null) {
+                        mopt = ((HObject*)iterable_val.get_heapptr()).get_prop_proto(iter_sym);
+                    } else if (iterable_val.is_string() && vm.heap.string_proto != null) {
+                        mopt = vm.heap.string_proto.get_prop_proto(iter_sym);
+                    }
+                    if (try m = mopt) {
+                        iter_method = m;
+                        has_method = iter_method.is_lightfunc() ||
+                            (iter_method.is_object() && iter_method.get_heapptr() != null &&
+                             ((HObject*)iter_method.get_heapptr()).is_callable());
+                    }
+                }
+                if (!has_method) {
+                    HString* tstr2 = typeof_string(vm, &iterable_val);
+                    HObject*? er4 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try e4 = er4) {
+                        e4.prototype = vm.heap.type_err_proto;
+                        char[128] buf2; int bl2 = libc::snprintf(&buf2, 128, "%s is not iterable", tstr2.get_cstr());
+                        if (bl2 > 0 && bl2 < 128) {
+                            HString* ms4 = intern_string(vm, buf2[:bl2]);
+                            if (ms4 != null) {
+                                TVal mt4; mt4.set_string(ms4);
+                                HString* mk4 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e4.put_prop(mk4, mt4, hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                        TVal ev4; ev4.set_object(e4);
+                        if (!vm_throw_value(vm, ev4, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &ev4);
+                    } else { return VM_ERROR~; }
+                    needs_restart = true; break;
+                }
+                TVal itv3 = vm.heap.call_fn(vm, iter_method, null, 0, iterable_val);
+                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                if (!itv3.is_object() || itv3.get_heapptr() == null) { ra[0].set_undefined(); break; }
+                iterator = (HObject*)itv3.get_heapptr();
+                gs.delegated_iter = iterator;
+            }
+
+            // State YS_CALL_NEXT: call iterator.next(received) and check done
+            if (ys_state == YS_CALL_NEXT) {
+                HString* nk = intern_string(vm, "next");
+                TVal? no = iterator.get_prop_proto(nk);
+                if (catch err = no) { ra[0].set_undefined(); break; }
+                TVal nm = no;
+                TVal itv4; itv4.set_object(iterator);
+                TVal[1] nargs; nargs[0] = received_val;
+                TVal nres = vm.heap.call_fn(vm, nm, &nargs, 1, itv4);
+                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                if (!nres.is_object() || nres.get_heapptr() == null) {
+                    HObject*? er5 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                    if (try e5 = er5) {
+                        e5.prototype = vm.heap.type_err_proto;
+                        HString* ms5 = intern_string(vm, "IteratorResult is not an object"); TVal mt5; mt5.set_string(ms5);
+                        HString* mk5 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e5.put_prop(mk5, mt5, hobject::PROP_FLAGS_WEC);
+                        TVal ev5; ev5.set_object(e5);
+                        if (!vm_throw_value(vm, ev5, act, &curr_pc, &needs_restart)) return vm_uncaught_error(vm, &ev5);
+                    } else { return VM_ERROR~; }
+                    needs_restart = true; break;
+                }
+                HObject* nro = (HObject*)nres.get_heapptr();
+                HString* dk3 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                HString* vk3 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                TVal? do3 = nro.get_prop_proto(dk3); bool nd = false; TVal nv; nv.set_undefined();
+                if (try d3 = do3) nd = builtins::builtin_to_boolean(&d3);
+                if (try v3 = nro.get_prop_proto(vk3)) nv = v3;
+                if (nd) {
+                    gs.delegated_iter = null; gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                    vm.heap.tval_copy_ref(&ra[0], &nv); break;
+                }
+                received_val = nv; ys_state = YS_YIELD;
+            }
+
+            // State YS_YIELD: suspend the generator and yield received_val
+            if (ys_state == YS_YIELD) {
+                for (uint i = 0; i < gs.num_regs; i++) {
+                    vm.heap.tval_copy_ref(&gs.saved_regs[i], &act.bottom[i]);
+                }
+                gs.saved_pc = curr_pc - 1;
+                gs.var_env = act.var_env; gs.lex_env = act.lex_env; gs.cat = act.cat;
+                vm.heap.tval_copy_ref(&gs.this_binding, &act.this_binding);
+                gs.state = GEN_SUSPENDED_YIELD;
+                vm.heap.tval_copy_ref(&vm.heap.yield_value, &received_val);
+                vm.heap.resume_gen = null; vm.heap.did_yield = true;
+                if (vm.activation_count > 0) {
+                    Activation* p_act = &vm.activations[vm.activation_count - 1];
+                    TVal* p_ret = p_act.retval;
+                    HObject*? p_robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT); TVal p_wrapped;
+                    if (try p_robj = p_robj_raw) {
+                        p_robj.prototype = vm.heap.object_proto;
+                        HString* p_vk = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                        if (p_vk != null) p_robj.put_prop(p_vk, vm.heap.yield_value, hobject::PROP_FLAGS_WEC);
+                        HString* p_dk = (HString*)vm.heap.strs[heap::BuiltinStr.DONE]; TVal p_dt; p_dt.set_boolean(false);
+                        if (p_dk != null) p_robj.put_prop(p_dk, p_dt, hobject::PROP_FLAGS_WEC); p_wrapped.set_object(p_robj);
+                    } else { p_wrapped = vm.heap.yield_value; }
+                    vm.heap.tval_copy_ref(&p_ret[0], &p_wrapped);
+                    vm.activation_count--;
+                    if (vm.activation_count > 0) {
+                        Activation* p_caller = &vm.activations[vm.activation_count - 1];
+                        vm.valstack_bottom = p_caller.bottom;
+                        if (p_caller.func != null) {
+                            CompiledFunction* p_cfunc = (CompiledFunction*)p_caller.func;
+                            vm.valstack_top = p_caller.bottom + p_cfunc.num_regs;
+                        }
+                    }
+                }
+                needs_restart = true;
+            }
             break;
         }
 
