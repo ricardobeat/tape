@@ -204,6 +204,15 @@ fn void builtin_eval(BuiltinContext* ctx) {
     // function body contains a direct eval(...) call).
     // For direct eval, use the caller's lexical environment (ES5 §10.4.2).
     // For indirect eval, use the global environment.
+    //
+    // In strict mode (this engine is strict-only per AGENTS.md), the eval'd
+    // code's variable and function declarations must be installed in a FRESH
+    // declarative environment whose parent is the caller's env (or the global
+    // env for indirect eval). This prevents `eval("var x = 1")` from
+    // mutating the caller's bindings — instead the declarations live in the
+    // eval's own env, which is discarded when the eval call returns.
+    // (Sloppy-mode eval would share the caller's env — Annex B legacy —
+    // but the engine has no sloppy mode.)
     vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
     usz act_count = eval_vm.activation_count;
     bool is_direct_eval = false;
@@ -215,8 +224,20 @@ fn void builtin_eval(BuiltinContext* ctx) {
             env_for_eval = caller_act.lex_env;
         }
     }
-    (*func_obj.extra_ptr()).func.var_env = env_for_eval;
-    (*func_obj.extra_ptr()).func.lex_env = env_for_eval;
+    // Create a fresh declarative child env so the eval's DECLVAR writes don't
+    // mutate the caller's bindings. `env_create_declarative` already exists
+    // and is used for the `needs_lex_bridge` path (vm.c3:5217).
+    EnvRecord*? eval_env_raw = env::env_create_declarative(ctx.heap, env_for_eval);
+    if (catch err = eval_env_raw) {
+        // Allocation failed — fall back to sharing the caller's env (preserves
+        // the old behavior on OOM rather than crashing the VM).
+        (*func_obj.extra_ptr()).func.var_env = env_for_eval;
+        (*func_obj.extra_ptr()).func.lex_env = env_for_eval;
+    } else {
+        EnvRecord* eval_env = eval_env_raw;
+        (*func_obj.extra_ptr()).func.var_env = eval_env;
+        (*func_obj.extra_ptr()).func.lex_env = eval_env;
+    }
 
     // Replace the callee slot with the compiled function HObject
     TVal func_tv;
