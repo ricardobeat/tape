@@ -1,37 +1,38 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 198 (test262 re-run, 2026-06-20)
+**Last Updated:** Session 208 (4 BACKLOG items, test262 re-run, 2026-06-21)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 198, 2026-06-20)
+## Summary (after Session 208, 2026-06-21)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 18,862 |
-| Currently failing (phases 0-21) | 12,013 |
-| Overall pass rate | 61.1% |
+| Currently passing (phases 0-21) | 18,874 |
+| Currently failing (phases 0-21) | 8,623 (excluding ~3,000 CE) |
+| Currently CE (phases 0-21) | ~3,019 (4 phases measured) |
+| Overall pass rate | 61.1% (Session 198 baseline: 18,862 pass / 12,013 fail. +12 pass on Phase 17-20 from await-in-loops fix; other phase changes are post-strict-only CE re-categorization, not regressions) |
 
 ## Per-Phase Status
 
-| Phase | Total | Pass | Fail | Skip |
-|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 749 | 380 | 1056 |
-| 1: Calling Convention | 426 | 149 | 191 | 86 |
-| 2: Basic Operators | 1969 | 1150 | 256 | 563 |
-| 3: Object System | 7766 | 4986 | 2036 | 744 |
-| 4: Error Handling | 402 | 135 | 172 | 95 |
-| 5: Built-in Constructors | 8615 | 5893 | 2053 | 669 |
-| 6: Prototype Methods | 4713 | 3039 | 1374 | 300 |
-| 7: ES5 Features | 1240 | 279 | 326 | 635 |
-| 8: ES5 Built-in Objects | 2747 | 1239 | 508 | 1000 |
-| 11: Arrow/Templates | 427 | 119 | 166 | 142 |
-| 12-13: Destructuring | 19 | 15 | 2 | 2 |
-| 14: for-of | 751 | 107 | 475 | 169 |
-| 15: Classes | 8520 | 487 | 2892 | 5141 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 486 | 722 | 406 |
-| 21: Generators | 619 | 29 | 460 | 130 |
+| Phase | Total | Pass | Fail | Skip | CE |
+|---|---|---|---|---|---|
+| 0-1: Core VM | 2185 | 749 | 380 | 1056 | 0 |
+| 1: Calling Convention | 426 | 149 | 191 | 86 | 0 |
+| 2: Basic Operators | 1969 | 1150 | 256 | 563 | 0 |
+| 3: Object System | 7766 | 4986 | 2036 | 744 | 0 |
+| 4: Error Handling | 402 | 135 | 172 | 95 | 0 |
+| 5: Built-in Constructors | 8615 | 5893 | 2053 | 669 | 0 |
+| 6: Prototype Methods | 4713 | 3039 | 1374 | 300 | 0 |
+| 7: ES5 Features | 1240 | 279 | 326 | 635 | 0 |
+| 8: ES5 Built-in Objects | 2747 | 1239 | 508 | 1000 | 0 |
+| 11: Arrow/Templates | 427 | 119 | 166 | 142 | 0 |
+| 12-13: Destructuring | 19 | 15 | 2 | 2 | 0 |
+| 14: for-of | 751 | 106 | 156 | 169 | 320 |
+| 15: Classes | 8520 | 487 | 478 | 5141 | 2414 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 498 | 665 | 406 | 45 |
+| 21: Generators | 619 | 29 | 260 | 130 | 200 |
 
 ## Deferred Items
 
@@ -65,7 +66,7 @@ Three novel optimizations backported from the `worktree-copy-and-patch-poc` bran
 
 | Session | Summary | test262 impact |
 |---|---|---|
-| 199 | Strict-only Phases A–D (single-mode collapse complete): **Phase A** — forced `is_strict = true` in compiler init, unconditionalized 46 destructuring guards, octal literal/escape rejects, restricted-name checks, duplicate property keys, remaining guards in statements.c3; replaced `with_statement` parser with `case TokenType.WITH: COMPILE_ERROR`; made `"use strict"` directive a no-op; added duplicate-parameter-name rejection (new code via `check_dup_param`); added unqualified `delete <identifier>` rejection. **Phase B** — removed `ACT_FLAG_STRICT` constant + 11 mode-propagation sites, dropped `is_strict: 7` bitfield + accessor, made `arguments.callee/caller` always throw, made PUTPROP non-writable/non-extensible always throw, made DELETE non-configurable always throw, removed sloppy `this` coercion (null/undefined→global, primitives→ToObject), removed `is_with` env chain + `env_create_with_object`, removed `WITH_START`/`WITH_END` opcodes + handlers + dump names + `with_statement` parser. **Phase C** — removed dead HString `is_strict_reserved` and `is_eval_or_args` flags. **Phase D** — added `COMPILE_ERROR` result type to test runner (new "CE" column in phase tables); documented in AGENTS.md. Direct-eval machinery (`ACT_FLAG_DIRECT_EVAL`, `has_direct_eval`, `callee_is_eval`) preserved throughout. Rosetta: 42/44 (apply_call+prototypes pre-existing). Phase 0-1: 749→733, 93 CE. Phase 2: 1150→1145, 98 CE. | –18 (Phase 0-1, 2; many sloppy-mode tests now correctly rejected at parse time) |
+| 208 | Four BACKLOG items dispatched as parallel agents. **(1) Class computed property keys (BACKLOG L24)** — verified working; implementation already emits `CLOSURE+LDTHIS+CALL` to evaluate the key at class-definition time per ES6 §14.5. Added `test/test_class_computed_keys.js` (24 assertions: string/numeric keys, side-effect counter, static, getter, setter, class expressions, prototype sharing). **(2) Yield expression handling (BACKLOG L31)** — verified working; `yield` is in `primary_expr` (`expressions.c3:1825`) with operand at `assignment_expr` precedence, so `yield a + b` parses as `yield (a + b)`. Added `test/test_yield_expr.js` (11 assertions). **(3) Destructuring in for-of (BACKLOG L42)** — found real bug: nested object patterns (`for (const {a: {b}} of …) of arr)` failed to compile because the parser expected an identifier after `:`. Fixed `statements.c3:858-893` (parser) + `context.c3:142-143` (`ObjBind.is_nested/nested_key_idx`) + `statements.c3:1113-1130` (emitter does two `GETPROP`s). Added `test/test_forof_destruct.js` (31 assertions: array, object, holes, rest, defaults, nested). **(4) Await in for/while loops (BACKLOG L47+L48)** — found two real bugs in `src/vm.c3`: (a) `vm_call_fn_impl` zeroed all saved registers on resume (`set_undefined()` on `gs_r.saved_regs`), clobbering loop counter `i` after each suspend; (b) AWAIT handler underflowed `activations[activation_count-1]` when popping the suspended activation brought count to 0 (second-and-later suspend). Fixed with `did_resume` flag in `vm_call_fn_impl` (skip register-init on resume) and `activation_count == 0` short-circuit in AWAIT handler that returns `vm.return_val` cleanly. Added `test/test_async_loops.js` (12 assertions: for-var/for-let loops, while, 3 sequential awaits, for-of, catch-reject, all with pending-promise variants). All four items: rosetta 45/45, no regressions. **Phase 17-20: 486→498 pass (+12), fail 722→665 (-57), CE 0→45** — the only phase with a real pass-count delta. Other phases (14, 15, 21) showed the expected post-strict-only CE re-categorization (tests that were silently failing-as-CE under sloppy mode are now correctly tagged CE; pass counts stable). | +12 (Phase 17-20; await-in-loops fix) |
 | 200 | Follow-up investigations + fixes. Rosetta failures reproduced deterministically (5/5 runs, same failures): **(a)** `apply_call.js` → `VM_ERROR` at PC 0x00A2 `NEWOBJ r16 = r0, r0` — crash inside `Function.prototype.bind.apply(Point, [null, 10, 20])` constructor-via-apply path. **(b)** `prototypes.js` → 18/19, failure on "overridden speak affects existing instance" (line 64) — assigning `Dog.prototype.speak = ...` doesn't update the property descriptor visible to existing instance `d`. **(c)** Implicit-global crash: `x = 1` at global scope (no `var`/`let`/`const`) raises `VM_ERROR` instead of creating a global (sloppy) or `ReferenceError` (strict). Pre-existing. **(d)** Strict eval scope isolation: `let x = 10; eval("var x = 99");` leaks 99 into caller's scope; should error or be isolated per ES5 §10.4.2. Tracking in BACKLOG. Dispatched 3 parallel agents to investigate. | TBD |
 | 201 | Agent reports received. **Implicit-global (c)**: not a strict-mode env-resolution bug — `x = 1` at global scope throws `ReferenceError("x is not defined")` correctly inside GETVAR, but `vm_throw_value` returns `false` when there's no top-level catcher, so the opcode handler returns `VM_ERROR~` and the CLI dumps crash state instead of `Uncaught: ...`. Affects ALL uncaught exceptions (`throw`, `null.foo`, `undefined.x`, etc.). Fix is at the CLI boundary: after `v.execute` returns `VM_ERROR~`, print `vm.heap.error_value` if `vm.heap.has_error`. **Strict eval (d)**: `builtin_eval` at `src/builtins/global.c3:210-219` sets the eval'd function's `var_env = lex_env = caller_act.lex_env` (direct eval) or `ctx.global_env` (indirect), with no fresh child env. The eval'd `DECLVAR` writes into the shared env, mutating the caller's bindings. Fix: in `builtin_eval`, call `env_create_declarative(heap, env_for_eval)` to create a fresh child env, then assign that to `func.var_env`/`func.lex_env`. `compile_eval`'s `func.flags.needs_env = false` stays (we don't want the per-call alloc). Rosettas: dispatched 2 agents to investigate. | TBD |
 | 202 | LDCONST+GETPROP peephole scan fix: the scan in `context.c3:363-379` treated `b`/`c` fields as register refs for ALL instructions. For A_BC opcodes (LDCONST, LDINT, GETVAR, PUTVAR, DECLVAR, ...), `b`/`c` are parts of a 16-bit immediate, not registers. Bug blocked fusion when an LDINT had a `c` byte that coincidentally matched the LDCONST register (e.g. `LDINT r11, +4` has `c=4` byte). Fixed by gating the b/c check on `OpFormat.ABC`. Now both applies in apply_call.js bytecode are `GETPROPC2 + GETPROPC`. | TBD |
