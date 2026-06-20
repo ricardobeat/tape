@@ -28,7 +28,7 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Run pure-class test suite: 149/237 pass (62.9%), 34 correctly rejected at compile time
 - [ ] Run full Phase 15 after fixes to measure delta
 - [ ] Survey generator test failures and categorize by root cause (compile vs VM vs builtin)
-- [ ] Fix `yield` expression handling in compiler: `var x = yield val` — yield is right-associative with lowest precedence
+- [x] Fix `yield` expression handling in compiler: `var x = yield val` — yield is right-associative with lowest precedence. `yield` already lives in `primary_expr` (`src/compiler/expressions.c3:1825`) with `assignment_expr()` for the operand, so right-associativity, sub-expressions, return value, and bare yield all work. Added `test/test_yield_expr.js` (11/11 pass); rosetta 45/45 unchanged.
 - [ ] Fix `yield*` delegation: should iterate inner iterable and yield each value
 - [ ] Fix `Generator.prototype.return()` / `.throw()` — currently likely missing or stubbed
 - [ ] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3
