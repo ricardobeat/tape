@@ -3521,34 +3521,41 @@ fn TVal? Vm.run(Vm* vm) {
                             break;
                         }
                         break;
-                    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
-                        vm.heap.tval_copy_ref(ra, &res.data_val);
-                        track_heap_store(act, ra, (uint)insn.a);
-                        // Populate IC for this site
-                        if (res.owner != null && ic_base != null) {
-                            uint pc_off = (uint)(curr_pc - 1 - code_base);
-                            hobject::ICEntry* ic = ic_base + pc_off;
-                            int owner_idx = res.owner.find_prop_idx(key);
-                            if (owner_idx >= 0) {
-                                ic.shape_id = hobj.shape_id;
-                                ic.proto = res.owner == hobj ? null : (void*)res.owner;
-                                ic.prop_idx = (ushort)owner_idx;
-                                ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
-                                if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
-                                ic.key = key;
-                                if (key != null) { ((types::HeapHeader*)key).incref(); }
-                                ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
-                                ic.cached_prop_alloc = (void*)res.owner.prop_values();
-                                // Also populate megamorphic cache for cross-site benefit
-                                hobject::mega_cache_store(vm.heap, hobj, key, res.owner, owner_idx);
+                        } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                            vm.heap.tval_copy_ref(ra, &res.data_val);
+                            track_heap_store(act, ra, (uint)insn.a);
+                            // Populate IC for this site.
+                            // Only cache OWN property lookups. Inherited lookups are not cached
+                            // because the IC would have no way to detect modifications to
+                            // intermediate objects in the prototype chain (e.g. when
+                            // B.prototype.foo = ... is set, an IC that previously resolved
+                            // b.foo via A.prototype would return a stale value). This matches
+                            // the QuickJS approach where the shape itself encodes the proto
+                            // and lookups always walk the current chain.
+                            if (res.owner == hobj && res.owner != null && ic_base != null) {
+                                uint pc_off = (uint)(curr_pc - 1 - code_base);
+                                hobject::ICEntry* ic = ic_base + pc_off;
+                                int owner_idx = res.owner.find_prop_idx(key);
+                                if (owner_idx >= 0) {
+                                    ic.shape_id = hobj.shape_id;
+                                    ic.proto = null;  // own property
+                                    ic.prop_idx = (ushort)owner_idx;
+                                    ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
+                                    if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
+                                    ic.key = key;
+                                    if (key != null) { ((types::HeapHeader*)key).incref(); }
+                                    ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
+                                    ic.cached_prop_alloc = (void*)res.owner.prop_values();
+                                    // Also populate megamorphic cache for cross-site benefit
+                                    hobject::mega_cache_store(vm.heap, hobj, key, res.owner, owner_idx);
+                                }
                             }
+                        } else {
+                            ra.set_undefined();
                         }
                     } else {
                         ra.set_undefined();
                     }
-                } else {
-                    ra.set_undefined();
-                }
             } else if (rb.is_null() || rb.is_undefined()) {
                 // TypeError: Cannot read properties of null/undefined
                 HString* name_hstr = null;
@@ -3846,14 +3853,15 @@ fn TVal? Vm.run(Vm* vm) {
                         } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                             vm.heap.tval_copy_ref(ra, &res.data_val);
                             track_heap_store(act, ra, (uint)insn.a);
-                            // Populate IC for this site
-                            if (res.owner != null && ic_base != null) {
+                            // Populate IC for this site.
+                            // Only cache OWN property lookups (see GETPROP comment).
+                            if (res.owner == hobj && res.owner != null && ic_base != null) {
                                 uint pc_off = (uint)(curr_pc - 1 - code_base);
                                 hobject::ICEntry* ic = ic_base + pc_off;
                                 int owner_idx = res.owner.find_prop_idx(key);
                                 if (owner_idx >= 0) {
                                     ic.shape_id = hobj.shape_id;
-                                    ic.proto = res.owner == hobj ? null : (void*)res.owner;
+                                    ic.proto = null;  // own property
                                     ic.prop_idx = (ushort)owner_idx;
                                     ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
                                     if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
@@ -4105,13 +4113,13 @@ fn TVal? Vm.run(Vm* vm) {
                         hobject::PropLookupResult r1 = hobj1.get_prop_or_accessor_proto(key1, true);
                         if (r1.kind == hobject::PropLookupKind.PROP_DATA) {
                             mid_val = r1.data_val;
-                            // Populate IC1
-                            if (r1.owner != null && ic_base != null) {
+                            // Populate IC1 — only cache OWN property lookups (see GETPROP).
+                            if (r1.owner == hobj1 && r1.owner != null && ic_base != null) {
                                 hobject::ICEntry* ic1 = ic_base + pc1;
                                 int idx1 = r1.owner.find_prop_idx(key1);
                                 if (idx1 >= 0) {
                                     ic1.shape_id = hobj1.shape_id;
-                                    ic1.proto = r1.owner == hobj1 ? null : (void*)r1.owner;
+                                    ic1.proto = null;  // own property
                                     ic1.prop_idx = (ushort)idx1;
                                     if (ic1.key != null) { vm.heap.decref((types::HeapHeader*)ic1.key); }
                                     ic1.key = key1;
@@ -4169,13 +4177,13 @@ fn TVal? Vm.run(Vm* vm) {
                             if (r2.kind == hobject::PropLookupKind.PROP_DATA) {
                                 vm.heap.tval_copy_ref(ra2, &r2.data_val);
                                 track_heap_store(act, ra2, dst2_reg);
-                                // Populate IC2
-                                if (r2.owner != null && ic_base != null) {
+                                // Populate IC2 — only cache OWN property lookups (see GETPROP).
+                                if (r2.owner == hobj2 && r2.owner != null && ic_base != null) {
                                     hobject::ICEntry* ic2 = ic_base + pc2;
                                     int idx2 = r2.owner.find_prop_idx(key2);
                                     if (idx2 >= 0) {
                                         ic2.shape_id = hobj2.shape_id;
-                                        ic2.proto = r2.owner == hobj2 ? null : (void*)r2.owner;
+                                        ic2.proto = null;  // own property
                                         ic2.prop_idx = (ushort)idx2;
                                         if (ic2.key != null) { vm.heap.decref((types::HeapHeader*)ic2.key); }
                                         ic2.key = key2;

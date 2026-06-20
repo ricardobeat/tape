@@ -1919,14 +1919,18 @@ fn MegamorphicEntry* mega_cache_lookup(heap::Heap* h, HObject* hobj, void* key) 
 }
 
 /// Populate the megamorphic cache after a successful property lookup.
+/// Only caches OWN property lookups (owner == hobj). Inherited lookups are not
+/// cached because the cache has no way to detect modifications to intermediate
+/// objects in the prototype chain (see the comment in vm.c3 GETPROP).
 fn void mega_cache_store(heap::Heap* h, HObject* hobj, void* key, HObject* owner, int prop_idx) @inline {
     if (h.mega_cache == null) return;
+    if (owner != hobj) return;  // don't cache inherited lookups
     uint slot = mega_hash(hobj.shape_id, key);
     MegamorphicEntry* e = h.mega_cache + slot;
     e.key = key;
     e.shape_id = hobj.shape_id;
     e.prop_idx = (ushort)prop_idx;
-    e.proto = owner == hobj ? null : (void*)owner;
+    e.proto = null;  // own property
     e.prop_value_ptr = &owner.prop_values()[prop_idx];
     e.cached_prop_alloc = (void*)owner.prop_values();
 }
