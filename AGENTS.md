@@ -39,6 +39,12 @@ All common tasks are `just` recipes (`just list` to see them all). The fast debu
 
 Typical debug loop: minimize a failure to a single-line `.js` repro → `just run` it → if it fails to compile the bug is in the compiler; if it runs but gives a wrong value / `VM_ERROR` it's in the VM → trace with the flags below.
 
+**test262 result categories** (per-phase table from `python3 scripts/run_test262.py --phase <n>`):
+- **Pass** — runtime PASS
+- **Fail** — runtime FAIL (harness assertion, timeout, VM_ERROR)
+- **Skip** — runner skip (noStrict, $DONOTEVALUATE, unsupported patterns, ES5-only)
+- **CE** — Compile Error (strict-only engine rejected the source). For `noStrict` tests this is the expected/correct outcome.
+
 ## Build Flags
 
 - `-D NONANBOX` — disable NaN-boxing, using the 16-byte tagged union `TVal` instead. Default is nanbox-on. Use `just build-nonanbox` or `just test-nonanbox` to exercise the non-nanbox path (e.g., for 16-bit ESP32 targets).

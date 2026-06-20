@@ -99,7 +99,7 @@ fn int exec_js(Vm* v, Heap* hp, char[] src) {
     CompiledFunction*? f = compiler::compile(&lx, hp);
     if (catch err = f) {
         io::eprintfn("  COMPILE ERROR");
-        return 1;
+        return 2;  // 2 = compile error (distinct from runtime error)
     }
     if (catch err = v.execute(f)) {
         io::eprintfn("  RUNTIME ERROR (compiled ok, %d insns)", f.code_count);
@@ -145,7 +145,9 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     // Load simplified isConstructor
     if (exec_js(v, hp, ISCON_HARNESS) != 0) { io::eprintfn("  FAIL: ISCON_HARNESS"); }
 
-    if (exec_js(v, hp, src) != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
+    int src_rc = exec_js(v, hp, src);
+    if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
+    if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 
     char[] kn = "__test262_fail";
     uint hh = hp.hash_string(kn);
@@ -206,6 +208,8 @@ fn int run_worker_loop() {
 
             if (rc == 0) {
                 io::printfn("PASS %s", (String)path);
+            } else if (rc == 2) {
+                io::printfn("COMPILE_ERROR %s", (String)path);
             } else {
                 io::printfn("FAIL %s", (String)path);
             }

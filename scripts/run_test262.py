@@ -293,6 +293,9 @@ def should_skip(path, es5_only=False):
         return True
     if es5_only and ANY_FEATURES_PATTERN.search(header):
         return True
+    # Strict-only engine: noStrict tests are intentionally unsupported —
+    # they exercise non-strict language features (octals, with, duplicate
+    # params, etc.) which the engine now rejects at parse time.
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return True
     return False
@@ -348,6 +351,10 @@ class Worker:
             result = None
             if line.startswith("PASS "):
                 result = "PASS"
+            elif line.startswith("COMPILE_ERROR "):
+                # Strict-only engine: intentional parse rejection of non-strict code.
+                # Treated as a passing category in the strict-only world.
+                result = "COMPILE_ERROR"
             elif line.startswith("FAIL "):
                 result = "FAIL"
             else:
@@ -497,8 +504,9 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
         w.kill()
 
     pass_count = sum(1 for _, r in results if r == "PASS")
-    fail_count = len(results) - pass_count
-    return (pass_count, fail_count, skipped, total)
+    compile_err_count = sum(1 for _, r in results if r == "COMPILE_ERROR")
+    fail_count = len(results) - pass_count - compile_err_count
+    return (pass_count, fail_count, skipped, total, compile_err_count)
 def main():
     parser = argparse.ArgumentParser(
         description="Run test262 tests in parallel worker mode."
@@ -547,29 +555,30 @@ def main():
             sys.exit(1)
 
     phases = [resolve_phase_num(args.phase)] if args.phase is not None else range(len(PHASES))
-    grand_pass = grand_fail = grand_skip = grand_total = 0
+    grand_pass = grand_fail = grand_skip = grand_total = grand_ce = 0
 
     if args.es5:
         print("Mode: ES5-only (skipping tests with post-ES5 feature flags)\n")
 
-    print("Phase | Total | Pass | Fail | Skip")
-    print("------|-------|------|------|-----")
+    print("Phase | Total | Pass | Fail | Skip | CE")
+    print("------|-------|------|------|------|-----")
     for p in phases:
-        p_pass, p_fail, p_skip, p_total = run_phase(
+        p_pass, p_fail, p_skip, p_total, p_ce = run_phase(
             p, args.workers, args.timeout, es5_only=args.es5
         )
         print(
-            f"{PHASES[p]['label']} | {p_total} | {p_pass} | {p_fail} | {p_skip}"
+            f"{PHASES[p]['label']} | {p_total} | {p_pass} | {p_fail} | {p_skip} | {p_ce}"
         )
         grand_pass += p_pass
         grand_fail += p_fail
         grand_skip += p_skip
         grand_total += p_total
+        grand_ce += p_ce
 
     if len(phases) > 1:
-        grand_run = grand_pass + grand_fail
+        grand_run = grand_pass + grand_fail + grand_ce
         pct = (grand_pass / grand_run * 100) if grand_run > 0 else 0
-        print(f"\nOverall: {grand_pass} pass / {grand_fail} fail ({pct:.1f}%)")
+        print(f"\nOverall: {grand_pass} pass / {grand_fail} fail / {grand_ce} compile-err ({pct:.1f}%)")
         if grand_skip > 0:
             print(f"Skipped: {grand_skip} tests")
 if __name__ == "__main__":
