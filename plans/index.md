@@ -32,3 +32,4 @@
 | [032-gc-safepoints.md](032-gc-safepoints.md) | ✅ DONE | `gc_pending`, `safepoint_gc()`, and `temproot` protection implemented in heap.c3/vm.c3 |
 | [033-memory-next-steps.md](033-memory-next-steps.md) | 🔄 IN PROGRESS | GC on backward jumps (item 2) done; boxed accessor pairs (item 1) done. Remaining: default-prototype elision |
 | [034-async-await.md](034-async-await.md) | 🔄 PLANNED | Async/await compiler desugaring, Promise state refactor, microtask queue |
+| [035-enforce-strict-mode.md](035-enforce-strict-mode.md) | 🔄 PLANNED | Collapse engine to always-strict: remove `is_strict`/`ACT_FLAG_STRICT`/`is_with`/`WITH` opcode, 4 phases (compile errors → runtime checks → cleanup → runner/docs) |

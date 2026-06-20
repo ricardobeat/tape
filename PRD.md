@@ -6,7 +6,13 @@ A port of the Duktape engine to C3, passing at least 80% of the ECMAScript test2
 
 Goals: beat Duktape in performance. Low memory consumption. Runnable on low-powered devices and multiple platforms.
 
-Leverage C3's native features for memory safety and it's stdlib; use Duktape's architecture as reference.
+Leverage C3's native features for memory safety and it's stdlib; use Duktape's and QuickJS's architectures as reference.
+
+- **Strict-only engine.** A single execution mode — always strict. Non-strict / Annex B
+  features (`with`, legacy octal literals/escapes, duplicate params, implicit globals,
+  unqualified `delete`, `arguments.callee`/`caller`, two-way `arguments`↔param binding) are
+  unsupported and rejected at parse time. `eval` and the direct/indirect-eval distinction are
+  not non-strict features and are fully supported.
 
 - RegExp is implemented using libregexp (from QuickJS)
 

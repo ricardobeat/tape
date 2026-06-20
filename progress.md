@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 198 (destructuring in function parameters)
+**Last Updated:** Session 198 (test262 re-run, 2026-06-20)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 195, 2026-06-18)
+## Summary (after Session 198, 2026-06-20)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 19,110 |
-| Currently failing (phases 0-21) | 11,765 |
-| Overall pass rate | 61.9% (corrected — old pattern skipped too many tests) |
+| Currently passing (phases 0-21) | 18,862 |
+| Currently failing (phases 0-21) | 12,013 |
+| Overall pass rate | 61.1% |
 
 ## Per-Phase Status
 
 | Phase | Total | Pass | Fail | Skip |
 |---|---|---|---|---|
-| 0-1: Core VM | 2185 | 723 | 406 | 1056 |
-| 1: Calling Convention | 426 | 108 | 232 | 86 |
-| 2: Basic Operators | 1969 | 1153 | 253 | 563 |
-| 3: Object System | 7766 | 5141 | 1881 | 744 |
-| 4: Error Handling | 402 | 141 | 166 | 95 |
-| 5: Built-in Constructors | 8615 | 6112 | 1834 | 669 |
-| 6: Prototype Methods | 4713 | 3107 | 1306 | 300 |
-| 7: ES5 Features | 1240 | 280 | 325 | 635 |
-| 8: ES5 Built-in Objects | 2747 | 1267 | 480 | 1000 |
-| 11: Arrow/Templates | 427 | 81 | 204 | 142 |
-| 12-13: Destructuring | 34 | 30 | 4 | 0 |
-| 14: for-of | 751 | 110 | 472 | 169 |
-| 15: Classes | 8520 | 359 | 3020 | 5141 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 501 | 707 | 406 |
-| 21: Generators | 619 | 27 | 462 | 130 |
+| 0-1: Core VM | 2185 | 749 | 380 | 1056 |
+| 1: Calling Convention | 426 | 149 | 191 | 86 |
+| 2: Basic Operators | 1969 | 1150 | 256 | 563 |
+| 3: Object System | 7766 | 4986 | 2036 | 744 |
+| 4: Error Handling | 402 | 135 | 172 | 95 |
+| 5: Built-in Constructors | 8615 | 5893 | 2053 | 669 |
+| 6: Prototype Methods | 4713 | 3039 | 1374 | 300 |
+| 7: ES5 Features | 1240 | 279 | 326 | 635 |
+| 8: ES5 Built-in Objects | 2747 | 1239 | 508 | 1000 |
+| 11: Arrow/Templates | 427 | 119 | 166 | 142 |
+| 12-13: Destructuring | 19 | 15 | 2 | 2 |
+| 14: for-of | 751 | 107 | 475 | 169 |
+| 15: Classes | 8520 | 487 | 2892 | 5141 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 486 | 722 | 406 |
+| 21: Generators | 619 | 29 | 460 | 130 |
 
 ## Deferred Items
 

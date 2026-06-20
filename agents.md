@@ -5,7 +5,17 @@
 > **High-level project phases and progress are tracked in `progress.md`.**
 > Check it before starting work to understand where we are and what's next.
 
-**Key principle**: This is a faithful port of Duktape v2.7.0 to C3, but we should leverage C3's native features where they improve clarity or safety. Check the stdlib reference for what is available when planning a new feature.
+**Key principle**: A C3-native, strict-only JavaScript engine. It uses Duktape v2.7.0 and QuickJS as architectural references while leveraging C3's native features where they improve clarity or safety. Check the stdlib reference for what is available when planning a new feature.
+
+## Strict-Only Mode
+
+The engine is strict-only — a single execution mode. See **PRD.md** for the philosophy and the full list of unsupported features.
+
+**Guardrails:**
+- The engine is single-mode; there is no `is_strict` / `ACT_FLAG_STRICT` flag to branch on.
+- `"use strict"` is parsed and ignored (a no-op, accepted for source compatibility).
+- Direct vs. indirect `eval` is not a strict-mode distinction; both are fully supported. `ACT_FLAG_DIRECT_EVAL` / `has_direct_eval` / `callee_is_eval` are orthogonal to strict mode.
+- `noStrict`-flagged test262 tests fail to compile by design.
 
 ## Build Flags
 
