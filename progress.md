@@ -1,18 +1,18 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 208 (4 BACKLOG items, test262 re-run, 2026-06-21)
+**Last Updated:** Session 209 (3 BACKLOG items: Phase 15 re-run, generator survey, yield* fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 208, 2026-06-21)
+## Summary (after Session 209, 2026-06-21)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 18,874 |
-| Currently failing (phases 0-21) | 8,623 (excluding ~3,000 CE) |
+| Currently passing (phases 0-21) | 18,875 (+1 from Phase 15) |
+| Currently failing (phases 0-21) | 8,622 (excluding ~3,000 CE) |
 | Currently CE (phases 0-21) | ~3,019 (4 phases measured) |
-| Overall pass rate | 61.1% (Session 198 baseline: 18,862 pass / 12,013 fail. +12 pass on Phase 17-20 from await-in-loops fix; other phase changes are post-strict-only CE re-categorization, not regressions) |
+| Overall pass rate | 61.1% (net +1 pass from Phase 15 classes re-run) |
 
 ## Per-Phase Status
 
@@ -30,7 +30,7 @@
 | 11: Arrow/Templates | 427 | 119 | 166 | 142 | 0 |
 | 12-13: Destructuring | 19 | 15 | 2 | 2 | 0 |
 | 14: for-of | 751 | 106 | 156 | 169 | 320 |
-| 15: Classes | 8520 | 487 | 478 | 5141 | 2414 |
+| 15: Classes | 8520 | 488 | 477 | 5141 | 2414 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 498 | 665 | 406 | 45 |
 | 21: Generators | 619 | 29 | 260 | 130 | 200 |
 
@@ -66,6 +66,7 @@ Three novel optimizations backported from the `worktree-copy-and-patch-poc` bran
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 209 | Three BACKLOG items dispatched. **(1) Phase 15 re-run (BACKLOG L29)** — Phase 15: 488 pass (+1), 477 fail (-1), 5141 skip, 2414 CE. All 477 failures are VM_ERROR; categories: class scope/name binding, computed property names, restricted properties, subclass builtins (22+ tests), heritage expressions. **(2) Generator failure survey (BACKLOG L30)** — Phase 21: 29 pass, 260 fail, 130 skip, 200 CE. Categorized: VM 243 (93.5%: destructuring+generator 156, yield execution 70, yield* 21, defaults 6), Builtin 16 (6.2%: Generator.prototype properties), Compiler 1 (0.4%). Top 3 root causes: (a) VM crash in yield/yield* (158 tests, NaN-boxing pointer), (b) destructuring in generators (156 tests), (c) Generator.prototype properties (16 tests). **(3) yield* delegation fix (BACKLOG L32)** — Replaced naive index-based loop with YIELD_STAR opcode implementing ES6 §25.3.2.4 iterator protocol. Compiler emits single YIELD_STAR opcode. VM handler: gets @@iterator, calls iterator.next() in suspend/resume loop, delegates .throw()/.return() to inner iterator. vm_call_fn_impl fixed for builtin call layout. Generator.prototype gets @@iterator. Test262 numbers unchanged (yield* tests affected by deeper generator infrastructure issues). test_yield_star.js: 27 assertions pass. Rosetta: 45/45. | Phase 15: +1 pass |
 | 208 | Four BACKLOG items dispatched as parallel agents. **(1) Class computed property keys (BACKLOG L24)** — verified working; implementation already emits `CLOSURE+LDTHIS+CALL` to evaluate the key at class-definition time per ES6 §14.5. Added `test/test_class_computed_keys.js` (24 assertions: string/numeric keys, side-effect counter, static, getter, setter, class expressions, prototype sharing). **(2) Yield expression handling (BACKLOG L31)** — verified working; `yield` is in `primary_expr` (`expressions.c3:1825`) with operand at `assignment_expr` precedence, so `yield a + b` parses as `yield (a + b)`. Added `test/test_yield_expr.js` (11 assertions). **(3) Destructuring in for-of (BACKLOG L42)** — found real bug: nested object patterns (`for (const {a: {b}} of …) of arr)` failed to compile because the parser expected an identifier after `:`. Fixed `statements.c3:858-893` (parser) + `context.c3:142-143` (`ObjBind.is_nested/nested_key_idx`) + `statements.c3:1113-1130` (emitter does two `GETPROP`s). Added `test/test_forof_destruct.js` (31 assertions: array, object, holes, rest, defaults, nested). **(4) Await in for/while loops (BACKLOG L47+L48)** — found two real bugs in `src/vm.c3`: (a) `vm_call_fn_impl` zeroed all saved registers on resume (`set_undefined()` on `gs_r.saved_regs`), clobbering loop counter `i` after each suspend; (b) AWAIT handler underflowed `activations[activation_count-1]` when popping the suspended activation brought count to 0 (second-and-later suspend). Fixed with `did_resume` flag in `vm_call_fn_impl` (skip register-init on resume) and `activation_count == 0` short-circuit in AWAIT handler that returns `vm.return_val` cleanly. Added `test/test_async_loops.js` (12 assertions: for-var/for-let loops, while, 3 sequential awaits, for-of, catch-reject, all with pending-promise variants). All four items: rosetta 45/45, no regressions. **Phase 17-20: 486→498 pass (+12), fail 722→665 (-57), CE 0→45** — the only phase with a real pass-count delta. Other phases (14, 15, 21) showed the expected post-strict-only CE re-categorization (tests that were silently failing-as-CE under sloppy mode are now correctly tagged CE; pass counts stable). | +12 (Phase 17-20; await-in-loops fix) |
 | 200 | Follow-up investigations + fixes. Rosetta failures reproduced deterministically (5/5 runs, same failures): **(a)** `apply_call.js` → `VM_ERROR` at PC 0x00A2 `NEWOBJ r16 = r0, r0` — crash inside `Function.prototype.bind.apply(Point, [null, 10, 20])` constructor-via-apply path. **(b)** `prototypes.js` → 18/19, failure on "overridden speak affects existing instance" (line 64) — assigning `Dog.prototype.speak = ...` doesn't update the property descriptor visible to existing instance `d`. **(c)** Implicit-global crash: `x = 1` at global scope (no `var`/`let`/`const`) raises `VM_ERROR` instead of creating a global (sloppy) or `ReferenceError` (strict). Pre-existing. **(d)** Strict eval scope isolation: `let x = 10; eval("var x = 99");` leaks 99 into caller's scope; should error or be isolated per ES5 §10.4.2. Tracking in BACKLOG. Dispatched 3 parallel agents to investigate. | TBD |
 | 201 | Agent reports received. **Implicit-global (c)**: not a strict-mode env-resolution bug — `x = 1` at global scope throws `ReferenceError("x is not defined")` correctly inside GETVAR, but `vm_throw_value` returns `false` when there's no top-level catcher, so the opcode handler returns `VM_ERROR~` and the CLI dumps crash state instead of `Uncaught: ...`. Affects ALL uncaught exceptions (`throw`, `null.foo`, `undefined.x`, etc.). Fix is at the CLI boundary: after `v.execute` returns `VM_ERROR~`, print `vm.heap.error_value` if `vm.heap.has_error`. **Strict eval (d)**: `builtin_eval` at `src/builtins/global.c3:210-219` sets the eval'd function's `var_env = lex_env = caller_act.lex_env` (direct eval) or `ctx.global_env` (indirect), with no fresh child env. The eval'd `DECLVAR` writes into the shared env, mutating the caller's bindings. Fix: in `builtin_eval`, call `env_create_declarative(heap, env_for_eval)` to create a fresh child env, then assign that to `func.var_env`/`func.lex_env`. `compile_eval`'s `func.flags.needs_env = false` stays (we don't want the per-call alloc). Rosettas: dispatched 2 agents to investigate. | TBD |

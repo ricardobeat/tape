@@ -26,10 +26,10 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Fix getter/setter in class bodies: INITGET/INITSET opcodes work, OPUTPROP uses WEC flags (enumerable issue pre-existing)
 - [x] Fix early-error SyntaxError checks: static prototype, get/set constructor, duplicate constructor, super() in non-constructor methods
 - [x] Run pure-class test suite: 149/237 pass (62.9%), 34 correctly rejected at compile time
-- [ ] Run full Phase 15 after fixes to measure delta
-- [ ] Survey generator test failures and categorize by root cause (compile vs VM vs builtin)
+- [x] Run full Phase 15 after fixes to measure delta — DONE (Session 209): 488 pass (+1), 477 fail (-1), 5141 skip, 2414 CE. All 477 failures are VM_ERROR.
+- [x] Survey generator test failures and categorize by root cause (compile vs VM vs builtin) — DONE (Session 209): VM 243 (93.5%), Builtin 16 (6.2%), Compiler 1 (0.4%). Top causes: destructuring+generator (156), yield execution (70), yield* (21), Generator.prototype properties (16).
 - [x] Fix `yield` expression handling in compiler: `var x = yield val` — yield is right-associative with lowest precedence. `yield` already lives in `primary_expr` (`src/compiler/expressions.c3:1825`) with `assignment_expr()` for the operand, so right-associativity, sub-expressions, return value, and bare yield all work. Added `test/test_yield_expr.js` (11/11 pass); rosetta 45/45 unchanged.
-- [ ] Fix `yield*` delegation: should iterate inner iterable and yield each value
+- [x] Fix `yield*` delegation: should iterate inner iterable and yield each value — DONE (Session 209): Replaced naive index-based loop with YIELD_STAR opcode implementing ES6 §25.3.2.4 iterator protocol. VM handler gets @@iterator, calls .next() in suspend/resume loop, delegates .throw()/.return(). Generator.prototype gets @@iterator. test_yield_star.js: 27 assertions. Rosetta 45/45.
 - [ ] Fix `Generator.prototype.return()` / `.throw()` — currently likely missing or stubbed
 - [ ] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3
 - [ ] Ensure `GeneratorFunction` and `Generator` constructor exist and are reachable
