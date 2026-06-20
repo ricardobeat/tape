@@ -12,7 +12,7 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [ ] **Strict-only — investigate**: confirm what `delete <identifier>` compiles to today (no unqualified-delete path found); decide if "always throw" is new code
 - [ ] **Strict-only — investigate**: confirm implicit-global creation (assignment without `var`) — engine may already throw ReferenceError; verify before scheduling work
 - [ ] **Strict-only Phase C** — cleanup: remove `TokenType.WITH` enum entry, any residual `is_strict`-gated paths, verify `is_strict_reserved` (`hstring.c3:78`) still needed
-- [ ] **Strict-only Phase D** — test runner + docs: remove `noStrict` skip (`run_test262.py:296-297`), add compile-error result type, update `AGENTS.md`/`PRD.md`/`progress.md` for strict-only philosophy
+- [ ] **Strict-only Phase D** — test runner + docs: remove `noStrict` skip (`run_test262.py:296-297`), add compile-error result type, update `AGENTS.md`/`progress.md` for strict-only philosophy
 - [x] Add Phase 15-21 choices to `scripts/run_test262.py` `--phase` argparse (currently restricted to 0-14)
 - [x] Add Phase 15-21 support to `scripts/phase_runner.py`
 - [x] Verify `just build-batch` produces working `out/batch_test_vm` for batch testing
