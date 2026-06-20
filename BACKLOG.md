@@ -21,7 +21,7 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Verify method compilation produces correct CLOSURE+PUTPROP bytecode
 - [x] Fix prototype chain setup for `extends`: SETPROTO after constructor returns
 - [x] Ensure `constructor()` returns correct `this` binding
-- [ ] Check computed property keys in class methods: `class { [expr]() {} }` — ensure expression is evaluated per-instance, not shared
+- [x] Check computed property keys in class methods: `class { [expr]() {} }` — verified — key expression evaluated once at class definition; test added (`test/test_class_computed_keys.js`, 24 assertions)
 - [x] Fix static method installation: static methods go on constructor, prototype methods go on `.prototype`
 - [x] Fix getter/setter in class bodies: INITGET/INITSET opcodes work, OPUTPROP uses WEC flags (enumerable issue pre-existing)
 - [x] Fix early-error SyntaxError checks: static prototype, get/set constructor, duplicate constructor, super() in non-constructor methods
