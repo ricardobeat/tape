@@ -37,13 +37,17 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Fix `Generator.prototype.return()` / `.throw()` — already implemented in generator.c3; verified working after state machine fixes
 - [x] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3 — six bugs fixed, 57 assertions in test_generator_sm.js
 - [x] Ensure `GeneratorFunction` and `Generator` constructor exist and are reachable — registered global, wired prototype chain
-- [ ] Create minimal destructuring regression test (`const [a] = [1]`) and trace bytecode output
-- [ ] Debug array destructuring: verify GETPROP with integer indices, binding to target registers
-- [ ] Debug object destructuring: verify string-keyed GETPROP, correct binding to named targets
-- [ ] Debug destructuring with rest: `[a, ...rest] = arr`
-- [ ] Debug destructuring default values: `[a = 42] = arr`
-- [ ] Debug nested destructuring: `const {x: {y}} = obj`
+- [x] Create minimal destructuring regression test (`const [a] = [1]`) and trace bytecode output — DONE (Session 212): added `test/test_destructure_regression.js` (87 tests, 81 pass). Covers basic array/object, defaults, rest, keyed, for-of, nested patterns, destructuring assignment, mixed patterns.
+- [x] Debug array destructuring: verify GETPROP with integer indices, binding to target registers — DONE (Session 212): basic array destructuring works. Fixed nested array patterns (`const [a, [b, c]] = [1, [2, 3]]`) by adding `is_nested`/`outer_idx`/`inner_idx` to `ArrayBind` and recursive nested-pattern parsing in `array_destructure()` + `array_destructure_assign()`.
+- [x] Debug object destructuring: verify string-keyed GETPROP, correct binding to named targets — DONE (Session 212): basic object destructuring works. Fixed nested object patterns (`const {x: {y, z}} = {x: {y: 1, z: 2}}`) by adding `is_nested`/`nested_key_idx` tracking and two-pass GETPROP emission in `object_destructure()` + `object_destructure_assign()`.
+- [x] Debug destructuring with rest: `[a, ...rest] = arr` — works correctly (tested in `test_destructure_array.js` T6-T7 and `test_forof_destruct.js` T4)
+- [x] Debug destructuring default values: `[a = 42] = arr` — works correctly (tested in existing tests + `test_forof_destruct.js` T5). Default guard uses `SEQ` (=== undefined), matching spec.
+- [x] Debug nested destructuring: `const {x: {y}} = obj` — DONE (Session 212): fixed in nested object destructuring pass. `const {x: {y}} = {x: {y: 42}}` now correctly gives y=42.
 - [x] Debug destructuring in for-of: `for (const [k, v] of pairs) {}`
+- [ ] Fix mixed destructuring patterns: array-in-object (`{x: [a, b]}`) and object-in-array (`[{a}]`) — both fail (compile error or wrong values). Regression test T37-T40.
+- [ ] Fix triple-nested array destructuring: `const [[[a]]] = [[[42]]]` — compile error
+- [ ] Fix rest inside nested array destructuring: `const [a, [b, ...rest]] = [1, [2, 3, 4]]` — compile error
+- [ ] Fix `let` destructuring assignment: `let a, b; [a, b] = [1, 2]` — variables remain undefined (regression test T33-T34)
 - [ ] Verify `async function` compilation: `is_async` flag propagated through `compile_inner_function`
 - [ ] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction)
 - [ ] Test async function without await (should return resolved Promise)
