@@ -33,10 +33,10 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Fix GETPROPC2 chain fusion: string/number/boolean intermediates now handled (vm.c3:4272-4433). `obj.y.length` works.
 - [x] Fix GC mark phase: GeneratorState.saved_regs, this_binding, delegated_iter, async_promise now traced (heap.c3 drain_gray GENERATOR case)
 - [x] Add HEAP_VERIFY debug tool: compile-time heap verification at yield/resume boundaries, sweep-time saved_regs check
-- [ ] Run Phase 21 to measure generator fix impact (GETPROPC2 fix likely unblocks many of the 70 yield-execution failures)
-- [ ] Fix `Generator.prototype.return()` / `.throw()` — currently likely missing or stubbed
-- [ ] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3
-- [ ] Ensure `GeneratorFunction` and `Generator` constructor exist and are reachable
+- [x] Run Phase 21 to measure generator fix impact (GETPROPC2 fix likely unblocks many of the 70 yield-execution failures)
+- [x] Fix `Generator.prototype.return()` / `.throw()` — already implemented in generator.c3; verified working after state machine fixes
+- [x] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3 — six bugs fixed, 57 assertions in test_generator_sm.js
+- [x] Ensure `GeneratorFunction` and `Generator` constructor exist and are reachable — registered global, wired prototype chain
 - [ ] Create minimal destructuring regression test (`const [a] = [1]`) and trace bytecode output
 - [ ] Debug array destructuring: verify GETPROP with integer indices, binding to target registers
 - [ ] Debug object destructuring: verify string-keyed GETPROP, correct binding to named targets
