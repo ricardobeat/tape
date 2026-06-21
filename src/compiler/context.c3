@@ -132,6 +132,8 @@ struct ArrayBind {
     bool   is_nested;        // true if this binding comes from a nested pattern
     uint   outer_idx;        // the index in the outer RHS array
     uint   inner_idx;        // the index within the nested sub-array
+    uint   nest_depth;       // 1 = one level nested, 2 = two levels nested
+    uint   depth2_idx;       // for nest_depth==2: index into 2nd-level array
 }
 
 /// Tracks a binding in an object destructuring pattern.

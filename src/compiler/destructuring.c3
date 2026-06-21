@@ -32,6 +32,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
                 bind_count++;
             }
             array_idx++;
@@ -50,6 +52,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
                 bind_count++;
             }
             while (self.match(TokenType.COMMA)) {}
@@ -75,9 +79,49 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                         binds[bind_count].is_nested = true;
                         binds[bind_count].outer_idx = nested_outer;
                         binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 1;
+                        binds[bind_count].depth2_idx = 0;
                         bind_count++;
                     }
                     inner_idx++;
+                    continue;
+                }
+
+                // Check for triple nesting: [[[a]]] or [[[a = expr]]]
+                if (self.check(TokenType.LBRACKET)) {
+                    self.advance()!; // consume inner '['
+                    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+
+                    // Check for default: a = expr
+                    bool has_default_val = false;
+                    ushort default_val_reg = 0;
+                    if (self.match(TokenType.ASSIGN)) {
+                        has_default_val = true;
+                        default_val_reg = self.assignment_expr()!;
+                    }
+
+                    self.expect(TokenType.RBRACKET)!;
+
+                    if (bind_count < 32) {
+                        ushort reg = self.declare_var(name_tok.str_value, kind);
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
+                        binds[bind_count].is_rest = false;
+                        binds[bind_count].is_hole = false;
+                        binds[bind_count].has_default = has_default_val;
+                        binds[bind_count].default_val_reg = default_val_reg;
+                        binds[bind_count].is_nested = true;
+                        binds[bind_count].outer_idx = nested_outer;
+                        binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 2;
+                        binds[bind_count].depth2_idx = 0;
+
+                        bind_count++;
+                    }
+                    inner_idx++;
+
+                    if (!self.match(TokenType.COMMA)) break;
                     continue;
                 }
 
@@ -93,6 +137,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                     binds[bind_count].is_nested = true;
                     binds[bind_count].outer_idx = nested_outer;
                     binds[bind_count].inner_idx = inner_idx;
+                    binds[bind_count].nest_depth = 1;
+                    binds[bind_count].depth2_idx = 0;
 
                     // Check for default: a = expr
                     if (self.match(TokenType.ASSIGN)) {
@@ -139,6 +185,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
 
                 // Check for default: a = expr
                 if (self.match(TokenType.ASSIGN)) {
@@ -241,11 +289,26 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 nested_temp_outer_idx = binds[i].outer_idx;
             }
 
-            // GETPROP temp[inner_idx] → reg
-            ushort idx_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
-            self.free_reg(idx_reg);
+            if (binds[i].nest_depth == 2) {
+                // Two-level nesting: temp2 = temp[inner_idx], result = temp2[depth2_idx]
+                ushort temp2_reg = self.alloc_reg();
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)temp2_reg, (uint)nested_temp_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+
+                ushort idx_reg2 = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg2, (int)binds[i].depth2_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)temp2_reg, (uint)idx_reg2);
+                self.free_reg(idx_reg2);
+                self.free_reg(temp2_reg);
+            } else {
+                // One-level nesting: result = temp[inner_idx]
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+            }
 
             // Apply default if present: if value is undefined, use default
             if (binds[i].has_default) {
@@ -718,6 +781,8 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
                 bind_count++;
             }
             array_idx++;
@@ -743,6 +808,8 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
                 bind_count++;
             }
             while (self.match(TokenType.COMMA)) {}
@@ -768,9 +835,56 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                         binds[bind_count].is_nested = true;
                         binds[bind_count].outer_idx = nested_outer;
                         binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 1;
+                        binds[bind_count].depth2_idx = 0;
                         bind_count++;
                     }
                     inner_idx++;
+                    continue;
+                }
+
+                // Check for triple nesting: [[[a]]] or [[[a = expr]]]
+                if (self.check(TokenType.LBRACKET)) {
+                    self.advance()!; // consume inner '['
+                    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+
+                    // Check for default: a = expr
+                    bool has_default_val = false;
+                    ushort default_val_reg = 0;
+                    if (self.match(TokenType.ASSIGN)) {
+                        has_default_val = true;
+                        default_val_reg = self.assignment_expr()!;
+                    }
+
+                    self.expect(TokenType.RBRACKET)!;
+
+                    if (bind_count < 32) {
+                        ushort reg;
+                        if (try existing = self.resolve_var(name_tok.str_value)) {
+                            reg = existing;
+                            binds[bind_count].is_resolved = true;
+                        } else {
+                            reg = self.alloc_reg();
+                            binds[bind_count].is_resolved = false;
+                        }
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
+                        binds[bind_count].is_rest = false;
+                        binds[bind_count].is_hole = false;
+                        binds[bind_count].has_default = has_default_val;
+                        binds[bind_count].default_val_reg = default_val_reg;
+                        binds[bind_count].is_nested = true;
+                        binds[bind_count].outer_idx = nested_outer;
+                        binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 2;
+                        binds[bind_count].depth2_idx = 0;
+
+                        bind_count++;
+                    }
+                    inner_idx++;
+
+                    if (!self.match(TokenType.COMMA)) break;
                     continue;
                 }
 
@@ -793,6 +907,8 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                     binds[bind_count].is_nested = true;
                     binds[bind_count].outer_idx = nested_outer;
                     binds[bind_count].inner_idx = inner_idx;
+                    binds[bind_count].nest_depth = 1;
+                    binds[bind_count].depth2_idx = 0;
 
                     // Check for default: a = expr
                     if (self.match(TokenType.ASSIGN)) {
@@ -830,6 +946,8 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
                 bind_count++;
             }
             array_idx++;
@@ -853,6 +971,8 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 binds[bind_count].has_default = false;
                 binds[bind_count].is_nested = false;
                 binds[bind_count].outer_idx = array_idx;
+                binds[bind_count].nest_depth = 1;
+                binds[bind_count].depth2_idx = 0;
 
                 // Check for default: a = expr
                 if (self.match(TokenType.ASSIGN)) {
@@ -932,11 +1052,26 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 nested_temp_outer_idx = binds[i].outer_idx;
             }
 
-            // GETPROP temp[inner_idx] → reg
-            ushort idx_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
-            self.free_reg(idx_reg);
+            if (binds[i].nest_depth == 2) {
+                // Two-level nesting: temp2 = temp[inner_idx], result = temp2[depth2_idx]
+                ushort temp2_reg = self.alloc_reg();
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)temp2_reg, (uint)nested_temp_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+
+                ushort idx_reg2 = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg2, (int)binds[i].depth2_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)temp2_reg, (uint)idx_reg2);
+                self.free_reg(idx_reg2);
+                self.free_reg(temp2_reg);
+            } else {
+                // One-level nesting: result = temp[inner_idx]
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+            }
 
             // Apply default if present: if value is undefined, use default
             if (binds[i].has_default) {
