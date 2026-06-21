@@ -341,6 +341,14 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(math, heap, "clz32",  BUILTIN_MATH_CLZ32))  return false;
     if (!register_math_method(math, heap, "imul",   BUILTIN_MATH_IMUL))   return false;
 
+    // Set @@toStringTag on Math
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "Math"));
+        math.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
     TVal math_tv;
     math_tv.set_object(null);
     math_tv.set_fastint(0);

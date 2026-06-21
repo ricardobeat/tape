@@ -1318,22 +1318,25 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         }
     }
 
-    // ── String searchValue (existing code) ──────────────────────────────
+    // ── String searchValue ──────────────────────────────────────────────
     HString* search_hstr = builtin_to_string(ctx.heap, search_val);
     if (search_hstr == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    HString* replace_hstr;
+    TVal replace_val_str = ctx.argc > 1 ? ctx.regs[ctx.base_reg + 1] : (TVal){ };
+    if (ctx.argc < 2) { replace_val_str.set_undefined(); }
+
+    bool str_replace_is_fn = false;
     if (ctx.argc > 1) {
-        replace_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
-    } else {
-        replace_hstr = builtin_intern_string(ctx.heap, "undefined");
-    }
-    if (replace_hstr == null) {
-        ctx.result.set_undefined();
-        return;
+        TVal* rv = &ctx.regs[ctx.base_reg + 1];
+        if (rv.is_lightfunc()) {
+            str_replace_is_fn = true;
+        } else if (rv.is_object() && rv.get_heapptr() != null &&
+                   ((HObject*)rv.get_heapptr()).is_callable()) {
+            str_replace_is_fn = true;
+        }
     }
 
     char* search_data = search_hstr.get_cstr();
@@ -1353,8 +1356,33 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         return;
     }
 
-    char* replace_data = replace_hstr.get_cstr();
-    uint replace_len = replace_hstr.blen;
+    HString* replace_str;
+    if (str_replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+        TVal[3] fn_args;
+        HString* match_str = builtin_intern_string(ctx.heap, input[found_pos : (usz)search_len]);
+        if (match_str == null) match_str = builtin_intern_string(ctx.heap, "");
+        fn_args[0].set_string(match_str);
+        fn_args[1].set_fastint((long)found_pos);
+        fn_args[2].set_string(s_hstr);
+        TVal this_val; this_val.set_undefined();
+        TVal fn_val = ctx.regs[ctx.base_reg + 1];
+        TVal res = ctx.heap.call_fn(ctx.vm, fn_val, &fn_args[0], 3, this_val);
+        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+        replace_str = builtin_to_string(ctx.heap, &res);
+        if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+    } else {
+        HString* replace_hstr;
+        if (ctx.argc > 1) {
+            replace_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+        } else {
+            replace_hstr = builtin_intern_string(ctx.heap, "undefined");
+        }
+        if (replace_hstr == null) { ctx.result.set_undefined(); return; }
+        replace_str = replace_hstr;
+    }
+
+    char* replace_data = replace_str.get_cstr();
+    uint replace_len = replace_str.blen;
 
     char[4096] buf;
     usz bOff = 0;

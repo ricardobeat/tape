@@ -1708,6 +1708,14 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
     // Register JSON.stringify
     if (!register_math_method(json, heap, "stringify", BUILTIN_JSON_STRINGIFY)) return false;
 
+    // Set @@toStringTag on JSON
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "JSON"));
+        json.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
     TVal json_tv;
     json_tv.set_object(null);
     json_tv.set_fastint(0);

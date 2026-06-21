@@ -3524,6 +3524,29 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     }
+                    // ES5 strict mode: function.caller and function.arguments throw TypeError
+                    if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION) {
+                        HString* key_hstr = (HString*)key;
+                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* emsg = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                                if (emsg != null) {
+                                    TVal emsg_val; emsg_val.set_string(emsg);
+                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val; err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return vm_uncaught_error(vm, &err_val);
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                    }
                     // STRING exotic: indexed access reads characters lazily from the primitive value.
                     // Handles both fastint/number keys (e.g. s[0]) and array-index string keys
                     // (e.g. s["0"]), avoiding the need to materialise per-character own properties.
@@ -3792,6 +3815,24 @@ fn TVal? Vm.run(Vm* vm) {
                             if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
                             else { ra.set_undefined(); }
                         } else { ra.set_undefined(); }
+                    } else if (key.equals("caller") || key.equals("arguments")) {
+                        // ES5 strict mode: accessing .caller and .arguments throws TypeError
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            HString* msg_val = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                            TVal msg_tv;
+                            msg_tv.set_string(msg_val);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val);
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
                     } else if (vm.heap.function_proto != null) {
                         // Walk Function.prototype for .call, .apply, .bind, etc.
                         TVal? result = vm.heap.function_proto.get_prop_proto(key);
@@ -3855,6 +3896,27 @@ fn TVal? Vm.run(Vm* vm) {
                             if (try err = err_raw) {
                                 err.prototype = vm.heap.type_err_proto;
                                 HString* emsg = intern_string(vm, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode");
+                                if (emsg != null) {
+                                    TVal emsg_val; emsg_val.set_string(emsg);
+                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
+                                }
+                                TVal err_val; err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return vm_uncaught_error(vm, &err_val);
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                        // ES5 strict mode: function.caller and function.arguments throw TypeError
+                        if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION
+                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* emsg = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
                                 if (emsg != null) {
                                     TVal emsg_val; emsg_val.set_string(emsg);
                                     HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
@@ -4072,6 +4134,24 @@ fn TVal? Vm.run(Vm* vm) {
                                 if (try v = result) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
                                 else { ra.set_undefined(); }
                             } else { ra.set_undefined(); }
+                        } else if (key_hstr.equals("caller") || key_hstr.equals("arguments")) {
+                            // ES5 strict mode: accessing .caller and .arguments throws TypeError
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val;
+                                err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return vm_uncaught_error(vm, &err_val);
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
                         } else if (vm.heap.function_proto != null) {
                             // Walk Function.prototype for .call, .apply, .bind, etc.
                             TVal? result = vm.heap.function_proto.get_prop_proto((void*)key_hstr);

@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 216 (B02: lightfunc chained .length fix; B07: JSON/Math missing Object.prototype chain)
+**Last Updated:** Session 216 (B01/B02/B03/B07/B08: lightfunc .length, JSON/Math proto, fn.caller TypeError, replace fn replacer, toStringTag)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (after Session 216, 2026-06-21)
@@ -18,10 +18,10 @@
 |---|---|---|---|---|---|---|
 | 1: Calling Convention | 426 | 153 | 76 | 86 | 111 | — |
 | 2: Basic Operators | 1969 | 1167 | 141 | 563 | 98 | — |
-| 3: Object System | 7766 | 4940 | 1473 | 744 | 609 | +63 |
-| 4: Error Handling | 402 | 127 | 86 | 95 | 94 | — |
+| 3: Object System | 7766 | 4948 | 1465 | 744 | 609 | +71 |
+| 4: Error Handling | 402 | 131 | 82 | 95 | 94 | +4 |
 | 5: Built-in Constructors | 8615 | 5804 | 2111 | 669 | 31 | +50 |
-| 6: Prototype Methods | 4713 | 3001 | 1395 | 300 | 17 | +13 |
+| 6: Prototype Methods | 4713 | 3013 | 1383 | 300 | 17 | +25 |
 | 7: ES5 Features | 1240 | 315 | 177 | 635 | 113 | — |
 
 ## Deferred Items
