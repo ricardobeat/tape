@@ -1901,6 +1901,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                     act.lex_env = (EnvRecord*)gs_r.lex_env;
                     act.cat = gs_r.cat;
                     // Restore saved registers instead of initializing fresh
+                    $if $feature(HEAP_VERIFY):
+                        vm.heap.verify_roots("before_resume_restore");
+                        if (gs_r.saved_regs != null) {
+                            vm.heap.verify_tval_array(gs_r.saved_regs, gs_r.num_regs, "resume_saved_regs");
+                        }
+                    $endif
                     for (uint i = 0; i < nregs; i++) {
                         if (gs_r.saved_regs != null) {
                             vm.heap.tval_copy_ref(&frame[i], &gs_r.saved_regs[i]);
@@ -1917,6 +1923,9 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                         act.flags |= ACT_FLAG_ASYNC;
                         act.async_promise = (hobject::HObject*)gs_r.async_promise;
                     }
+                    $if $feature(HEAP_VERIFY):
+                        vm.heap.verify_roots("after_resume_restore");
+                    $endif
                 }
             }
 
@@ -4260,6 +4269,65 @@ fn TVal? Vm.run(Vm* vm) {
                     } else {
                         ra2.set_undefined();
                     }
+                } else if (mid_val.is_string()) {
+                    // STRING intermediate: auto-box for hop 2 (mirrors GETPROPC string handling).
+                    HString* mid_str = (HString*)mid_val.get_heapptr();
+                    if (mid_str != null && mid_str.is_symbol() && vm.heap.symbol_proto != null) {
+                        if (key2_hstr != null) {
+                            TVal? result = vm.heap.symbol_proto.get_prop_proto((void*)key2_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra2, &v);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else if (key2_hstr != null) {
+                        // .length fast path
+                        if ((void*)key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra2.set_fastint((long)mid_str.char_length());
+                        } else if (vm.heap.string_proto != null) {
+                            TVal? result = vm.heap.string_proto.get_prop_proto((void*)key2_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra2, &v);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else if (mid_val.is_number() || mid_val.is_fastint()) {
+                    // NUMBER intermediate: auto-box for hop 2.
+                    if (key2_hstr != null && vm.heap.number_proto != null) {
+                        TVal? result = vm.heap.number_proto.get_prop_proto((void*)key2_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra2, &v);
+                            track_heap_store(act, ra2, dst2_reg);
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else if (mid_val.is_boolean()) {
+                    // BOOLEAN intermediate: auto-box for hop 2.
+                    if (key2_hstr != null && vm.heap.bool_proto != null) {
+                        TVal? result = vm.heap.bool_proto.get_prop_proto((void*)key2_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra2, &v);
+                            track_heap_store(act, ra2, dst2_reg);
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
                 } else {
                     ra2.set_undefined();
                 }
@@ -4271,8 +4339,100 @@ fn TVal? Vm.run(Vm* vm) {
                 } else {
                     *ra = mid_val;
                 }
+            } else if (rb.is_string()) {
+                // rb is a string primitive — auto-box for hop 1, then hop 2 on the result.
+                TVal mid_val;
+                mid_val.set_undefined();
+                HString* rb_str = (HString*)rb.get_heapptr();
+                if (rb_str != null && key1_hstr != null) {
+                    if (rb_str.is_symbol() && vm.heap.symbol_proto != null) {
+                        TVal? result = vm.heap.symbol_proto.get_prop_proto((void*)key1_hstr);
+                        if (try v = result) { mid_val = v; }
+                    } else {
+                        if ((void*)key1_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            mid_val.set_fastint((long)rb_str.char_length());
+                        } else if (vm.heap.string_proto != null) {
+                            TVal? result = vm.heap.string_proto.get_prop_proto((void*)key1_hstr);
+                            if (try v = result) { mid_val = v; }
+                        }
+                    }
+                }
+
+                // Hop 2: mid_val[key2] (simplified — no IC)
+                if (mid_val.is_object()) {
+                    HObject* hobj2 = (HObject*)mid_val.get_heapptr();
+                    if (hobj2 != null && key2_hstr != null) {
+                        if (hobj2.get_class() == hobject::ObjClass.ARRAY
+                            && (void*)key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra2.set_fastint((long)*hobj2.array_len_ptr());
+                        } else {
+                            hobject::PropLookupResult r2 = hobj2.get_prop_or_accessor_proto((void*)key2_hstr, true);
+                            if (r2.kind == hobject::PropLookupKind.PROP_DATA) {
+                                vm.heap.tval_copy_ref(ra2, &r2.data_val);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else if (mid_val.is_string()) {
+                    HString* mid_str = (HString*)mid_val.get_heapptr();
+                    if (mid_str != null && key2_hstr != null) {
+                        if ((void*)key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra2.set_fastint((long)mid_str.char_length());
+                        } else if (vm.heap.string_proto != null) {
+                            TVal? result = vm.heap.string_proto.get_prop_proto((void*)key2_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra2, &v);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else if (mid_val.is_number() || mid_val.is_fastint()) {
+                    if (key2_hstr != null && vm.heap.number_proto != null) {
+                        TVal? result = vm.heap.number_proto.get_prop_proto((void*)key2_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra2, &v);
+                            track_heap_store(act, ra2, dst2_reg);
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else if (mid_val.is_boolean()) {
+                    if (key2_hstr != null && vm.heap.bool_proto != null) {
+                        TVal? result = vm.heap.bool_proto.get_prop_proto((void*)key2_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra2, &v);
+                            track_heap_store(act, ra2, dst2_reg);
+                        } else {
+                            ra2.set_undefined();
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else {
+                    ra2.set_undefined();
+                }
+
+                // Store mid_val in ra
+                if (mid_val.is_heap_allocated()) {
+                    vm.heap.tval_copy_ref(ra, &mid_val);
+                    track_heap_store(act, ra, (uint)insn.a);
+                } else {
+                    *ra = mid_val;
+                }
             } else {
-                // rb is not an object — both hops fail
+                // rb is not an object or string — both hops fail
                 ra.set_undefined();
                 ra2.set_undefined();
             }
@@ -5766,11 +5926,18 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);
 
                     // Copy saved registers to valstack
+                    $if $feature(HEAP_VERIFY):
+                        vm.heap.verify_roots("before_call_resume_restore");
+                        vm.heap.verify_tval_array(gs.saved_regs, gs.num_regs, "call_resume_saved_regs");
+                    $endif
                     TVal* new_regs_r = new_act_r.bottom;
                     uint new_nregs_r = target.num_regs;
                     for (uint i = 0; i < new_nregs_r; i++) {
                         vm.heap.tval_copy_ref(&new_regs_r[i], &gs.saved_regs[i]);
                     }
+                    $if $feature(HEAP_VERIFY):
+                        vm.heap.verify_roots("after_call_resume_restore");
+                    $endif
 
                     vm.valstack_top = new_regs_r + new_nregs_r;
                     vm.valstack_bottom = new_act_r.bottom;
@@ -6701,6 +6868,15 @@ fn TVal? Vm.run(Vm* vm) {
             // resume value. Also handles throw/return injection: for THROW,
             // call vm_throw_value to find the nearest catcher; for RETURN,
             // mark the generator complete and return to the caller.
+            $if $feature(HEAP_VERIFY):
+                vm.heap.verify_roots("before_load_resume");
+                if (vm.heap.resume_gen != null) {
+                    GeneratorState* gs_chk = vm.heap.resume_gen;
+                    if (gs_chk.saved_regs != null) {
+                        vm.heap.verify_tval_array(gs_chk.saved_regs, gs_chk.num_regs, "load_resume_saved_regs");
+                    }
+                }
+            $endif
             if (vm.heap.resume_gen != null) {
                 GeneratorState* gs_lr = vm.heap.resume_gen;
                 ResumeKind rk = gs_lr.resume_kind;
@@ -6931,6 +7107,11 @@ fn TVal? Vm.run(Vm* vm) {
                     vm.heap.tval_copy_ref(&gs.saved_regs[i], &regs_src[i]);
                 }
 
+                $if $feature(HEAP_VERIFY):
+                    vm.heap.verify_roots("after_await_save");
+                    vm.heap.verify_tval_array(gs.saved_regs, gs.num_regs, "await_saved_regs");
+                $endif
+
                 // 2. Create resume callback (builtin)
                 HObject*? resume_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
                 if (catch _e1 = resume_raw) {
@@ -7021,6 +7202,11 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.cat = act.cat;
                 vm.heap.tval_copy_ref(&gs.this_binding, &act.this_binding);
                 gs.state = GEN_SUSPENDED_YIELD;
+
+                $if $feature(HEAP_VERIFY):
+                    vm.heap.verify_roots("after_yield");
+                    vm.heap.verify_tval_array(gs.saved_regs, gs.num_regs, "yield_saved_regs");
+                $endif
 
                 // Store the yielded value
                 vm.heap.tval_copy_ref(&vm.heap.yield_value, &ra[0]);
@@ -7379,6 +7565,10 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.var_env = act.var_env; gs.lex_env = act.lex_env; gs.cat = act.cat;
                 vm.heap.tval_copy_ref(&gs.this_binding, &act.this_binding);
                 gs.state = GEN_SUSPENDED_YIELD;
+                $if $feature(HEAP_VERIFY):
+                    vm.heap.verify_roots("after_yield_star");
+                    vm.heap.verify_tval_array(gs.saved_regs, gs.num_regs, "yield_star_saved_regs");
+                $endif
                 vm.heap.tval_copy_ref(&vm.heap.yield_value, &received_val);
                 vm.heap.resume_gen = null; vm.heap.did_yield = true;
                 if (vm.activation_count > 0) {

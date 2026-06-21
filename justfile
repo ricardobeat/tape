@@ -45,6 +45,15 @@ build t="duktape_c3":
 build-debug t="duktape_c3":
     c3c -O0 build "{{t}}"
 
+# Build with heap verification enabled (`-D HEAP_VERIFY`) — validates GC roots at yield/resume
+build-verify t="test_vm":
+    c3c -D HEAP_VERIFY -O0 build "{{t}}"
+
+# Build test_vm with heap verification and run a JS file
+run-verify file="test/simple.js":
+    c3c -D HEAP_VERIFY -O0 build test_vm
+    ./out/test_vm {{file}}
+
 # ── Debugging ─────────────────────────────────────────────────────────────────
 
 # Build duktape_c3 with -O0 and launch lldb

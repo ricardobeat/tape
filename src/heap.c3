@@ -1590,6 +1590,28 @@ fn void Heap.drain_gray(&self) {
                 if ((*obj.extra_ptr()).gen.lex_env != null && (*obj.extra_ptr()).gen.lex_env.bindings != null) {
                     self.mark_hobject((*obj.extra_ptr()).gen.lex_env.bindings);
                 }
+                // Mark GeneratorState fields for suspended generators
+                GeneratorState* gs = (GeneratorState*)(*obj.extra_ptr()).gen.generator_data;
+                if (gs != null) {
+                    // Mark saved registers (contains TVal references to live objects)
+                    if (gs.saved_regs != null) {
+                        for (uint i = 0; i < gs.num_regs; i++) {
+                            self.mark_tval(&gs.saved_regs[i]);
+                        }
+                    }
+                    // Mark TVal fields
+                    self.mark_tval(&gs.this_binding);
+                    self.mark_tval(&gs.resume_value);
+                    self.mark_tval(&gs.throw_value);
+                    self.mark_tval(&gs.return_value);
+                    // Mark heap object pointers
+                    if (gs.delegated_iter != null) {
+                        self.mark_hobject((HObject*)gs.delegated_iter);
+                    }
+                    if (gs.async_promise != null) {
+                        self.mark_hobject((HObject*)gs.async_promise);
+                    }
+                }
                 break;
             case ObjClass.PROMISE:
                 // Mark the resolved value/rejection reason and the linked list
@@ -1784,6 +1806,290 @@ fn void Heap.mark_roots(&self) {
 }
 
 // ============================================================================
+// Heap verification (debug) — enabled with `-D HEAP_VERIFY`
+// ============================================================================
+
+/// Validate that a HeapHeader pointer is live and has a valid htype.
+/// For OBJECT/BUFFER: walks `heap_allocated` (O(n)).
+/// For STRING: checks htype only (symbols are not in str_table, only htype
+/// validation is reliable for all string types).
+/// Returns true if valid, false + stderr diagnostic if not.
+fn bool Heap.validate_hobject(&self, HeapHeader* hdr, ZString where) {
+$if $feature(HEAP_VERIFY):
+    if (hdr == null) {
+        io::eprintf("[HEAP_VERIFY]   ERROR at %s: null pointer\n", where);
+        return false;
+    }
+
+    HType ht = hdr.get_type();
+    if (ht != HType.OBJECT && ht != HType.STRING && ht != HType.BUFFER) {
+        io::eprintf("[HEAP_VERIFY]   ERROR at %s: invalid htype %d for pointer %p\n",
+                    where, (int)ht, hdr);
+        return false;
+    }
+
+    // Strings (including symbols) use alloc_no_gc and are not always tracked
+    // in str_table — htype validity is the only reliable check.
+    if (ht == HType.STRING) {
+        return true;
+    }
+
+    // OBJECT/BUFFER: walk the live heap list
+    HeapHeader* walk = self.heap_allocated;
+    while (walk != null) {
+        if (walk == hdr) return true;
+        walk = walk.next;
+    }
+
+    io::eprintf("[HEAP_VERIFY]   ERROR at %s: pointer %p (htype=%d) not in heap_allocated\n",
+                where, hdr, (int)ht);
+    return false;
+$else
+    return true;
+$endif
+}
+
+/// Validate every heap pointer inside a TVal array (e.g. saved_regs).
+/// Returns the number of errors found.
+fn uint Heap.verify_tval_array(&self, TVal* arr, uint count, ZString context) {
+$if $feature(HEAP_VERIFY):
+    uint errors = 0;
+    for (uint i = 0; i < count; i++) {
+        TVal* tv = &arr[i];
+        if (tv.is_object()) {
+            HObject* obj = (HObject*)tv.get_heapptr();
+            if (obj != null && !self.validate_hobject((HeapHeader*)obj, context)) {
+                errors++;
+            }
+        } else if (tv.is_string()) {
+            HString* s = (HString*)tv.get_heapptr();
+            if (s != null && !self.validate_hobject((HeapHeader*)s, context)) {
+                errors++;
+            }
+        } else if (tv.is_buffer()) {
+            void* buf = tv.get_heapptr();
+            if (buf != null && !self.validate_hobject((HeapHeader*)buf, context)) {
+                errors++;
+            }
+        }
+    }
+    return errors;
+$else
+    return 0;
+$endif
+}
+
+/// Verify all GC root sets point to live heap objects.
+/// Enabled only with `-D HEAP_VERIFY`. Returns true if all checks pass.
+fn bool Heap.verify_roots(&self, ZString context) {
+$if $feature(HEAP_VERIFY):
+    io::eprintf("[HEAP_VERIFY] %s: checking roots...\n", context);
+
+    // Count live objects
+    uint live_count = 0;
+    HeapHeader* h = self.heap_allocated;
+    while (h != null) {
+        live_count++;
+        h = h.next;
+    }
+    io::eprintf("[HEAP_VERIFY]   live objects: %d\n", (int)live_count);
+
+    uint checked = 0;
+    uint errors = 0;
+
+    // Check GC roots
+    for (uint i = 0; i < self.gc_root_count; i++) {
+        void* root = self.gc_roots[i];
+        if (root != null) {
+            if (!self.validate_hobject((HeapHeader*)root, "gc_root")) errors++;
+            checked++;
+        }
+    }
+
+    // Check built-in error prototypes
+    ZString[8] err_names = {
+        "err_proto", "type_err_proto", "range_err_proto", "ref_err_proto",
+        "syntax_err_proto", "eval_err_proto", "uri_err_proto", "aggregate_err_proto"
+    };
+    HObject*[8] err_protos = {
+        self.err_proto, self.type_err_proto, self.range_err_proto, self.ref_err_proto,
+        self.syntax_err_proto, self.eval_err_proto, self.uri_err_proto, self.aggregate_err_proto
+    };
+    for (uint i = 0; i < 8; i++) {
+        if (err_protos[i] != null) {
+            if (!self.validate_hobject((HeapHeader*)err_protos[i], err_names[i])) errors++;
+            checked++;
+        }
+    }
+
+    // Check built-in constructor prototypes
+    ZString[17] ctor_names = {
+        "object_proto", "bool_proto", "string_proto", "number_proto",
+        "array_proto", "function_proto", "date_proto", "regexp_proto",
+        "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
+        "symbol_proto", "promise_proto", "generator_proto", "iterator_proto",
+        "typedarray_proto"
+    };
+    HObject*[17] ctor_protos = {
+        self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
+        self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
+        self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
+        self.symbol_proto, self.promise_proto, self.generator_proto, self.iterator_proto,
+        self.typedarray_proto
+    };
+    for (uint i = 0; i < 17; i++) {
+        if (ctor_protos[i] != null) {
+            if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
+            checked++;
+        }
+    }
+
+    // Scan the VM value stack
+    if (self.valstack_base != null && self.valstack_top_ptr != null) {
+        TVal* top = *self.valstack_top_ptr;
+        TVal* scan = self.valstack_base;
+        while (scan < top) {
+            if (scan.is_object()) {
+                HObject* obj = (HObject*)scan.get_heapptr();
+                if (obj != null) {
+                    if (!self.validate_hobject((HeapHeader*)obj, "valstack")) errors++;
+                    checked++;
+                }
+            } else if (scan.is_string()) {
+                HString* s = (HString*)scan.get_heapptr();
+                if (s != null) {
+                    if (!self.validate_hobject((HeapHeader*)s, "valstack")) errors++;
+                    checked++;
+                }
+            } else if (scan.is_buffer()) {
+                void* buf = scan.get_heapptr();
+                if (buf != null) {
+                    if (!self.validate_hobject((HeapHeader*)buf, "valstack")) errors++;
+                    checked++;
+                }
+            }
+            scan++;
+        }
+    }
+
+    // Check symbol registry entries
+    for (uint i = 0; i < self.symbol_registry_count; i++) {
+        HString* key = self.symbol_registry_keys[i];
+        HString* sym = self.symbol_registry_syms[i];
+        if (key != null) {
+            if (!self.validate_hobject((HeapHeader*)key, "symbol_registry_key")) errors++;
+            checked++;
+        }
+        if (sym != null) {
+            if (!self.validate_hobject((HeapHeader*)sym, "symbol_registry_sym")) errors++;
+            checked++;
+        }
+    }
+
+    // Check built-in cached strings
+    for (uint i = 0; i < STRS_CACHE_SIZE; i++) {
+        HString* s = (HString*)self.strs[i];
+        if (s != null) {
+            if (!self.validate_hobject((HeapHeader*)s, "strs_cache")) errors++;
+            checked++;
+        }
+    }
+
+    // Check cached well-known symbols
+    HString*[8] cached_syms = {
+        self.iterator_symbol, self.toprimitive_symbol,
+        self.concatspreadable_symbol, self.hasinstance_symbol,
+        self.match_symbol, self.search_symbol,
+        self.replace_symbol, self.split_symbol
+    };
+    ZString[8] cached_sym_names = {
+        "iterator_symbol", "toprimitive_symbol",
+        "concatspreadable_symbol", "hasinstance_symbol",
+        "match_symbol", "search_symbol",
+        "replace_symbol", "split_symbol"
+    };
+    for (uint i = 0; i < 8; i++) {
+        if (cached_syms[i] != null) {
+            if (!self.validate_hobject((HeapHeader*)cached_syms[i], cached_sym_names[i])) errors++;
+            checked++;
+        }
+    }
+
+    // Check checkpoint keys
+    for (uint i = 0; i < self.checkpoint_count; i++) {
+        HString* key = (HString*)self.checkpoint_keys[i];
+        if (key != null) {
+            if (!self.validate_hobject((HeapHeader*)key, "checkpoint_key")) errors++;
+            checked++;
+        }
+    }
+
+    // Check generator saved_regs — walk heap for GENERATOR objects
+    HeapHeader* gen_walk = self.heap_allocated;
+    uint gen_count = 0;
+    while (gen_walk != null) {
+        if (gen_walk.is_object()) {
+            HObject* gen_obj = (HObject*)gen_walk;
+            if (gen_obj.flags.obj_class == ObjClass.GENERATOR) {
+                GeneratorState* gs = (GeneratorState*)(*gen_obj.extra_ptr()).gen.generator_data;
+                if (gs != null && gs.saved_regs != null && gs.num_regs > 0) {
+                    gen_count++;
+                    uint gs_errors = self.verify_tval_array(gs.saved_regs, gs.num_regs, "gen_saved_regs");
+                    if (gs_errors > 0) {
+                        io::eprintf("[HEAP_VERIFY]   generator %p: %d saved_regs errors\n", gen_obj, (int)gs_errors);
+                        errors += gs_errors;
+                    }
+                    checked += gs.num_regs;
+                }
+            }
+        }
+        gen_walk = gen_walk.next;
+    }
+    io::eprintf("[HEAP_VERIFY]   generators checked: %d\n", (int)gen_count);
+
+    io::eprintf("[HEAP_VERIFY]   checked: %d, errors: %d\n", (int)checked, (int)errors);
+    if (errors > 0) {
+        io::eprintf("[HEAP_VERIFY]   *** VERIFICATION FAILED ***\n");
+    }
+    return errors == 0;
+$else
+    return true;
+$endif
+}
+
+/// Check if a pointer is referenced by any suspended generator's saved_regs.
+/// Called during sweep before freeing an object. Returns true if the pointer
+/// is in a generator's saved_regs (meaning freeing it would create a dangling pointer).
+fn bool Heap.is_in_generator_saved_regs(&self, HeapHeader* ptr) {
+$if $feature(HEAP_VERIFY):
+    HeapHeader* walk = self.heap_allocated;
+    while (walk != null) {
+        if (walk.is_object()) {
+            HObject* obj = (HObject*)walk;
+            if (obj.flags.obj_class == ObjClass.GENERATOR) {
+                GeneratorState* gs = (GeneratorState*)(*obj.extra_ptr()).gen.generator_data;
+                if (gs != null && gs.saved_regs != null) {
+                    for (uint i = 0; i < gs.num_regs; i++) {
+                        TVal* tv = &gs.saved_regs[i];
+                        if (tv.is_object() || tv.is_string() || tv.is_buffer()) {
+                            void* hp = tv.get_heapptr();
+                            if (hp == (void*)ptr) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        walk = walk.next;
+    }
+    return false;
+$else
+    return false;
+$endif
+}
+
+// ============================================================================
 // GC sweep
 // ============================================================================
 
@@ -1816,6 +2122,12 @@ fn void Heap.sweep(&self) {
                 if (next != null) {
                     next.prev = prev;
                 }
+                $if $feature(HEAP_VERIFY):
+                    if (self.is_in_generator_saved_regs(cur)) {
+                        io::eprintf("[HEAP_VERIFY]   SWEEP WARNING: freeing %p (htype=%d) which is in a generator's saved_regs!\n",
+                                    cur, (int)cur.get_type());
+                    }
+                $endif
                 // Free
                 if (cur.is_object()) {
                     hobject::hobject_free((HObject*)cur, (void*)self);
