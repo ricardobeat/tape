@@ -287,6 +287,7 @@ fn void decref_callee_regs(Vm* vm, Activation* callee_act) {
     if (callee_act.max_heap_reg == 0) return;  // fast path: no heap refs
     CompiledFunction* callee_func = (CompiledFunction*)callee_act.func;
     uint nregs = callee_func.num_regs;
+    if (nregs == 0) return;  // no registers to decref
     TVal* regs = callee_act.bottom;
     uint limit = callee_act.max_heap_reg;
     if (limit >= nregs) limit = nregs - 1;

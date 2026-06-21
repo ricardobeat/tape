@@ -501,11 +501,17 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
     if (mod.status == ModuleStatus.EVALUATING) return true; // cycle guard
     mod.status = ModuleStatus.EVALUATING;
 
-    // Create module env if not already done
+    // Create module env if not already done, parented to the global env so
+    // that globals (console, Error, etc.) are visible inside modules.
     if (mod.env == null) {
-        EnvRecord*? env_opt = env::env_create_declarative(heap, null);
+        EnvRecord*? env_opt = env::env_create_declarative(heap, vm.global_env);
         if (catch err = env_opt) return false;
         mod.env = env_opt;
+        // Register the env bindings as a GC root so that objects stored in module
+        // envs (e.g. exported functions) are not swept between module evaluations.
+        if (mod.env.bindings != null) {
+            heap.register_gc_root(mod.env.bindings.as_header());
+        }
     }
 
     // Execute dependencies first (so their exports are available)
@@ -526,10 +532,27 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         if (rme.resolved == null) continue;
         ModuleDef* source_mod = (ModuleDef*)rme.resolved;
 
-        if (ie.is_star) continue; // namespace objects deferred
+        if (ie.is_star) {
+            // `import * as ns from '...'` — build a Module Namespace Object
+            HObject*? ns_opt = build_namespace_object(heap, source_mod);
+            if (catch err = ns_opt) continue;
+            HObject* ns = ns_opt;
+            TVal ns_val;
+            ns_val.set_object(ns);
+            HString* local_key = heap.str_intern(ie.local_name);
+            if (local_key != null) {
+                env::env_declare(mod.env, local_key, ns_val);
+            }
+            continue;
+        }
+
+        // Resolve the export name to the actual local binding name in the source module.
+        // For example, `export default 42` stores the value under "*default*" but
+        // exports it under the name "default".
+        char[] src_local_name = resolve_export_local_name(source_mod, ie.import_name);
 
         // Look up the exported binding in the source module's env
-        HString* key = heap.str_intern(ie.import_name);
+        HString* key = heap.str_intern(src_local_name);
         if (key == null) continue;
 
         TVal val;
@@ -556,12 +579,19 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         if (rme.resolved == null) continue;
         ModuleDef* source_mod = (ModuleDef*)rme.resolved;
 
-        HString* source_key = heap.str_intern(ee.local_name);
+        // Resolve the local name in the source module (handles "*default*" style names)
+        char[] src_local = resolve_export_local_name(source_mod, ee.local_name);
+        HString* source_key = heap.str_intern(src_local);
         HString* export_key = heap.str_intern(ee.export_name);
         if (source_key == null || export_key == null) continue;
 
         TVal val;
-        TVal? val_opt = env::env_get(source_mod.env, source_key);
+        TVal? val_opt;
+        if (source_mod.env != null) {
+            val_opt = env::env_get(source_mod.env, source_key);
+        } else {
+            val_opt = hobject::PROP_NOT_FOUND~;
+        }
         if (catch err = val_opt) {
             val.set_undefined();
         } else {
@@ -586,6 +616,55 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Resolve an export name to the local binding name in a module's exports table.
+/// For most exports local_name == export_name, but for `export default <expr>`
+/// the compiler emits local_name="*default*" and export_name="default".
+fn char[] resolve_export_local_name(ModuleDef* mod, char[] export_name) {
+    for (uint i = 0; i < mod.export_count; i++) {
+        ExportEntry* ee = &mod.exports[i];
+        if (!ee.is_indirect && char_slice_eq(ee.export_name, export_name)) {
+            return ee.local_name;
+        }
+    }
+    return export_name; // fallback: identity
+}
+
+/// Build a Module Namespace Object for `import * as ns`.
+/// The returned HObject has one own enumerable property per export of source_mod.
+fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
+    HObject*? ns_opt = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = ns_opt) return MODULE_ERROR~;
+    HObject* ns = ns_opt;
+
+    for (uint i = 0; i < source_mod.export_count; i++) {
+        ExportEntry* ee = &source_mod.exports[i];
+        // Declare the export_name property on the namespace object
+        HString* export_key = heap.str_intern(ee.export_name);
+        if (export_key == null) continue;
+
+        // Look up the local binding in the source module's env
+        char[] lookup_name = ee.is_indirect ? ee.local_name : ee.local_name;
+        HString* local_key = heap.str_intern(lookup_name);
+        if (local_key == null) continue;
+
+        TVal val;
+        if (source_mod.env != null) {
+            TVal? val_opt = env::env_get(source_mod.env, local_key);
+            if (catch err = val_opt) {
+                val.set_undefined();
+            } else {
+                val = val_opt;
+            }
+        } else {
+            val.set_undefined();
+        }
+
+        ns.put_prop(export_key, val, hobject::PROP_FLAGS_WEC);
+    }
+
+    return ns;
+}
 
 fn bool char_slice_eq(char[] a, char[] b) {
     if (a.len != b.len) return false;

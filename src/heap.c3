@@ -51,7 +51,7 @@ const uint  STRING_PINNED_REFCOUNT  = 0x7FFF_FFFF;
 /// Initial capacity for the gray object stack (grows as needed).
 const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
-const uint  GC_MAX_ROOTS            = 16;
+const uint  GC_MAX_ROOTS            = 64;
 const uint  BWD_GC_INTERVAL        = 1024;  /// Backward-jump GC check interval (prevents thrashing)
 
 // Lightfunc deleted-property bitset sizing.
