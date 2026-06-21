@@ -731,7 +731,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 ushort reg;
                 if (try existing = self.resolve_var(rest_tok.str_value)) {
                     reg = existing;
-                    binds[bind_count].is_resolved = true;
+                    binds[bind_count].is_resolved = false;
                 } else {
                     reg = self.alloc_reg();
                     binds[bind_count].is_resolved = false;
@@ -780,7 +780,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                     ushort reg;
                     if (try existing = self.resolve_var(name_tok.str_value)) {
                         reg = existing;
-                        binds[bind_count].is_resolved = true;
+                        binds[bind_count].is_resolved = false;
                     } else {
                         reg = self.alloc_reg();
                         binds[bind_count].is_resolved = false;
@@ -818,7 +818,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 ushort reg;
                 if (try existing = self.resolve_var(name_tok.str_value)) {
                     reg = existing;
-                    binds[bind_count].is_resolved = true;
+                    binds[bind_count].is_resolved = false;
                 } else {
                     reg = self.alloc_reg();
                     binds[bind_count].is_resolved = false;
@@ -841,7 +841,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 ushort reg;
                 if (try existing = self.resolve_var(name_tok.str_value)) {
                     reg = existing;
-                    binds[bind_count].is_resolved = true;
+                    binds[bind_count].is_resolved = false;
                 } else {
                     reg = self.alloc_reg();
                     binds[bind_count].is_resolved = false;
@@ -1027,7 +1027,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             ushort reg;
                             if (try existing = self.resolve_var(nested_name.str_value)) {
                                 reg = existing;
-                                binds[bind_count].is_resolved = true;
+                                binds[bind_count].is_resolved = false;
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
@@ -1051,7 +1051,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_bind.str_value)) {
                                         reg = existing;
-                                        binds[bind_count].is_resolved = true;
+                                        binds[bind_count].is_resolved = false;
                                     } else {
                                         reg = self.alloc_reg();
                                         binds[bind_count].is_resolved = false;
@@ -1069,7 +1069,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_prop.str_value)) {
                                         reg = existing;
-                                        binds[bind_count].is_resolved = true;
+                                        binds[bind_count].is_resolved = false;
                                     } else {
                                         reg = self.alloc_reg();
                                         binds[bind_count].is_resolved = false;
@@ -1093,7 +1093,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             ushort reg;
                             if (try existing = self.resolve_var(nested_name.str_value)) {
                                 reg = existing;
-                                binds[bind_count].is_resolved = true;
+                                binds[bind_count].is_resolved = false;
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
@@ -1112,7 +1112,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(nested_el.str_value)) {
                                     reg = existing;
-                                    binds[bind_count].is_resolved = true;
+                                    binds[bind_count].is_resolved = false;
                                 } else {
                                     reg = self.alloc_reg();
                                     binds[bind_count].is_resolved = false;
@@ -1132,7 +1132,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             ushort reg;
                             if (try existing = self.resolve_var(val_tok.str_value)) {
                                 reg = existing;
-                                binds[bind_count].is_resolved = true;
+                                binds[bind_count].is_resolved = false;
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
@@ -1157,7 +1157,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         ushort reg;
                         if (try existing = self.resolve_var(bind_tok.str_value)) {
                             reg = existing;
-                            binds[bind_count].is_resolved = true;
+                            binds[bind_count].is_resolved = false;
                         } else {
                             reg = self.alloc_reg();
                             binds[bind_count].is_resolved = false;
@@ -1181,7 +1181,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         ushort reg;
                         if (try existing = self.resolve_var(name_tok.str_value)) {
                             reg = existing;
-                            binds[bind_count].is_resolved = true;
+                            binds[bind_count].is_resolved = false;
                         } else {
                             reg = self.alloc_reg();
                             binds[bind_count].is_resolved = false;
@@ -1197,7 +1197,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         ushort reg;
                         if (try existing = self.resolve_var(name_tok.str_value)) {
                             reg = existing;
-                            binds[bind_count].is_resolved = true;
+                            binds[bind_count].is_resolved = false;
                         } else {
                             reg = self.alloc_reg();
                             binds[bind_count].is_resolved = false;
@@ -1226,7 +1226,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(nested_bind.str_value)) {
                                     reg = existing;
-                                    binds[bind_count].is_resolved = true;
+                                    binds[bind_count].is_resolved = false;
                                 } else {
                                     reg = self.alloc_reg();
                                     binds[bind_count].is_resolved = false;
@@ -1250,7 +1250,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(nested_name.str_value)) {
                                     reg = existing;
-                                    binds[bind_count].is_resolved = true;
+                                    binds[bind_count].is_resolved = false;
                                 } else {
                                     reg = self.alloc_reg();
                                     binds[bind_count].is_resolved = false;
@@ -1276,7 +1276,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_bind2.str_value)) {
                                         reg = existing;
-                                        binds[bind_count].is_resolved = true;
+                                        binds[bind_count].is_resolved = false;
                                     } else {
                                         reg = self.alloc_reg();
                                         binds[bind_count].is_resolved = false;
@@ -1294,7 +1294,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     ushort reg;
                                     if (try existing = self.resolve_var(nested_prop.str_value)) {
                                         reg = existing;
-                                        binds[bind_count].is_resolved = true;
+                                        binds[bind_count].is_resolved = false;
                                     } else {
                                         reg = self.alloc_reg();
                                         binds[bind_count].is_resolved = false;
@@ -1319,7 +1319,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             ushort reg;
                             if (try existing = self.resolve_var(bind_tok.str_value)) {
                                 reg = existing;
-                                binds[bind_count].is_resolved = true;
+                                binds[bind_count].is_resolved = false;
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
@@ -1339,7 +1339,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 ushort reg;
                                 if (try existing = self.resolve_var(arr_el.str_value)) {
                                     reg = existing;
-                                    binds[bind_count].is_resolved = true;
+                                    binds[bind_count].is_resolved = false;
                                 } else {
                                     reg = self.alloc_reg();
                                     binds[bind_count].is_resolved = false;
@@ -1360,7 +1360,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             ushort reg;
                             if (try existing = self.resolve_var(bind_tok.str_value)) {
                                 reg = existing;
-                                binds[bind_count].is_resolved = true;
+                                binds[bind_count].is_resolved = false;
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
@@ -1385,7 +1385,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         ushort reg;
                         if (try existing = self.resolve_var(prop_tok.str_value)) {
                             reg = existing;
-                            binds[bind_count].is_resolved = true;
+                            binds[bind_count].is_resolved = false;
                         } else {
                             reg = self.alloc_reg();
                             binds[bind_count].is_resolved = false;
