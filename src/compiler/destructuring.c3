@@ -347,6 +347,8 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                             binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
                             binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                             binds[bind_count].has_default = false;
+                            binds[bind_count].is_nested = true;
+                            binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
                             bind_count++;
                         }
                         // Parse remaining nested properties
@@ -361,8 +363,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                     ushort reg = self.declare_var(nested_bind.str_value, kind);
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             } else {
@@ -370,8 +374,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                     ushort reg = self.declare_var(nested_prop.str_value, kind);
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             }
@@ -491,6 +497,8 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
                                 binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                 binds[bind_count].has_default = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
 
                                 // Check for default
                                 if (self.match(TokenType.ASSIGN)) {
@@ -508,6 +516,8 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
                                 binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                 binds[bind_count].has_default = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
                                 bind_count++;
                             }
                         }
@@ -524,8 +534,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                     ushort reg = self.declare_var(nested_bind2.str_value, kind);
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind2.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             } else {
@@ -533,8 +545,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                     ushort reg = self.declare_var(nested_prop.str_value, kind);
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             }
@@ -631,10 +645,25 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 
     // Emit GETPROP for each property: rhs[key] → bind_reg
     for (uint i = 0; i < bind_count; i++) {
-        ushort key_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
-        self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
-        self.free_reg(key_reg);
+        if (binds[i].is_nested) {
+            // Nested binding: GETPROP parent = rhs[outer_key], then GETPROP bind = parent[inner_key]
+            ushort parent_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key_reg, binds[i].key_idx));
+            ushort parent_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)rhs_reg, (uint)parent_key_reg);
+            self.free_reg(parent_key_reg);
+
+            ushort inner_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)inner_key_reg, binds[i].nested_key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)parent_reg, (uint)inner_key_reg);
+            self.free_reg(inner_key_reg);
+            self.free_reg(parent_reg);
+        } else {
+            ushort key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
+            self.free_reg(key_reg);
+        }
 
         // Apply default if present: if value is undefined, use default
         if (binds[i].has_default) {
@@ -1007,6 +1036,8 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
                             binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                             binds[bind_count].has_default = false;
+                            binds[bind_count].is_nested = true;
+                            binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
                             bind_count++;
                         }
                         while (self.match(TokenType.COMMA)) {
@@ -1027,8 +1058,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     }
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             } else {
@@ -1043,8 +1076,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     }
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             }
@@ -1200,6 +1235,8 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
                                 binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                 binds[bind_count].has_default = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     binds[bind_count].has_default = true;
@@ -1222,6 +1259,8 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
                                 binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                 binds[bind_count].has_default = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
                                 bind_count++;
                             }
                         }
@@ -1244,8 +1283,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     }
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind2.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             } else {
@@ -1260,8 +1301,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     }
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                                     binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
                                     bind_count++;
                                 }
                             }
@@ -1374,10 +1417,25 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
     // Emit GETPROP for each property: rhs[key] → bind_reg
     for (uint i = 0; i < bind_count; i++) {
-        ushort key_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
-        self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
-        self.free_reg(key_reg);
+        if (binds[i].is_nested) {
+            // Nested binding: GETPROP parent = rhs[outer_key], then GETPROP bind = parent[inner_key]
+            ushort parent_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key_reg, binds[i].key_idx));
+            ushort parent_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)rhs_reg, (uint)parent_key_reg);
+            self.free_reg(parent_key_reg);
+
+            ushort inner_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)inner_key_reg, binds[i].nested_key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)parent_reg, (uint)inner_key_reg);
+            self.free_reg(inner_key_reg);
+            self.free_reg(parent_reg);
+        } else {
+            ushort key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
+            self.free_reg(key_reg);
+        }
 
         // Apply default if present: if value is undefined, use default
         if (binds[i].has_default) {
