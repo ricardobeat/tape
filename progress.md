@@ -1,16 +1,16 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 213 (mixed/triple-nested destructuring + let assignment fixes)
+**Last Updated:** Session 214 (rest-in-nested destructuring, postfix member writeback, async verification)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 213, 2026-06-21)
+## Summary (after Session 214, 2026-06-21)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
 | ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 18,967 (+5 from destructuring fixes) |
-| Currently failing (phases 0-21) | 8,528 |
+| Currently passing (phases 0-21) | 18,973 (+6 from this session) |
+| Currently failing (phases 0-21) | 8,522 |
 | Currently CE (phases 0-21) | ~3,019 (4 phases measured) |
 | Overall pass rate | 69.0% |
 
@@ -30,14 +30,13 @@
 | 11: Arrow/Templates | 427 | 119 | 166 | 142 | 0 |
 | 12-13: Destructuring | 19 | 15 | 2 | 2 | 0 |
 | 14: for-of | 751 | 106 | 156 | 169 | 320 |
-| 15: Classes | 8520 | 490 | 475 | 5141 | 2414 |
+| 15: Classes | 8520 | 492 | 473 | 5141 | 2414 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 498 | 665 | 406 | 45 |
-| 21: Generators | 619 | 111 | 178 | 130 | 200 |
+| 21: Generators | 619 | 115 | 174 | 130 | 200 |
 
 ## Deferred Items
 
 - Private class fields/methods
-- rest inside nested array destructuring: `[a, [b, ...rest]]` (BACKLOG L49)
 - Reflect, Proxy
 
 ## VM Performance Optimizations (Session ~197, 2026-06-19)

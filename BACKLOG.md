@@ -46,14 +46,14 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Debug destructuring in for-of: `for (const [k, v] of pairs) {}`
 - [x] Fix mixed destructuring patterns: array-in-object (`{x: [a, b]}`) and object-in-array (`[{a}]`) — added is_array_nested/arr_nested_idx to ObjBind and is_obj_nested/obj_key_idx to ArrayBind; T37-T40 all pass.
 - [x] Fix triple-nested array destructuring: `const [[[a]]] = [[[42]]]` — added nest_depth/depth2_idx to ArrayBind; chained two-level GETPROP emission.
-- [ ] Fix rest inside nested array destructuring: `const [a, [b, ...rest]] = [1, [2, 3, 4]]` — compile error
+- [x] Fix rest inside nested array destructuring: `const [a, [b, ...rest]] = [1, [2, 3, 4]]` — added ELLIPSIS branch in inner loop of `array_destructure()` and `array_destructure_assign()`; nested rest calls `.slice(inner_idx)` on the cached inner array temp
 - [x] Fix `let` destructuring assignment: `let a, b; [a, b] = [1, 2]` — set is_resolved=false everywhere in assign variants so PUTVAR always updates the lexical env (T33-T34 fixed).
-- [ ] Verify `async function` compilation: `is_async` flag propagated through `compile_inner_function`
-- [ ] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction)
-- [ ] Test async function without await (should return resolved Promise)
-- [ ] Test async function with single await (should suspend and resume)
+- [x] Verify `async function` compilation: `is_async` flag propagated through `compile_inner_function` — confirmed in `functions.c3:1265`; `is_generator` set to true for suspend/resume via AWAIT opcode
+- [x] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction) — confirmed working; `test/test_async.js` 38/38, `test/test_async_loops.js` 12/12
+- [x] Test async function without await (should return resolved Promise) — covered in `test/test_async.js`
+- [x] Test async function with single await (should suspend and resume) — covered in `test/test_async.js`
 - [x] Test async error handling: rejected promise inside async function should reject the returned promise — `test/test_async_loops.js` `catchReject`/`loopWithReject` cases pass
 - [x] Test `await` in `for`/`while` loops (repeated suspend/resume) — see `test/test_async_loops.js`; `vm.c3` vm_call_fn_impl was clobbering the saved registers (loop var `i` etc. on resume), and the AWAIT handler crashed on second-or-later suspend because the outer dispatch loop indexed `activations[activation_count-1]` when count had reached 0
-- [ ] Fix remaining postfix `++`/`--` member writeback edge cases after GETPROP patching refactor
+- [x] Fix remaining postfix `++`/`--` member writeback edge cases after GETPROP patching refactor — removed NOP-GETPROP hack; keep obj/prop registers alive in `member_expr` when next token is INC/DEC so `postfix_expr` can PUTPROP correctly (expressions.c3)
 - [x] **Follow-up — implicit-global crash**: `x = 1` at global scope (no `var`/`let`/`const`) raises `VM_ERROR` instead of creating a global (in strict mode this must be `ReferenceError`). Pre-existing in baseline (crashes in both modes); discovered during strict-mode investigation. FIXED in commit fdfbf8e — see the implicit-global investigation item above. The ReferenceError was always being thrown correctly; the fix was to surface it instead of dropping it.
 - [ ] Run full ES5 test262 suite and measure delta from 61.9% baseline
