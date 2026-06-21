@@ -635,9 +635,14 @@ fn void? CompilerContext.while_statement(&self) {
         self.expect(TokenType.RPAREN)!;      // consume ')'
 
         ushort lhs_reg = self.alloc_reg();
-        if (try reg = self.resolve_var(ident_tok.str_value)) {
-            if (reg != lhs_reg) {
-                self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+        if (!self.is_global) {
+            if (try reg = self.resolve_var(ident_tok.str_value)) {
+                if (reg != lhs_reg) {
+                    self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+                }
+            } else {
+                uint name_idx2 = self.add_string_constant(ident_tok.str_value);
+                self.emit_a_bc(Opcode.GETVAR, (uint)lhs_reg, name_idx2);
             }
         } else {
             uint name_idx2 = self.add_string_constant(ident_tok.str_value);
@@ -1777,9 +1782,17 @@ fn void? CompilerContext.for_statement(&self) {
             self.expect(TokenType.SEMICOLON)!;  // consume `;`
 
             ushort lhs_reg = self.alloc_reg();
-            if (try reg = self.resolve_var(ident_tok.str_value)) {
-                if (reg != lhs_reg) {
-                    self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+            // Mirror primary_expr: at global scope, all identifiers go through GETVAR
+            // (registers are not kept in sync with the env by the body). resolve_var is
+            // only safe when the body also uses the register directly (non-global scope).
+            if (!self.is_global) {
+                if (try reg = self.resolve_var(ident_tok.str_value)) {
+                    if (reg != lhs_reg) {
+                        self.emit_abc(Opcode.LDREG, (uint)lhs_reg, (uint)reg, 0);
+                    }
+                } else {
+                    uint name_idx2 = self.add_string_constant(ident_tok.str_value);
+                    self.emit_a_bc(Opcode.GETVAR, (uint)lhs_reg, name_idx2);
                 }
             } else {
                 uint name_idx2 = self.add_string_constant(ident_tok.str_value);
