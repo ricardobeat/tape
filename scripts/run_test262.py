@@ -58,6 +58,8 @@ SKIP_DIRS = {
     "built-ins/WeakRef",               # 29    — GC-dependent
     "built-ins/FinalizationRegistry",  # 47    — GC-dependent
     "built-ins/BigInt",                # 77    — defer
+    "language/statements/with",        # sloppy-mode only, not supported
+    "language/statements/labeled",     # not supported
 }
 
 # Feature flags to skip (matched against test metadata `features: [...]`)
@@ -183,9 +185,9 @@ PHASES = [
     {
         "label": "Phase 7: Remaining ES5 Features",
         "dirs": [
-            "language/statements/switch", "language/statements/with",
+            "language/statements/switch",
             "language/statements/break", "language/statements/continue",
-            "language/statements/labeled", "language/expressions/instanceof",
+            "language/expressions/instanceof",
             "language/expressions/in", "language/expressions/delete",
             "language/eval-code", "language/statements/for",
         ],
