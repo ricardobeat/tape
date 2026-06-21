@@ -140,7 +140,7 @@ fn void? CompilerContext.statement(&self) {
         case TokenType.SWITCH:
             self.switch_statement()!;
         case TokenType.WITH:
-            return COMPILE_ERROR~;
+            return self.fail("'with' statement is not supported")~;
         case TokenType.BREAK:
             self.break_statement()!;
         case TokenType.CONTINUE:

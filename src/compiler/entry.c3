@@ -16,6 +16,10 @@ import std::io;
 /// Compile a complete program (sequence of statements).
 /// Returns the top-level CompiledFunction or a fault on error.
 fn CompiledFunction*? compile(Lexer* lex, void* heap) {
+    // Reset error state for this top-level compilation.
+    g_last_err_msg[0] = 0;
+    g_last_err_line = 0;
+    g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
     ctx.is_global = true;
@@ -69,6 +73,9 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 /// Eval code differs from a regular program in that the value of the last
 /// expression statement is returned (not undefined).
 fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
+    g_last_err_msg[0] = 0;
+    g_last_err_line = 0;
+    g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
     ctx.is_global = true;
@@ -147,6 +154,9 @@ fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
 /// `module_def` is an opaque ModuleDef* — the compiler writes import/export
 /// metadata into it via the void* current_module field.
 fn CompiledFunction*? compile_module(Lexer* lex, void* heap, char[] module_name, void* module_def) {
+    g_last_err_msg[0] = 0;
+    g_last_err_line = 0;
+    g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
     ctx.is_global = true;

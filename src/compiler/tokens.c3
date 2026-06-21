@@ -10,6 +10,24 @@ import libc;
 import std::io;
 
 // ============================================================================
+// Error recording helper
+// ============================================================================
+
+/// Record a compile error with the current lexer position, then return COMPILE_ERROR~.
+/// Callers: `return self.fail("message")!;` or `return self.fail("message");`
+macro fault CompilerContext.fail(&self, char[] msg) {
+    if (g_last_err_msg[0] == 0) {
+        g_last_err_line = self.lexer.line;
+        g_last_err_col  = self.lexer.col;
+        // Copy msg into fixed buffer (truncate if necessary, always NUL-terminate).
+        usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
+        libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
+        g_last_err_msg[copy_len] = 0;
+    }
+    return COMPILE_ERROR;
+}
+
+// ============================================================================
 // Token consumption helpers
 // ============================================================================
 
@@ -20,8 +38,34 @@ fn Token? CompilerContext.advance(&self) {
         self.pushback_count--;
         return self.pushback_stack[self.pushback_count];
     }
-    Token tok = self.lexer.next_token()!;
-    return tok;
+    Token? tok_opt = self.lexer.next_token();
+    if (catch _err = tok_opt) {
+        // Lex error — record position and a descriptive message (only if no prior error).
+        if (g_last_err_msg[0] == 0) {
+            g_last_err_line = self.lexer.line;
+            // After a single-char lex error the lexer has already advanced pos/col by 1;
+            // back up by one to report the column of the offending character.
+            g_last_err_col  = self.lexer.col > 0 ? self.lexer.col - 1 : 0;
+            // Identify the offending character if we can.
+            uint bad_pos = self.lexer.pos > 0 ? self.lexer.pos - 1 : 0;
+            if (bad_pos < (uint)self.lexer.source.len) {
+                char c = self.lexer.source[bad_pos];
+                char[128] buf;
+                usz n = (usz)libc::snprintf(&buf[0], buf.len,
+                    "unexpected character '%c' (not supported)", c);
+                usz copy_len = n < (g_last_err_msg.len - 1) ? n : (g_last_err_msg.len - 1);
+                libc::memcpy(&g_last_err_msg[0], &buf[0], copy_len);
+                g_last_err_msg[copy_len] = 0;
+            } else {
+                char[] msg = "unexpected end of input";
+                usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
+                libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
+                g_last_err_msg[copy_len] = 0;
+            }
+        }
+        return COMPILE_ERROR~;
+    }
+    return tok_opt;
 }
 
 /// Expect the next token to be of the given type; consume and return it.
@@ -29,6 +73,20 @@ fn Token? CompilerContext.advance(&self) {
 fn Token? CompilerContext.expect(&self, TokenType tt) {
     Token tok = self.advance()!;
     if (tok.type != tt) {
+        // Only record if no earlier error has already been captured.
+        if (g_last_err_msg[0] == 0) {
+            char[128] buf;
+            char[] want = lexer::token_type_name(tt);
+            char[] got  = lexer::token_type_name(tok.type);
+            usz n = (usz)libc::snprintf(&buf[0], buf.len, "expected '%.*s', got '%.*s'",
+                                        (int)want.len, want.ptr,
+                                        (int)got.len,  got.ptr);
+            g_last_err_line = tok.line;
+            g_last_err_col  = tok.col;
+            usz copy_len = n < (g_last_err_msg.len - 1) ? n : (g_last_err_msg.len - 1);
+            libc::memcpy(&g_last_err_msg[0], &buf[0], copy_len);
+            g_last_err_msg[copy_len] = 0;
+        }
         return COMPILE_ERROR~;
     }
     return tok;
@@ -51,10 +109,31 @@ fn TokenType CompilerContext.peek_type(&self) {
     if (self.pushback_count > 0) {
         return self.pushback_stack[self.pushback_count - 1].type;
     }
-    if (try tok = self.lexer.peek()) {
-        return tok.type;
+    Token? peek_opt = self.lexer.peek();
+    if (catch _peek_err = peek_opt) {
+        // Lex error during peek — record it now (only if no prior error captured).
+        if (g_last_err_msg[0] == 0) {
+            g_last_err_line = self.lexer.line;
+            g_last_err_col  = self.lexer.col > 0 ? self.lexer.col - 1 : 0;
+            uint bad_pos = self.lexer.pos > 0 ? self.lexer.pos - 1 : 0;
+            if (bad_pos < (uint)self.lexer.source.len) {
+                char c = self.lexer.source[bad_pos];
+                char[128] buf;
+                usz n = (usz)libc::snprintf(&buf[0], buf.len,
+                    "unexpected character '%c' (not supported)", c);
+                usz copy_len = n < (g_last_err_msg.len - 1) ? n : (g_last_err_msg.len - 1);
+                libc::memcpy(&g_last_err_msg[0], &buf[0], copy_len);
+                g_last_err_msg[copy_len] = 0;
+            } else {
+                char[] msg = "unexpected end of input";
+                usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
+                libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
+                g_last_err_msg[copy_len] = 0;
+            }
+        }
+        return TokenType.EOF_TOKEN;
     }
-    return TokenType.EOF_TOKEN;
+    return peek_opt.type;
 }
 
 /// Check if the next token is the given type without consuming.

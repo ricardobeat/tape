@@ -153,6 +153,19 @@ struct ObjBind {
 }
 
 // ============================================================================
+// Last compile-error info (module-level; written on fault, read by callers)
+// ============================================================================
+
+char[512] g_last_err_msg;
+uint      g_last_err_line;
+uint      g_last_err_col;
+
+/// Retrieve the last compile error message (pointer to the module-level buffer).
+fn char* last_error_msg()   { return &g_last_err_msg[0]; }
+fn uint  last_error_line()  { return g_last_err_line; }
+fn uint  last_error_col()   { return g_last_err_col; }
+
+// ============================================================================
 // CompilerContext
 // ============================================================================
 

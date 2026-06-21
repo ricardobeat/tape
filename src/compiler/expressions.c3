@@ -658,7 +658,7 @@ fn ushort? CompilerContext.unary_expr(&self) {
                 // Delete of a non-reference (variable, literal, etc.).
                 // ES5 §11.4.1 / ES6 §12.5.3: SyntaxError in strict mode.
                 // Strict-only engine: always reject (early SyntaxError).
-                return COMPILE_ERROR~;
+                return self.fail("delete of a variable name is not allowed in strict mode")~;
             }
 
         case TokenType.INC:
@@ -1822,7 +1822,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
         {
             self.advance()!;  // consume 'yield'
             if (!self.is_generator) {
-                return COMPILE_ERROR~;  // yield only valid in generators
+                return self.fail("'yield' is only valid inside a generator function")~;
             }
             // Check for yield* (delegating yield)
             bool is_delegate = false;
@@ -1884,7 +1884,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
         {
             self.advance()!;  // consume 'import'
             if (!self.match(TokenType.LPAREN)) {
-                return COMPILE_ERROR~;  // import must be followed by '('
+                return self.fail("'import' as an expression must be followed by '(' (dynamic import)")~;
             }
             // Parse the specifier argument (we discard it for now)
             ushort spec_reg = self.assignment_expr()!;

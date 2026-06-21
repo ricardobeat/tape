@@ -207,6 +207,82 @@ fn char[] keyword_to_string(TokenType tt) {
     return "";
 }
 
+/// Return a human-readable name for a token type (for error messages).
+fn char[] token_type_name(TokenType tt) {
+    // Try keyword table first
+    char[] kw = keyword_to_string(tt);
+    if (kw.len > 0) return kw;
+    switch (tt) {
+        case TokenType.EOF_TOKEN:       return "<end of input>";
+        case TokenType.NUMBER:          return "<number>";
+        case TokenType.STRING:          return "<string>";
+        case TokenType.REGEXP:          return "<regexp>";
+        case TokenType.TEMPLATE:        return "<template>";
+        case TokenType.TEMPLATE_HEAD:   return "<template>";
+        case TokenType.TEMPLATE_MIDDLE: return "<template>";
+        case TokenType.TEMPLATE_TAIL:   return "<template>";
+        case TokenType.IDENTIFIER:      return "<identifier>";
+        case TokenType.LBRACE:          return "{";
+        case TokenType.RBRACE:          return "}";
+        case TokenType.LPAREN:          return "(";
+        case TokenType.RPAREN:          return ")";
+        case TokenType.LBRACKET:        return "[";
+        case TokenType.RBRACKET:        return "]";
+        case TokenType.DOT:             return ".";
+        case TokenType.ELLIPSIS:        return "...";
+        case TokenType.SEMICOLON:       return ";";
+        case TokenType.COMMA:           return ",";
+        case TokenType.LT:              return "<";
+        case TokenType.GT:              return ">";
+        case TokenType.LE:              return "<=";
+        case TokenType.GE:              return ">=";
+        case TokenType.EQ:              return "==";
+        case TokenType.NE:              return "!=";
+        case TokenType.SEQ:             return "===";
+        case TokenType.SNE:             return "!==";
+        case TokenType.PLUS:            return "+";
+        case TokenType.MINUS:           return "-";
+        case TokenType.STAR:            return "*";
+        case TokenType.SLASH:           return "/";
+        case TokenType.PERCENT:         return "%";
+        case TokenType.STARSTAR:        return "**";
+        case TokenType.INC:             return "++";
+        case TokenType.DEC:             return "--";
+        case TokenType.SHL:             return "<<";
+        case TokenType.SHR:             return ">>";
+        case TokenType.USHR:            return ">>>";
+        case TokenType.BIT_AND:         return "&";
+        case TokenType.BIT_OR:          return "|";
+        case TokenType.BIT_XOR:         return "^";
+        case TokenType.BIT_NOT:         return "~";
+        case TokenType.LOG_AND:         return "&&";
+        case TokenType.LOG_OR:          return "||";
+        case TokenType.LOG_NOT:         return "!";
+        case TokenType.NULLISH:         return "??";
+        case TokenType.QUESTION:        return "?";
+        case TokenType.COLON:           return ":";
+        case TokenType.ASSIGN:          return "=";
+        case TokenType.PLUS_ASSIGN:     return "+=";
+        case TokenType.MINUS_ASSIGN:    return "-=";
+        case TokenType.STAR_ASSIGN:     return "*=";
+        case TokenType.SLASH_ASSIGN:    return "/=";
+        case TokenType.PERCENT_ASSIGN:  return "%=";
+        case TokenType.STARSTAR_ASSIGN: return "**=";
+        case TokenType.SHL_ASSIGN:      return "<<=";
+        case TokenType.SHR_ASSIGN:      return ">>=";
+        case TokenType.USHR_ASSIGN:     return ">>>=";
+        case TokenType.BIT_AND_ASSIGN:  return "&=";
+        case TokenType.BIT_OR_ASSIGN:   return "|=";
+        case TokenType.BIT_XOR_ASSIGN:  return "^=";
+        case TokenType.LOG_AND_ASSIGN:  return "&&=";
+        case TokenType.LOG_OR_ASSIGN:   return "||=";
+        case TokenType.NULLISH_ASSIGN:  return "??=";
+        case TokenType.ARROW:           return "=>";
+        case TokenType.OPT_CHAIN:       return "?.";
+        default:                        return "<unknown>";
+    }
+}
+
 // ============================================================================
 // Character classification helpers
 // ============================================================================

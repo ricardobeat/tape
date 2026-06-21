@@ -366,7 +366,25 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
     // 5. Compile
     Lexer lex = lexer::lexer_init(source, heap);
     bytecode::CompiledFunction*? func_opt = compiler::compile_module(&lex, heap, normalized, mod);
-    if (catch err = func_opt) return MODULE_ERROR~;
+    if (catch err = func_opt) {
+        char* msg  = compiler::last_error_msg();
+        uint  line = compiler::last_error_line();
+        uint  col  = compiler::last_error_col();
+        usz   msg_len = (usz)libc::strlen((ZString)msg);
+        // Build the module name portion into a temp buffer for printing.
+        char[512] name_buf;
+        usz name_copy = normalized.len < 511 ? normalized.len : 511;
+        libc::memcpy(&name_buf[0], normalized.ptr, name_copy);
+        name_buf[name_copy] = 0;
+        if (msg_len > 0) {
+            io::eprintfn("%s: compile error at line %d:%d: %s",
+                         (ZString)name_buf[0..], line, col, (ZString)msg);
+        } else {
+            io::eprintfn("%s: compile error at line %d:%d",
+                         (ZString)name_buf[0..], line, col);
+        }
+        return MODULE_ERROR~;
+    }
     mod.func = func_opt;
 
     // 6. Notify host
@@ -377,7 +395,6 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
         ReqModuleEntry* rme = &mod.req_modules[i];
         ModuleDef*? dep = resolve_module(heap, rme.module_name, normalized);
         if (catch err = dep) {
-            io::eprintfn("module resolve dep failed");
             return MODULE_ERROR~;
         }
         rme.resolved = dep;

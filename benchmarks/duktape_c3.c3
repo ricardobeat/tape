@@ -127,7 +127,7 @@ fn int main(String[] args) {
         char[] module_name = path;
         esm::ModuleDef*? mod_opt = esm::resolve_module(hp, module_name, "");
         if (catch err = mod_opt) {
-            io::eprintfn("module resolve failed");
+            // Compile error was already printed by resolve_module; just exit.
             return 1;
         }
         esm::ModuleDef* mod = mod_opt;
@@ -155,7 +155,15 @@ fn int main(String[] args) {
     Lexer lx = lexer::lexer_init(source, hp);
     bytecode::CompiledFunction*? func = compiler::compile(&lx, hp);
     if (catch err = func) {
-        io::eprintfn("compile failed");
+        char* msg  = compiler::last_error_msg();
+        uint  line = compiler::last_error_line();
+        uint  col  = compiler::last_error_col();
+        usz   msg_len = (usz)libc::strlen((ZString)msg);
+        if (msg_len > 0) {
+            io::eprintfn("%s: compile error at line %d:%d: %s", path, line, col, (ZString)msg);
+        } else {
+            io::eprintfn("%s: compile error at line %d:%d", path, line, col);
+        }
         return 1;
     }
     if (debug) io::printfn("  compile:     %d us", (int)(time::now() - t3));
