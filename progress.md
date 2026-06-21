@@ -8,8 +8,10 @@
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,813 |
+| Pass + Fail (executable tests) | 26,619 |
 | Total passing | 18,905 |
-| **Overall pass rate** | **45.2%** |
+| **Overall pass rate (pass/pass+fail)** | **71.0%** |
+| Skipped + CE (not run) | 15,194 |
 
 ## Per-Phase Status (all phases, session 216)
 
