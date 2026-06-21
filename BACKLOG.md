@@ -30,6 +30,10 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Survey generator test failures and categorize by root cause (compile vs VM vs builtin) — DONE (Session 209): VM 243 (93.5%), Builtin 16 (6.2%), Compiler 1 (0.4%). Top causes: destructuring+generator (156), yield execution (70), yield* (21), Generator.prototype properties (16).
 - [x] Fix `yield` expression handling in compiler: `var x = yield val` — yield is right-associative with lowest precedence. `yield` already lives in `primary_expr` (`src/compiler/expressions.c3:1825`) with `assignment_expr()` for the operand, so right-associativity, sub-expressions, return value, and bare yield all work. Added `test/test_yield_expr.js` (11/11 pass); rosetta 45/45 unchanged.
 - [x] Fix `yield*` delegation: should iterate inner iterable and yield each value — DONE (Session 209): Replaced naive index-based loop with YIELD_STAR opcode implementing ES6 §25.3.2.4 iterator protocol. VM handler gets @@iterator, calls .next() in suspend/resume loop, delegates .throw()/.return(). Generator.prototype gets @@iterator. test_yield_star.js: 27 assertions. Rosetta 45/45.
+- [x] Fix GETPROPC2 chain fusion: string/number/boolean intermediates now handled (vm.c3:4272-4433). `obj.y.length` works.
+- [x] Fix GC mark phase: GeneratorState.saved_regs, this_binding, delegated_iter, async_promise now traced (heap.c3 drain_gray GENERATOR case)
+- [x] Add HEAP_VERIFY debug tool: compile-time heap verification at yield/resume boundaries, sweep-time saved_regs check
+- [ ] Run Phase 21 to measure generator fix impact (GETPROPC2 fix likely unblocks many of the 70 yield-execution failures)
 - [ ] Fix `Generator.prototype.return()` / `.throw()` — currently likely missing or stubbed
 - [ ] Verify `.next()`, `.return()`, `.throw()` state machine transitions per ES6 §25.3
 - [ ] Ensure `GeneratorFunction` and `Generator` constructor exist and are reachable
