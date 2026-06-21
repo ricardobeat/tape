@@ -87,6 +87,28 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                     continue;
                 }
 
+                // Check for rest element in nested array: [a, [b, ...rest]]
+                if (self.match(TokenType.ELLIPSIS)) {
+                    Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                    if (bind_count < 32) {
+                        ushort reg = self.declare_var(rest_tok.str_value, kind);
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                        binds[bind_count].is_rest = true;
+                        binds[bind_count].is_hole = false;
+                        binds[bind_count].has_default = false;
+                        binds[bind_count].is_nested = true;
+                        binds[bind_count].outer_idx = nested_outer;
+                        binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 1;
+                        binds[bind_count].depth2_idx = 0;
+                        bind_count++;
+                    }
+                    while (self.match(TokenType.COMMA)) {}
+                    break;
+                }
+
                 // Check for triple nesting: [[[a]]] or [[[a = expr]]]
                 if (self.check(TokenType.LBRACKET)) {
                     self.advance()!; // consume inner '['
@@ -244,7 +266,44 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
     for (uint i = 0; i < bind_count; i++) {
         if (binds[i].is_hole) continue;
 
-        if (binds[i].is_rest) {
+        if (binds[i].is_rest && binds[i].is_nested) {
+            // Nested rest element: [a, [b, ...rest]] → call nested_array.slice(inner_idx)
+            // First ensure nested temp is available
+            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
+                if (has_nested_temp) {
+                    self.free_reg(nested_temp_reg);
+                }
+                nested_temp_reg = self.alloc_reg();
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+                has_nested_temp = true;
+                nested_temp_outer_idx = binds[i].outer_idx;
+            }
+
+            // Now call nested_array.slice(inner_idx)
+            uint rest_idx = binds[i].inner_idx;
+            ushort callee_reg = self.alloc_reg();
+            if (self.next_reg < callee_reg + 3) {
+                self.next_reg = callee_reg + 3;
+            }
+
+            ushort slice_key_reg = self.alloc_reg();
+            uint slice_key_idx = self.add_string_constant("slice");
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
+            ushort method_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)nested_temp_reg, (uint)slice_key_reg);
+
+            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
+            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)nested_temp_reg, 0);
+            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
+
+            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
+
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
+            self.free_regs_to(callee_reg);
+        } else if (binds[i].is_rest) {
             // Free nested temp if any
             if (has_nested_temp) {
                 self.free_reg(nested_temp_reg);
@@ -923,6 +982,35 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                     continue;
                 }
 
+                // Check for rest element in nested array: [a, [b, ...rest]]
+                if (self.match(TokenType.ELLIPSIS)) {
+                    Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                    if (bind_count < 32) {
+                        ushort reg;
+                        if (try existing = self.resolve_var(rest_tok.str_value)) {
+                            reg = existing;
+                            binds[bind_count].is_resolved = false;
+                        } else {
+                            reg = self.alloc_reg();
+                            binds[bind_count].is_resolved = false;
+                        }
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                        binds[bind_count].is_rest = true;
+                        binds[bind_count].is_hole = false;
+                        binds[bind_count].has_default = false;
+                        binds[bind_count].is_nested = true;
+                        binds[bind_count].outer_idx = nested_outer;
+                        binds[bind_count].inner_idx = inner_idx;
+                        binds[bind_count].nest_depth = 1;
+                        binds[bind_count].depth2_idx = 0;
+                        bind_count++;
+                    }
+                    while (self.match(TokenType.COMMA)) {}
+                    break;
+                }
+
                 // Check for triple nesting: [[[a]]] or [[[a = expr]]]
                 if (self.check(TokenType.LBRACKET)) {
                     self.advance()!; // consume inner '['
@@ -1101,7 +1189,44 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     for (uint i = 0; i < bind_count; i++) {
         if (binds[i].is_hole) continue;
 
-        if (binds[i].is_rest) {
+        if (binds[i].is_rest && binds[i].is_nested) {
+            // Nested rest element: [a, [b, ...rest]] → call nested_array.slice(inner_idx)
+            // First ensure nested temp is available
+            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
+                if (has_nested_temp) {
+                    self.free_reg(nested_temp_reg);
+                }
+                nested_temp_reg = self.alloc_reg();
+                ushort idx_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
+                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+                has_nested_temp = true;
+                nested_temp_outer_idx = binds[i].outer_idx;
+            }
+
+            // Now call nested_array.slice(inner_idx)
+            uint rest_idx = binds[i].inner_idx;
+            ushort callee_reg = self.alloc_reg();
+            if (self.next_reg < callee_reg + 3) {
+                self.next_reg = callee_reg + 3;
+            }
+
+            ushort slice_key_reg = self.alloc_reg();
+            uint slice_key_idx = self.add_string_constant("slice");
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
+            ushort method_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)nested_temp_reg, (uint)slice_key_reg);
+
+            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
+            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)nested_temp_reg, 0);
+            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
+
+            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
+
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
+            self.free_regs_to(callee_reg);
+        } else if (binds[i].is_rest) {
             // Free nested temp if any
             if (has_nested_temp) {
                 self.free_reg(nested_temp_reg);
