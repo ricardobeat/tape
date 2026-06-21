@@ -82,6 +82,11 @@ run file="test/simple.js":
     @test -f out/test_vm && echo "need: c3c build test_vm" ; c3c build test_vm 2>/dev/null || true
     ./out/test_vm {{file}}
 
+# Run a JS file as an ESM module (import/export)
+run-module file="test/mod_main.js":
+    @test -f out/duktape_c3 || { echo "Building duktape_c3..."; c3c build duktape_c3; }
+    ./out/duktape_c3 --module {{file}}
+
 # ── Rosetta Code ─────────────────────────────────────────────────────────────
 
 # Run Rosetta Code tests on duktape-c3 (rebuilds first)
