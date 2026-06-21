@@ -777,30 +777,21 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         self.emit_abc(Opcode.LDREG, (uint)saved, (uint)operand, 0);
         self.emit_abc(Opcode.UNP, (uint)saved, (uint)saved, 0);
 
-        // If the LHS was a member expression (e.g. obj.prop), NOP the
-        // GETPROP emitted by member_expr and emit INC + PUTPROP to write
-        // the new value back. The obj/prop register indices are saved in
-        // last_member_obj_reg / last_member_prop_reg by member_expr.
+        // If the LHS was a member expression (e.g. obj.prop), emit INC +
+        // PUTPROP to write the new value back. The GETPROP emitted by
+        // member_expr already loaded the value into `operand`; we keep it
+        // (do NOT NOP it) so the register has the correct value at runtime.
+        // The obj/prop register indices are saved in last_member_obj_reg /
+        // last_member_prop_reg by member_expr (and kept alive by the
+        // is_postfix check there).
         bool handled = false;
         if (self.last_was_member) {
-            // Search backward past the LDREG/UNP we just emitted to find
-            // the GETPROP and NOP it.
-            int idx = (int)self.code_count;
-            while (idx > 0) {
-                idx--;
-                if (self.code[idx].op == Opcode.GETPROP) {
-                    self.code[idx] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
-                    break;
-                }
-            }
             ushort obj_reg = self.last_member_obj_reg;
             ushort prop_reg = self.last_member_prop_reg;
             // INC the operand (the property value already in the register).
             self.emit_abc(Opcode.INC, (uint)operand, 0, 0);
             // Write back to the property.
             self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)prop_reg, (uint)operand);
-            // free_reg is a no-op for registers below the top, but emit
-            // them for clarity / future-proofing if the allocator changes.
             self.free_reg(prop_reg);
             self.free_reg(obj_reg);
             handled = true;
@@ -827,14 +818,6 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 
         bool handled = false;
         if (self.last_was_member) {
-            int idx = (int)self.code_count;
-            while (idx > 0) {
-                idx--;
-                if (self.code[idx].op == Opcode.GETPROP) {
-                    self.code[idx] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
-                    break;
-                }
-            }
             ushort obj_reg = self.last_member_obj_reg;
             ushort prop_reg = self.last_member_prop_reg;
             self.emit_abc(Opcode.DEC, (uint)operand, 0, 0);
@@ -1457,13 +1440,19 @@ fn ushort? CompilerContext.member_expr(&self) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
-                // RHS mode: free obj/prop immediately
-                self.free_reg(prop_reg);
+                // RHS mode: free obj/prop immediately, UNLESS the next token is
+                // a postfix INC/DEC — in that case postfix_expr needs obj/prop alive
+                // to emit PUTPROP after INC/DEC. postfix_expr will free them.
+                TokenType next_tt = self.peek_type();
+                bool is_postfix = (next_tt == TokenType.INC || next_tt == TokenType.DEC);
+                if (!is_postfix) {
+                    self.free_reg(prop_reg);
+                }
                 // If next token is LPAREN or a template, this is a method call.
                 // Track the object for 'this' setup in emit_call / emit_tagged_template.
-                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
+                if (next_tt == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
-                } else {
+                } else if (!is_postfix) {
                     self.free_reg(obj);
                 }
             }
@@ -1491,10 +1480,17 @@ fn ushort? CompilerContext.member_expr(&self) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
-                self.free_reg(idx_reg);
-                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
+                // RHS mode: free obj/idx_reg immediately, UNLESS the next token is
+                // a postfix INC/DEC — in that case postfix_expr needs them alive
+                // to emit PUTPROP after INC/DEC. postfix_expr will free them.
+                TokenType next_tt = self.peek_type();
+                bool is_postfix = (next_tt == TokenType.INC || next_tt == TokenType.DEC);
+                if (!is_postfix) {
+                    self.free_reg(idx_reg);
+                }
+                if (next_tt == TokenType.LPAREN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
-                } else {
+                } else if (!is_postfix) {
                     self.free_reg(obj);
                 }
             }
