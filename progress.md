@@ -1,28 +1,35 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 216 (B01/B02/B03/B07/B08: lightfunc .length, JSON/Math proto, fn.caller TypeError, replace fn replacer, toStringTag)
+**Last Updated:** Session 216 (full suite run 2026-06-21)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 216, 2026-06-21)
+## Summary (full run, 2026-06-21)
 
 | Metric | Value |
 |---|---|
-| Total test262 tests | 42,013 |
-| ES5-relevant tests (phases 1-7) | 34,927 |
-| Currently passing (phases 1-7) | 19,285 (+126 from session 216) |
-| Session 216 baseline (phases 1-7) | 15,381 |
+| Total tests measured | 41,813 |
+| Total passing | 18,905 |
+| **Overall pass rate** | **45.2%** |
 
-## Per-Phase Status (phases 1-7, session 216 measured)
+## Per-Phase Status (all phases, session 216)
 
-| Phase | Total | Pass | Fail | Skip | CE | vs Baseline |
-|---|---|---|---|---|---|---|
-| 1: Calling Convention | 426 | 153 | 76 | 86 | 111 | — |
-| 2: Basic Operators | 1969 | 1167 | 141 | 563 | 98 | — |
-| 3: Object System | 7766 | 4948 | 1465 | 744 | 609 | +71 |
-| 4: Error Handling | 402 | 131 | 82 | 95 | 94 | +4 |
-| 5: Built-in Constructors | 8615 | 5804 | 2111 | 669 | 31 | +50 |
-| 6: Prototype Methods | 4713 | 3013 | 1383 | 300 | 17 | +25 |
-| 7: ES5 Features | 1240 | 315 | 177 | 635 | 113 | — |
+| Phase | Total | Pass | Fail | Skip | CE |
+|---|---|---|---|---|---|
+| 0: Core VM | 2185 | 739 | 297 | 1056 | 93 |
+| 1: Calling Convention | 426 | 154 | 75 | 86 | 111 |
+| 2: Basic Operators | 1969 | 1170 | 138 | 563 | 98 |
+| 3: Object System | 7766 | 4965 | 1448 | 744 | 609 |
+| 4: Error Handling | 402 | 126 | 87 | 95 | 94 |
+| 5: Built-in Constructors | 8615 | 5819 | 2096 | 669 | 31 |
+| 6: Prototype Methods | 4713 | 3021 | 1375 | 300 | 17 |
+| 7: ES5 Features | 1240 | 316 | 176 | 635 | 113 |
+| 8: ES5 Built-in Objects | 2747 | 1236 | 501 | 1000 | 10 |
+| 11: Arrow/Templates | 427 | 119 | 73 | 142 | 93 |
+| 12-13: Destructuring | 19 | 15 | 0 | 2 | 2 |
+| 14: for-of | 751 | 136 | 126 | 169 | 320 |
+| 15: Classes | 8520 | 490 | 475 | 5141 | 2414 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 493 | 670 | 406 | 45 |
+| 21: Generators | 619 | 112 | 177 | 130 | 200 |
 
 ## Test Infrastructure
 
