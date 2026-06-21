@@ -2653,14 +2653,21 @@ fn void? CompilerContext.import_declaration(&self) {
         while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
             if (binding_count >= 32) return COMPILE_ERROR~;
 
-            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+            // The import name (before 'as') is an IdentifierName and may be a
+            // reserved word (e.g. 'default' in: import { default as d } from '…').
+            Token name_tok = self.lexer.next_token()!;
+            char[] import_name_str = name_tok.str_value;
+            if (import_name_str.len == 0) {
+                import_name_str = lexer::keyword_to_string(name_tok.type);
+            }
+            if (import_name_str.len == 0) return COMPILE_ERROR~;
             if (self.match_as()) {
                 Token alias_tok = self.expect(TokenType.IDENTIFIER)!;
                 local_names[binding_count] = alias_tok.str_value;
-                import_names[binding_count] = name_tok.str_value;
+                import_names[binding_count] = import_name_str;
             } else {
-                local_names[binding_count] = name_tok.str_value;
-                import_names[binding_count] = name_tok.str_value;
+                local_names[binding_count] = import_name_str;
+                import_names[binding_count] = import_name_str;
             }
             binding_count++;
 
@@ -2812,9 +2819,16 @@ fn void? CompilerContext.export_declaration(&self) {
             if (count >= 32) return COMPILE_ERROR~;
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
             if (self.match_as()) {
-                Token alias_tok = self.expect(TokenType.IDENTIFIER)!;
+                // The exported name (after 'as') is a ModuleExportName / IdentifierName:
+                // reserved words like 'default' are valid here.
+                Token alias_tok = self.lexer.next_token()!;
+                char[] alias_str = alias_tok.str_value;
+                if (alias_str.len == 0) {
+                    alias_str = lexer::keyword_to_string(alias_tok.type);
+                }
+                if (alias_str.len == 0) return COMPILE_ERROR~;
                 local_names[count] = name_tok.str_value;
-                export_names[count] = alias_tok.str_value;
+                export_names[count] = alias_str;
             } else {
                 local_names[count] = name_tok.str_value;
                 export_names[count] = name_tok.str_value;

@@ -3345,17 +3345,21 @@ fn TVal? Vm.run(Vm* vm) {
                             }
                         }
 
-                        // Compile the regexp
-                        // lre_compile requires a null-terminated pattern string
-                        char[256] pattern_buf;
-                        usz copy_len = pattern_data.len < 255 ? pattern_data.len : 255;
-                        libc::memcpy(&pattern_buf, pattern_data.ptr, copy_len);
-                        pattern_buf[copy_len] = 0;
+                        // Compile the regexp.
+                        // Allocate a heap buffer so patterns of any length are
+                        // supported (the old 256-byte stack buffer truncated
+                        // patterns longer than 255 chars).
+                        usz plen = pattern_data.len;
+                        char* pattern_buf_heap = (char*)libc::malloc(plen + 1);
+                        if (pattern_buf_heap != null) {
+                            libc::memcpy(pattern_buf_heap, pattern_data.ptr, plen);
+                            pattern_buf_heap[plen] = 0;
+                        }
                         char[128] error_buf;
-                        void* compiled = re_bindings::re_compile(
-                            &pattern_buf, copy_len,
-                            flags, &error_buf, 128
-                        );
+                        void* compiled = (pattern_buf_heap != null)
+                            ? re_bindings::re_compile(pattern_buf_heap, plen, flags, &error_buf, 128)
+                            : null;
+                        if (pattern_buf_heap != null) libc::free(pattern_buf_heap);
 
                         if (compiled != null) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
