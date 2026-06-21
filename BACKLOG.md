@@ -44,10 +44,10 @@ Pass rates from Session 195 (61.9% overall, ~19,102/26,353 ES5-relevant).
 - [x] Debug destructuring default values: `[a = 42] = arr` — works correctly (tested in existing tests + `test_forof_destruct.js` T5). Default guard uses `SEQ` (=== undefined), matching spec.
 - [x] Debug nested destructuring: `const {x: {y}} = obj` — DONE (Session 212): fixed in nested object destructuring pass. `const {x: {y}} = {x: {y: 42}}` now correctly gives y=42.
 - [x] Debug destructuring in for-of: `for (const [k, v] of pairs) {}`
-- [ ] Fix mixed destructuring patterns: array-in-object (`{x: [a, b]}`) and object-in-array (`[{a}]`) — both fail (compile error or wrong values). Regression test T37-T40.
-- [ ] Fix triple-nested array destructuring: `const [[[a]]] = [[[42]]]` — compile error
+- [x] Fix mixed destructuring patterns: array-in-object (`{x: [a, b]}`) and object-in-array (`[{a}]`) — added is_array_nested/arr_nested_idx to ObjBind and is_obj_nested/obj_key_idx to ArrayBind; T37-T40 all pass.
+- [x] Fix triple-nested array destructuring: `const [[[a]]] = [[[42]]]` — added nest_depth/depth2_idx to ArrayBind; chained two-level GETPROP emission.
 - [ ] Fix rest inside nested array destructuring: `const [a, [b, ...rest]] = [1, [2, 3, 4]]` — compile error
-- [ ] Fix `let` destructuring assignment: `let a, b; [a, b] = [1, 2]` — variables remain undefined (regression test T33-T34)
+- [x] Fix `let` destructuring assignment: `let a, b; [a, b] = [1, 2]` — set is_resolved=false everywhere in assign variants so PUTVAR always updates the lexical env (T33-T34 fixed).
 - [ ] Verify `async function` compilation: `is_async` flag propagated through `compile_inner_function`
 - [ ] Verify `AWAIT` opcode handles settled Promise (extract result) vs pending (suspend + reaction)
 - [ ] Test async function without await (should return resolved Promise)
