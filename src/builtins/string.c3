@@ -1787,7 +1787,7 @@ fn void builtin_string_proto_trimStart(BuiltinContext* ctx) {
     if (start == 0) {
         ctx.result.set_string(s_hstr); return;
     }
-    HString* result = ctx.heap.str_intern(data[start..len]);
+    HString* result = ctx.heap.str_intern(data[start:len - start]);
     if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
@@ -1814,7 +1814,7 @@ fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
     if (end == len) {
         ctx.result.set_string(s_hstr); return;
     }
-    HString* result = ctx.heap.str_intern(data[0..end]);
+    HString* result = ctx.heap.str_intern(data[0:end]);
     if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }

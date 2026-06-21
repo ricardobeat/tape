@@ -24,11 +24,6 @@
 | 6: Prototype Methods | 4713 | 3013 | 1383 | 300 | 17 | +25 |
 | 7: ES5 Features | 1240 | 315 | 177 | 635 | 113 | — |
 
-## Deferred Items
-
-- Private class fields/methods
-- Reflect, Proxy
-
 ## VM Performance Optimizations (Session ~197, 2026-06-19)
 
 Three novel optimizations backported from the `worktree-copy-and-patch-poc` branch:
