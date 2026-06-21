@@ -4263,16 +4263,50 @@ fn TVal? Vm.run(Vm* vm) {
                         ra2.set_undefined();
                     }
                 } else if (mid_val.is_lightfunc()) {
-                    // LIGHTFUNC intermediate: walk Function.prototype for .call/.apply/.bind
-                    // (mirrors the lightfunc handling in GETPROPC at vm.c3:3968-4021).
-                    if (key2_hstr != null && vm.heap.function_proto != null) {
-                        TVal? result = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
-                        if (try v = result) {
-                            vm.heap.tval_copy_ref(ra2, &v);
-                            track_heap_store(act, ra2, dst2_reg);
-                        } else {
-                            ra2.set_undefined();
-                        }
+                    // LIGHTFUNC intermediate: resolve .name/.length/.prototype from metadata,
+                    // other props from Function.prototype (mirrors GETPROPC lightfunc handling).
+                    uint lf_fn_idx = (uint)(usz)mid_val.get_heapptr();
+                    if (key2_hstr != null) {
+                        if (key2_hstr.equals("name")) {
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 0)) {
+                                builtins::BuiltinMeta lf_meta = builtins::builtin_get_metadata(lf_fn_idx);
+                                if (lf_meta.name.len > 0) {
+                                    HString* name_str = intern_string(vm, lf_meta.name);
+                                    vm.heap.set_reg_string(ra2, name_str);
+                                } else { ra2.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? r = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
+                                if (try v = r) { vm.heap.tval_copy_ref(ra2, &v); track_heap_store(act, ra2, dst2_reg); }
+                                else { ra2.set_undefined(); }
+                            } else { ra2.set_undefined(); }
+                        } else if (key2_hstr.equals("length")) {
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 1)) {
+                                builtins::BuiltinMeta lf_meta = builtins::builtin_get_metadata(lf_fn_idx);
+                                if (lf_meta.arity >= 0) {
+                                    ra2.set_number(lf_meta.arity);
+                                } else { ra2.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? r = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
+                                if (try v = r) { vm.heap.tval_copy_ref(ra2, &v); track_heap_store(act, ra2, dst2_reg); }
+                                else { ra2.set_undefined(); }
+                            } else { ra2.set_undefined(); }
+                        } else if (key2_hstr.equals("prototype")) {
+                            if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 2)) {
+                                HObject* lf_proto = lightfunc_get_proto(vm, lf_fn_idx);
+                                if (lf_proto != null) {
+                                    ra2.set_object(lf_proto);
+                                    track_heap_store(act, ra2, dst2_reg);
+                                } else { ra2.set_undefined(); }
+                            } else if (vm.heap.function_proto != null) {
+                                TVal? r = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
+                                if (try v = r) { vm.heap.tval_copy_ref(ra2, &v); track_heap_store(act, ra2, dst2_reg); }
+                                else { ra2.set_undefined(); }
+                            } else { ra2.set_undefined(); }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? r = vm.heap.function_proto.get_prop_proto((void*)key2_hstr);
+                            if (try v = r) { vm.heap.tval_copy_ref(ra2, &v); track_heap_store(act, ra2, dst2_reg); }
+                            else { ra2.set_undefined(); }
+                        } else { ra2.set_undefined(); }
                     } else {
                         ra2.set_undefined();
                     }

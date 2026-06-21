@@ -1701,6 +1701,7 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
     HObject*? json_raw = heap.alloc_object(hobject::ObjClass.JSON);
     if (catch err = json_raw) return false;
     HObject* json = json_raw;
+    json.prototype = heap.object_proto;
 
     // Register JSON.parse
     if (!register_math_method(json, heap, "parse", BUILTIN_JSON_PARSE)) return false;

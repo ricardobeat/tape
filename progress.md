@@ -1,38 +1,28 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 214 (rest-in-nested destructuring, postfix member writeback, async verification)
+**Last Updated:** Session 216 (B02: lightfunc chained .length fix; B07: JSON/Math missing Object.prototype chain)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (after Session 214, 2026-06-21)
+## Summary (after Session 216, 2026-06-21)
 
 | Metric | Value |
 |---|---|
 | Total test262 tests | 42,013 |
-| ES5-relevant tests | ~26,353 |
-| Currently passing (phases 0-21) | 18,973 (+6 from this session) |
-| Currently failing (phases 0-21) | 8,522 |
-| Currently CE (phases 0-21) | ~3,019 (4 phases measured) |
-| Overall pass rate | 69.0% |
+| ES5-relevant tests (phases 1-7) | 34,927 |
+| Currently passing (phases 1-7) | 19,285 (+126 from session 216) |
+| Session 216 baseline (phases 1-7) | 15,381 |
 
-## Per-Phase Status
+## Per-Phase Status (phases 1-7, session 216 measured)
 
-| Phase | Total | Pass | Fail | Skip | CE |
-|---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 749 | 380 | 1056 | 0 |
-| 1: Calling Convention | 426 | 149 | 191 | 86 | 0 |
-| 2: Basic Operators | 1969 | 1150 | 256 | 563 | 0 |
-| 3: Object System | 7766 | 4986 | 2036 | 744 | 0 |
-| 4: Error Handling | 402 | 135 | 172 | 95 | 0 |
-| 5: Built-in Constructors | 8615 | 5893 | 2053 | 669 | 0 |
-| 6: Prototype Methods | 4713 | 3039 | 1374 | 300 | 0 |
-| 7: ES5 Features | 1240 | 279 | 326 | 635 | 0 |
-| 8: ES5 Built-in Objects | 2747 | 1239 | 508 | 1000 | 0 |
-| 11: Arrow/Templates | 427 | 119 | 166 | 142 | 0 |
-| 12-13: Destructuring | 19 | 15 | 2 | 2 | 0 |
-| 14: for-of | 751 | 106 | 156 | 169 | 320 |
-| 15: Classes | 8520 | 492 | 473 | 5141 | 2414 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 498 | 665 | 406 | 45 |
-| 21: Generators | 619 | 115 | 174 | 130 | 200 |
+| Phase | Total | Pass | Fail | Skip | CE | vs Baseline |
+|---|---|---|---|---|---|---|
+| 1: Calling Convention | 426 | 153 | 76 | 86 | 111 | — |
+| 2: Basic Operators | 1969 | 1167 | 141 | 563 | 98 | — |
+| 3: Object System | 7766 | 4940 | 1473 | 744 | 609 | +63 |
+| 4: Error Handling | 402 | 127 | 86 | 95 | 94 | — |
+| 5: Built-in Constructors | 8615 | 5804 | 2111 | 669 | 31 | +50 |
+| 6: Prototype Methods | 4713 | 3001 | 1395 | 300 | 17 | +13 |
+| 7: ES5 Features | 1240 | 315 | 177 | 635 | 113 | — |
 
 ## Deferred Items
 
