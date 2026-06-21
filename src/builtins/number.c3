@@ -733,8 +733,8 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "toPrecision", BUILTIN_NUMBER_PROTO_TOPRECISION)) return false;
 
     // Number.prototype.toLocaleString — ES5 §15.7.4.5
-    // Same semantics as Object.prototype.toLocaleString: delegates to this.toString().
-    if (!register_string_proto_method(proto, heap, "toLocaleString", BUILTIN_OBJECT_PROTO_TOLOCALESTRING)) return false;
+    // Delegates to Number.prototype.toString (handles number primitives correctly).
+    if (!register_string_proto_method(proto, heap, "toLocaleString", BUILTIN_NUMBER_PROTO_TOSTRING)) return false;
 
     // Create Number constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static properties like Number.MAX_VALUE, Number.NaN, etc.
