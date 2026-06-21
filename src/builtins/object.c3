@@ -3324,51 +3324,76 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
     // === Fallback: length-based iteration for array-like objects without @@iterator ===
     usz len = 0;
     bool has_len = false;
-    HString* length_key = builtin_intern_string(ctx.heap, "length");
-    if (try len_tv = iterable.get_prop(length_key)) {
-        if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
-            len = (usz)len_tv.get_fastint();
-            has_len = true;
-        } else if (len_tv.is_number()) {
-            len = (usz)len_tv.get_number();
-            has_len = true;
+    // ARRAY exotics store length in array_len_ptr(), not the property table,
+    // so get_prop("length") would return PROP_NOT_FOUND. Handle them directly.
+    if (iterable.flags.exotic_array) {
+        len = (usz)*iterable.array_len_ptr();
+        has_len = true;
+    } else {
+        HString* length_key = builtin_intern_string(ctx.heap, "length");
+        if (try len_tv = iterable.get_prop(length_key)) {
+            if (len_tv.is_fastint() && len_tv.get_fastint() >= 0) {
+                len = (usz)len_tv.get_fastint();
+                has_len = true;
+            } else if (len_tv.is_number()) {
+                len = (usz)len_tv.get_number();
+                has_len = true;
+            }
         }
     }
     if (!has_len || len == 0) {
         ctx.result.set_object(obj);
         return;
     }
-    // Iterate entries by numeric index
+    // Iterate entries by numeric index.
+    // Arrays created by array literals with no prior elements have array_size=0
+    // (PUTPROP skips set_array_idx when array_part is null), so elements may live
+    // in the property table under string keys "0", "1", ... rather than the dense
+    // array part.  We must fall back to get_prop_proto with a string key in that case.
     for (usz i = 0; i < len; i++) {
-        TVal idx_tv;
-        idx_tv.set_fastint((long)i);
         TVal entry;
-        if (try e = iterable.get_prop(&idx_tv)) {
-            entry = e;
-        } else {
-            continue;
+        bool got_entry = false;
+        if (iterable.array_size > 0 && i < (usz)iterable.array_size) {
+            if (try e = iterable.get_array_idx((uint)i)) {
+                entry = e;
+                got_entry = true;
+            }
         }
+        if (!got_entry) {
+            // Fall back: element stored as named property (e.g. "0", "1")
+            HString* idx_str = ctx.heap.int_to_hstring((long)i);
+            if (idx_str == null) continue;
+            if (try e2 = iterable.get_prop_proto(idx_str)) {
+                entry = e2;
+                got_entry = true;
+            }
+        }
+        if (!got_entry) continue;
         if (!entry.is_object()) continue;
         HObject* pair = (HObject*)entry.get_heapptr();
-        // Get key from pair[0]
-        TVal key_idx;
-        key_idx.set_fastint(0);
+        // Get key from pair[0] and value from pair[1] — same dual-path logic
         TVal key_val;
-        if (try kv = pair.get_prop(&key_idx)) {
-            key_val = kv;
-        } else {
-            continue;
-        }
-        // Get value from pair[1]
-        TVal val_idx;
-        val_idx.set_fastint(1);
         TVal val_val;
-        if (try vv = pair.get_prop(&val_idx)) {
-            val_val = vv;
-        } else {
-            val_val.set_undefined();
+        bool got_key = false;
+        if (pair.array_size > 0) {
+            if (try kv = pair.get_array_idx(0)) { key_val = kv; got_key = true; }
         }
-        // Convert key to property key (ToPropertyKey)
+        if (!got_key) {
+            HString* zero_str = ctx.heap.int_to_hstring(0);
+            if (zero_str == null) continue;
+            if (try kv2 = pair.get_prop_proto(zero_str)) { key_val = kv2; got_key = true; }
+        }
+        if (!got_key) continue;
+        TVal val_tmp; val_tmp.set_undefined();
+        if (pair.array_size > 1) {
+            if (try vv = pair.get_array_idx(1)) { val_tmp = vv; }
+        } else {
+            HString* one_str = ctx.heap.int_to_hstring(1);
+            if (one_str != null) {
+                if (try vv2 = pair.get_prop_proto(one_str)) { val_tmp = vv2; }
+            }
+        }
+        val_val = val_tmp;
         HString* key_str = builtin_to_property_key(ctx, key_val);
         if (key_str != null) {
             obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
