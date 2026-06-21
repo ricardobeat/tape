@@ -129,6 +129,9 @@ struct ArrayBind {
     bool   has_default;
     ushort default_val_reg;  // register holding compiled default expression result
     bool   is_resolved;      // for assignment mode: was var resolved locally?
+    bool   is_nested;        // true if this binding comes from a nested pattern
+    uint   outer_idx;        // the index in the outer RHS array
+    uint   inner_idx;        // the index within the nested sub-array
 }
 
 /// Tracks a binding in an object destructuring pattern.
