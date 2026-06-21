@@ -134,6 +134,8 @@ struct ArrayBind {
     uint   inner_idx;        // the index within the nested sub-array
     uint   nest_depth;       // 1 = one level nested, 2 = two levels nested
     uint   depth2_idx;       // for nest_depth==2: index into 2nd-level array
+    bool   is_obj_nested;    // true if nested pattern is an object
+    uint   obj_key_idx;      // constant index of object property key (used when is_obj_nested)
 }
 
 /// Tracks a binding in an object destructuring pattern.
@@ -146,6 +148,8 @@ struct ObjBind {
     bool   is_resolved;      // for assignment mode: was var resolved locally?
     bool   is_nested;
     uint   nested_key_idx;
+    bool   is_array_nested;  // true if nested pattern is an array
+    uint   arr_nested_idx;   // index within the nested array (used when is_array_nested)
 }
 
 // ============================================================================

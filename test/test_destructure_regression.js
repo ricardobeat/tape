@@ -394,37 +394,29 @@ function assertVal(v, msg) {
 // 6. MIXED PATTERNS (array-in-object, object-in-array)
 // ============================================================
 
-// TODO BUG: {x: [a, b]} — array nested inside object.
+// {x: [a, b]} — array nested inside object.
 // Expected: a=1, b=2
-// Actual: the whole array [1,2] is assigned to x, inner [a,b] not applied
 {
-    const {t37x: t37v} = {t37x: [1, 2]};
-    if (Array.isArray(t37v)) {
-        fail++;
-        print('TODO T37: {x: [a, b]} = {x: [1,2]} - got array, inner pattern not applied (BUG)');
-        skip++;
-    } else {
-        pass++;
+    const {t37x: [t37a, t37b]} = {t37x: [1, 2]};
+    if (t37a === 1 && t37b === 2) {
+        pass = pass + 2;
         print('T37: FIXED - {x: [a, b]} gives a=1 b=2');
+    } else {
+        fail = fail + 2;
+        print('TODO T37: {x: [a, b]} = {x: [1,2]} - got a=' + t37a + ' b=' + t37b + ' expected 1,2 (BUG)');
     }
 }
 
-// TODO BUG: [{a}] — object nested inside array.
+// [{a}] — object nested inside array.
 // Expected: a=1 (number)
-// Actual: a is the whole object {a:1} (inner pattern not applied)
 {
-    const [t38v] = [{t38a: 1}];
-    if (typeof t38v === 'object' && t38v !== null) {
-        fail++;
-        print('TODO T38: [{a}] = [{a:1}] - got object, inner pattern not applied (BUG)');
-        skip++;
-    } else if (t38v === 1) {
+    const [{t38a}] = [{t38a: 1}];
+    if (t38a === 1) {
         pass++;
         print('T38: FIXED - [{a}] gives a=1');
     } else {
         fail++;
-        print('TODO T38: [{a}] = [{a:1}] - got ' + t38v + ' (BUG)');
-        skip++;
+        print('TODO T38: [{a}] = [{a:1}] - got ' + t38a + ' expected 1 (BUG)');
     }
 }
 
