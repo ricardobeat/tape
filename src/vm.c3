@@ -178,14 +178,19 @@ struct Vm {
 /// Searches the full activation chain, unwinding intermediate activations
 /// when a catcher is found in a parent activation.
 ///
+/// If `local_only` is true, only searches the current activation (does not
+/// walk parent activations). Used by generator LOAD_RESUME THROW to determine
+/// whether the generator itself has a catcher without finding the caller's.
+///
 /// Returns true if a catcher was found (execution continues after restart).
 /// Returns false if no catcher was found anywhere in the call stack
 /// (caller should return VM_ERROR~).
 fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
-                       Instruction** curr_pc, bool* needs_restart) {
+                       Instruction** curr_pc, bool* needs_restart,
+                       bool local_only = false) {
     // Walk through current and parent activations
     Activation* search_act = act;
-    while (search_act != null) {
+    for (;;) {
         Catcher* cat = (Catcher*)search_act.cat;
         while (cat != null) {
             if (cat.flags & CATCHER_FLAG_CATCH_ENABLED) {
@@ -261,7 +266,9 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
             }
             cat = cat.parent;
         }
+        if (local_only) break;  // Don't walk parent activations
         search_act = search_act.parent;
+        if (search_act == null) break;
     }
     return false;
 }
@@ -5868,6 +5875,23 @@ fn TVal? Vm.run(Vm* vm) {
                         break;
                     }
 
+                    // .throw() on SUSPENDED_START: exception before any body code
+                    // (ES6 §25.3.3.4 step 8: resume with abrupt throw completion)
+                    if (gs.state == GEN_SUSPENDED_START && gs.resume_kind == THROW) {
+                        gs.state = GEN_COMPLETED;
+                        vm.heap.resume_gen = null;
+                        // Propagate exception to the .throw() caller
+                        if (!vm_throw_value(vm, gs.throw_value, act, &curr_pc, &needs_restart)) {
+                            vm.has_error = true;
+                            vm.heap.has_error = true;
+                            if (act.retval != null) {
+                                vm.heap.tval_copy_ref(act.retval, &gs.throw_value);
+                            }
+                        }
+                        needs_restart = true;
+                        break;
+                    }
+
                     // Set state to EXECUTING
                     gs.state = GEN_EXECUTING;
 
@@ -5988,20 +6012,25 @@ fn TVal? Vm.run(Vm* vm) {
                 gs.func = target;
                 gs.num_regs = target.num_regs;
                 gs.saved_pc = target.code;
-                gs.var_env = (*hobj.extra_ptr()).gen.var_env;
-                gs.lex_env = (*hobj.extra_ptr()).gen.lex_env;
+                gs.var_env = (*hobj.extra_ptr()).func.var_env;
+                gs.lex_env = (*hobj.extra_ptr()).func.lex_env;
                 vm.heap.tval_copy_ref(&gs.this_binding, &regs_base[callee_reg + 1]);
 
                 // Allocate and copy saved registers
                 usz regs_bytes = (usz)target.num_regs * TVal::size;
-                void* regs_raw = vm.heap.alloc_func(vm.heap.heap_udata, regs_bytes);
-                if (regs_raw == null) {
-                    vm.heap.free_func(vm.heap.heap_udata, gs_raw);
-                    regs_base[result_reg].set_undefined();
-                    break;
+                void* regs_raw;
+                if (regs_bytes > 0) {
+                    regs_raw = vm.heap.alloc_func(vm.heap.heap_udata, regs_bytes);
+                    if (regs_raw == null) {
+                        vm.heap.free_func(vm.heap.heap_udata, gs_raw);
+                        regs_base[result_reg].set_undefined();
+                        break;
+                    }
+                    libc::memset(regs_raw, 0, regs_bytes);
+                } else {
+                    regs_raw = null;
                 }
                 gs.saved_regs = (TVal*)regs_raw;
-                libc::memset(regs_raw, 0, regs_bytes);
 
                 // Initialize registers with args (rest = undefined for extra slots)
                 TVal* base = new_bottom;
@@ -6010,11 +6039,17 @@ fn TVal? Vm.run(Vm* vm) {
                 if (copy_count > target.num_regs) copy_count = target.num_regs;
                 for (uint i = 0; i < copy_count; i++) {
                     vm.heap.tval_copy_ref(&base[i], &old_args[i]);
+                }
+                for (uint i = 0; i < copy_count && target.num_regs > 0; i++) {
                     vm.heap.tval_copy_ref(&gs.saved_regs[i], &old_args[i]);
                 }
                 for (uint i = copy_count; i < target.num_regs; i++) {
                     base[i].set_undefined();
-                    gs.saved_regs[i].set_undefined();
+                }
+                for (uint i = copy_count; i < target.num_regs; i++) {
+                    if (gs.saved_regs != null) {
+                        gs.saved_regs[i].set_undefined();
+                    }
                 }
 
                 // Handle rest parameter: build rest array and store in saved_regs
@@ -6882,10 +6917,12 @@ fn TVal? Vm.run(Vm* vm) {
                 ResumeKind rk = gs_lr.resume_kind;
 
                 if (rk == THROW) {
-                    // Inject exception: find the nearest catcher in the generator
+                    // Inject exception: find catcher only within the generator activation.
+                    // Use local_only=true so we don't mistakenly find the caller's catcher
+                    // and then fail to complete the generator (ES6 §25.3.3.4 step 8).
                     TVal throw_val = gs_lr.throw_value;
 
-                    if (!vm_throw_value(vm, throw_val, act, &curr_pc, &needs_restart)) {
+                    if (!vm_throw_value(vm, throw_val, act, &curr_pc, &needs_restart, true)) {
                         // No catcher in generator/async function.
                         vm.heap.resume_gen = null;
                         gs_lr.state = GEN_COMPLETED;
