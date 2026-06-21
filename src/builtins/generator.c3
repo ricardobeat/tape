@@ -366,8 +366,94 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
         proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
-    // Wire prototype.constructor → GeneratorFunction constructor
-    // GeneratorFunction constructor is created later; we'll wire it there
+    // Create GeneratorFunction.prototype (ES6 §25.2.3)
+    // This is the prototype of all generator function objects.
+    // It inherits from Function.prototype.
+    HObject*? gf_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = gf_proto_raw) return false;
+    HObject* gf_proto = gf_proto_raw;
+    gf_proto.prototype = heap.function_proto;
+    heap.generator_func_proto = gf_proto;
+
+    // Set GeneratorFunction.prototype.constructor → GeneratorFunction
+    // (will be filled in after creating the ctor object below)
+
+    // Set @@toStringTag on GeneratorFunction.prototype
+    {
+        HString* gf_tag_key = ensure_tostringtag_symbol(heap);
+        if (gf_tag_key != null) {
+            TVal tag_tv;
+            tag_tv.set_string(builtin_intern_string(heap, "GeneratorFunction"));
+            gf_proto.put_prop(gf_tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // Create GeneratorFunction constructor HObject (ES6 §25.2.2)
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_GENERATOR_FUNCTION;
+    ctor.flags.callable = true;
+    ctor.prototype = heap.function_proto;
+
+    // Wire Generator.prototype.constructor → GeneratorFunction
+    {
+        HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+        TVal constructor_tv;
+        constructor_tv.set_object(ctor);
+        proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+    }
+
+    // Wire GeneratorFunction.prototype.constructor → GeneratorFunction
+    {
+        HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+        TVal constructor_tv;
+        constructor_tv.set_object(ctor);
+        gf_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+    }
+
+    // Wire GeneratorFunction.prototype → GeneratorFunction.prototype object
+    // (non-writable, non-enumerable, non-configurable per ES6 §19.2.4.3)
+    {
+        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal gf_proto_tv;
+        gf_proto_tv.set_object(gf_proto);
+        PropFlags proto_pflags;
+        proto_pflags.writable = false;
+        proto_pflags.enumerable = false;
+        proto_pflags.configurable = false;
+        proto_pflags.is_accessor = false;
+        ctor.put_prop(prototype_key, gf_proto_tv, proto_pflags);
+    }
+
+    // GeneratorFunction.length = 1 (ES6 §25.2.2)
+    {
+        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal length_tv;
+        length_tv.set_fastint(1);
+        ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // GeneratorFunction.name = "GeneratorFunction" (ES6 §25.2.2)
+    set_func_ctor_name(ctor, heap, "GeneratorFunction");
+
+    // Register GeneratorFunction as a global constructor
+    {
+        uint hash = heap.hash_string("GeneratorFunction");
+        HString* existing = heap.str_table_lookup("GeneratorFunction", hash);
+        HString* gf_key;
+        if (existing != null) {
+            gf_key = existing;
+        } else {
+            HString*? new_key = hstring::hstring_alloc(heap, "GeneratorFunction", hash);
+            if (catch err = new_key) return false;
+            heap.str_table_insert(new_key);
+            gf_key = new_key;
+        }
+        TVal gf_tv;
+        gf_tv.set_object(ctor);
+        env::env_declare_nonenum(global_env, gf_key, gf_tv);
+    }
 
     return true;
 }

@@ -8408,7 +8408,13 @@ fn TVal? Vm.run(Vm* vm) {
 
                 HObject*? func_obj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
                 if (try func_obj = func_obj_raw) {
-                    func_obj.prototype = vm.heap.function_proto;
+                    // Generator function objects inherit from GeneratorFunction.prototype,
+                    // all other functions inherit from Function.prototype (ES6 §25.2.3).
+                    if (template.is_generator() && vm.heap.generator_func_proto != null) {
+                        func_obj.prototype = vm.heap.generator_func_proto;
+                    } else {
+                        func_obj.prototype = vm.heap.function_proto;
+                    }
                     func_obj.flags.callable = true;
                     func_obj.flags.constructable = template.is_constructable();
                     (*func_obj.extra_ptr()).func.comp_func = template;
@@ -8441,12 +8447,19 @@ fn TVal? Vm.run(Vm* vm) {
                         // ES5 §13.2: create .prototype property (plain object with .constructor)
                         HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try proto_obj = proto_obj_raw) {
-                            proto_obj.prototype = vm.heap.object_proto;
-                            // Set .constructor on the prototype object
-                            HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
-                            TVal constr_val;
-                            constr_val.set_object(func_obj);
-                            proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
+                            if (template.is_generator() && vm.heap.generator_proto != null) {
+                                // Generator function .prototype inherits from Generator.prototype
+                                proto_obj.prototype = vm.heap.generator_proto;
+                                // .constructor is inherited from Generator.prototype,
+                                // no need to set it here.
+                            } else {
+                                proto_obj.prototype = vm.heap.object_proto;
+                                // Set .constructor on the prototype object
+                                HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+                                TVal constr_val;
+                                constr_val.set_object(func_obj);
+                                proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
+                            }
                             // Set .prototype on the function
                             HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
                             TVal proto_tv;

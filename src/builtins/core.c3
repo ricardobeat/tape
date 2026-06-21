@@ -2175,9 +2175,10 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register Promise constructor and prototype
     if (!register_promise_constructor(global_env, heap)) return false;
 
-    // Register Generator constructor and prototype (GeneratorFunction uses
-    // heap.generator_proto; the GeneratorFunction global is registered
-    // separately as a simple builtin).
+    // Register Generator constructor and prototype.  This also creates
+    // the GeneratorFunction constructor as a full HObject, wires
+    // GeneratorFunction.prototype → Generator.prototype, and registers
+    // GeneratorFunction as a global constructor (ES6 §25.2.2).
     if (!register_generator_constructor(global_env, heap)) return false;
 
     // Register %IteratorPrototype% (ES6 §25.1.2) — shared prototype for all
