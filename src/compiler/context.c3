@@ -28,7 +28,7 @@ const uint MAX_REGISTERS  = 512;
 const uint MAX_PARAMS     = 32;
 const uint MAX_CODE        = 4096;
 const uint MAX_CONSTANTS   = 1024;
-const uint MAX_INNER_FUNCS = 64;
+const uint MAX_INNER_FUNCS = 256;
 const uint MAX_SCOPE_DEPTH = 256;
 const uint MAX_LOOP_DEPTH  = 16;
 const uint MAX_TRY_DEPTH   = 8;
@@ -281,7 +281,7 @@ struct CompilerContext {
     bool has_closures;
 
     // Hoisted function declaration names (so main pass can skip recompilation).
-    char[][16] hoisted_fn_names;
+    char[][64] hoisted_fn_names;
     ushort hoisted_fn_count;
 
     // Direct eval tracking — when true, the CALL path must create a fresh env.

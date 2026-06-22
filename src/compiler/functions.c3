@@ -438,7 +438,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
         }
         if (tt == TokenType.RBRACE) {
             if (!is_global && brace_depth == 0) break;
-            brace_depth--;
+            if (brace_depth > 0) brace_depth--;
             // For function-level hoisting, stop when the function body's
             // closing '}' returns brace_depth to 0 (end of scanned scope).
             if (!is_global && brace_depth == 0) break;
@@ -473,6 +473,27 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
         }
 
         if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+            // At global/module scope, function declarations are already hoisted
+            // by hoist_global_fn_decls().  Skip them here to avoid double
+            // compilation — just advance past the star, name, and body.
+            if (is_global) {
+                self.is_async = false;
+                // Consume optional generator star
+                Token? skip_star = self.lexer.next_token();
+                if (catch _err_skip = skip_star) continue;
+                if (skip_star.type == TokenType.STAR) {
+                    // Star consumed; next token is the name
+                } else {
+                    // Not a star — push back (it's the name)
+                    self.lexer.pushback(skip_star);
+                }
+                // Consume function name
+                Token? skip_name = self.lexer.next_token();
+                if (catch _err_skip2 = skip_name) continue;
+                // skip_function_body expects lexer past the name — skip (params) { body }
+                self.skip_function_body();
+                continue;
+            }
             // If we detected `async function` above, is_async is already true.
             bool hoist_is_async = self.is_async;
             self.is_async = false;
@@ -505,7 +526,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             }
 
             // Record as hoisted
-            if (self.hoisted_fn_count < 16) {
+            if (self.hoisted_fn_count < 64) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
             }
@@ -558,7 +579,10 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 
             // Lexer is now past the function body. Continue scanning.
         } else if (tt == TokenType.VAR) {
-            // var declarations (any brace depth: hoisted to function scope)
+            // var declarations hoisted to function scope.  At global/module
+            // scope, only top-level (brace_depth == 0) vars need hoisting;
+            // vars inside function bodies are hoisted by their own scope.
+            if (is_global && brace_depth > 0) continue;
             for (;;) {
                 Token? name_opt2 = self.lexer.next_token();
                 if (catch _err = name_opt2) break;
@@ -712,7 +736,7 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             }
 
             // Record as hoisted
-            if (self.hoisted_fn_count < 16) {
+            if (self.hoisted_fn_count < 64) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
             }
