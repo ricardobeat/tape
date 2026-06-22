@@ -2528,13 +2528,7 @@ fn void? CompilerContext.function_declaration(&self) {
     self.is_generator = saved_is_generator;
 
     // Add to inner functions table
-    uint inner_idx = 0;
-    if (self.inner_func_count < MAX_INNER_FUNCS) {
-        inner_idx = self.inner_func_count;
-        self.inner_funcs[inner_idx] = inner;
-        self.inner_func_count++;
-        self.has_closures = true;
-    }
+    uint inner_idx = self.add_inner_func(inner);
 
     // Emit CLOSURE to create the function object
     self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
@@ -2782,13 +2776,7 @@ fn void? CompilerContext.export_declaration(&self) {
             self.is_async = saved_is_async;
             self.is_generator = false;
 
-            uint inner_idx = 0;
-            if (self.inner_func_count < MAX_INNER_FUNCS) {
-                inner_idx = self.inner_func_count;
-                self.inner_funcs[inner_idx] = inner;
-                self.inner_func_count++;
-                self.has_closures = true;
-            }
+            uint inner_idx = self.add_inner_func(inner);
 
             ushort func_reg = self.declare_var("*default*", VAR);
             self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
@@ -2908,13 +2896,7 @@ fn void? CompilerContext.export_declaration(&self) {
         self.is_async = saved_is_async;
         self.is_generator = false;
 
-        uint inner_idx = 0;
-        if (self.inner_func_count < MAX_INNER_FUNCS) {
-            inner_idx = self.inner_func_count;
-            self.inner_funcs[inner_idx] = inner;
-            self.inner_func_count++;
-            self.has_closures = true;
-        }
+        uint inner_idx = self.add_inner_func(inner);
 
         self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
         uint name_idx = self.add_string_constant(name_tok.str_value);

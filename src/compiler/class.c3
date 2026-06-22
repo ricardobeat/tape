@@ -175,7 +175,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
     ushort method_count = 0;
 
     // Track constructor
-    uint ctor_inner_idx = MAX_INNER_FUNCS;  // sentinel
+    uint ctor_inner_idx = 0xFFFFFFFF;  // sentinel
 
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         // Skip semicolons (empty class elements)
@@ -197,7 +197,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
 
         // Check for computed key [expr]
         bool has_computed_key = false;
-        uint computed_key_inner_idx = MAX_INNER_FUNCS;
+        uint computed_key_inner_idx = 0xFFFFFFFF;
 
         if (self.check(TokenType.LBRACKET)) {
             // Computed property name: [expr]
@@ -208,12 +208,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             CompiledFunction* key_func = self.compile_key_expr()!;
             self.expect(TokenType.RBRACKET)!;
 
-            if (self.inner_func_count < MAX_INNER_FUNCS) {
-                computed_key_inner_idx = self.inner_func_count;
-                self.inner_funcs[computed_key_inner_idx] = key_func;
-                self.inner_func_count++;
-        self.has_closures = true;
-            }
+            computed_key_inner_idx = self.add_inner_func(key_func);
 
             // Still need a method name for compile_inner_function (used as debug name)
             method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
@@ -242,12 +237,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                         has_computed_key = true;
                         CompiledFunction* accessor_key_func = self.compile_key_expr()!;
                         self.expect(TokenType.RBRACKET)!;
-                        if (self.inner_func_count < MAX_INNER_FUNCS) {
-                            computed_key_inner_idx = self.inner_func_count;
-                            self.inner_funcs[computed_key_inner_idx] = accessor_key_func;
-                            self.inner_func_count++;
-                            self.has_closures = true;
-                        }
+                        computed_key_inner_idx = self.add_inner_func(accessor_key_func);
                         method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
                     } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)
                                || lexer::keyword_to_string(self.peek_type()).len > 0) {
@@ -291,7 +281,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
                     // getter/setter named "constructor" — already handled above
                     return COMPILE_ERROR~;
                 }
-                if (ctor_inner_idx != MAX_INNER_FUNCS) {
+                if (ctor_inner_idx != 0xFFFFFFFF) {
                     // duplicate constructor is a SyntaxError
                     return COMPILE_ERROR~;
                 }
@@ -335,13 +325,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         self.is_constructable = saved_constructable;
 
         // Add to inner functions table
-        uint inner_idx = MAX_INNER_FUNCS;
-        if (self.inner_func_count < MAX_INNER_FUNCS) {
-            inner_idx = self.inner_func_count;
-            self.inner_funcs[inner_idx] = inner;
-            self.inner_func_count++;
-        self.has_closures = true;
-        }
+        uint inner_idx = self.add_inner_func(inner);
 
         if (is_constructor) {
             ctor_inner_idx = inner_idx;
@@ -359,7 +343,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
     self.expect(TokenType.RBRACE)!;
 
     // If no constructor was specified, create a default one
-    if (ctor_inner_idx == MAX_INNER_FUNCS) {
+    if (ctor_inner_idx == 0xFFFFFFFF) {
         heap::Heap* hp = (heap::Heap*)self.heap;
         CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding);
         if (catch err = ctor_func_raw) {
@@ -368,12 +352,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         CompiledFunction* ctor_func = ctor_func_raw;
         // Track for heap cleanup
         hp.track_compiled_func((void*)ctor_func);
-        if (self.inner_func_count < MAX_INNER_FUNCS) {
-            ctor_inner_idx = self.inner_func_count;
-            self.inner_funcs[ctor_inner_idx] = ctor_func;
-            self.inner_func_count++;
-        self.has_closures = true;
-        }
+        ctor_inner_idx = self.add_inner_func(ctor_func);
     }
 
     // Emit CLOSURE for the constructor
@@ -415,7 +394,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
 
         // Get the key register — either from computed key expression or static name
         ushort key_reg;
-        if (methods[mi].computed_key_inner_idx != MAX_INNER_FUNCS) {
+        if (methods[mi].computed_key_inner_idx != 0xFFFFFFFF) {
             // Computed key: CLOSURE + CALL to evaluate key expression
             // CALL convention: CALL result_reg, callee_reg, nargs
             // this must be at callee_reg + 1, args at callee_reg + 2, ...

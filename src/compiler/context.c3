@@ -26,9 +26,18 @@ faultdef CONST_OVERFLOW;
 
 const uint MAX_REGISTERS  = 512;
 const uint MAX_PARAMS     = 32;
-const uint MAX_CODE        = 4096;
-const uint MAX_CONSTANTS   = 1024;
-const uint MAX_INNER_FUNCS = 256;
+// Initial capacities for growable compiler arrays.
+// These are the starting sizes; the arrays double when full.
+const uint INITIAL_CODE        = 512;
+const uint INITIAL_CONSTANTS   = 128;
+const uint INITIAL_CONST_HASH  = 256;
+const uint INITIAL_INNER_FUNCS = 16;
+const uint INITIAL_HOISTED_FNS = 16;
+
+// Hard limits (sanity caps to catch runaway compilation).
+const uint MAX_CODE_HARD        = 1 << 22;  // 4M instructions
+const uint MAX_CONSTANTS_HARD   = 1 << 20;  // 1M constants
+const uint MAX_INNER_FUNCS_HARD = 1 << 16;  // 65K inner functions
 const uint MAX_SCOPE_DEPTH = 256;
 const uint MAX_LOOP_DEPTH  = 16;
 const uint MAX_TRY_DEPTH   = 8;
@@ -180,20 +189,26 @@ struct CompilerContext {
     ushort next_reg;
     ushort max_reg;
 
-    // Constant pool
-    TVal[MAX_CONSTANTS] constants;
+    // Constant pool (growable)
+    TVal* constants;
     uint const_count;
-    // Hash table for constant deduplication: maps TVal bits → constant index
-    ConstHashEntry[MAX_CONST_HASH] const_hash;
+    uint const_cap;
+    // Hash table for constant deduplication (growable, tracks constants)
+    ConstHashEntry* const_hash;
     uint const_hash_count;
+    uint const_hash_cap;
+    /// Insertion cap keeping at least 25% of slots empty so probes terminate early.
+    uint const_hash_fill;
 
-    // Code emission
-    Instruction[MAX_CODE] code;
+    // Code emission (growable)
+    Instruction* code;
     uint code_count;
+    uint code_cap;
 
-    // Inner functions
-    CompiledFunction*[MAX_INNER_FUNCS] inner_funcs;
+    // Inner functions (growable)
+    CompiledFunction** inner_funcs;
     uint inner_func_count;
+    uint inner_func_cap;
 
     // Scope tracking
     ScopeEntry[MAX_SCOPE_DEPTH] scope_stack;
@@ -281,7 +296,8 @@ struct CompilerContext {
     bool has_closures;
 
     // Hoisted function declaration names (so main pass can skip recompilation).
-    char[][64] hoisted_fn_names;
+    // Fixed-size — bounded by top-level function count in a single module.
+    char[][256] hoisted_fn_names;
     ushort hoisted_fn_count;
 
     // Direct eval tracking — when true, the CALL path must create a fresh env.
@@ -321,9 +337,96 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
 
+    // Allocate growable buffers
+    Heap* h = (Heap*)heap;
+    self.code_cap = INITIAL_CODE;
+    self.code = (Instruction*)h.alloc_func(h.heap_udata, (usz)(INITIAL_CODE * Instruction::size));
+    self.const_cap = INITIAL_CONSTANTS;
+    self.constants = (TVal*)h.alloc_func(h.heap_udata, (usz)(INITIAL_CONSTANTS * TVal::size));
+    self.const_hash_cap = INITIAL_CONST_HASH;
+    self.const_hash_fill = INITIAL_CONST_HASH - INITIAL_CONST_HASH / 4;
+    self.const_hash = (ConstHashEntry*)h.alloc_func(h.heap_udata, (usz)(INITIAL_CONST_HASH * ConstHashEntry::size));
+    if (self.const_hash != null) {
+        libc::memset(self.const_hash, 0, (usz)(INITIAL_CONST_HASH * ConstHashEntry::size));
+    }
+    self.inner_func_cap = INITIAL_INNER_FUNCS;
+    self.inner_funcs = (CompiledFunction**)h.alloc_func(h.heap_udata, (usz)(INITIAL_INNER_FUNCS * CompiledFunction*::size));
+
     // Strict-only engine: lexer always in strict mode (affects FutureReservedWord
     // keyword recognition — implements/interface/package/private/protected/public).
     self.lexer.set_strict(true);
+}
+
+/// Free heap-allocated compiler buffers.  Call after finish() or on error.
+fn void CompilerContext.cleanup(&self) {
+    Heap* h = (Heap*)self.heap;
+    if (self.code != null) { h.free_func(h.heap_udata, self.code); self.code = null; }
+    if (self.constants != null) { h.free_func(h.heap_udata, self.constants); self.constants = null; }
+    if (self.const_hash != null) { h.free_func(h.heap_udata, self.const_hash); self.const_hash = null; }
+    if (self.inner_funcs != null) { h.free_func(h.heap_udata, self.inner_funcs); self.inner_funcs = null; }
+}
+
+/// Grow code buffer to accommodate more instructions.
+fn void CompilerContext.ensure_code_cap(&self) {
+    if (self.code_count < self.code_cap) return;
+    uint new_cap = self.code_cap * 2;
+    if (new_cap > MAX_CODE_HARD) return;
+    Heap* h = (Heap*)self.heap;
+    void* p = h.realloc_func(h.heap_udata, self.code, (usz)(new_cap * Instruction::size));
+    if (p == null) return;
+    self.code = (Instruction*)p;
+    self.code_cap = new_cap;
+}
+
+/// Grow constant pool and hash table.
+fn void CompilerContext.ensure_const_cap(&self) {
+    if (self.const_count < self.const_cap) return;
+    uint new_cap = self.const_cap * 2;
+    if (new_cap > MAX_CONSTANTS_HARD) return;
+    Heap* h = (Heap*)self.heap;
+
+    // Grow constants array
+    void* p = h.realloc_func(h.heap_udata, self.constants, (usz)(new_cap * TVal::size));
+    if (p == null) return;
+    self.constants = (TVal*)p;
+    self.const_cap = new_cap;
+
+    // Grow hash table proportionally and rehash
+    uint new_hash_cap = new_cap * 2;
+    void* hp2 = h.realloc_func(h.heap_udata, self.const_hash, (usz)(new_hash_cap * ConstHashEntry::size));
+    if (hp2 == null) return;
+    self.const_hash = (ConstHashEntry*)hp2;
+    self.const_hash_cap = new_hash_cap;
+    self.const_hash_fill = new_hash_cap - new_hash_cap / 4;
+    // Rehash: clear and reinsert
+    libc::memset(self.const_hash, 0, (usz)(new_hash_cap * ConstHashEntry::size));
+    self.const_hash_count = 0;
+    for (uint i = 0; i < self.const_count; i++) {
+        self.insert_constant_hash(self.constants[i].get_raw_bits(), i);
+    }
+}
+
+/// Grow inner functions array.
+fn void CompilerContext.ensure_inner_func_cap(&self) {
+    if (self.inner_func_count < self.inner_func_cap) return;
+    uint new_cap = self.inner_func_cap * 2;
+    if (new_cap > MAX_INNER_FUNCS_HARD) return;
+    Heap* h = (Heap*)self.heap;
+    void* p = h.realloc_func(h.heap_udata, self.inner_funcs, (usz)(new_cap * CompiledFunction*::size));
+    if (p == null) return;
+    self.inner_funcs = (CompiledFunction**)p;
+    self.inner_func_cap = new_cap;
+}
+
+/// Register an inner function and return its index.
+fn uint CompilerContext.add_inner_func(&self, CompiledFunction* func) {
+    self.ensure_inner_func_cap();
+    if (self.inner_func_count >= self.inner_func_cap) return 0;
+    uint idx = self.inner_func_count;
+    self.inner_funcs[idx] = func;
+    self.inner_func_count++;
+    self.has_closures = true;
+    return idx;
 }
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
@@ -450,8 +553,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         //   The fused JMP_N* ops added by this pass in the same run: they only appear
         //   in slot i (replacing the compare), never as new targets, so we don't need
         //   to worry about them here.
-        bool[MAX_CODE] jump_targets;
-        libc::memset(&jump_targets[0], 0, self.code_count);
+        bool* jump_targets = (bool*)h.alloc_func(h.heap_udata, (usz)self.code_cap);
+        if (jump_targets == null) { self.cleanup(); return COMPILE_ERROR~; }
+        libc::memset(jump_targets, 0, (usz)self.code_count);
         for (uint i = 0; i < self.code_count; i++) {
             Instruction ins = self.code[i];
             switch (ins.op) {
@@ -663,6 +767,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             self.code[i]     = bytecode::make_abc(fused_op, (uint)(char)fused_off, rB, rC);
             self.code[i + 1] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
         }
+        h.free_func(h.heap_udata, jump_targets);
     }
 
     // --- Peephole: copy propagation — NOP LDREG rT = rS when immediately followed
@@ -807,8 +912,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // `keep[]` before building the pc_map.
     if (self.code_count > 0) {
         // Step 1: mark TRY jump slots as non-removable.
-        bool[MAX_CODE] nop_keep;
-        libc::memset(&nop_keep[0], 0, self.code_count);
+        bool* nop_keep = (bool*)h.alloc_func(h.heap_udata, (usz)self.code_cap);
+        if (nop_keep == null) { self.cleanup(); return COMPILE_ERROR~; }
+        libc::memset(nop_keep, 0, (usz)self.code_count);
         for (uint i = 0; i < self.code_count; i++) {
             if (self.code[i].op == Opcode.TRY && i + 1 < self.code_count) {
                 nop_keep[i + 1] = true;
@@ -817,7 +923,8 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
         // Step 2: build pc_map[old_pc] → new_pc.
         // NOP slots that are not kept map to the new_pc of the next kept slot.
-        uint[MAX_CODE + 1] pc_map;
+        uint* pc_map = (uint*)h.alloc_func(h.heap_udata, (usz)((long)(self.code_cap + 1) * (long)uint::size));
+        if (pc_map == null) { h.free_func(h.heap_udata, nop_keep); self.cleanup(); return COMPILE_ERROR~; }
         uint new_count = 0;
         for (uint i = 0; i < self.code_count; i++) {
             pc_map[i] = new_count;
@@ -905,6 +1012,8 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         }
         func.code = dst_code;
         func.code_count = new_count;
+        h.free_func(h.heap_udata, pc_map);
+        h.free_func(h.heap_udata, nop_keep);
     }
 
     // Copy constant pool
@@ -998,6 +1107,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
 
     // Run JIT optimizations (GETPROPC2 chain fusion, etc.)
     jit::jit_scan(func, hp);
+
+    // Free compiler scratch buffers — the CompiledFunction owns its own copies.
+    self.cleanup();
 
     return func;
 }

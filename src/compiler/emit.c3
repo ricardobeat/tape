@@ -15,8 +15,9 @@ import std::io;
 
 /// Emit a raw instruction, returning its index in the code array.
 fn uint CompilerContext.emit(&self, Instruction inst) {
-    if (self.code_count >= MAX_CODE) {
-        return self.code_count;  // silently cap (real impl would error)
+    self.ensure_code_cap();
+    if (self.code_count >= self.code_cap) {
+        return self.code_count;  // hard cap reached
     }
     uint idx = self.code_count;
     self.code[idx] = inst;

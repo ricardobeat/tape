@@ -13,17 +13,18 @@ import std::io;
 // Constant pool
 // ============================================================================
 
-/// Look up a constant in the hash table and return its index, or MAX_CONSTANTS if not found.
+/// Look up a constant in the hash table and return its index, or const_count if not found.
 fn uint CompilerContext.lookup_constant_hash(&self, ulong val_bits) {
+    if (self.const_hash == null || self.const_hash_cap == 0) return self.const_count;
     // Use the low bits of the TVal as initial hash probe
-    uint hash = (uint)(val_bits >> 1) % MAX_CONST_HASH;
+    uint hash = (uint)(val_bits >> 1) % self.const_hash_cap;
 
     // Linear probe: find empty slot or matching entry
-    for (uint attempt = 0; attempt < MAX_CONST_HASH; attempt++) {
-        uint idx = (hash + attempt) % MAX_CONST_HASH;
+    for (uint attempt = 0; attempt < self.const_hash_cap; attempt++) {
+        uint idx = (hash + attempt) % self.const_hash_cap;
         if (self.const_hash[idx].hash == 0) {
             // Empty slot: not found
-            return MAX_CONSTANTS;
+            return self.const_count;
         }
         if (self.const_hash[idx].hash == val_bits) {
             // Found matching entry
@@ -31,7 +32,7 @@ fn uint CompilerContext.lookup_constant_hash(&self, ulong val_bits) {
         }
     }
     // Hash table full (shouldn't happen if maintained correctly)
-    return MAX_CONSTANTS;
+    return self.const_count;
 }
 
 /// Insert a constant into the hash table.
@@ -40,14 +41,14 @@ fn uint CompilerContext.lookup_constant_hash(&self, ulong val_bits) {
 /// appended without dedup) and for all-zero bits, which are
 /// indistinguishable from an empty slot.
 fn void CompilerContext.insert_constant_hash(&self, ulong val_bits, uint idx) {
-    if (self.const_hash_count >= MAX_CONST_HASH_FILL || val_bits == 0) {
+    if (self.const_hash == null || self.const_hash_count >= self.const_hash_fill || val_bits == 0) {
         return;
     }
-    uint hash = (uint)(val_bits >> 1) % MAX_CONST_HASH;
+    uint hash = (uint)(val_bits >> 1) % self.const_hash_cap;
 
     // Linear probe: find empty slot
-    for (uint attempt = 0; attempt < MAX_CONST_HASH; attempt++) {
-        uint slot = (hash + attempt) % MAX_CONST_HASH;
+    for (uint attempt = 0; attempt < self.const_hash_cap; attempt++) {
+        uint slot = (hash + attempt) % self.const_hash_cap;
         if (self.const_hash[slot].hash == 0) {
             self.const_hash[slot].hash = val_bits;
             self.const_hash[slot].index = idx;
@@ -66,13 +67,14 @@ fn uint CompilerContext.add_constant(&self, TVal val) {
     // strings are handled separately via add_string_constant.
     if (tag == NUMBER || tag == FASTINT) {
         uint found_idx = self.lookup_constant_hash(val_bits);
-        if (found_idx < MAX_CONSTANTS) {
+        if (found_idx < self.const_count) {
             return found_idx;
         }
     }
 
-    if (self.const_count >= MAX_CONSTANTS) {
-        return self.const_count;  // cap
+    self.ensure_const_cap();
+    if (self.const_count >= self.const_cap) {
+        return self.const_count;  // hard cap
     }
     uint idx = self.const_count;
     self.constants[idx] = val;
@@ -116,14 +118,15 @@ fn uint CompilerContext.add_string_constant(&self, char[] str) {
 
     // Check if this string (by pointer) is already in the constant pool
     uint found_idx = self.lookup_constant_hash(val_bits);
-    if (found_idx < MAX_CONSTANTS) {
+    if (found_idx < self.const_count) {
         // The pool entry already holds its references; release the one taken
         // by set_string above.
         if (hstr != null) { hp.decref((types::HeapHeader*)hstr); }
         return found_idx;
     }
 
-    if (self.const_count >= MAX_CONSTANTS) {
+    self.ensure_const_cap();
+    if (self.const_count >= self.const_cap) {
         return self.const_count;
     }
     uint idx = self.const_count;

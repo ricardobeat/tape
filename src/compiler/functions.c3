@@ -144,13 +144,8 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
             if (*count > 0) {
                 binds[*count - 1].has_default = true;
                 CompiledFunction* default_func = self.compile_default_expr()!;
-                if (self.inner_func_count < MAX_INNER_FUNCS) {
-                    uint def_idx = self.inner_func_count;
-                    self.inner_funcs[def_idx] = default_func;
-                    self.inner_func_count++;
-                    self.has_closures = true;
+                uint def_idx = self.add_inner_func(default_func);
                     binds[*count - 1].default_func_idx = def_idx;
-                }
             }
         }
 
@@ -264,13 +259,8 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
             if (*count > 0) {
                 binds[*count - 1].has_default = true;
                 CompiledFunction* default_func = self.compile_default_expr()!;
-                if (self.inner_func_count < MAX_INNER_FUNCS) {
-                    uint def_idx = self.inner_func_count;
-                    self.inner_funcs[def_idx] = default_func;
-                    self.inner_func_count++;
-                    self.has_closures = true;
+                uint def_idx = self.add_inner_func(default_func);
                     binds[*count - 1].default_func_idx = def_idx;
-                }
             }
         }
 
@@ -526,7 +516,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             }
 
             // Record as hoisted
-            if (self.hoisted_fn_count < 64) {
+            if (self.hoisted_fn_count < 256) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
             }
@@ -564,13 +554,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             self.is_generator = saved_gen;
 
             // Add to inner functions table
-            uint inner_idx = 0;
-            if (self.inner_func_count < MAX_INNER_FUNCS) {
-                inner_idx = self.inner_func_count;
-                self.inner_funcs[inner_idx] = inner;
-                self.inner_func_count++;
-                self.has_closures = true;
-            }
+            uint inner_idx = self.add_inner_func(inner);
 
             // Emit CLOSURE + DECLVAR
             self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
@@ -736,7 +720,7 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             }
 
             // Record as hoisted
-            if (self.hoisted_fn_count < 64) {
+            if (self.hoisted_fn_count < 256) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
             }
@@ -774,13 +758,7 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             self.is_generator = saved_gen;
 
             // Add to inner functions table
-            uint inner_idx = 0;
-            if (self.inner_func_count < MAX_INNER_FUNCS) {
-                inner_idx = self.inner_func_count;
-                self.inner_funcs[inner_idx] = inner;
-                self.inner_func_count++;
-                self.has_closures = true;
-            }
+            uint inner_idx = self.add_inner_func(inner);
 
             // Emit CLOSURE + DECLVAR
             self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
@@ -928,16 +906,12 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 CompiledFunction* default_func = self.compile_default_expr()!;
 
                 // Add to inner functions table
-                if (self.inner_func_count < MAX_INNER_FUNCS
-                    && self.default_count < MAX_PARAMS) {
-                    uint def_idx = self.inner_func_count;
-                    self.inner_funcs[def_idx] = default_func;
+                if (self.default_count < MAX_PARAMS) {
+                    uint def_idx = self.add_inner_func(default_func);
                     self.defaults[self.default_count].param_reg = param_reg;
                     self.defaults[self.default_count].param_name_idx = param_name_idx;
                     self.defaults[self.default_count].default_func_idx = def_idx;
                     self.default_count++;
-                    self.inner_func_count++;
-                    self.has_closures = true;
                 }
 
                 // Track first default index (0-based arg index)
@@ -1419,15 +1393,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
                 CompiledFunction* default_func = inner_ctx.compile_default_expr()!;
 
                 // Add to inner functions table
-                if (inner_ctx.inner_func_count < MAX_INNER_FUNCS
-                    && inner_ctx.default_count < MAX_PARAMS) {
-                    uint def_idx = inner_ctx.inner_func_count;
-                    inner_ctx.inner_funcs[def_idx] = default_func;
+                if (inner_ctx.default_count < MAX_PARAMS) {
+                    uint def_idx = inner_ctx.add_inner_func(default_func);
                     inner_ctx.defaults[inner_ctx.default_count].param_reg = param_reg;
                     inner_ctx.defaults[inner_ctx.default_count].param_name_idx = param_name_idx;
                     inner_ctx.defaults[inner_ctx.default_count].default_func_idx = def_idx;
                     inner_ctx.default_count++;
-                    inner_ctx.inner_func_count++;
                 }
 
                 // Track first default index (0-based arg index)
@@ -1717,13 +1688,7 @@ fn ushort? CompilerContext.function_expr(&self) {
     self.is_generator = saved_is_generator;
 
     // Add to inner functions table
-    uint inner_idx = 0;
-    if (self.inner_func_count < MAX_INNER_FUNCS) {
-        inner_idx = self.inner_func_count;
-        self.inner_funcs[inner_idx] = inner;
-        self.inner_func_count++;
-        self.has_closures = true;
-    }
+    uint inner_idx = self.add_inner_func(inner);
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
@@ -1737,13 +1702,7 @@ fn ushort? CompilerContext.function_expr_body(&self) {
     char[] name;  // anonymous
     CompiledFunction* inner = self.compile_inner_function(name)!;
 
-    uint inner_idx = 0;
-    if (self.inner_func_count < MAX_INNER_FUNCS) {
-        inner_idx = self.inner_func_count;
-        self.inner_funcs[inner_idx] = inner;
-        self.inner_func_count++;
-        self.has_closures = true;
-    }
+    uint inner_idx = self.add_inner_func(inner);
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
@@ -1759,13 +1718,7 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
     CompiledFunction* inner = self.compile_arrow_inner_reparse()!;
 
     // Add to inner functions table
-    uint inner_idx = 0;
-    if (self.inner_func_count < MAX_INNER_FUNCS) {
-        inner_idx = self.inner_func_count;
-        self.inner_funcs[inner_idx] = inner;
-        self.inner_func_count++;
-        self.has_closures = true;
-    }
+    uint inner_idx = self.add_inner_func(inner);
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
@@ -1879,15 +1832,12 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
                 CompiledFunction* default_func = arrow_ctx.compile_default_expr()!;
 
                 // Add to inner functions table
-                if (arrow_ctx.inner_func_count < MAX_INNER_FUNCS
-                    && arrow_ctx.default_count < MAX_PARAMS) {
-                    uint def_idx = arrow_ctx.inner_func_count;
-                    arrow_ctx.inner_funcs[def_idx] = default_func;
+                if (arrow_ctx.default_count < MAX_PARAMS) {
+                    uint def_idx = arrow_ctx.add_inner_func(default_func);
                     arrow_ctx.defaults[arrow_ctx.default_count].param_reg = param_reg;
                     arrow_ctx.defaults[arrow_ctx.default_count].param_name_idx = param_name_idx;
                     arrow_ctx.defaults[arrow_ctx.default_count].default_func_idx = def_idx;
                     arrow_ctx.default_count++;
-                    arrow_ctx.inner_func_count++;
                 }
 
                 // Track first default index (0-based arg index)
@@ -2163,13 +2113,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
     CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest)!;
 
     // Add to inner functions table
-    uint inner_idx = 0;
-    if (self.inner_func_count < MAX_INNER_FUNCS) {
-        inner_idx = self.inner_func_count;
-        self.inner_funcs[inner_idx] = inner;
-        self.inner_func_count++;
-        self.has_closures = true;
-    }
+    uint inner_idx = self.add_inner_func(inner);
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
