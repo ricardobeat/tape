@@ -22,6 +22,7 @@ TESTS=(
   "t08_chain:multi-level dependency chain (A->B->C)"
   "t09_multi_named:multiple named exports/imports"
   "t10_smoke:smoke — module with no imports/exports"
+  "t11_colord:colord — ESM color manipulation library"
 )
 
 for entry in "${TESTS[@]}"; do

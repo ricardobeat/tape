@@ -87,6 +87,11 @@ run-module file="test/mod_main.js":
     @test -f out/duktape_c3 || { echo "Building duktape_c3..."; c3c build duktape_c3; }
     ./out/duktape_c3 --module {{file}}
 
+# Run all ESM module tests
+modules:
+    @just build duktape_c3
+    bash test/modules/run.sh
+
 # ── Rosetta Code ─────────────────────────────────────────────────────────────
 
 # Run Rosetta Code tests on duktape-c3 (rebuilds first)
