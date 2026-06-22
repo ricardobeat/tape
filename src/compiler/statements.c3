@@ -1614,7 +1614,17 @@ fn void? CompilerContext.for_statement(&self) {
 
             // Standard for loop: we already consumed the decl keyword and identifier
             // Declare the variable and optionally initialize
-            ushort var_reg = self.declare_var(name_tok.str_value, decl_kind);
+            ushort var_reg;
+            if (!is_lexical) {
+                ushort? existing = self.resolve_var(name_tok.str_value);
+                if (try er = existing) {
+                    var_reg = er;
+                } else {
+                    var_reg = self.declare_var(name_tok.str_value, decl_kind);
+                }
+            } else {
+                var_reg = self.declare_var(name_tok.str_value, decl_kind);
+            }
             has_for_var = !is_lexical && !self.is_global;
             for_var_reg = var_reg;
             for_var_name_idx = self.add_string_constant(name_tok.str_value);
@@ -1642,7 +1652,17 @@ fn void? CompilerContext.for_statement(&self) {
                     self.object_destructure(decl_kind, is_lexical, is_const)!;
                 } else {
                     Token extra_name = self.expect(TokenType.IDENTIFIER)!;
-                    ushort extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    ushort extra_reg;
+                    if (!is_lexical) {
+                        ushort? existing2 = self.resolve_var(extra_name.str_value);
+                        if (try er2 = existing2) {
+                            extra_reg = er2;
+                        } else {
+                            extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                        }
+                    } else {
+                        extra_reg = self.declare_var(extra_name.str_value, decl_kind);
+                    }
                     if (self.match(TokenType.ASSIGN)) {
                         ushort extra_val = self.assignment_expr()!;
                         if (extra_val != extra_reg) {
@@ -1848,6 +1868,14 @@ fn void? CompilerContext.for_statement(&self) {
         self.lexer.has_lookahead = _incr_haslk; self.lexer.pushed_back = _incr_push;
         self.lexer.has_pushed_back = _incr_haspb; self.lexer.seen_line_term = _incr_slt;
         self.pushback_count = _incr_pbc; self.pushback_stack = _incr_pbs;
+        // The loop body may have dropped next_reg below the for-statement's
+        // high-water mark (e.g. expression_statement frees the result register
+        // of an assignment whose target is the topmost live local).  Restore to
+        // saved_reg so the increment and condition compile into fresh temporaries
+        // above all live locals, not into registers that belong to live variables.
+        if (self.next_reg < saved_reg) {
+            self.next_reg = saved_reg;
+        }
         ushort incr_reg = self.expression()!;
         self.free_reg(incr_reg);
     }
@@ -1913,6 +1941,13 @@ fn void? CompilerContext.for_statement(&self) {
             self.lexer.has_lookahead = _cond_haslk; self.lexer.pushed_back = _cond_push;
             self.lexer.has_pushed_back = _cond_haspb; self.lexer.seen_line_term = _cond_slt;
             self.pushback_count = _cond_pbc; self.pushback_stack = _cond_pbs;
+            // Compile condition temporaries above all live locals.  The body may
+            // have lowered next_reg (freeing the result register of a top-of-stack
+            // assignment), which would otherwise let the condition allocate into a
+            // register still owned by a live variable such as the for-init var.
+            if (self.next_reg < saved_reg) {
+                self.next_reg = saved_reg;
+            }
             ushort cond_reg = self.expression()!;
             self.expect(TokenType.SEMICOLON)!;
             int back = (int)body_label - (int)self.code_count - 1;
@@ -1934,6 +1969,7 @@ fn void? CompilerContext.for_statement(&self) {
     // is freed and subsequent code reads the binding via GETVAR.
     if (has_for_var && !for_var_needs_iter_sync) {
         self.emit_a_bc(Opcode.PUTVAR, (uint)for_var_reg, for_var_name_idx);
+        self.emit_a_bc(Opcode.GETVAR, (uint)for_var_reg, for_var_name_idx);
     }
 
     // Restore the lexer to the position after the body so the outer parser
