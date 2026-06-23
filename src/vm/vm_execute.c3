@@ -3908,6 +3908,37 @@ fn TVal? Vm.run(Vm* vm) {
                     TVal* new_regs = new_act.bottom;
                     uint new_nregs = target_fast.num_regs;
 
+                    // Create arguments object BEFORE the rest parameter handling
+                    // below overwrites new_regs[0] with the rest array. (Sliding
+                    // window: new_regs aliases the caller's arg slots at this point.)
+                    if (target_fast.uses_arguments()) {
+                        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+                        if (try args_obj = args_obj_raw) {
+                            for (uint ai = 0; ai < nargs; ai++) {
+                                args_obj.set_array_idx(ai, new_regs[ai]);
+                            }
+                            args_obj.prototype = vm.heap.object_proto;
+                            HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                            if (callee_key != null) {
+                                TVal callee_tv;
+                                callee_tv.set_object(hobj_fast);
+                                args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
+                            }
+                            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                            if (length_key != null) {
+                                TVal length_tv;
+                                length_tv.set_fastint((long)nargs);
+                                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+                            }
+                            HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+                            if (args_name != null) {
+                                TVal args_tv;
+                                args_tv.set_object(args_obj);
+                                env::env_declare(new_act.var_env, args_name, args_tv);
+                            }
+                        }
+                    }
+
                     // Copy args: in the sliding-window model new_regs == old_args
                     // Values are already in place — set missing parameter registers
                     // to undefined so default parameter checks (param !== undefined) work.
@@ -3975,41 +4006,6 @@ fn TVal? Vm.run(Vm* vm) {
                     nregs = target_fast.num_regs;
                     curr_pc = act.curr_pc;
                     regs_base = act.bottom;
-
-                    // Create arguments object if the function references 'arguments'
-                    if (target_fast.uses_arguments()) {
-                        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
-                        if (try args_obj = args_obj_raw) {
-                            // Store arguments in dense array_part (avoids O(argc) string key allocs)
-                            for (uint ai = 0; ai < nargs; ai++) {
-                                args_obj.set_array_idx(ai, regs_base[ai]);
-                            }
-                            // ES5 §10.6: [[Prototype]] is Object.prototype
-                            args_obj.prototype = vm.heap.object_proto;
-                            // ES5 §10.6: define 'callee' property (writable, non-enumerable, configurable)
-                            HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                            if (callee_key != null) {
-                                TVal callee_tv;
-                                callee_tv.set_object(hobj_fast);
-                                args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
-                            }
-                            // ES5 §10.6: define 'length' property (writable, non-enumerable, configurable)
-                            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                            if (length_key != null) {
-                                TVal length_tv;
-                                length_tv.set_fastint((long)nargs);
-                                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
-                            }
-                            // Declare 'arguments' in the function's var_env
-                            HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
-                            if (args_name != null) {
-                                TVal args_tv;
-                                args_tv.set_object(args_obj);
-                                env::env_declare(new_act.var_env, args_name, args_tv);
-                            }
-                        }
-                    }
-
                     continue;
                     }
                 }
@@ -4882,6 +4878,34 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Copy args
             TVal* old_args = regs_base + callee_reg + 2;
+
+            // Create arguments object BEFORE the rest parameter handling below
+            // overwrites new_regs[0] with the rest array.
+            if (super_target.uses_arguments()) {
+                HObject*? args_obj_raw_su = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+                if (try args_obj_su = args_obj_raw_su) {
+                    for (uint ai = 0; ai < nargs; ai++) {
+                        args_obj_su.set_array_idx(ai, old_args[ai]);
+                    }
+                    args_obj_su.prototype = vm.heap.object_proto;
+                    HString* callee_key_su = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                    if (callee_key_su != null) {
+                        TVal callee_tv_su; callee_tv_su.set_object(super_hobj);
+                        args_obj_su.put_prop(callee_key_su, callee_tv_su, hobject::PROP_FLAGS_WC);
+                    }
+                    HString* length_key_su = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                    if (length_key_su != null) {
+                        TVal length_tv_su; length_tv_su.set_fastint((long)nargs);
+                        args_obj_su.put_prop(length_key_su, length_tv_su, hobject::PROP_FLAGS_WC);
+                    }
+                    HString* args_name_su = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+                    if (args_name_su != null) {
+                        TVal args_tv_su; args_tv_su.set_object(args_obj_su);
+                        env::env_declare(super_var_env, args_name_su, args_tv_su);
+                    }
+                }
+            }
+
             if (super_target.has_rest()) {
                 uint copy_count = (uint)super_target.num_formals;
                 for (uint i = 0; i < nargs && i < copy_count; i++) {
@@ -5263,6 +5287,36 @@ fn TVal? Vm.run(Vm* vm) {
 
             // Copy args
             TVal* old_args2 = regs_base + callee_reg + 2;
+
+            // Create arguments object BEFORE the rest parameter handling below
+            // overwrites new_regs2[0] with the rest array.  Capture the original
+            // (pre-overwrite) args via the same stack pointer the rest code will
+            // mutate.
+            if (target.uses_arguments()) {
+                HObject*? args_obj_raw2 = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+                if (try args_obj2 = args_obj_raw2) {
+                    for (uint ai = 0; ai < nargs; ai++) {
+                        args_obj2.set_array_idx(ai, old_args2[ai]);
+                    }
+                    args_obj2.prototype = vm.heap.object_proto;
+                    HString* callee_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                    if (callee_key2 != null) {
+                        TVal callee_tv2; callee_tv2.set_object(hobj);
+                        args_obj2.put_prop(callee_key2, callee_tv2, hobject::PROP_FLAGS_WC);
+                    }
+                    HString* length_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                    if (length_key2 != null) {
+                        TVal length_tv2; length_tv2.set_fastint((long)nargs);
+                        args_obj2.put_prop(length_key2, length_tv2, hobject::PROP_FLAGS_WC);
+                    }
+                    HString* args_name2 = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+                    if (args_name2 != null) {
+                        TVal args_tv2; args_tv2.set_object(args_obj2);
+                        env::env_declare(ctor_var_env, args_name2, args_tv2);
+                    }
+                }
+            }
+
             if (target.has_rest()) {
                 uint copy_count = (uint)target.num_formals;
                 for (uint i = 0; i < nargs && i < copy_count; i++) {
