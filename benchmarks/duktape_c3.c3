@@ -176,6 +176,9 @@ fn int main(String[] args) {
             if (inner != null) {
                 io::printfn("\n--- Inner function %d ---", i);
                 dump_function(*inner);
+                if (dump_consts) {
+                    dump_constants_pool(*inner);
+                }
             }
         }
         if (dump_consts) {
@@ -410,7 +413,10 @@ fn void print_uncaught_error(heap::Heap* h, TVal* err_val) {
             return;
         }
     }
-    io::eprintfn("Uncaught: <non-object error value>");
+    // Non-object throw value (string, number, boolean, etc.)
+    io::eprintf("Uncaught: ");
+    print_tval_stderr(err_val);
+    io::eprintf("\n");
 }
 
 fn void print_tval_stderr(TVal* v) {

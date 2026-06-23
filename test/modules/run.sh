@@ -23,6 +23,7 @@ TESTS=(
   "t09_multi_named:multiple named exports/imports"
   "t10_smoke:smoke — module with no imports/exports"
   "t11_colord:colord — ESM color manipulation library"
+  "t12_tinycolor:tinycolor — ESM color manipulation library"
 )
 
 for entry in "${TESTS[@]}"; do

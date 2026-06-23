@@ -2448,7 +2448,15 @@ fn void? CompilerContext.expression_statement(&self) {
         // Preserve the expression result for eval's implicit return value
         self.emit_abc(Opcode.LDREG, (uint)self.eval_acc_reg, (uint)reg, 0);
     }
-    self.free_reg(reg);
+    // Don't free a register that is the slot of a live local variable AND is
+    // the top of the register stack (so free_reg would actually decrement).
+    // Freeing the var slot would decrement next_reg past the slot, allowing
+    // subsequent alloc_reg calls to clobber the variable's value.
+    // (`var x = ...; x = ...;` returns the LHS register as the expression
+    // result; freeing it after the standalone statement clobbers `x`.)
+    if (reg + 1 != self.next_reg || !self.is_local_var_reg(reg)) {
+        self.free_reg(reg);
+    }
     self.match(TokenType.SEMICOLON);
 }
 

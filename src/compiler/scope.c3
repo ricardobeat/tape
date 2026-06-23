@@ -110,3 +110,18 @@ fn bool CompilerContext.is_var_const(&self, char[] name) {
     }
     return false;
 }
+
+/// Check if a register is the slot of a declared local variable/let/const/param.
+/// Returns true if the register holds a live local binding that must NOT be
+/// freed by expression_statement (the binding outlives the expression).
+fn bool CompilerContext.is_local_var_reg(&self, ushort reg) {
+    if (self.scope_depth == 0) {
+        return false;
+    }
+    for (uint i = 0; i < self.scope_depth; i++) {
+        if (self.scope_stack[i].reg == reg) {
+            return true;
+        }
+    }
+    return false;
+}
