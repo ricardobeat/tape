@@ -2673,8 +2673,6 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "repeat",     BUILTIN_STRING_PROTO_REPEAT))     return false;
     if (!register_string_proto_method(proto, heap, "trimStart",  BUILTIN_STRING_PROTO_TRIMSTART))  return false;
     if (!register_string_proto_method(proto, heap, "trimEnd",    BUILTIN_STRING_PROTO_TRIMEND))    return false;
-    if (!register_string_proto_method(proto, heap, "trimLeft",   BUILTIN_STRING_PROTO_TRIMSTART))  return false;
-    if (!register_string_proto_method(proto, heap, "trimRight",  BUILTIN_STRING_PROTO_TRIMEND))    return false;
     if (!register_string_proto_method(proto, heap, "codePointAt", BUILTIN_STRING_PROTO_CODEPOINTAT)) return false;
     if (!register_string_proto_method(proto, heap, "at",         BUILTIN_STRING_PROTO_AT))         return false;
     if (!register_string_proto_method(proto, heap, "padStart",   BUILTIN_STRING_PROTO_PADSTART))   return false;

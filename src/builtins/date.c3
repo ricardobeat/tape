@@ -2269,9 +2269,6 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // Add Date.prototype.toUTCString()
     if (!register_string_proto_method(proto, heap, "toUTCString", BUILTIN_DATE_PROTO_TOUTCSTRING)) return false;
 
-    // Add Date.prototype.toGMTString() (alias for toUTCString)
-    if (!register_string_proto_method(proto, heap, "toGMTString", BUILTIN_DATE_PROTO_TOGMTSTRING)) return false;
-
     // Add Date.prototype.toLocaleString() — ES5 §15.9.5.5
     if (!register_string_proto_method(proto, heap, "toLocaleString", BUILTIN_DATE_PROTO_TOLOCALESTRING)) return false;
 

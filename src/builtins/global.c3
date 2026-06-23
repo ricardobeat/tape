@@ -102,7 +102,7 @@ fn void builtin_parse_int(BuiltinContext* ctx) {
         TVal* rad_arg = &ctx.regs[ctx.base_reg + 1];
         radix = (int)(rad_arg.is_fastint() ? rad_arg.get_fastint() : rad_arg.get_number());
     } else {
-        radix = 0;  // auto-detect (0x = hex, 0 = octal legacy, else decimal)
+        radix = 0;  // auto-detect: 0x/0X = hex; leading 0 = octal via strtol (legacy ES5; not ES2015+ spec)
     }
 
     char* end;

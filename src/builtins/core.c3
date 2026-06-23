@@ -385,7 +385,6 @@ const uint BUILTIN_DATE_PROTO_SETUTCMONTH    = 256;
 const uint BUILTIN_DATE_PROTO_SETUTCFULLYEAR = 257;
 const uint BUILTIN_DATE_PROTO_TOISOSTRING    = 258;
 const uint BUILTIN_DATE_PROTO_TOUTCSTRING    = 259;
-const uint BUILTIN_DATE_PROTO_TOGMTSTRING    = 260;
 const uint BUILTIN_DATE_PROTO_TODATESTRING   = 301;
 const uint BUILTIN_DATE_PROTO_TOTIMESTRING   = 302;
 const uint BUILTIN_STRING_PROTO_REPLACEALL    = 303;
@@ -1259,7 +1258,6 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 257: return { "setUTCFullYear", 3 };
         case 258: return { "toISOString", 0 };
         case 259: return { "toUTCString", 0 };
-        case 260: return { "toGMTString", 0 };
         case 261: return { "toLocaleString", 0 };
         case 262: return { "toLocaleDateString", 0 };
         case 263: return { "toLocaleTimeString", 0 };
@@ -1698,7 +1696,6 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_DATE_PROTO_SETUTCMINUTES] = &builtin_date_proto_setUTCMinutes,
     [BUILTIN_DATE_PROTO_SETUTCMONTH] = &builtin_date_proto_setUTCMonth,
     [BUILTIN_DATE_PROTO_SETUTCSECONDS] = &builtin_date_proto_setUTCSeconds,
-    [BUILTIN_DATE_PROTO_TOGMTSTRING] = &builtin_date_proto_toUTCString,
     [BUILTIN_DATE_PROTO_TOISOSTRING] = &builtin_date_proto_toISOString,
     [BUILTIN_DATE_PROTO_TOJSON] = &builtin_date_proto_toJSON,
     [BUILTIN_DATE_PROTO_TOLOCALEDATESTRING] = &builtin_date_proto_toLocaleDateString,
