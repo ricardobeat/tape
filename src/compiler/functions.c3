@@ -1244,7 +1244,11 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
 }
 
 /// Compile an inner function (parameters + body) into a sub-CompiledFunction.
-fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name) {
+/// If `is_named_expr` is true and `name` is non-empty, the resulting function
+/// is tagged with `is_namebinding`, signalling the VM to bind `name` to the
+/// function object in a fresh lexical environment at call time (per ES2015
+/// §14.1.20 NamedEvaluation).
+fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name, bool is_named_expr = false) {
     // Create a new CompilerContext for the inner function
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
@@ -1648,6 +1652,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name)
     if (name.len > 0) {
         func.name_ptr = name.ptr;
         func.name_len = (uint)name.len;
+        // Named function expression: tag so the VM creates a lexical
+        // environment binding for `name` at call time (ES2015 §14.1.20).
+        if (is_named_expr) {
+            func.flags.is_namebinding = true;
+        }
     }
 
     return func;
@@ -1672,16 +1681,18 @@ fn ushort? CompilerContext.function_expr(&self) {
 
     // Optional function name
     char[] name;
+    bool has_name = false;
     if (self.check(TokenType.IDENTIFIER)) {
         Token name_tok = self.advance()!;
         name = name_tok.str_value;
+        has_name = true;
     }
 
     // Compile the function body into a sub-context.
     // Restore is_async so compile_inner_function propagates the flag,
     // then immediately reset to prevent nested functions from inheriting it.
     self.is_async = saved_is_async;
-    CompiledFunction* inner = self.compile_inner_function(name)!;
+    CompiledFunction* inner = self.compile_inner_function(name, has_name)!;
     self.is_async = false;
 
     // Restore generator flag (async already reset above)

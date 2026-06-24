@@ -958,6 +958,13 @@ macro bool CompiledFunction.has_rest(&self) {
     return self.flags.has_rest;
 }
 
+/// Returns `true` when the function is a named function expression — the
+/// VM must bind the function's name to the function object in a fresh
+/// lexical environment at call time (ES2015 §14.1.20 NamedEvaluation).
+macro bool CompiledFunction.is_namebinding(&self) {
+    return self.flags.is_namebinding;
+}
+
 // ============================================================================
 // CompiledFunction — code access
 // ============================================================================

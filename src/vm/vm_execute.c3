@@ -12,6 +12,23 @@ import std::io;
 import std::math;
 import libc;
 
+/// Set up a named-function-expression's lexical environment.
+/// Returns a fresh declarative env with `name_hstr` bound immutably to
+/// `func_obj`, or null on failure. The returned env's parent is `var_env`,
+/// so lookups for everything else still walk through the function's normal
+/// scope chain (per ES2015 §14.1.20 NamedEvaluation).
+fn EnvRecord*? setup_named_function_expr_env(Vm* vm, EnvRecord* var_env,
+                                              HString* name_hstr,
+                                              HObject* func_obj) {
+    EnvRecord*? lex_env_raw = env::env_create_declarative(vm.heap, var_env);
+    if (catch err = lex_env_raw) return types::ALLOC_ERROR~;
+    EnvRecord* lex_env = lex_env_raw;
+    TVal func_tv; func_tv.set_object(func_obj);
+    // Non-writable, enumerable, configurable — same flags PUTLEX_C uses for const.
+    lex_env.bindings.put_prop((void*)name_hstr, func_tv, hobject::PROP_FLAGS_EC);
+    return lex_env;
+}
+
 /// Implementation of Heap.call_fn — calls a JS function with N arguments through the VM.
 fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal this_val) {
     Vm* vm = (Vm*)vm_ptr;
@@ -3846,9 +3863,19 @@ fn TVal? Vm.run(Vm* vm) {
                     Activation* new_act = &vm.activations[vm.activation_count];
 
                     EnvRecord* fast_var_env;
-                    // Skip env allocation when the callee has no local bindings —
-                    // the parent's env is sufficient (no var hoisting needed).
-                    if (target_fast.needs_env()) {
+                    // Arrow functions inherit their enclosing lexical environment —
+                    // they don't get a fresh function scope, and they don't have a
+                    // var_env of their own.  Use the captured lex_env directly.
+                    if (target_fast.is_arrow()) {
+                        EnvRecord* arrow_lex = (*hobj_fast.extra_ptr()).func.lex_env;
+                        if (arrow_lex == null) {
+                            regs_base[result_reg].set_undefined();
+                            break;
+                        }
+                        fast_var_env = arrow_lex;
+                    } else if (target_fast.needs_env()) {
+                        // Skip env allocation when the callee has no local bindings —
+                        // the parent's env is sufficient (no var hoisting needed).
                         fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
                         if (try fv_f = env::env_create_function_scope(vm.heap, (*hobj_fast.extra_ptr()).func.var_env)) { fast_var_env = fv_f; }
                     } else {
@@ -3861,7 +3888,26 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.parent = act;
                     new_act.func = target_fast;
                     new_act.var_env = fast_var_env;
-                    new_act.lex_env = fast_var_env;
+                    // Named function expressions get a fresh declarative lex_env
+                    // with the function name bound immutably (ES2015 §14.1.20).
+                    // This takes precedence over the lex_bridge for default
+                    // thunks: the name binding must live in the function's own
+                    // immediate lex scope (not on the captured bridge).
+                    if (target_fast.is_namebinding()) {
+                        char[] name_data = target_fast.get_name();
+                        HString* name_hstr = intern_string(vm, name_data);
+                        if (name_hstr != null) {
+                            if (try name_lex2 = setup_named_function_expr_env(vm, fast_var_env, name_hstr, hobj_fast)) {
+                                new_act.lex_env = name_lex2;
+                            } else {
+                                new_act.lex_env = fast_var_env;
+                            }
+                        } else {
+                            new_act.lex_env = fast_var_env;
+                        }
+                    } else {
+                        new_act.lex_env = fast_var_env;
+                    }
                     // Bridge captured lex scope for default thunks that need
                     // to see TDZ sentinels in the parent's param scope.
                     if (target_fast.needs_lex_bridge()) {
@@ -4863,7 +4909,23 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.parent = act;
             new_act.func = super_target;
             new_act.var_env = super_var_env;
-            new_act.lex_env = super_var_env;
+            // Named function expressions get a fresh declarative lex_env
+            // with the function name bound immutably (ES2015 §14.1.20).
+            if (super_target.is_namebinding()) {
+                char[] name_data = super_target.get_name();
+                HString* name_hstr = intern_string(vm, name_data);
+                if (name_hstr != null) {
+                    if (try name_lex = setup_named_function_expr_env(vm, super_var_env, name_hstr, super_hobj)) {
+                        new_act.lex_env = name_lex;
+                    } else {
+                        new_act.lex_env = super_var_env;
+                    }
+                } else {
+                    new_act.lex_env = super_var_env;
+                }
+            } else {
+                new_act.lex_env = super_var_env;
+            }
             new_act.cat = null;
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
@@ -5272,7 +5334,23 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.parent = act;
             new_act.func = target;
             new_act.var_env = ctor_var_env;
-            new_act.lex_env = ctor_var_env;
+            // Named function expressions get a fresh declarative lex_env
+            // with the function name bound immutably (ES2015 §14.1.20).
+            if (target.is_namebinding()) {
+                char[] name_data = target.get_name();
+                HString* name_hstr = intern_string(vm, name_data);
+                if (name_hstr != null) {
+                    if (try name_lex = setup_named_function_expr_env(vm, ctor_var_env, name_hstr, hobj)) {
+                        new_act.lex_env = name_lex;
+                    } else {
+                        new_act.lex_env = ctor_var_env;
+                    }
+                } else {
+                    new_act.lex_env = ctor_var_env;
+                }
+            } else {
+                new_act.lex_env = ctor_var_env;
+            }
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;
