@@ -1,16 +1,24 @@
 # Duktape C3 — Backlog
 
-Baseline as of Session 215 (2026-06-21):
+Baseline as of Session 220 (2026-06-25):
 
 | Phase | Total | Pass | Fail | Skip | CE  |
 |-------|-------|------|------|------|-----|
-| 1: Calling Convention & Closures | 426 | 153 | 76 | 86 | 111 |
-| 2: Basic Operators | 1969 | 1167 | 141 | 563 | 98 |
-| 3: Object System | 7766 | 4948 | 1465 | 744 | 609 |
-| 4: Error Handling & References | 402 | 131 | 82 | 95 | 94 |
-| 5: Built-in Constructors | 8615 | 5804 | 2111 | 669 | 31 |
-| 6: Built-in Prototype Methods | 4713 | 3013 | 1383 | 300 | 17 |
-| 7: Remaining ES5 Features | 1240 | 315 | 177 | 635 | 113 |
+| 0-1: Core VM | 2185 | 677 | 199 | 1297 | 12 |
+| 1: Calling Convention & Closures | 426 | 79 | 6 | 338 | 3 |
+| 2: Basic Operators | 1969 | 1058 | 79 | 825 | 7 |
+| 3: Object System | 7766 | 4796 | 977 | 1967 | 26 |
+| 4: Error Handling & References | 402 | 123 | 71 | 201 | 7 |
+| 5: Built-in Constructors | 8615 | 5716 | 1364 | 1529 | 6 |
+| 6: Built-in Prototype Methods | 4713 | 2946 | 827 | 936 | 4 |
+| 7: Remaining ES5 Features | 1035 | 206 | 69 | 749 | 11 |
+| 8: ES5 Built-in Objects | 2747 | 1045 | 237 | 1464 | 1 |
+| 11: Arrow Functions & Templates | 427 | 69 | 29 | 324 | 5 |
+| 12-13: Destructuring & Spread | 19 | 0 | 0 | 19 | 0 |
+| 14: for-of | 751 | 13 | 19 | 719 | 0 |
+| 15: Classes | 8520 | 55 | 207 | 8258 | 0 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 358 | 282 | 974 | 0 |
+| 21: Generators | 619 | 0 | 2 | 617 | 0 |
 
 ---
 

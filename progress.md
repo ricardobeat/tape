@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 213 (tinycolor.js ESM vendor + 2 compiler fixes)
+**Last Updated:** Session 220 (GETPROPC2 complete + full test262 re-run)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (full run, 2026-06-21)
+## Summary (full run, 2026-06-25)
 
 | Metric | Value |
 |---|---|
-| Total tests measured | 41,813 |
-| Pass + Fail (executable tests) | 26,619 |
-| Total passing | 18,905 |
-| **Overall pass rate (pass/pass+fail)** | **71.0%** |
-| Skipped + CE (not run) | 15,194 |
+| Total tests measured | 41,808 |
+| Pass + Fail + CE (executable) | 21,591 |
+| Total passing | 17,141 |
+| **Overall pass rate (pass/pass+fail+CE)** | **79.4%** |
+| Skipped + CE (not run) | 20,217 |
 
-## Per-Phase Status (all phases, session 216)
+## Per-Phase Status (session 220)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0: Core VM | 2185 | 739 | 297 | 1056 | 93 |
-| 1: Calling Convention | 426 | 154 | 75 | 86 | 111 |
-| 2: Basic Operators | 1969 | 1170 | 138 | 563 | 98 |
-| 3: Object System | 7766 | 4965 | 1448 | 744 | 609 |
-| 4: Error Handling | 402 | 126 | 87 | 95 | 94 |
-| 5: Built-in Constructors | 8615 | 5819 | 2096 | 669 | 31 |
-| 6: Prototype Methods | 4713 | 3021 | 1375 | 300 | 17 |
-| 7: ES5 Features | 1240 | 316 | 176 | 635 | 113 |
-| 8: ES5 Built-in Objects | 2747 | 1236 | 501 | 1000 | 10 |
-| 11: Arrow/Templates | 427 | 119 | 73 | 142 | 93 |
-| 12-13: Destructuring | 19 | 15 | 0 | 2 | 2 |
-| 14: for-of | 751 | 136 | 126 | 169 | 320 |
-| 15: Classes | 8520 | 490 | 475 | 5141 | 2414 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 493 | 670 | 406 | 45 |
-| 21: Generators | 619 | 112 | 177 | 130 | 200 |
+| 0-1: Core VM | 2185 | 677 | 199 | 1297 | 12 |
+| 1: Calling Convention | 426 | 79 | 6 | 338 | 3 |
+| 2: Basic Operators | 1969 | 1058 | 79 | 825 | 7 |
+| 3: Object System | 7766 | 4796 | 977 | 1967 | 26 |
+| 4: Error Handling | 402 | 123 | 71 | 201 | 7 |
+| 5: Built-in Constructors | 8615 | 5716 | 1364 | 1529 | 6 |
+| 6: Prototype Methods | 4713 | 2946 | 827 | 936 | 4 |
+| 7: ES5 Features | 1035 | 206 | 69 | 749 | 11 |
+| 8: ES5 Built-in Objects | 2747 | 1045 | 237 | 1464 | 1 |
+| 11: Arrow/Templates | 427 | 69 | 29 | 324 | 5 |
+| 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
+| 14: for-of | 751 | 13 | 19 | 719 | 0 |
+| 15: Classes | 8520 | 55 | 207 | 8258 | 0 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 358 | 282 | 974 | 0 |
+| 21: Generators | 619 | 0 | 2 | 617 | 0 |
 
 ## Test Infrastructure
 
