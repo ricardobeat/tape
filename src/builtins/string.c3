@@ -1997,17 +1997,15 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     char* input = s_hstr.get_cstr();
     int input_len = (int)s_hstr.blen;
 
-    // No args or undefined → null (per spec: RegExp(undefined) would match "undefined" string,
-    // but most engines return null for match() with no args)
-    if (ctx.argc == 0) {
-        ctx.result.set_null();
-        return;
-    }
-
+    // ES2015 §21.1.3.10: missing arg or undefined/null falls through to RegExpCreate.
+    // Earlier ES5 returned null, but ES2015+ (and test262) expects RegExp(undefined).match(this),
+    // e.g. "".match() === [""] (matches the empty string at position 0).
     TVal* regexp_arg = &ctx.regs[ctx.base_reg];
+    bool arg_is_missing_or_nullish = (ctx.argc == 0)
+        || regexp_arg.is_null() || regexp_arg.is_undefined();
 
-    // ── Check for @@match protocol (ES6 §21.1.3.11 step 2) ───────────────
-    if (!regexp_arg.is_null() && !regexp_arg.is_undefined()) {
+    // ── Check for @@match protocol (ES2015 §21.1.3.10 step 2) ───────────────
+    if (!arg_is_missing_or_nullish) {
         if (regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
             HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
             HString* match_sym = ensure_match_symbol(ctx.heap);
@@ -2027,6 +2025,43 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                 }
             }
         }
+    }
+
+    // ES2015 §21.1.3.10 step 4: arg is missing/nullish → RegExpCreate(arg).
+    // ES2017 §21.2.3.1 step 7: if pattern is undefined, P = ""; else P = ToString(pattern).
+    //   missing arg  → undefined → ""
+    //   null         → "null"
+    // Use the resulting regex's @@match against the string.
+    if (arg_is_missing_or_nullish) {
+        char[16] pat_buf;
+        int pat_len;
+        if (regexp_arg.is_null()) {
+            char[] s = "null";
+            pat_len = s.len;
+            libc::memcpy(&pat_buf[0], s.ptr, s.len);
+        } else {
+            // missing or undefined → empty string
+            pat_len = 0;
+        }
+        HObject* rx = create_regexp_from_string(ctx.heap, pat_buf[:pat_len], 0);
+        if (rx == null) { ctx.result.set_null(); return; }
+        TVal[1] args;
+        args[0].set_string(s_hstr);
+        TVal this_val; this_val.set_object(rx);
+        HString* match_sym = ensure_match_symbol(ctx.heap);
+        if (match_sym == null) { ctx.result.set_null(); return; }
+        if (try matcher = rx.get_prop(match_sym)) {
+            if (matcher.is_lightfunc() ||
+                (matcher.is_object() && matcher.get_heapptr() != null &&
+                 ((HObject*)matcher.get_heapptr()).is_callable())) {
+                TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
+                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                *ctx.result = res;
+                return;
+            }
+        }
+        ctx.result.set_null();
+        return;
     }
 
     // If arg is a RegExp object, use it directly
@@ -2201,7 +2236,7 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     }
 
     // Non-RegExp arg: convert to string and do literal search
-    HString* search_hstr = builtin_to_string(ctx.heap, regexp_arg);
+    HString* search_hstr = builtin_to_string_vm(ctx, regexp_arg);
     if (search_hstr == null) { ctx.result.set_null(); return; }
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
@@ -2231,6 +2266,15 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
     elem.set_string(search_hstr);
     HString* zero_key = builtin_intern_string(ctx.heap, "0");
     arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+
+    // ES5 §15.5.4.10 step 11: result array must have .index and .input
+    TVal idx_tv; idx_tv.set_fastint((long)found_pos);
+    HString* idx_key = builtin_intern_string(ctx.heap, "index");
+    arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
+
+    TVal input_tv; input_tv.set_string(s_hstr);
+    HString* input_key = builtin_intern_string(ctx.heap, "input");
+    arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
 
     TVal len_tv;
     len_tv.set_fastint(1);
