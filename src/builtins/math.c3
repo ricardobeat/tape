@@ -6,6 +6,7 @@ import duktape::env;
 
 import duktape::heap;
 import duktape::hobject;
+import duktape::vm;
 import std::io;
 import std::math;
 
@@ -14,12 +15,26 @@ import std::math;
 // ============================================================================
 
 /// Helper: get numeric arg at index i, defaulting to NaN if absent.
+/// Uses vm_to_number for objects so that valueOf / toString are called
+/// per the spec (and any exception they throw propagates through the VM).
+/// Returns NaN and sets ctx.should_throw / throw_value on ToNumber failure.
 fn double math_arg(BuiltinContext* ctx, ushort i) {
     if (i >= ctx.argc) return double::nan;
     TVal* arg = &ctx.regs[ctx.base_reg + i];
     if (arg.is_fastint()) return (double)arg.get_fastint();
     if (arg.is_number()) return arg.get_number();
-    // Non-numeric — need ToNumber
+    if (arg.is_object() && ctx.vm != null) {
+        Vm* v = (Vm*)ctx.vm;
+        double d = vm::vm_to_number(v, arg);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.throw_value = v.throw_value;
+            v.throw_pending = false;
+            return double::nan;
+        }
+        return d;
+    }
+    // Non-object non-number: undefined / null / boolean / string / symbol.
     TVal num;
     builtin_to_number(arg, &num);
     return num.is_fastint() ? (double)num.get_fastint() : num.get_number();
@@ -224,11 +239,28 @@ fn void builtin_math_cbrt(BuiltinContext* ctx) {
 }
 
 fn void builtin_math_hypot(BuiltinContext* ctx) {
+    // ES6 §20.2.2.18 Math.hypot(...): Infinity propagates; NaN only propagates
+    // if no argument is Infinity. Zero-arg call returns +0.
+    if (ctx.argc == 0) {
+        ctx.result.set_number(0.0);
+        return;
+    }
+    bool saw_infinity = false;
+    bool saw_nan = false;
     double result = 0.0;
     for (ushort i = 0; i < ctx.argc; i++) {
         double v = math_arg(ctx, i);
-        if (math::is_nan(v)) { result = double::nan; break; }
+        if (math::is_inf(v)) { saw_infinity = true; continue; }
+        if (math::is_nan(v)) { saw_nan = true; continue; }
         result = result + v * v;
+    }
+    if (saw_infinity) {
+        ctx.result.set_number(double::inf);
+        return;
+    }
+    if (saw_nan) {
+        ctx.result.set_number(double::nan);
+        return;
     }
     ctx.result.set_number(math_sqrt(result));
 }
@@ -269,7 +301,14 @@ fn void builtin_math_fround(BuiltinContext* ctx) {
 
 fn void builtin_math_clz32(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
-    uint val = (uint)x;
+    // Per spec: ToUint32(x) — NaN, +0, -0, +Infinity, -Infinity all return +0.
+    uint val;
+    if (math::is_nan(x) || math::is_inf(x) || x == 0.0) {
+        val = 0;
+    } else {
+        // Truncate toward zero, then interpret as uint32.
+        val = (uint)(long)x;
+    }
     if (val == 0) {
         ctx.result.set_fastint(32);
     } else {
@@ -285,9 +324,18 @@ fn void builtin_math_clz32(BuiltinContext* ctx) {
 fn void builtin_math_imul(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
     double y = math_arg(ctx, 1);
-    int a = (int)(uint)x;
-    int b = (int)(uint)y;
-    ctx.result.set_fastint((long)(a * b));
+    // Math.imul: ToUint32(x) * ToUint32(y) mod 2^32, then sign-fix to int32.
+    // Truncate toward zero (C3 `(long)` cast) so fractional inputs become 0.
+    long a_long = (long)x;
+    long b_long = (long)y;
+    uint a = (uint)a_long;
+    uint b = (uint)b_long;
+    // Use 64-bit multiply to avoid signed-overflow UB; then take low 32 bits.
+    ulong product = (ulong)a * (ulong)b;
+    uint low = (uint)(product & 0xFFFFFFFFul);
+    // Reinterpret as signed int32.
+    int result = (int)low;
+    ctx.result.set_fastint((long)result);
 }
 
 fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
