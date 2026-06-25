@@ -986,20 +986,77 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
     } else {
         // Snapshot property keys before iterating, so that getters that delete
         // properties don't cause keys to be skipped (ES5 §15.12.3 step 4.b).
+        // We use prop_key_at(i) for i in 0..prop_count-1 — this iterates in
+        // insertion order (HObject.prop_key_at walks the shape chain, returning
+        // the i-th property in insertion order).
         HString*[64] snap_keys;
-        ushort[64] snap_indices;
+        uint[64]   snap_value_idx;  // prop_values index of this key
         uint snap_count = 0;
         for (uint i = 0; i < obj.prop_count && snap_count < 64; i++) {
-            if (obj.prop_key_at(i) != null) {
-                snap_keys[snap_count] = (HString*)obj.prop_key_at(i);
-                snap_indices[snap_count] = (ushort)i;
+            HString* k = (HString*)obj.prop_key_at(i);
+            if (k != null) {
+                snap_keys[snap_count] = k;
+                snap_value_idx[snap_count] = i;
                 snap_count++;
             }
         }
-
-        for (uint si = 0; si < snap_count; si++) {
-            HString* key_hstr = snap_keys[si];
-            uint pi = snap_indices[si];
+        // Per ES5 §15.12.3 step 4.b.ii: integer-indexed keys are output first in
+        // ascending numeric order; remaining string keys follow in their original
+        // order. We split into two lists, sort the integer list numerically, then
+        // concatenate.
+        HString*[64] int_keys;
+        uint[64]   int_value_idx;
+        uint int_count = 0;
+        for (uint k = 0; k < snap_count; k++) {
+            HString* kk = snap_keys[k];
+            if (kk.is_arridx()) {
+                int_keys[int_count] = kk;
+                int_value_idx[int_count] = snap_value_idx[k];
+                int_count++;
+            }
+        }
+        // Compact snap_keys to keep only non-integer keys (preserving order).
+        uint string_count = 0;
+        for (uint k = 0; k < snap_count; k++) {
+            if (!snap_keys[k].is_arridx()) {
+                snap_keys[string_count] = snap_keys[k];
+                snap_value_idx[string_count] = snap_value_idx[k];
+                string_count++;
+            }
+        }
+        snap_count = string_count;
+        // Insertion sort the integer keys by their numeric index.
+        for (uint i = 1; i < int_count; i++) {
+            HString* tk = int_keys[i];
+            uint     ti = int_value_idx[i];
+            uint j = i;
+            while (j > 0 && int_keys[j - 1].array_index() > tk.array_index()) {
+                int_keys[j] = int_keys[j - 1];
+                int_value_idx[j] = int_value_idx[j - 1];
+                j--;
+            }
+            int_keys[j] = tk;
+            int_value_idx[j] = ti;
+        }
+        // Concatenate: integer keys first (sorted), then string keys (in
+        // insertion order). Use a separate buffer to avoid clobbering snap_keys.
+        HString*[128] final_keys;
+        uint[128]   final_value_idx;
+        uint final_count = 0;
+        for (uint i = 0; i < int_count; i++) {
+            final_keys[final_count] = int_keys[i];
+            final_value_idx[final_count] = int_value_idx[i];
+            final_count++;
+        }
+        for (uint i = 0; i < snap_count; i++) {
+            final_keys[final_count] = snap_keys[i];
+            final_value_idx[final_count] = snap_value_idx[i];
+            final_count++;
+        }
+        // Now iterate the final list.
+        for (uint si = 0; si < final_count; si++) {
+            HString* key_hstr = final_keys[si];
+            uint pi = final_value_idx[si];
             TVal val;
             // Check if property still exists and read its value
             if (pi < obj.prop_count && obj.prop_key_at(pi) == key_hstr) {
@@ -1069,9 +1126,9 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
                 jctx.depth--;
                 return -1;
             }
-            int r = json_serialize_val(jctx, &val);
+            int rc2 = json_serialize_val(jctx, &val);
             jctx.depth--;
-            if (r != 0) return r;
+            if (rc2 != 0) return rc2;
         }
     }
 
