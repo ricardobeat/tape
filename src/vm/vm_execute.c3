@@ -3897,9 +3897,16 @@ fn TVal? Vm.run(Vm* vm) {
                             break;
                         }
                         fast_var_env = arrow_lex;
-                    } else if (target_fast.needs_env()) {
-                        // Skip env allocation when the callee has no local bindings —
-                        // the parent's env is sufficient (no var hoisting needed).
+                    } else if (target_fast.needs_env() || (target_fast.num_args > 0 && !target_fast.needs_lex_bridge())) {
+                        // needs_env=true → caller has var/closures/eval/arguments, so we
+                        // need a fresh env.
+                        // num_args > 0 && !needs_lex_bridge → a function with simple
+                        // parameters but no defaults still needs a fresh env because
+                        // its DECLVARs for parameters would clobber the parent env
+                        // when the parameter names collide with parent bindings.
+                        // (Functions with default-valued parameters get a
+                        // separate params-vs-body env structure via the lex_bridge
+                        // mechanism, so this path doesn't apply to them.)
                         fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
                         if (try fv_f = env::env_create_function_scope(vm.heap, (*hobj_fast.extra_ptr()).func.var_env)) { fast_var_env = fv_f; }
                     } else {
@@ -4624,7 +4631,7 @@ fn TVal? Vm.run(Vm* vm) {
             new_act.caller_valstack_top = vm.valstack_top;
 
             EnvRecord* call_var_env2 = (*hobj.extra_ptr()).func.var_env;
-            if (target.needs_env()) {
+            if (target.needs_env() || (target.num_args > 0 && !target.needs_lex_bridge())) {
                 if (try fv_c2 = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { call_var_env2 = fv_c2; }
             }
             new_act.parent = act;
