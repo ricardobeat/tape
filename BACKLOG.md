@@ -60,7 +60,7 @@ Baseline as of Session 215 (2026-06-21):
 
 ## Lower Impact / Needs Investigation
 
-- [ ] **B15** — Phase 1 CE (111 compile errors from 426 total): many tests that should pass are being rejected at compile time. Investigate which features trigger spurious CE. May include tagged template literals, computed property shorthand, or other syntax the compiler rejects.
+- [x] **B15** — Variable shadowing through the call/return boundary. A function with parameters but no body locals would share the parent's variable environment; its DECLVAR instructions for each parameter then wrote into the shared env and clobbered any outer binding whose name matched. Classic reproducer: `function isSameValue(a, b) { ... }` followed by `var b = ...; isSameValue(...)` — after the call, `b` held the arg instead of the original object. Same bug masked itself in many failing test262 tests where helper functions use generic param names. Two fixes in `src/vm/vm_execute.c3`: (1) extend the `needs_env` check to also allocate a fresh function-scope env whenever a function has parameters without default expressions — preserving the params-vs-body split for default-param thunks via the `needs_lex_bridge` exception; (2) bridge the captured lex_env into the new activation when it's a declarative block scope, so closures inside the body can see enclosing let/const bindings. Phase 1 +8 pass, Phase 3 +95 pass, Phase 8 +23 pass (compared to pre-fix baseline; phases have ~20-test parallel-runner flakiness).
 
 - [ ] **B16** — Phase 4 Error Handling (86 fail, 94 CE): CE rate is very high relative to test count. Likely the compiler is incorrectly rejecting valid try/catch/finally patterns or error subclassing. Investigate specific CE failures.
 
