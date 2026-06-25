@@ -18,14 +18,26 @@ import duktape::heap;
 
 /// Shared typed array constructor.  `obj_class` determines the internal class
 /// (e.g. INT16ARRAY).  Creates an empty typed array with length=0.
-fn void builtin_typed_array_shared(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject* proto) {
+fn void builtin_typed_array_shared(BuiltinContext* ctx, hobject::ObjClass obj_class) {
     HObject*? raw = ctx.heap.alloc_object(obj_class);
     if (catch err = raw) {
         ctx.result.set_undefined();
         return;
     }
     HObject* obj = raw;
-    obj.prototype = proto;
+    // Per-ctor prototype inherits from the shared %TypedArray%.prototype.
+    HObject* instance_proto = ctx.heap.typedarray_proto;
+    if (ctx.callee_obj != null) {
+        HString* prototype_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal? proto_tv = ctx.callee_obj.get_prop(prototype_key);
+        if (try ptv = proto_tv) {
+            if (ptv.is_object()) {
+                HObject* cp = (HObject*)ptv.get_heapptr();
+                if (cp != null) instance_proto = cp;
+            }
+        }
+    }
+    obj.prototype = instance_proto;
 
     // TypedArray instances have "length" = 0 (empty)
     HString* length_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
@@ -41,39 +53,39 @@ fn void builtin_typed_array_shared(BuiltinContext* ctx, hobject::ObjClass obj_cl
 // ============================================================================
 
 fn void builtin_int8array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.INT8ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.INT8ARRAY);
 }
 
 fn void builtin_uint8array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT8ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT8ARRAY);
 }
 
 fn void builtin_uint8clampedarray(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT8CLAMPEDARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT8CLAMPEDARRAY);
 }
 
 fn void builtin_int16array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.INT16ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.INT16ARRAY);
 }
 
 fn void builtin_uint16array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT16ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT16ARRAY);
 }
 
 fn void builtin_int32array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.INT32ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.INT32ARRAY);
 }
 
 fn void builtin_uint32array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT32ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.UINT32ARRAY);
 }
 
 fn void builtin_float32array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.FLOAT32ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.FLOAT32ARRAY);
 }
 
 fn void builtin_float64array(BuiltinContext* ctx) {
-    builtin_typed_array_shared(ctx, hobject::ObjClass.FLOAT64ARRAY, ctx.heap.typedarray_proto);
+    builtin_typed_array_shared(ctx, hobject::ObjClass.FLOAT64ARRAY);
 }
 
 // ============================================================================
@@ -103,10 +115,28 @@ fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
+    // Per ES6 §22.2, each TypedArray constructor has its own .prototype that
+    // inherits from the shared %TypedArray%.prototype. We set @@toStringTag on
+    // that per-ctor prototype so Object.prototype.toString.call(instance)
+    // returns "[object <Name>]" rather than "[object TypedArray]".
+    HObject*? ctor_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err_cp = ctor_proto_raw) return false;
+    HObject* ctor_proto = ctor_proto_raw;
+    ctor_proto.prototype = proto;
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        HString* tag_str = builtin_intern_string(heap, name);
+        if (tag_str != null) {
+            TVal tag_tv;
+            tag_tv.set_string(tag_str);
+            ctor_proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
     // Wire .prototype
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;
-    proto_tv.set_object(proto);
+    proto_tv.set_object(ctor_proto);
     PropFlags proto_pflags;
     proto_pflags.writable = false;
     proto_pflags.enumerable = false;

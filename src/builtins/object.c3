@@ -3428,6 +3428,39 @@ fn HString* builtin_to_property_key(BuiltinContext* ctx, TVal key_val) {
 
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
+    // ES6 §19.1.3.6 step 2: If Type(O) is not Object, the class name is derived
+    // from the value's type: Undefined → "Undefined", Null → "Null", Boolean → "Boolean",
+    // Number → "Number", String → "String", Symbol → "Symbol", BigInt → "BigInt".
+    if (this_val.is_undefined()) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Undefined]");
+        ctx.result.set_string(s);
+        return;
+    }
+    if (this_val.is_null()) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Null]");
+        ctx.result.set_string(s);
+        return;
+    }
+    if (this_val.is_boolean()) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Boolean]");
+        ctx.result.set_string(s);
+        return;
+    }
+    if (this_val.is_number() || this_val.is_fastint()) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Number]");
+        ctx.result.set_string(s);
+        return;
+    }
+    if (is_symbol_val(this_val)) {
+        HString* s = builtin_intern_string(ctx.heap, "[object Symbol]");
+        ctx.result.set_string(s);
+        return;
+    }
+    if (this_val.is_string()) {
+        HString* s = builtin_intern_string(ctx.heap, "[object String]");
+        ctx.result.set_string(s);
+        return;
+    }
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         char[64] buf;
@@ -3435,6 +3468,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         switch (obj.get_class()) {
             case hobject::ObjClass.ARRAY:     class_name = "Array"; break;
             case hobject::ObjClass.FUNCTION:  class_name = "Function"; break;
+            case hobject::ObjClass.ARGUMENTS: class_name = "Arguments"; break;
             case hobject::ObjClass.BOOLEAN:   class_name = "Boolean"; break;
             case hobject::ObjClass.NUMBER:    class_name = "Number"; break;
             case hobject::ObjClass.STRING:    class_name = "String"; break;
@@ -3495,14 +3529,6 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             ctx.result.set_string(s);
             return;
         }
-    } else if (this_val.is_undefined()) {
-        HString* s = builtin_intern_string(ctx.heap, "[object Undefined]");
-        ctx.result.set_string(s);
-        return;
-    } else if (this_val.is_null()) {
-        HString* s = builtin_intern_string(ctx.heap, "[object Null]");
-        ctx.result.set_string(s);
-        return;
     }
     HString* s = builtin_intern_string(ctx.heap, "[object Object]");
     ctx.result.set_string(s);

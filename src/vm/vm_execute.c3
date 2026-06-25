@@ -4901,6 +4901,7 @@ fn TVal? Vm.run(Vm* vm) {
                     ctx.re_nargs = 0;
                     ctx.global_env = vm.global_env;
                     ctx.should_throw = false;
+                    ctx.callee_obj = super_hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
                 }
                 break;
@@ -5262,6 +5263,7 @@ fn TVal? Vm.run(Vm* vm) {
                     ctx.re_nargs = 0;
                     ctx.global_env = vm.global_env;
                     ctx.should_throw = false;
+                    ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, act, &curr_pc, &needs_restart)) {
