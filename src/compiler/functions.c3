@@ -480,6 +480,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 // Consume function name
                 Token? skip_name = self.lexer.next_token();
                 if (catch _err_skip2 = skip_name) continue;
+                if (skip_name.type != TokenType.IDENTIFIER) {
+                    // Anonymous function expression — push the token back so
+                    // skip_function_body sees the full `function (...) { ... }`.
+                    // For example in `(function() { ... }())`, the `(` is the
+                    // function's param-open; we must leave it for the skipper.
+                    self.lexer.pushback(skip_name);
+                }
                 // skip_function_body expects lexer past the name — skip (params) { body }
                 self.skip_function_body();
                 continue;
@@ -638,6 +645,16 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
 
     uint brace_depth = 0;
 
+    // Track the previous top-level token to disambiguate
+    // function declarations from function expressions in expressions like
+    // `var x = function name() { ... }`.  A `function` keyword at
+    // brace_depth 0 is a declaration only when preceded by a statement
+    // terminator (`;`, `{`, `}`, or start-of-file).  After an operator
+    // (`=`, `(`, `,`, `:`, `?`, etc.) the `function` is an expression
+    // and must be skipped.
+    TokenType prev_toplevel = TokenType.EOF_TOKEN;
+    bool has_prev = false;
+
     while (true) {
         // Save lexer state before consuming this token (so we can restore
         // and re-consume it for function compilation).
@@ -663,6 +680,10 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
         }
         if (tt == TokenType.RBRACE) {
             brace_depth--;
+            if (brace_depth == 0) {
+                prev_toplevel = TokenType.RBRACE;
+                has_prev = true;
+            }
             continue;
         }
 
@@ -688,7 +709,31 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             }
         }
 
+        if (brace_depth == 0 && tt == TokenType.SEMICOLON) {
+            prev_toplevel = TokenType.SEMICOLON;
+            has_prev = true;
+            continue;
+        }
+
         if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+            // `function` at brace_depth 0 is a declaration only when it
+            // starts a statement.  In expression position (after `=`,
+            // `(`, `,`, `:`, `?`, `=>`, etc.) it must be skipped to
+            // avoid double-compilation by the statement parser.
+            bool in_stmt_pos = !has_prev
+                || prev_toplevel == TokenType.SEMICOLON
+                || prev_toplevel == TokenType.RBRACE
+                || prev_toplevel == TokenType.LBRACE
+                || prev_toplevel == TokenType.EOF_TOKEN;
+            if (!in_stmt_pos) {
+                // Expression position — skip the entire function expression
+                // body so we don't compile it here.  The statement parser
+                // will see the `function` token on the second pass.
+                self.skip_function_body();
+                prev_toplevel = TokenType.FUNCTION;
+                has_prev = true;
+                continue;
+            }
             bool hoist_is_async = self.is_async;
             self.is_async = false;
             // Check for generator star
@@ -766,6 +811,20 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
 
             // Lexer is now past the function body. Continue scanning.
+            prev_toplevel = TokenType.FUNCTION;
+            has_prev = true;
+            continue;
+        }
+
+        // For other top-level tokens, record the operator so the next
+        // `function` (if any) is recognized as an expression.  Any token
+        // that is not a statement terminator (`;`, `{`, `}`) puts the
+        // following `function` in expression position.
+        if (brace_depth == 0 && tt != TokenType.SEMICOLON
+            && tt != TokenType.LBRACE && tt != TokenType.RBRACE
+            && tt != TokenType.EOF_TOKEN) {
+            prev_toplevel = tt;
+            has_prev = true;
         }
     }
 

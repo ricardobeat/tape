@@ -1059,6 +1059,9 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     //   - var bindings captured by a nested closure
     //   - arguments object
     //   - direct eval
+    //   - default-valued parameters (parameter expressions need a fresh env
+    //     because of ES5 §10.4.1.2: a separate env for params so closures
+    //     in default expressions don't see body var declarations)
     // Functions with var declarations but no closures, eval, or arguments
     // can reuse the parent's env directly.
     bool has_params_needing_env = self.has_rest || self.default_count > 0;
