@@ -1604,6 +1604,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
             }
             return num_reg;
 
+        case TokenType.BIGINT:
+            self.last_was_getvar = false;
+            Token bi_tok = self.advance()!;
+            uint bi_idx = self.add_bigint_constant(bi_tok.str_value);
+            ushort bi_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)bi_reg, bi_idx));
+            return bi_reg;
+
         case TokenType.STRING:
             Token str_tok = self.advance()!;
 

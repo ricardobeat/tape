@@ -39,6 +39,7 @@ enum TokenType : ushort {
     // Literals
     EOF_TOKEN,
     NUMBER,
+    BIGINT,
     STRING,
     REGEXP,
     TEMPLATE,
@@ -215,6 +216,7 @@ fn char[] token_type_name(TokenType tt) {
     switch (tt) {
         case TokenType.EOF_TOKEN:       return "<end of input>";
         case TokenType.NUMBER:          return "<number>";
+        case TokenType.BIGINT:          return "<bigint>";
         case TokenType.STRING:          return "<string>";
         case TokenType.REGEXP:          return "<regexp>";
         case TokenType.TEMPLATE:        return "<template>";
@@ -682,6 +684,14 @@ fn Token? Lexer.scan_number(&self) {
                 prev_was_digit = true;
             }
             if (!prev_was_digit) return LEX_ERROR~;
+            // Check for BigInt suffix 'n'
+            if (!self.at_end() && self.peek_char() == 'n') {
+                self.pos++;
+                self.col++;
+                Token tok = make_token(TokenType.BIGINT, start_line, start_col);
+                tok.str_value = self.source[start_pos..self.pos-2]; // exclude 'n'
+                return tok;
+            }
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -712,6 +722,14 @@ fn Token? Lexer.scan_number(&self) {
                 prev_was_digit = true;
             }
             if (!prev_was_digit) return LEX_ERROR~;
+            // Check for BigInt suffix 'n'
+            if (!self.at_end() && self.peek_char() == 'n') {
+                self.pos++;
+                self.col++;
+                Token tok = make_token(TokenType.BIGINT, start_line, start_col);
+                tok.str_value = self.source[start_pos..self.pos-2];
+                return tok;
+            }
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -742,6 +760,14 @@ fn Token? Lexer.scan_number(&self) {
                 prev_was_digit = true;
             }
             if (!prev_was_digit) return LEX_ERROR~;
+            // Check for BigInt suffix 'n'
+            if (!self.at_end() && self.peek_char() == 'n') {
+                self.pos++;
+                self.col++;
+                Token tok = make_token(TokenType.BIGINT, start_line, start_col);
+                tok.str_value = self.source[start_pos..self.pos-2];
+                return tok;
+            }
             Token tok = make_token(TokenType.NUMBER, start_line, start_col);
             tok.num_value = value;
             tok.str_value = self.source[start_pos..self.pos-1];
@@ -850,6 +876,22 @@ fn Token? Lexer.scan_number(&self) {
             // Fallback: should never happen for valid JS number literals
             value = 0.0;
         }
+    }
+
+    // Check for BigInt suffix 'n'
+    if (!self.at_end() && self.peek_char() == 'n') {
+        // BigInt cannot have decimal point or exponent
+        bool has_dot_or_exp = false;
+        for (usz si = start_pos; si < self.pos; si++) {
+            char sc = self.source[si];
+            if (sc == '.' || sc == 'e' || sc == 'E') { has_dot_or_exp = true; break; }
+        }
+        if (has_dot_or_exp) return LEX_ERROR~;
+        self.pos++;
+        self.col++;
+        Token tok = make_token(TokenType.BIGINT, start_line, start_col);
+        tok.str_value = self.source[start_pos..self.pos-2]; // exclude 'n'
+        return tok;
     }
 
     Token tok = make_token(TokenType.NUMBER, start_line, start_col);
