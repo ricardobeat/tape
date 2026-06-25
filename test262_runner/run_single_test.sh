@@ -2,6 +2,7 @@
 # Helper: run a single test262 test file and print result.
 # Usage: run_single_test.sh <test_file_path>
 set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 test_file="$1"
 test_name="$(basename "$(dirname "$test_file")")/$(basename "$test_file" .js)"
 vm="$SCRIPT_DIR/../out/test_vm"
