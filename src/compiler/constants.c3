@@ -144,3 +144,51 @@ fn uint CompilerContext.add_number_constant(&self, double val) {
     tv.set_number(val);
     return self.add_constant(tv);
 }
+
+/// Add a BigInt constant (interned digit string) and return its index.
+fn uint CompilerContext.add_bigint_constant(&self, char[] digits) {
+    Heap* hp = (Heap*)self.heap;
+    uint hash = hp.hash_string(digits);
+
+    // Intern the digit string
+    HString* hstr = hp.str_table_lookup(digits, hash);
+    if (hstr == null) {
+        hstr = hstring::hstring_alloc(self.heap, digits, hash) ?? null;
+        if (hstr != null) {
+            hp.str_table_insert(hstr);
+            ((types::HeapHeader*)hstr).incref();
+            hstr.flags.is_interned = true;
+        }
+    }
+
+    // Wrap as BIGINT TVal (set_bigint does incref)
+    TVal tv;
+    if (hstr != null) {
+        tv.set_bigint(hstr);
+    } else {
+        tv.set_bigint(null);
+    }
+
+    ulong val_bits = tv.get_raw_bits();
+
+    // Check if this bigint (by pointer) is already in the constant pool
+    uint found_idx = self.lookup_constant_hash(val_bits);
+    if (found_idx < self.const_count) {
+        // Release tv's reference; pool already has one
+        if (hstr != null) { hp.decref((types::HeapHeader*)hstr); }
+        return found_idx;
+    }
+
+    self.ensure_const_cap();
+    if (self.const_count >= self.const_cap) {
+        if (hstr != null) { hp.decref((types::HeapHeader*)hstr); }
+        return self.const_count;
+    }
+    uint idx = self.const_count;
+    self.constants[idx] = tv;
+    self.insert_constant_hash(val_bits, idx);
+    // Pool entry takes over tv's reference; give it one more for the pool slot
+    if (hstr != null) { ((types::HeapHeader*)hstr).incref(); }
+    self.const_count++;
+    return idx;
+}

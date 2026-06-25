@@ -1,0 +1,10 @@
+"use strict";
+var a = 0n;
+var b = 1n;
+var c = 9007199254740993n;
+var d = 0xFFn;
+var e = 0b1010n;
+var f = 0o77n;
+console.log(typeof a);
+console.log(typeof b);
+console.log(typeof c);

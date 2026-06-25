@@ -92,6 +92,8 @@ enum TValTag : char {
     POINTER,
     /// Lightweight function pointer (no heap allocation).
     LIGHTFUNC,
+    /// Pointer to a heap-allocated BigInt (interned HString digit string).
+    BIGINT,
 }
 
 /// FASTINT uses 48-bit signed integer range (fits in NaN-box payload).
@@ -118,6 +120,7 @@ const ulong NANBOX_PAYLOAD_MASK = 0x0000FFFFFFFFFFFF;  // bits 47-0
 /// stored in bits 63-48, matching Duktape's encoding. All doubles must
 /// have bits 63-48 <= 0xFFF0 (achieved by NaN normalization in set_number).
 const ulong TAG_FASTINT    = 0xFFF1;  // embed: 48-bit signed integer
+const ulong TAG_BIGINT     = 0xFFF2;  // embed: HString* ptr (interned digit string)
 const ulong TAG_UNDEFINED  = 0xFFF3;  // embed: nothing
 const ulong TAG_NULL_VAL   = 0xFFF4;  // embed: nothing
 const ulong TAG_BOOLEAN    = 0xFFF5;  // embed: 0 or 1
@@ -181,6 +184,7 @@ $if USE_NANBOX:
         case TAG_BUFFER:     return BUFFER;
         case TAG_POINTER:    return POINTER;
         case TAG_LIGHTFUNC:  return LIGHTFUNC;
+        case TAG_BIGINT:     return BIGINT;
         default:             return UNDEFINED;
     }
 $else
@@ -281,6 +285,14 @@ $else
 $endif
 }
 
+macro bool TVal.is_bigint(&self) {
+$if USE_NANBOX:
+    return nanbox_get_tag(self.bits) == TAG_BIGINT;
+$else
+    return self.tag == BIGINT;
+$endif
+}
+
 macro bool TVal.is_pointer(&self) {
 $if USE_NANBOX:
     return nanbox_get_tag(self.bits) == TAG_POINTER;
@@ -318,9 +330,9 @@ $endif
 macro bool TVal.is_heap_allocated(&self) {
 $if USE_NANBOX:
     ulong tag = self.bits >> 48;
-    return tag >= TAG_STRING && tag <= TAG_BUFFER;
+    return (tag >= TAG_STRING && tag <= TAG_BUFFER) || tag == TAG_BIGINT;
 $else
-    return self.tag == STRING || self.tag == OBJECT || self.tag == BUFFER;
+    return self.tag == STRING || self.tag == OBJECT || self.tag == BUFFER || self.tag == BIGINT;
 $endif
 }
 
@@ -478,6 +490,16 @@ $else
     self.tag     = LIGHTFUNC;
     self.pointer = ptr;
 $endif
+}
+
+macro void TVal.set_bigint(&self, void* ptr) {
+$if USE_NANBOX:
+    self.bits = nanbox_encode_tagged(TAG_BIGINT, (usz)ptr);
+$else
+    self.tag     = BIGINT;
+    self.pointer = ptr;
+$endif
+    if (ptr != null) { ((HeapHeader*)ptr).incref(); }
 }
 
 // ---------------------------------------------------------------------------

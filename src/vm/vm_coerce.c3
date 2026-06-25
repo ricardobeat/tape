@@ -272,6 +272,7 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
             }
             return (HString*)h.strs[heap::BuiltinStr.OBJECT];
         case LIGHTFUNC: return (HString*)h.strs[heap::BuiltinStr.FUNCTION];
+        case BIGINT:    return (HString*)h.strs[heap::BuiltinStr.BIGINT];
         default:        return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
     }
 }
