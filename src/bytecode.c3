@@ -394,6 +394,19 @@ enum Opcode : char {
     /// A-only format: A=target_reg, B=0, C=0.
     DEC,
 
+    /// Write a value into the call-argument area at a runtime-computed slot.
+    /// Used for non-spread arguments that follow a spread — their position
+    /// depends on the runtime spread count, which is not known at compile time.
+    /// ABC format: A=base_reg (first_arg register), B=count_reg (running total),
+    /// C=src_reg (value to write). Effect: regs[A + regs[B]] = regs[C];
+    /// then regs[B]++.
+    PUTARG,
+
+    /// `new ctor(...args)` with a spread — same as NEW_OBJ but reads the
+    /// runtime argument count from a register (like CALL_S). ABC format:
+    /// A=result_reg, B=ctor_reg, C=nargs_reg.
+    NEW_OBJ_S,
+
     // ---- Variable arithmetic fusion ---------------------------------------
 
     /// `variable[constants[BC]] = variable[constants[BC]] + 1` — fused
@@ -527,6 +540,8 @@ case PUTLEX:     return A_BC;
         case POP_LEX:    return NONE;
         case INC:        return NONE;
         case DEC:        return NONE;
+        case PUTARG:     return ABC;
+        case NEW_OBJ_S:  return ABC;
         case INC_VAR:    return A_BC;
         case DEC_VAR:    return A_BC;
         case GETPROPC2:  return ABC;
@@ -1123,6 +1138,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.AWAIT.ordinal]        = "AWAIT",
     [Opcode.INC.ordinal]          = "INC",
     [Opcode.DEC.ordinal]          = "DEC",
+    [Opcode.PUTARG.ordinal]       = "PUTARG",
+    [Opcode.NEW_OBJ_S.ordinal]    = "NEW_OBJ_S",
     [Opcode.INC_VAR.ordinal]      = "INC_VAR",
     [Opcode.DEC_VAR.ordinal]      = "DEC_VAR",
     [Opcode.JMP_NLT.ordinal]      = "JMP_NLT",

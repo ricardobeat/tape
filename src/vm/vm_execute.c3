@@ -928,6 +928,30 @@ fn TVal? Vm.run(Vm* vm) {
             }
             break;
 
+        // Write a value into the call-argument area at a runtime-computed slot.
+        // ABC format: A=base_reg, B=count_reg, C=src_reg.
+        // Effect: regs[A + regs[B]] = regs[C]; regs[B]++.
+        // Used for non-spread arguments that follow a spread, where the slot
+        // index depends on the runtime spread count.
+        case Opcode.PUTARG: {
+            uint base_reg = insn.a;
+            uint count_reg = insn.b;
+            uint src_reg = insn.c;
+            TVal* count_slot = regs_base + count_reg;
+            long idx;
+            if (count_slot.is_fastint()) {
+                idx = count_slot.get_fastint();
+            } else if (count_slot.is_number()) {
+                idx = (long)count_slot.get_number();
+            } else {
+                idx = 0;
+            }
+            TVal* dest = regs_base + base_reg + (uint)idx;
+            *dest = regs_base[src_reg];
+            count_slot.set_fastint(idx + 1);
+            break;
+        }
+
         // === VARIABLE ARITHMETIC FUSION ===
         // Fused GETVAR + INC/PUTVAR.  Reads a variable by name, increments
         // or decrements it, and writes it back in a single dispatch.
@@ -5029,11 +5053,25 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
 
-        case Opcode.NEW_OBJ: {
-            // Compiler convention: A=result_reg, B=callee_reg, C=nargs
+        case Opcode.NEW_OBJ:
+        case Opcode.NEW_OBJ_S: {
+            // Compiler convention: A=result_reg, B=callee_reg, C=nargs (NEW_OBJ)
+            // or C=nargs_reg (NEW_OBJ_S — reads nargs at runtime).
             uint result_reg = insn.a;
             uint callee_reg = insn.b;
-            uint nargs = insn.c;
+            uint nargs;
+            if (op == Opcode.NEW_OBJ_S) {
+                TVal* nargs_slot = regs_base + insn.c;
+                if (nargs_slot.is_fastint()) {
+                    nargs = (uint)nargs_slot.get_fastint();
+                } else if (nargs_slot.is_number()) {
+                    nargs = (uint)nargs_slot.get_number();
+                } else {
+                    nargs = 0;
+                }
+            } else {
+                nargs = insn.c;
+            }
 
             TVal* func_slot = regs_base + callee_reg;
             TVal func_val = *func_slot;

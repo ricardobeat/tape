@@ -1054,16 +1054,26 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
                 }
             } else {
                 ushort arg_reg = self.assignment_expr()!;
-                // Ensure the argument is in the expected consecutive register
-                ushort expected = first_arg + arg_count;
-                if (arg_reg != expected) {
-                    self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                if (has_spread) {
+                    // Non-spread arg following a spread — destination
+                    // slot depends on the runtime spread count held in
+                    // total_count_reg. The new PUTARG opcode writes the
+                    // value at regs[first_arg + total_count] and
+                    // increments total_count.
+                    self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
                     self.free_reg(arg_reg);
-                    if (self.next_reg <= expected) {
-                        self.next_reg = expected + 1;
+                } else {
+                    // Ensure the argument is in the expected consecutive register
+                    ushort expected = first_arg + arg_count;
+                    if (arg_reg != expected) {
+                        self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                        self.free_reg(arg_reg);
+                        if (self.next_reg <= expected) {
+                            self.next_reg = expected + 1;
+                        }
                     }
+                    arg_count++;
                 }
-                arg_count++;
             }
 
             if (!self.match(TokenType.COMMA)) {
@@ -1298,23 +1308,78 @@ fn ushort? CompilerContext.new_expr(&self) {
     // Parse the constructor (could be member access)
     ushort ctor_reg = self.member_expr()!;
 
+    // Per ES2023 §13.3.1.1 (EvaluateNew): GetValue(constructor) happens
+    // BEFORE argument evaluation. If the constructor is a local var and
+    // an argument expression assigns to that same var, the assignment
+    // would clobber our constructor register. Move the constructor to
+    // a fresh register that is guaranteed not to alias any local var slot.
+    ushort safe_ctor_reg = self.alloc_reg();
+    if (ctor_reg != safe_ctor_reg) {
+        self.emit_abc(Opcode.LDREG, (uint)safe_ctor_reg, (uint)ctor_reg, 0);
+        // The original ctor_reg can now be reused for arg layout.
+        ctor_reg = safe_ctor_reg;
+    }
+    self.free_reg(safe_ctor_reg);  // safe_ctor_reg stays allocated below
+
     // Args start right after constructor (same convention as emit_call)
     ushort first_arg = ctor_reg + 2;
     if (self.next_reg < first_arg) {
         self.next_reg = first_arg;
     }
     ushort arg_count = 0;
+    bool has_spread = false;
+    ushort total_count_reg = MAX_REGISTERS;
+    ushort spread_count_reg = MAX_REGISTERS;
 
     if (self.match(TokenType.LPAREN)) {
         if (!self.check(TokenType.RPAREN)) {
             for (;;) {
-                ushort arg_reg = self.assignment_expr()!;
-                ushort expected = first_arg + arg_count;
-                if (arg_reg != expected) {
-                    self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
-                    self.free_reg(arg_reg);
+                if (self.match(TokenType.ELLIPSIS)) {
+                    // Spread argument inside `new ...(...)`.
+                    // SPREAD_ARG writes spread elements into consecutive
+                    // destination slots starting at first_arg + arg_count,
+                    // and writes the spread count into spread_count_reg.
+                    // ADD then folds it into total_count_reg.
+                    ushort dest_start = first_arg + arg_count;
+                    if (self.next_reg <= dest_start + 1) {
+                        self.next_reg = dest_start + 2;
+                    }
+                    ushort spread_reg = self.assignment_expr()!;
+                    if (spread_reg >= dest_start && spread_reg <= dest_start + 10) {
+                        ushort safe_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
+                        self.free_reg(spread_reg);
+                        spread_reg = safe_reg;
+                    }
+                    if (!has_spread) {
+                        has_spread = true;
+                        total_count_reg = self.alloc_reg();
+                        spread_count_reg = self.alloc_reg();
+                        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                    }
+                    self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                    self.free_reg(spread_reg);
+                    self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
+                    if (self.next_reg <= dest_start + 1) {
+                        self.next_reg = dest_start + 2;
+                    }
+                } else {
+                    ushort arg_reg = self.assignment_expr()!;
+                    if (has_spread) {
+                        self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                        self.free_reg(arg_reg);
+                    } else {
+                        ushort expected = first_arg + arg_count;
+                        if (arg_reg != expected) {
+                            self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                            self.free_reg(arg_reg);
+                            if (self.next_reg <= expected) {
+                                self.next_reg = expected + 1;
+                            }
+                        }
+                        arg_count++;
+                    }
                 }
-                arg_count++;
 
                 if (!self.match(TokenType.COMMA)) {
                     break;
@@ -1328,8 +1393,13 @@ fn ushort? CompilerContext.new_expr(&self) {
         self.expect(TokenType.RPAREN)!;
     }
 
-    // Emit NEW_OBJ: reuse ctor_reg as result (ctor consumed by new)
-    self.emit_abc(Opcode.NEW_OBJ, (uint)ctor_reg, (uint)ctor_reg, (uint)arg_count);
+    // Emit NEW_OBJ or NEW_OBJ_S (spread variant).
+    if (has_spread) {
+        // NEW_OBJ_S: A=result_reg, B=ctor_reg, C=total_count_reg.
+        self.emit_abc(Opcode.NEW_OBJ_S, (uint)ctor_reg, (uint)ctor_reg, (uint)total_count_reg);
+    } else {
+        self.emit_abc(Opcode.NEW_OBJ, (uint)ctor_reg, (uint)ctor_reg, (uint)arg_count);
+    }
 
     self.free_regs_to(ctor_reg);
     self.next_reg = ctor_reg + 1;
