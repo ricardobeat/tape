@@ -2272,10 +2272,12 @@ fn void arr_throw_type_error(BuiltinContext* ctx, char[] msg) {
 /// Helper: check if numeric key exists on object (ES5 §15.4.5.1 step 4 "k in O").
 /// Uses get_prop_or_accessor_proto to handle accessor properties.
 fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
-    // Fast path: dense array storage
-    if (obj.get_class() == hobject::ObjClass.ARRAY) {
+    // Fast path: dense array storage (also used by the arguments object,
+    // which stores its indexed values in array_part rather than as named props)
+    if (obj.get_class() == hobject::ObjClass.ARRAY
+        || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
         if (try v = obj.get_array_idx(key)) { return true; }
-        // Fall through: element may be stored as a named property (sparse or pre-dense)
+        // Fall through: element may also be stored as a named property (sparse)
     }
     // STRING exotic: integer indices [0, char_length) are own properties served lazily
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
@@ -2418,8 +2420,10 @@ fn bool arr_get_elem_vm(HObject* obj, uint key, Heap* heap, void* vm_ptr, TVal* 
         return false;
     }
 
-    // Fast path: dense array storage (covers the vast majority of cases)
-    if (obj.get_class() == hobject::ObjClass.ARRAY) {
+    // Fast path: dense array storage (also used by the arguments object,
+    // which stores its indexed values in array_part rather than as named props)
+    if (obj.get_class() == hobject::ObjClass.ARRAY
+        || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
         if (try v = obj.get_array_idx(key)) {
             *out = v;
             return true;
@@ -2532,18 +2536,24 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     arr.prototype = ctx.heap.array_proto;
     uint aj = 0;
     for (uint k = 0; k < len; k++) {
-        if (arr_has_prop(o, k, ctx.heap)) {
-            TVal v;
-            if (arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
-                TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
-                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                HString* akey = ctx.heap.int_to_hstring((long)aj);
-                if (akey != null) {
-                    arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
-                }
-                aj++;
+        // ES5 §15.4.4.19 step 8.c: invoke the callback for every index k in
+        // [0, len) — for holes in sparse inputs, pass undefined as the value.
+        TVal v;
+        bool has = arr_has_prop(o, k, ctx.heap);
+        if (has) {
+            if (!arr_get_elem_vm(o, k, ctx.heap, ctx.vm, &v)) {
+                v.set_undefined();
             }
+        } else {
+            v.set_undefined();
         }
+        TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        HString* akey = ctx.heap.int_to_hstring((long)aj);
+        if (akey != null) {
+            arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
+        }
+        aj++;
     }
     HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv; len_tv.set_fastint((long)aj);

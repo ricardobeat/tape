@@ -1171,7 +1171,9 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     bool is_dense = (arr.get_class() == ObjClass.ARRAY || arr.get_class() == ObjClass.ARGUMENTS)
                     && arr.array_part() != null;
 
-    // Always read length from the property (spec-correct)
+    // Always read length from the property when possible, otherwise fall back
+    // to the cached array_length pointer (used by arrays whose length is in
+    // array_part rather than the named prop table, e.g. result of slice()).
     HString* len_key = builtin_intern_string(jctx.heap, "length");
     TVal? len_prop = arr.get_prop_proto(len_key);
     uint len = 0;
@@ -1181,6 +1183,11 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         } else if (l.is_number()) {
             len = (uint)(long)l.get_number();
         }
+        // Non-numeric length is not expected for arrays; if it occurs, len stays 0
+    } else if (arr.get_class() == ObjClass.ARRAY) {
+        // Cached array_length pointer (set by array_set_length for arrays
+        // whose length lives in array_part, not the named prop table).
+        len = (uint)*arr.array_len_ptr();
     }
 
     if (len == 0) {
