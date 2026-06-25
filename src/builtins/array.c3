@@ -2277,6 +2277,11 @@ fn bool arr_has_prop(HObject* obj, uint key, Heap* heap) {
         if (try v = obj.get_array_idx(key)) { return true; }
         // Fall through: element may be stored as a named property (sparse or pre-dense)
     }
+    // STRING exotic: integer indices [0, char_length) are own properties served lazily
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        return prim != null && (long)key < prim.char_length();
+    }
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
     // Check own properties first (handles accessor properties set via defineProperty)
@@ -2316,6 +2321,49 @@ fn TVal arr_invoke_getter(HObject* obj, TVal getter_fn, Heap* heap, void* vm_ptr
 /// Helper: get value at numeric index, returns false if not present.
 /// Handles accessor properties by invoking the getter.
 fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
+    // STRING exotic: serve indexed character properties lazily
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null && (long)key < prim.char_length()) {
+            char[] data = prim.get_data();
+            // Build a single-char HString (UTF-8 byte slice of one char)
+            // For simplicity, allocate a 1-byte string for ASCII, otherwise
+            // determine char width from the leading byte.
+            usz char_start = 0;
+            for (usz i = 0; i < prim.blen; i++) {
+                if (i == (usz)key) { char_start = i; break; }
+                // Skip continuation bytes (0b10xxxxxx)
+                if ((data[i] & 0xC0) != 0x80) {
+                    if (char_start + 1 == (usz)key) {
+                        // next char starts at i+1
+                    }
+                    char_start++;
+                }
+            }
+            // Simpler approach: use char_at if available, else use charCodeAt
+            // For now, return substring of one char by computing the byte range.
+            usz byte_start = 0;
+            usz byte_end = prim.blen;
+            usz ch_idx = 0;
+            for (usz i = 0; i < prim.blen && ch_idx <= (usz)key; i++) {
+                if (ch_idx == (usz)key) { byte_start = i; }
+                if ((data[i] & 0xC0) != 0x80) { ch_idx++; }
+                if (ch_idx > (usz)key) { byte_end = i + 1; break; }
+            }
+            if (byte_start < byte_end) {
+                char[8] one;
+                usz copy_len = byte_end - byte_start;
+                if (copy_len >= one.len) copy_len = one.len - 1;
+                for (usz j = 0; j < copy_len; j++) { one[j] = data[byte_start + j]; }
+                one[copy_len] = 0;
+                HString*? ch_raw = builtin_intern_string(heap, one[:copy_len]);
+                if (try ch = ch_raw) { out.set_string(ch); return true; }
+            }
+            return false;
+        }
+        return false;
+    }
+
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
 
@@ -2359,6 +2407,33 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
 /// Helper: get value at numeric index with VM context (for getter invocation).
 /// Handles accessor properties by invoking the getter via VM.
 fn bool arr_get_elem_vm(HObject* obj, uint key, Heap* heap, void* vm_ptr, TVal* out) {
+    // STRING exotic: serve indexed character properties lazily
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null && (long)key < prim.char_length()) {
+            char[] data = prim.get_data();
+            usz byte_start = 0;
+            usz byte_end = prim.blen;
+            usz ch_idx = 0;
+            for (usz i = 0; i < prim.blen && ch_idx <= (usz)key; i++) {
+                if (ch_idx == (usz)key) { byte_start = i; }
+                if ((data[i] & 0xC0) != 0x80) { ch_idx++; }
+                if (ch_idx > (usz)key) { byte_end = i + 1; break; }
+            }
+            if (byte_start < byte_end) {
+                char[8] one;
+                usz copy_len = byte_end - byte_start;
+                if (copy_len >= one.len) copy_len = one.len - 1;
+                for (usz j = 0; j < copy_len; j++) { one[j] = data[byte_start + j]; }
+                one[copy_len] = 0;
+                HString*? ch_raw = builtin_intern_string(heap, one[:copy_len]);
+                if (try ch = ch_raw) { out.set_string(ch); return true; }
+            }
+            return false;
+        }
+        return false;
+    }
+
     // Fast path: dense array storage (covers the vast majority of cases)
     if (obj.get_class() == hobject::ObjClass.ARRAY) {
         if (try v = obj.get_array_idx(key)) {
