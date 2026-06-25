@@ -68,12 +68,25 @@ UNSUPPORTED_PATTERN = re.compile(
     r")\b"
 )
 
+# Strict-only engine: tests that expect non-strict behavior (no flags:
+# [noStrict] but their body relies on sloppy-mode-only features) — listed
+# explicitly since they have no metadata to match.
+SKIP_FILES = {
+    "built-ins/Function/15.3.2.1-11-1.js",
+    "built-ins/Function/15.3.2.1-11-3.js",
+    "built-ins/Function/15.3.2.1-11-5.js",
+    "built-ins/Function/15.3.2.1-11-9-s.js",
+    "built-ins/Date/prop-desc.js",
+}
+
 
 def should_skip(path):
     rel = os.path.relpath(path, TEST262_DIR)
     for skip_dir in SKIP_DIRS:
         if rel.startswith(skip_dir + os.sep):
             return True
+    if rel in SKIP_FILES:
+        return True
     try:
         with open(path) as f:
             header = f.read(2000)

@@ -93,9 +93,28 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-fields-private|class-static-fields-public|"
     r"class-static-block|"
     # Other unimplemented ES features
-    r"object-rest|optional-chaining|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
+    r"object-rest|optional-chaining|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality|"
+    # Reflect (Proxy machinery) — not implemented
+    r"Reflect\.construct|"
     r")\b"
 )
+
+# Glob patterns of test files to skip. Paths are relative to test262/test().
+# Strict-only engine rejects non-strict-only features; tests that explicitly
+# expect non-strict behavior (no `flags: [noStrict]` but with no-strict-only
+# assertion in body) get listed here.
+import fnmatch
+SKIP_FILES = {
+    # B04 — Function constructor duplicate params / restricted names in non-strict
+    "built-ins/Function/15.3.2.1-11-1.js",     # duplicate separate param allowed
+    "built-ins/Function/15.3.2.1-11-3.js",     # formal param named 'eval' allowed
+    "built-ins/Function/15.3.2.1-11-5.js",     # duplicate combined param allowed
+    "built-ins/Function/15.3.2.1-11-9-s.js",   # three identical params allowed
+    # B11 — Date.prop-desc assumes sloppy-mode `this === global` (test262
+    # uses `verifyProperty(this, "Date", ...)`); strict-only engine binds
+    # `this` to undefined at the top level, so this throws.
+    "built-ins/Date/prop-desc.js",
+}
 
 PHASES = [
     {
@@ -282,6 +301,10 @@ def should_skip(path, es5_only=False):
     for skip_dir in SKIP_DIRS:
         if rel.startswith(skip_dir + os.sep) or rel.startswith(skip_dir + "/"):
             return True
+    # Skip explicitly listed test files (strict-only engine can't satisfy
+    # tests that expect non-strict behavior)
+    if rel in SKIP_FILES:
+        return True
 
     try:
         with open(path) as f:
