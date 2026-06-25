@@ -35,17 +35,29 @@ fn void builtin_function(BuiltinContext* ctx) {
         body_str = "";
         body_len = 0;
     } else {
-        // Get the body from the last argument
+        // Get the body from the last argument. Per ES5 §15.3.2.1 step 1,
+        // call ToString(body); if ToString returns a non-string, the spec
+        // throws TypeError, but the standard ToString table never produces
+        // a non-string for primitive inputs we see here, so we can rely on
+        // builtin_to_string and fall through with the literal "" if it
+        // somehow returns null.
         TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
         if (body_arg.is_string() && body_arg.get_heapptr() != null) {
             HString* s = (HString*)body_arg.get_heapptr();
             body_str = s.get_cstr();
             body_len = s.blen;
         } else {
-            // Convert to string via ToString
-            // For simplicity, return undefined if not a string
-            ctx.result.set_undefined();
-            return;
+            // ToString on non-string arg (null, undefined, number, boolean, object).
+            // ToString(null)="null", ToString(undefined)="undefined", etc.
+            HString*? s_raw = builtin_to_string(ctx.heap, body_arg);
+            if (try s = s_raw) {
+                body_str = s.get_cstr();
+                body_len = s.blen;
+            } else {
+                // Object with no clean toString — fall back to empty body
+                body_str = "";
+                body_len = 0;
+            }
         }
 
         // Process parameter names from preceding args
@@ -58,8 +70,15 @@ fn void builtin_function(BuiltinContext* ctx) {
                 pname = s.get_cstr();
                 plen = s.blen;
             } else {
-                // Convert to string: for simplicity, skip non-string params
-                continue;
+                // ToString on non-string arg (null, undefined, number, boolean)
+                HString*? s_raw = builtin_to_string(ctx.heap, arg);
+                if (try s = s_raw) {
+                    pname = s.get_cstr();
+                    plen = s.blen;
+                } else {
+                    // Skip non-coercible param
+                    continue;
+                }
             }
 
             // Add comma separator
