@@ -2326,22 +2326,6 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null && (long)key < prim.char_length()) {
             char[] data = prim.get_data();
-            // Build a single-char HString (UTF-8 byte slice of one char)
-            // For simplicity, allocate a 1-byte string for ASCII, otherwise
-            // determine char width from the leading byte.
-            usz char_start = 0;
-            for (usz i = 0; i < prim.blen; i++) {
-                if (i == (usz)key) { char_start = i; break; }
-                // Skip continuation bytes (0b10xxxxxx)
-                if ((data[i] & 0xC0) != 0x80) {
-                    if (char_start + 1 == (usz)key) {
-                        // next char starts at i+1
-                    }
-                    char_start++;
-                }
-            }
-            // Simpler approach: use char_at if available, else use charCodeAt
-            // For now, return substring of one char by computing the byte range.
             usz byte_start = 0;
             usz byte_end = prim.blen;
             usz ch_idx = 0;

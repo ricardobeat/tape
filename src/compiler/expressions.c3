@@ -1319,7 +1319,7 @@ fn ushort? CompilerContext.new_expr(&self) {
         // The original ctor_reg can now be reused for arg layout.
         ctor_reg = safe_ctor_reg;
     }
-    self.free_reg(safe_ctor_reg);  // safe_ctor_reg stays allocated below
+    // safe_ctor_reg stays allocated; free_regs_to(ctor_reg) at the end releases it.
 
     // Args start right after constructor (same convention as emit_call)
     ushort first_arg = ctor_reg + 2;
@@ -1345,7 +1345,9 @@ fn ushort? CompilerContext.new_expr(&self) {
                         self.next_reg = dest_start + 2;
                     }
                     ushort spread_reg = self.assignment_expr()!;
-                    if (spread_reg >= dest_start && spread_reg <= dest_start + 10) {
+                    // If spread_reg is at or above dest_start, SPREAD_ARG could overwrite it
+                    // (the iterator may yield arbitrarily many elements into dest_start+0, +1, …).
+                    if (spread_reg >= dest_start) {
                         ushort safe_reg = self.alloc_reg();
                         self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
                         self.free_reg(spread_reg);
