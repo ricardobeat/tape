@@ -835,7 +835,15 @@ fn Token? Lexer.scan_number(&self) {
         char[64] buf;
         if (len < 64) {
             libc::memcpy(&buf, &self.source[start_pos], len);
-            buf[len] = 0;
+            // Strip numeric separators (_) before passing to strtod
+            uint j = 0;
+            for (uint i = 0; i < len; i++) {
+                if (buf[i] != '_') {
+                    buf[j] = buf[i];
+                    j++;
+                }
+            }
+            buf[j] = 0;
             char* endptr;
             value = libc::strtod(&buf[0], &endptr);
         } else {

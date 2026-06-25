@@ -1,0 +1,15 @@
+"use strict";
+var a = 1_000;
+var b = 1_000_000;
+var c = 0xFF_FF;
+var d = 0b1111_0000;
+var e = 0o77_77;
+var f = 1_000.5_5;
+var g = 1e1_0;
+console.log(a);
+console.log(b);
+console.log(c);
+console.log(d);
+console.log(e);
+console.log(f);
+console.log(g);
