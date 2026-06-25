@@ -517,11 +517,14 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, BuiltinContext* ctx) {
         if (try v = len_val) {
             if (v.is_fastint()) return (double)v.get_fastint();
             if (v.is_number()) return v.get_number();
+            // Non-numeric (string/bool/null/object): apply ToNumber per ES ToLength
+            return builtin_to_number_getdouble(ctx, &v);
         }
         len_val = obj.get_prop_proto(len_key);
         if (try v = len_val) {
             if (v.is_fastint()) return (double)v.get_fastint();
             if (v.is_number()) return v.get_number();
+            return builtin_to_number_getdouble(ctx, &v);
         }
         return 0;
     }
@@ -549,6 +552,8 @@ fn double array_get_length_raw(HObject* obj, Heap* heap, BuiltinContext* ctx) {
         TVal v = res.data_val;
         if (v.is_fastint()) return (double)v.get_fastint();
         if (v.is_number()) return v.get_number();
+        // Non-numeric (string/bool/null/object): apply ToNumber per ES ToLength
+        return builtin_to_number_getdouble(ctx, &v);
     }
     return 0;
 }
