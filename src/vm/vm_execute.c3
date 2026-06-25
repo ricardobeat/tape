@@ -2572,10 +2572,7 @@ fn TVal? Vm.run(Vm* vm) {
 
                 // === Hop 1: hobj1[key1] ===
                 TVal mid_val;
-                mid_val.set_undefined();
-
-                // IC fast path for hop 1
-                if (ic_base != null) {
+                mid_val.set_undefined();                if (ic_base != null) {
                     hobject::ICEntry* ic1 = ic_base + pc1;
                     if (ic1.key == (void*)key1_hstr && ic1.shape_id == hobj1.shape_id) {
                         HObject* owner1 = ic1.proto == null ? hobj1 : (HObject*)ic1.proto;
@@ -2619,8 +2616,7 @@ fn TVal? Vm.run(Vm* vm) {
                 }
 
                 // === Hop 2: mid_val[key2] ===
-                if (mid_val.is_object()) {
-                    HObject* hobj2 = (HObject*)mid_val.get_heapptr();
+                if (mid_val.is_object()) {                    HObject* hobj2 = (HObject*)mid_val.get_heapptr();
                     uint pc2 = (uint)(curr_pc - 1 - code_base);  // pc of the data slot
 
                     // IC fast path for hop 2
@@ -2844,8 +2840,22 @@ fn TVal? Vm.run(Vm* vm) {
                 } else if (mid_val.is_string()) {
                     HString* mid_str = (HString*)mid_val.get_heapptr();
                     if (mid_str != null && key2_hstr != null) {
-                        if ((void*)key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                        // Always check for "length" by string content, not just
+                        // by pointer identity — the constant pool may have a
+                        // different HString instance for "length" than the
+                        // BuiltinStr.LENGTH sentinel. Same pattern as in GETPROPC.
+                        bool key2_is_length = (key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH])
+                            || key2_hstr.equals("length");
+                        if (key2_is_length) {
                             ra2.set_fastint((long)mid_str.char_length());
+                        } else if (mid_str.is_symbol() && vm.heap.symbol_proto != null) {
+                            TVal? result = vm.heap.symbol_proto.get_prop_proto((void*)key2_hstr);
+                            if (try v = result) {
+                                vm.heap.tval_copy_ref(ra2, &v);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
                         } else if (vm.heap.string_proto != null) {
                             TVal? result = vm.heap.string_proto.get_prop_proto((void*)key2_hstr);
                             if (try v = result) {
@@ -2894,6 +2904,99 @@ fn TVal? Vm.run(Vm* vm) {
                     track_heap_store(act, ra, (uint)insn.a);
                 } else {
                     *ra = mid_val;
+                }
+            } else if (rb.is_lightfunc()) {
+                // LIGHTFUNC source for hop 1: resolve .name/.length/.prototype from
+                // metadata, other props from Function.prototype. Mirrors the
+                // non-fused GETPROP lightfunc handling so chained accesses like
+                // `URIError.prototype.constructor` work (session 219 B16 fix).
+                TVal mid_val;
+                mid_val.set_undefined();
+                uint lf_fn_idx = (uint)(usz)rb.get_heapptr();
+                if (key1_hstr != null) {
+                    if (key1_hstr.equals("name")) {
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 0)) {
+                            builtins::BuiltinMeta lf_meta = builtins::builtin_get_metadata(lf_fn_idx);
+                            if (lf_meta.name.len > 0) {
+                                HString* name_str = intern_string(vm, lf_meta.name);
+                                vm.heap.set_reg_string(ra, name_str);
+                            } else { ra.set_undefined(); }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? r = vm.heap.function_proto.get_prop_proto((void*)key1_hstr);
+                            if (try v = r) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
+                    } else if (key1_hstr.equals("length")) {
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 1)) {
+                            builtins::BuiltinMeta lf_meta = builtins::builtin_get_metadata(lf_fn_idx);
+                            if (lf_meta.arity >= 0) {
+                                ra.set_number(lf_meta.arity);
+                            } else { ra.set_undefined(); }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? r = vm.heap.function_proto.get_prop_proto((void*)key1_hstr);
+                            if (try v = r) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
+                    } else if (key1_hstr.equals("prototype")) {
+                        if (!heap::lf_is_deleted(&vm.heap.lf_deleted_props[0], lf_fn_idx, 2)) {
+                            HObject* lf_proto = lightfunc_get_proto(vm, lf_fn_idx);
+                            if (lf_proto != null) {
+                                ra.set_object(lf_proto);
+                                track_heap_store(act, ra, (uint)insn.a);
+                                mid_val.set_object(lf_proto);
+                            } else { ra.set_undefined(); }
+                        } else if (vm.heap.function_proto != null) {
+                            TVal? r = vm.heap.function_proto.get_prop_proto((void*)key1_hstr);
+                            if (try v = r) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); mid_val = v; }
+                            else { ra.set_undefined(); }
+                        } else { ra.set_undefined(); }
+                    } else if (vm.heap.function_proto != null) {
+                        TVal? r = vm.heap.function_proto.get_prop_proto((void*)key1_hstr);
+                        if (try v = r) { vm.heap.tval_copy_ref(ra, &v); track_heap_store(act, ra, (uint)insn.a); mid_val = v; }
+                        else { ra.set_undefined(); }
+                    } else { ra.set_undefined(); }
+                } else { ra.set_undefined(); }
+
+                // Now run hop 2 on mid_val (typically the .prototype HObject or a
+                // Function.prototype method like .call/.apply/.bind).
+                if (mid_val.is_object()) {
+                    HObject* hobj2 = (HObject*)mid_val.get_heapptr();
+                    uint pc2 = (uint)(curr_pc - 1 - code_base);
+                    if (ic_base != null && key2_hstr != null) {
+                        hobject::ICEntry* ic2 = ic_base + pc2;
+                        if (ic2.key == (void*)key2_hstr && ic2.shape_id == hobj2.shape_id) {
+                            HObject* owner2 = ic2.proto == null ? hobj2 : (HObject*)ic2.proto;
+                            if (ic2.cached_prop_alloc == (void*)owner2.prop_values()) {
+                                TVal ic2_val = *ic2.prop_value_ptr;
+                                if (!ic2_val.is_heap_allocated()) {
+                                    *ra2 = ic2_val;
+                                } else {
+                                    vm.heap.tval_copy_ref(ra2, &ic2_val);
+                                    track_heap_store(act, ra2, dst2_reg);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (key2_hstr != null) {
+                        if (hobj2.get_class() == hobject::ObjClass.ARRAY
+                            && (void*)key2_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                            ra2.set_fastint((long)*hobj2.array_len_ptr());
+                        } else {
+                            void* key2 = (void*)key2_hstr;
+                            hobject::PropLookupResult r2 = hobj2.get_prop_or_accessor_proto(key2, true);
+                            if (r2.kind == hobject::PropLookupKind.PROP_DATA) {
+                                vm.heap.tval_copy_ref(ra2, &r2.data_val);
+                                track_heap_store(act, ra2, dst2_reg);
+                            } else {
+                                ra2.set_undefined();
+                            }
+                        }
+                    } else {
+                        ra2.set_undefined();
+                    }
+                } else {
+                    ra2.set_undefined();
                 }
             } else {
                 // rb is not an object or string — both hops fail
