@@ -28,7 +28,10 @@ fn double date_now_ms() {
 fn double date_get_time_value(TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
-        if (obj.get_class() == hobject::ObjClass.DATE &&
+        // Date.prototype is a DATE object but lacks the [[DateValue]] slot;
+        // IS_DATE_PROTO flag distinguishes it. For non-Date-prototype DATE
+        // objects, return the stored time value (NaN is a valid Date value).
+        if (obj.get_class() == hobject::ObjClass.DATE && !obj.flags.is_date_proto &&
             ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
             return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         }
@@ -37,10 +40,16 @@ fn double date_get_time_value(TVal* val) {
 }
 
 /// ES5 §15.9.1.1 thisTimeValue(value): throw TypeError if not a Date object.
+/// A Date instance always has a [[DateValue]] internal slot; Date.prototype
+/// is a DATE object but does NOT have the slot, so the engine flags it via
+/// the `is_date_proto` ObjClass flag below.
 fn double date_this_time_value(BuiltinContext* ctx, TVal* val) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
-        if (obj.get_class() == hobject::ObjClass.DATE &&
+        // Date.prototype is a DATE object that lacks [[DateValue]]; it carries
+        // the IS_DATE_PROTO flag. All other DATE objects are real Date
+        // instances and may hold NaN as their time value.
+        if (obj.get_class() == hobject::ObjClass.DATE && !obj.flags.is_date_proto &&
             ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
             return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         }
@@ -2147,13 +2156,15 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     // a valid Date instance by thisTimeValue (it has class DATE but no
     // [[DateValue]] internal slot per ES2015 §20.4.3.1).
     (*proto.extra_ptr()).prim.primitive_value.set_number(double::nan);
+    // Date.prototype is a DATE object that does NOT have a [[DateValue]] slot
+    // (ES5 §15.9.1.1, §15.9.4). Flag it so thisTimeValue throws TypeError
+    // when called with Date.prototype as `this` — while a real Date instance
+    // holding NaN as its time value still returns NaN from getDate/etc.
+    proto.flags.is_date_proto = true;
     heap.date_proto = proto;
 
-    // Set .constructor to Date lightfunc
-    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
-    TVal constructor_tv;
-    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_DATE);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+    // .constructor is wired below (after the constructor HObject exists) to
+    // point at the function object itself, not a lightfunc — see below.
 
     // Add Date.prototype.toString()
     if (!register_string_proto_method(proto, heap, "toString", BUILTIN_DATE_PROTO_TOSTRING)) return false;
@@ -2289,6 +2300,15 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = date_raw) return false;
     HObject* date_obj = date_raw;
     (*date_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_DATE;
+
+    // Set .constructor to the Date constructor object itself (function object),
+    // matching how Function.prototype.constructor is wired. Using a lightfunc
+    // here would create a separate identity from `Date`, breaking
+    // `new Date().constructor === Date`.
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal constructor_tv;
+    constructor_tv.set_object(date_obj);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // Set Date.prototype on the constructor
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];

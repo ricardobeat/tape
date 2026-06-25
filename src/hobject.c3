@@ -211,6 +211,11 @@ bitstruct ObjFlags : uint {
     ObjClass obj_class     : 16..21;
     /// Set when pool allocation was exhausted and this object fell back to malloc.
     bool pool_fallback     : 22;
+    /// Object is the Date.prototype — a DATE-class object that does NOT have
+    /// a [[DateValue]] internal slot. Used by date_this_time_value to
+    /// distinguish Date.prototype (must throw TypeError) from a Date instance
+    /// with NaN time value (must return NaN).
+    bool is_date_proto     : 23;
 }
 
 // ============================================================================
