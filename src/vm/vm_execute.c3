@@ -3937,7 +3937,20 @@ fn TVal? Vm.run(Vm* vm) {
                             new_act.lex_env = fast_var_env;
                         }
                     } else {
-                        new_act.lex_env = fast_var_env;
+                        // Use the captured lex_env so block-scoped let/const
+                        // bindings from the enclosing function body are visible.
+                        // Only when the captured env is a *declarative* (block) scope
+                        // — i.e., created by PUSH_LEX inside the function body —
+                        // not when it's the function-scope env or the global env
+                        // (which are object/object-like envs, not lexical block scopes).
+                        EnvRecord* cap_lex_noname = (*hobj_fast.extra_ptr()).func.lex_env;
+                        if (cap_lex_noname != null
+                            && cap_lex_noname != fast_var_env
+                            && cap_lex_noname.is_declarative) {
+                            new_act.lex_env = cap_lex_noname;
+                        } else {
+                            new_act.lex_env = fast_var_env;
+                        }
                     }
                     // Bridge captured lex scope for default thunks that need
                     // to see TDZ sentinels in the parent's param scope.
