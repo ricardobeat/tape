@@ -320,7 +320,31 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
             self.is_constructable = false;
         }
 
-        CompiledFunction* inner = self.compile_inner_function(method_name.str_value)!;
+        // ES2015 §14.5.13: getter/setter methods in class bodies have a name
+        // prefixed with "get " or "set " (matching object literal semantics).
+        // For a computed key ([expr]) the name is the empty string per spec.
+        char[128] method_name_buf;
+        usz method_name_len = 0;
+        if (has_computed_key) {
+            // Leave name empty — the actual key is computed at class evaluation time.
+            method_name_len = 0;
+        } else if (is_getter || is_setter) {
+            char[] prefix = is_getter ? "get " : "set ";
+            usz prop_len = method_name.str_value.len;
+            if (prefix.len + prop_len < 128) {
+                for (usz i = 0; i < prefix.len; i++) method_name_buf[i] = prefix[i];
+                for (usz i = 0; i < prop_len; i++) method_name_buf[prefix.len + i] = method_name.str_value[i];
+                method_name_len = prefix.len + prop_len;
+            }
+        } else {
+            usz prop_len = method_name.str_value.len;
+            if (prop_len < 128) {
+                for (usz i = 0; i < prop_len; i++) method_name_buf[i] = method_name.str_value[i];
+                method_name_len = prop_len;
+            }
+        }
+
+        CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len])!;
 
         self.is_constructable = saved_constructable;
 

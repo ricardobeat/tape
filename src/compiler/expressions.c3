@@ -32,7 +32,6 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     TokenType first_tt = self.peek_type();
     if (first_tt == TokenType.LBRACKET || first_tt == TokenType.LBRACE) {
         bool is_array = (first_tt == TokenType.LBRACKET);
-
         // Save lexer state to look ahead for '=' after the pattern
         uint _pos   = self.lexer.pos;
         uint _line  = self.lexer.line;
@@ -2290,11 +2289,28 @@ fn ushort? CompilerContext.object_literal(&self) {
                         }
                         key_reg = self.alloc_reg();
                         self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, prop_key_idx));
+
+                        // ES2015 §14.3: getter/setter names are prefixed with
+                        // "get " or "set " so `o = { get foo() {} }; o.foo.name === "get foo"`.
+                        // Always overwrite the inherited inferred name (from var
+                        // `o = ...`) — the property key + get/set prefix is the
+                        // more specific source.
+                        char[] prefix = is_obj_getter ? "get " : "set ";
+                        usz prop_len = prop_tok.str_value.len;
+                        if (prefix.len + prop_len < 128) {
+                            self.has_inferred_name = true;
+                            self.inferred_name_len = (ushort)(prefix.len + prop_len);
+                            for (usz i = 0; i < prefix.len; i++) {
+                                self.inferred_name_buf[i] = prefix[i];
+                            }
+                            for (usz i = 0; i < prop_len; i++) {
+                                self.inferred_name_buf[prefix.len + i] = prop_tok.str_value[i];
+                            }
+                        }
                     }
 
                     // Compile the getter/setter function body
                     ushort accessor_reg = self.function_expr_body()!;
-
                     if (is_obj_getter) {
                         self.emit_abc(Opcode.INITGET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
                     } else {
@@ -2327,6 +2343,17 @@ fn ushort? CompilerContext.object_literal(&self) {
                 uint key_idx = self.add_string_constant(key_tok.str_value);
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+
+                // ES2015 §14.3 / §14.1.20: method name inference. Always overwrite
+                // the inherited inferred name from the enclosing assignment — the
+                // property key is the more specific source for the function name.
+                self.has_inferred_name = true;
+                self.inferred_name_len = (ushort)key_tok.str_value.len;
+                if (key_tok.str_value.len < 128) {
+                    for (ushort i = 0; i < self.inferred_name_len; i++) {
+                        self.inferred_name_buf[i] = key_tok.str_value[i];
+                    }
+                }
             } else if (key_tt == TokenType.NUMBER) {
                 Token key_tok = self.advance()!;
 
@@ -2349,7 +2376,11 @@ fn ushort? CompilerContext.object_literal(&self) {
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
             } else if (key_tt == TokenType.LBRACKET) {
-                // Computed property key
+                // Computed property key — clear inferred name since the actual
+                // key is computed at runtime (per ES2015 §14.3 the inferred
+                // name is the empty string for computed keys).
+                self.has_inferred_name = false;
+                self.inferred_name_len = 0;
                 self.advance()!;
                 key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;
@@ -2369,13 +2400,13 @@ fn ushort? CompilerContext.object_literal(&self) {
 
             // Check for method shorthand or data property
             if (self.check(TokenType.LPAREN)) {
-                // Method shorthand: key() { ... }
+                // Method shorthand: key() { ... } — name inferred from key (set above)
                 ushort method_reg = self.function_expr_body()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
             } else {
-                // key: value
+                // key: value — name inferred from key (set above)
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);

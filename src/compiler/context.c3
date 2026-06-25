@@ -313,6 +313,15 @@ struct CompilerContext {
     // Module tracking — true when compiling an ESM module body.
     bool is_module;
     void* current_module;  // ModuleDef* (opaque to avoid import cycle)
+
+    // Inferred function name for the next anonymous function expression parsed.
+    // Set by assignment_expr when LHS is a plain identifier (e.g. `var f = function() {}`)
+    // or by object literal property parsing (e.g. `o = { method() {} }`).
+    // Used by function_expr / function_expr_body when no explicit function name is given.
+    // Cleared after use. Per ES2015 §14.1.20 SetFunctionName.
+    char[128] inferred_name_buf;
+    ushort inferred_name_len;
+    bool has_inferred_name;
 }
 
 // ============================================================================

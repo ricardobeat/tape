@@ -479,6 +479,19 @@ fn void? CompilerContext.var_declaration(&self) {
             // Optional initializer
             bool has_init = false;
             if (self.match(TokenType.ASSIGN)) {
+                // ES2015 §14.1.20 SetFunctionName: pass the var name to a
+                // following anonymous function expression so `var f = function(){}`
+                // gives f the name "f". Set the inferred name unconditionally
+                // (overwriting any stale value from a previous declarator in the
+                // same var statement); function_expr clears it after use.
+                self.has_inferred_name = true;
+                ushort nlen = (ushort)name_tok.str_value.len;
+                if (nlen < 128) {
+                    for (ushort i = 0; i < nlen; i++) self.inferred_name_buf[i] = name_tok.str_value[i];
+                    self.inferred_name_len = nlen;
+                } else {
+                    self.has_inferred_name = false;
+                }
                 ushort val_reg = self.assignment_expr()!;
                 if (val_reg != reg) {
                     self.emit_abc(Opcode.LDREG, (uint)reg, (uint)val_reg, 0);

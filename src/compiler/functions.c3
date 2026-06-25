@@ -1707,14 +1707,23 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 
     CompiledFunction* func = inner_ctx.finish()!;
 
-    // Set function name
+    // Set function name. The name parameter is a slice into the caller's
+    // inferred_name_buf (or a lexer token buffer), which gets reused for
+    // subsequent function compilations. Copy the bytes into a heap allocation
+    // that outlives the compile context, so each CompiledFunction holds its
+    // own stable copy of its name.
     if (name.len > 0) {
-        func.name_ptr = name.ptr;
-        func.name_len = (uint)name.len;
-        // Named function expression: tag so the VM creates a lexical
-        // environment binding for `name` at call time (ES2015 §14.1.20).
-        if (is_named_expr) {
-            func.flags.is_namebinding = true;
+        char* name_heap = (char*)libc::malloc((usz)name.len + 1);
+        if (name_heap != null) {
+            for (usz i = 0; i < (usz)name.len; i++) name_heap[i] = name[i];
+            name_heap[name.len] = 0;
+            func.name_ptr = name_heap;
+            func.name_len = (uint)name.len;
+            // Named function expression: tag so the VM creates a lexical
+            // environment binding for `name` at call time (ES2015 §14.1.20).
+            if (is_named_expr) {
+                func.flags.is_namebinding = true;
+            }
         }
     }
 
@@ -1738,20 +1747,39 @@ fn ushort? CompilerContext.function_expr(&self) {
         self.is_generator = true;
     }
 
-    // Optional function name
+    // Optional function name. If the user didn't write one and we have an
+    // inferred name from an enclosing `var f = ...` / `o = { m: ... }` /
+    // object literal method shorthand, use the inferred name per ES2015
+    // §14.1.20 SetFunctionName. Note: the inferred name does NOT create
+    // a name binding (i.e. `f` is NOT visible inside the body), only the
+    // display name on the function object.
+    //
+    // Always clear has_inferred_name after consumption — even when the user
+    // provided an explicit name (`function bar() {}`), so a following
+    // `var b = function() {}` doesn't inherit a stale name from `var a = function bar() {}`.
     char[] name;
     bool has_name = false;
+    bool name_is_explicit = false;
     if (self.check(TokenType.IDENTIFIER)) {
         Token name_tok = self.advance()!;
         name = name_tok.str_value;
         has_name = true;
+        name_is_explicit = true;
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
+    } else if (self.has_inferred_name) {
+        name = self.inferred_name_buf[:(uint)self.inferred_name_len];
+        has_name = true;
+        name_is_explicit = false;
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
     }
 
     // Compile the function body into a sub-context.
     // Restore is_async so compile_inner_function propagates the flag,
     // then immediately reset to prevent nested functions from inheriting it.
     self.is_async = saved_is_async;
-    CompiledFunction* inner = self.compile_inner_function(name, has_name)!;
+    CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit)!;
     self.is_async = false;
 
     // Restore generator flag (async already reset above)
@@ -1769,7 +1797,16 @@ fn ushort? CompilerContext.function_expr(&self) {
 /// Parse a function expression body (parameters + block) without the `function` keyword.
 /// Used for method shorthand in object literals.
 fn ushort? CompilerContext.function_expr_body(&self) {
-    char[] name;  // anonymous
+    // ES2015 §14.3: object literal method shorthand `o = { m() {} }` —
+    // the function's name is inferred from the property key. Caller
+    // (object_literal / class_body parser) sets has_inferred_name before
+    // calling. After consumption clear it so nested functions don't inherit.
+    char[] name;
+    if (self.has_inferred_name) {
+        name = self.inferred_name_buf[:(uint)self.inferred_name_len];
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
+    }
     CompiledFunction* inner = self.compile_inner_function(name)!;
 
     uint inner_idx = self.add_inner_func(inner);
@@ -1781,11 +1818,29 @@ fn ushort? CompilerContext.function_expr_body(&self) {
 
 /// Parse an arrow function by re-parsing the parameter list from source.
 /// The lexer is positioned right after '(' when called. This function
-/// re-parses params (including defaults) and compiles the body.
+/// re-parses params (including defaults, rest params, etc.) and compiles the body.
 /// Called from primary_expr after the arrow detection scan confirms '=>' follows.
 fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
+    // Apply inferred name (from enclosing `var f = ...`) per ES2015 §14.1.20.
+    char[] arrow_name;
+    if (self.has_inferred_name) {
+        arrow_name = self.inferred_name_buf[:(uint)self.inferred_name_len];
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
+    }
+
     // Create inner CompiledFunction for the arrow
     CompiledFunction* inner = self.compile_arrow_inner_reparse()!;
+
+    if (arrow_name.len > 0) {
+        char* name_heap = (char*)libc::malloc((usz)arrow_name.len + 1);
+        if (name_heap != null) {
+            for (usz i = 0; i < (usz)arrow_name.len; i++) name_heap[i] = arrow_name[i];
+            name_heap[arrow_name.len] = 0;
+            inner.name_ptr = name_heap;
+            inner.name_len = (uint)arrow_name.len;
+        }
+    }
 
     // Add to inner functions table
     uint inner_idx = self.add_inner_func(inner);
@@ -2179,8 +2234,27 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
     // Consume the ARROW token
     self.expect(TokenType.ARROW)!;
 
-    // Create inner CompiledFunction for the arrow
+    // Create inner CompiledFunction for the arrow — apply inferred name
+    // (from enclosing `var f = ...`) per ES2015 §14.1.20 SetFunctionName.
+    char[] arrow_name;
+    if (self.has_inferred_name) {
+        arrow_name = self.inferred_name_buf[:(uint)self.inferred_name_len];
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
+    }
     CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest)!;
+
+    // Set the function's display name from the inferred source. This is a
+    // non-binding name (no lexical scope entry) — only the name property.
+    if (arrow_name.len > 0) {
+        char* name_heap = (char*)libc::malloc((usz)arrow_name.len + 1);
+        if (name_heap != null) {
+            for (usz i = 0; i < (usz)arrow_name.len; i++) name_heap[i] = arrow_name[i];
+            name_heap[arrow_name.len] = 0;
+            inner.name_ptr = name_heap;
+            inner.name_len = (uint)arrow_name.len;
+        }
+    }
 
     // Add to inner functions table
     uint inner_idx = self.add_inner_func(inner);
