@@ -378,6 +378,7 @@ fn void? CompilerContext.block(&self, bool check_directives) {
         for (uint j = 0; j < saved_depth; j++) {
             if (str_eq(self.scope_stack[j].name, name)) {
                 self.scope_stack[j].is_captured = true;
+                self.has_captured_local = true;
                 break;
             }
         }
@@ -2126,6 +2127,7 @@ fn void? CompilerContext.try_statement(&self) {
             // so a later register read would get undefined.
             if (!self.is_global && self.scope_depth > 0) {
                 self.scope_stack[self.scope_depth - 1].is_captured = true;
+                self.has_captured_local = true;
             }
             self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
             // PUTVAR the exception into the env so that subsequent

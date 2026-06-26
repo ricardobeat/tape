@@ -202,4 +202,9 @@ struct Dispatch {
     TVal* regs_base;
     Instruction* curr_pc;
     bool needs_restart;
+    // Set by a sub-dispatch handler (e.g. top-level RET) to make Vm.run exit
+    // its loop and return `halt_value`.  Distinguishes "VM is done" from the
+    // ordinary "continue to next instruction" of an empty optional return.
+    bool halt;
+    TVal halt_value;
 }

@@ -600,6 +600,20 @@ fn ushort? CompilerContext.unary_expr(&self) {
                             // to normal typeof expr (will parse the member expr)
                             self.pushback(idTok);
                         } else {
+                            // If the identifier resolves to a non-captured local
+                            // register, the reference is always resolvable, so use
+                            // the register-based TYPEOF instead of the env-walking
+                            // TYPEOFIDENT. This keeps the local out of the function's
+                            // env (register-resident locals optimization). Captured
+                            // vars and globals still use TYPEOFIDENT (handles the
+                            // unresolvable-reference case per ES5 §11.4.3).
+                            if (!self.is_global) {
+                                if (try local_reg = self.resolve_var(idTok.str_value)) {
+                                    ushort res_typeof = self.alloc_reg();
+                                    self.emit_abc(Opcode.TYPEOF, (uint)res_typeof, (uint)local_reg, 0);
+                                    return res_typeof;
+                                }
+                            }
                             uint name_idx = self.add_string_constant(idTok.str_value);
                             ushort res_typeof = self.alloc_reg();
                             self.emit(bytecode::make_a_bc(Opcode.TYPEOFIDENT, (uint)res_typeof, name_idx));

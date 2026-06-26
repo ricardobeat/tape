@@ -10,6 +10,12 @@
       "opt": "O3",
       "fp-math": "relaxed"
     },
+    "duktape_c3_envstrict": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "opt": "O0",
+      "features": [ "ENV_STRICT" ]
+    },
     "lib": {
       "type": "static-lib",
       "sources": [ "src" ]

@@ -7,9 +7,6 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
 import duktape::builtins;
-import duktape::re_bindings;
-import std::io;
-import std::math;
 import libc;
 
 // ============================================================================

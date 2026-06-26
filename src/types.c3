@@ -105,6 +105,12 @@ const long FASTINT_MAX =  140737488355327L;  //  2^47 - 1
 /// Default is true. Pass `-D NONANBOX` to c3c to disable.
 const bool USE_NANBOX = !$feature(NONANBOX);
 
+/// Toggle for strict environment access checking. When true, the VM will trap
+/// (via unreachable) if a function with needs_env=false tries to touch its own
+/// environment bindings. This helps catch bugs before register-local optimization.
+/// Default is false. Pass `-D ENV_STRICT` to c3c to enable.
+const bool ENV_STRICT = $feature(ENV_STRICT);
+
 /// Maximum length of a formatted error-message string (160 bytes).
 const int ERROR_MSG_BUF = 160;
 /// Maximum length of a number/date-to-string temporary buffer (32 bytes).

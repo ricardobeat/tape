@@ -2,15 +2,6 @@ module duktape::vm;
 
 import duktape::types;
 import duktape::bytecode;
-import duktape::heap;
-import duktape::hstring;
-import duktape::hobject;
-import duktape::env;
-import duktape::builtins;
-import duktape::re_bindings;
-import std::io;
-import std::math;
-import libc;
 
 // ============================================================================
 // Catcher chain — helper functions

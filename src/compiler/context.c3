@@ -294,6 +294,11 @@ struct CompilerContext {
     // needs_env: if the function has var bindings but no nested functions
     // that could capture them, the env can be skipped.
     bool has_closures;
+    // True once any local in this function is forced through the environment
+    // (let/const block shadowing of an outer var, catch parameter). Such a
+    // function must keep its scope object — its captured locals are read via
+    // GETVAR, so the register-locals env-elision must not fire.
+    bool has_captured_local;
 
     // Hoisted function declaration names (so main pass can skip recompilation).
     // Fixed-size — bounded by top-level function count in a single module.
@@ -912,6 +917,52 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
         }
     }
 
+    // --- Register-resident locals: elide dead env ops when no scope is needed ---
+    // Must run BEFORE the NOP compaction below so the NOPs we introduce here are
+    // physically removed too. When this function needs no runtime scope object
+    // (no closures / eval / arguments / default-or-rest params, and not an
+    // arrow/generator/async), nothing can ever read its scope — all of its
+    // non-captured locals live purely in registers (reads already use registers;
+    // see resolve_var). The env *writes* below are therefore dead, so we NOP
+    // them; this lets the VM skip allocating the scope HObject per call (the
+    // dominant cost in call-heavy code). NOP is a valid jump target → layout-safe.
+    {
+        bool elide_has_params_needing_env = self.has_rest || self.default_count > 0;
+        bool elide_needs_runtime_env = ((self.has_local_bindings || self.num_args > 0) && self.has_closures)
+                              || self.uses_arguments
+                              || self.has_direct_eval;
+        bool elide_ok = !elide_needs_runtime_env
+                     && !elide_has_params_needing_env
+                     && !self.has_captured_local
+                     && !self.is_global   // global/eval vars are env-resident (resolve_var skips global scope)
+                     && !self.is_arrow
+                     && !self.is_generator
+                     && !self.is_async;
+        if (elide_ok) {
+            for (uint i = 0; i < self.code_count; i++) {
+                Opcode dop = self.code[i].op;
+                // Declarations always target the function's own immediate scope.
+                if (dop == Opcode.DECLVAR || dop == Opcode.PUTLEX
+                    || dop == Opcode.PUTLEX_C || dop == Opcode.INITTZ) {
+                    self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    continue;
+                }
+                // Loop-variable env sync: an adjacent `PUTVAR rX,n` + `GETVAR rX,n`
+                // pair with identical register AND name (for_statement writes the
+                // final loop counter back to the env). A genuine parent/global
+                // access never produces this same-reg/same-name adjacent pair.
+                if (dop == Opcode.PUTVAR && i + 1 < self.code_count
+                    && self.code[i + 1].op == Opcode.GETVAR
+                    && self.code[i].get_a() == self.code[i + 1].get_a()
+                    && self.code[i].get_bc() == self.code[i + 1].get_bc()) {
+                    self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    self.code[i + 1] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    i++;
+                }
+            }
+        }
+    }
+
     // --- NOP Compaction Pass ---
     // Physically remove NOP instructions and remap all pc-relative offsets.
     // Must run last, after all other peepholes have introduced NOPs.
@@ -1083,6 +1134,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                           || self.has_direct_eval;
     bool can_skip_env = !needs_runtime_env
                      && !has_params_needing_env
+                     && !self.has_captured_local
                      && !self.is_arrow
                      && !self.is_generator
                      && !self.is_async;

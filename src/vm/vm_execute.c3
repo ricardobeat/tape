@@ -426,6 +426,7 @@ fn TVal? Vm.run(Vm* vm) {
     Dispatch ds;
     ds.vm = vm;
     ds.needs_restart = true;
+    ds.halt = false;
 
     // Outer restart loop: on ECMAScript-to-ECMAScript calls, reload state
     for (;;) {
@@ -450,6 +451,9 @@ fn TVal? Vm.run(Vm* vm) {
 
         // Inner dispatch loop
         for (; !ds.needs_restart; ) {
+            if (ds.halt) {
+                return ds.halt_value;
+            }
             if (ds.curr_pc >= ds.code_end) {
                 // Inline handle_return for fall-off-end — avoids function call overhead.
                 Activation* callee_act = &vm.activations[vm.activation_count - 1];
@@ -518,73 +522,1780 @@ fn TVal? Vm.run(Vm* vm) {
         switch (op) {
 
         // === LOAD / STORE ===
+        case Opcode.LDREG:
+            // Fast path: if source is not a heap ref (fastint, undefined, etc.),
+            // skip full refcounting — only decref dst if it held a heap pointer.
+            if (!rb.is_heap_allocated()) {
+                if (ra.is_heap_allocated()) {
+                    vm.heap.decref_tval(ra);
+                }
+                *ra = *rb;
+            } else {
+                vm.heap.tval_copy_ref(ra, rb);
+                track_heap_store(ds.act, ra, (uint)insn.a);
+            }
+            continue;
 
-        case Opcode.LDREG: {
-            // Forward to dispatch_load_store function (handles all LOAD/STORE opcodes)
-            if (catch err = dispatch_load_store(&ds, op, ra, rb, rc, insn)) { return err~; }
+        case Opcode.LDCONST: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                vm.heap.tval_copy_ref(ra, &ds.constants[bc]);
+            } else {
+                ra.set_undefined();
+            }
             continue;
         }
+
+        case Opcode.LDINT:
+            ra.set_fastint((long)insn.get_sbc());
             continue;
+
+        case Opcode.LDINTX: {
+            long ix_high = ra.get_fastint();
+            ra.set_fastint((ix_high << 16) | (long)insn.get_bc());
+            continue;
+        }
+
+        case Opcode.LDUNDEF:
+            ra.set_undefined();
+            continue;
+
+        case Opcode.LDNULL:
+            ra.set_null();
+            continue;
+
+        case Opcode.LDTRUE:
+            ra.set_boolean(true);
+            continue;
+
+        case Opcode.LDFALSE:
+            ra.set_boolean(false);
+            continue;
+
+        case Opcode.LDTHIS:
+            vm.heap.tval_copy_ref(ra, &ds.act.this_binding);
+            track_heap_store(ds.act, ra, (uint)insn.a);
+            continue;
+
         // === ARITHMETIC ===
+        case Opcode.ADD: {
+            // ES5 §11.6.1: ToPrimitive both, then string concat or numeric add
+            // Fast path: FASTINT + FASTINT — most common in arithmetic benchmarks.
+            // Check this BEFORE OBJECT/STRING to avoid unnecessary tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                long sum = rb.get_fastint() + rc.get_fastint();
+                if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
+                    ra.set_fastint(sum);
+                } else {
+                    ra.set_number((double)sum);
+                }
+                continue;
+            }
+            // Fast path: STRING + FASTINT or FASTINT + STRING
+            // Format the integer directly into the concat buffer, avoiding
+            // the intermediate HString allocation for the integer.
+            if ((rb.is_string() && rc.is_fastint()) || (rb.is_fastint() && rc.is_string())) {
+                HString* str;
+                long int_val;
+                if (rb.is_string()) {
+                    str = (HString*)rb.get_heapptr();
+                    int_val = rc.get_fastint();
+                } else {
+                    str = (HString*)rc.get_heapptr();
+                    int_val = rb.get_fastint();
+                }
+                if (str != null) {
+                    char[32] int_buf;
+                    int int_len = hstring::int_to_buf(int_val, &int_buf, 32);
+                    if (int_len > 0) {
+                        uint s_len = str.blen;
+                        uint total = s_len + (uint)int_len;
+                        char[544] stack_buf;
+                        char* buf;
+                        bool heap_allocated = false;
+                        if (total <= 544) {
+                            buf = &stack_buf;
+                        } else {
+                            buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
+                            if (buf == null) { ra.set_undefined(); break; }
+                            heap_allocated = true;
+                        }
+                        if (rb.is_string()) {
+                            libc::memcpy(buf, str.get_cstr(), s_len);
+                            libc::memcpy(buf + s_len, &int_buf, (usz)int_len);
+                        } else {
+                            libc::memcpy(buf, &int_buf, (usz)int_len);
+                            libc::memcpy(buf + int_len, str.get_cstr(), s_len);
+                        }
+                        // Skip interning for accumulator (ra == source register),
+                        // intern for new strings that may be used as property keys.
+                        bool is_accum = (ra == rb || ra == rc);
+                        if (is_accum) {
+                            uint hash = vm.heap.hash_string(buf[:total]);
+                            HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                            if (try s = maybe_s) {
+                                vm.heap.set_reg_string(ra, s);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else {
+                            HString* interned = intern_string(vm, buf[:total]);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                            vm.heap.set_reg_string(ra, interned);
+                        }
+                        continue;
+                    }
+                }
+                // Fall through to generic path if str is null or int_to_buf failed
+            }
+            TVal prim_b = *rb;
+            TVal prim_c = *rc;
+            // ES5 §11.6.1: + operator uses ToPrimitive with no hint (default "number")
+            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, false); }
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, false); }
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            TValTag pt_b = prim_b.get_tag();
+            TValTag pt_c = prim_c.get_tag();
+            if (pt_b == STRING || pt_c == STRING) {
+                HString*? left_str = vm_to_string(vm, &prim_b);
+                if (vm.throw_pending) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                    continue;
+                }
+                HString*? right_str = vm_to_string(vm, &prim_c);
+                if (vm.throw_pending) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                    continue;
+                }
+                if (try ls = left_str && try rs = right_str) {
+                    uint a_len = ls.blen;
+                    uint b_len = rs.blen;
+                    uint total = a_len + b_len;
 
-        if (catch err = dispatch_arith(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
+                    // Use stack buffer for small strings, heap for large
+                    char[512] stack_buf;
+                    char* buf;
+                    bool heap_allocated = false;
+                    if (total <= 512) {
+                        buf = &stack_buf;
+                    } else {
+                        buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
+                        if (buf == null) { ra.set_undefined(); break; }
+                        heap_allocated = true;
+                    }
+
+                    // Copy both halves directly into buffer
+                    if (a_len > 0) {
+                        libc::memcpy(buf, ls.get_cstr(), a_len);
+                    }
+                    if (b_len > 0) {
+                        libc::memcpy(buf + a_len, rs.get_cstr(), b_len);
+                    }
+
+                    // Skip interning for accumulator (ra == source register),
+                    // intern for new strings that may be used as property keys.
+                    bool is_accum = (ra == rb || ra == rc);
+                    if (is_accum) {
+                        uint hash = vm.heap.hash_string(buf[:total]);
+                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                        if (try s = maybe_s) {
+                            vm.heap.set_reg_string(ra, s);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        HString* interned = intern_string(vm, buf[:total]);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                        vm.heap.set_reg_string(ra, interned);
+                    }
+                } else {
+                    ra.set_undefined();
+                }
+            } else {
+                double add_b = vm_to_number(vm,&prim_b);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                double add_c = vm_to_number(vm,&prim_c);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                ra.set_number(add_b + add_c);
+            }
+        }
+
+        case Opcode.SUB:
+            if (rb.is_fastint() && rc.is_fastint()) {
+                long diff = rb.get_fastint() - rc.get_fastint();
+                if (diff >= types::FASTINT_MIN && diff <= types::FASTINT_MAX) {
+                    ra.set_fastint(diff);
+                } else {
+                    ra.set_number((double)diff);
+                }
+            } else {
+                double sub_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double sub_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                ra.set_number(sub_b - sub_c);
+            }
+            continue;
+
+        case Opcode.MUL:
+            if (rb.is_fastint() && rc.is_fastint()) {
+                // Use 64-bit multiply and check overflow
+                long mul_result = rb.get_fastint() * rc.get_fastint();
+                if (mul_result >= types::FASTINT_MIN && mul_result <= types::FASTINT_MAX) {
+                    ra.set_fastint(mul_result);
+                } else {
+                    ra.set_number((double)mul_result);
+                }
+            } else {
+                double mul_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double mul_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                ra.set_number(mul_b * mul_c);
+            }
+            continue;
+
+        case Opcode.DIV: {
+            double div_b = vm_to_number(vm,rb);
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            double div_c = vm_to_number(vm,rc);
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_number(div_b / div_c);
+            continue;
+        }
+
+        case Opcode.MOD:
+            if (rb.is_fastint() && rc.is_fastint() && rc.get_fastint() != 0) {
+                long mod_result = rb.get_fastint() % rc.get_fastint();
+                if (mod_result == 0 && rb.get_fastint() < 0) {
+                    // -1 % 1 → -0: sign of zero matches dividend per ES5 §11.5.3
+                    ra.set_number(-0.0);
+                } else {
+                    ra.set_fastint(mod_result);
+                }
+            } else {
+                double mod_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double mod_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                ra.set_number((mod_b % mod_c));
+            }
+            continue;
+
+        case Opcode.EXP: {
+            double exp_b = vm_to_number(vm,rb);
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            double exp_c = vm_to_number(vm,rc);
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_number(math::pow(exp_b, exp_c));
+            continue;
+        }
+
         // === UNARY ===
+        case Opcode.UNP:
+        case Opcode.UNM:
+        case Opcode.BNOT:
+        case Opcode.LNOT:
+        case Opcode.TYPEOF:
+        case Opcode.VOID:
+        case Opcode.INC:
+        case Opcode.DEC:
+        case Opcode.PUTARG:
+        case Opcode.INC_VAR:
+        case Opcode.DEC_VAR:
+            if (catch err = dispatch_unary(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_unary(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === BITWISE ===
+        case Opcode.BAND:
+            // Bitwise ops always produce Int32, always fit in FASTINT
+        {
+            int band_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int band_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(band_b & band_c));
+            continue;
+        }
 
-        if (catch err = dispatch_bitwise(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
+        case Opcode.BOR:
+        {
+            int bor_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int bor_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(bor_b | bor_c));
+            continue;
+        }
+
+        case Opcode.BXOR:
+        {
+            int bxor_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int bxor_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(bxor_b ^ bxor_c));
+            continue;
+        }
+
+        case Opcode.SHL:
+        {
+            int shl_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int shl_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
+            continue;
+        }
+
+        case Opcode.SHR:
+        {
+            int shr_b = toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int shr_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
+            continue;
+        }
+
+        case Opcode.USHR:
+        {
+            uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (ds.needs_restart) break;
+            int  ushr_c = toint32(vm_to_number(vm,rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
+            continue;
+        }
+
         // === COMPARISON ===
+        case Opcode.EQ:
+            ra.set_boolean(abstract_eq(vm, rb, rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            continue;
 
-        if (catch err = dispatch_compare(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
+        case Opcode.NEQ:
+            ra.set_boolean(!abstract_eq(vm, rb, rc));
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            continue;
+
+        case Opcode.SEQ: {
+            // Fast path: FASTINT === FASTINT — most common in loop counters and
+            // arithmetic benchmarks. Short-circuit before full tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean(rb.get_fastint() == rc.get_fastint());
+                continue;
+            }
+            bool seq_r = false;
+            TValTag tag_b = rb.get_tag();
+            TValTag tag_c = rc.get_tag();
+            if (tag_b == tag_c) {
+                switch (tag_b) {
+                    case UNDEFINED: seq_r = true; break;
+                    case NULL_VAL:  seq_r = true; break;
+                    case BOOLEAN:   seq_r = (rb.get_boolean() == rc.get_boolean()); break;
+                    case NUMBER:
+                        if (math::is_nan(rb.get_number()) || math::is_nan(rc.get_number())) {
+                            seq_r = false;
+                        } else {
+                            seq_r = (rb.get_number() == rc.get_number());
+                        }
+                        break;
+                    case FASTINT:   seq_r = (rb.get_fastint() == rc.get_fastint()); break;
+                    case STRING: {
+                        HString* sa = (HString*)rb.get_heapptr();
+                        HString* sb = (HString*)rc.get_heapptr();
+                        seq_r = sa != null && sb != null && sa.equals_hstring(sb);
+                        break;
+                    }
+                    case OBJECT:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case LIGHTFUNC: seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case POINTER:   seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    case BUFFER:    seq_r = (rb.get_heapptr() == rc.get_heapptr()); break;
+                    default: break;
+                }
+            } else if ((tag_b == NUMBER && tag_c == FASTINT) ||
+                       (tag_b == FASTINT && tag_c == NUMBER)) {
+                double nb = (tag_b == FASTINT) ? (double)rb.get_fastint() : rb.get_number();
+                double nc = (tag_c == FASTINT) ? (double)rc.get_fastint() : rc.get_number();
+                seq_r = (nb == nc);
+            }
+            ra.set_boolean(seq_r);
+            continue;
+        }
+
+        case Opcode.SNEQ: {
+            // Fast path: FASTINT !== FASTINT — short-circuit before full tag dispatch.
+            if (rb.is_fastint() && rc.is_fastint()) {
+                ra.set_boolean(rb.get_fastint() != rc.get_fastint());
+                continue;
+            }
+            bool sneq_r = true;
+            TValTag tag_b = rb.get_tag();
+            TValTag tag_c = rc.get_tag();
+            if (tag_b == tag_c) {
+                switch (tag_b) {
+                    case UNDEFINED: sneq_r = false; break;
+                    case NULL_VAL:  sneq_r = false; break;
+                    case BOOLEAN:   sneq_r = (rb.get_boolean() != rc.get_boolean()); break;
+                    case NUMBER:
+                        if (math::is_nan(rb.get_number()) || math::is_nan(rc.get_number())) {
+                            sneq_r = true;
+                        } else {
+                            sneq_r = (rb.get_number() != rc.get_number());
+                        }
+                        break;
+                    case FASTINT:   sneq_r = (rb.get_fastint() != rc.get_fastint()); break;
+                    case STRING: {
+                        HString* sa = (HString*)rb.get_heapptr();
+                        HString* sb = (HString*)rc.get_heapptr();
+                        sneq_r = !(sa != null && sb != null && sa.equals_hstring(sb));
+                        break;
+                    }
+                    case OBJECT:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case LIGHTFUNC: sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case POINTER:   sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    case BUFFER:    sneq_r = (rb.get_heapptr() != rc.get_heapptr()); break;
+                    default: break;
+                }
+            } else if ((tag_b == NUMBER && tag_c == FASTINT) ||
+                       (tag_b == FASTINT && tag_c == NUMBER)) {
+                double nb = (tag_b == FASTINT) ? (double)rb.get_fastint() : rb.get_number();
+                double nc = (tag_c == FASTINT) ? (double)rc.get_fastint() : rc.get_number();
+                sneq_r = (nb != nc);
+            }
+            ra.set_boolean(sneq_r);
+            continue;
+        }
+
+        case Opcode.LT: {
+            bool result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                result = rb.get_fastint() < rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
+            } else {
+                double lt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double lt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                result = lt_b < lt_c;
+            }
+            ra.set_boolean(result);
+            continue;
+        }
+
+        case Opcode.LE: {
+            bool result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                result = rb.get_fastint() <= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
+            } else {
+                double le_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double le_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                result = le_b <= le_c;
+            }
+            ra.set_boolean(result);
+            continue;
+        }
+
+        case Opcode.GT: {
+            bool result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                result = rb.get_fastint() > rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
+            } else {
+                double gt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double gt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                result = gt_b > gt_c;
+            }
+            ra.set_boolean(result);
+            continue;
+        }
+
+        case Opcode.GE: {
+            bool result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                result = rb.get_fastint() >= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+            } else {
+                double ge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double ge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                result = ge_b >= ge_c;
+            }
+            ra.set_boolean(result);
+            continue;
+        }
+
+        // === FUSED COMPARE-AND-BRANCH ===
+        // Each op replicates the corresponding compare's exact semantics, then
+        // branches if the result is FALSE (i.e. branches when condition does NOT hold).
+        // Offset in A (signed 8-bit, cast via char) is relative to the already-
+        // incremented pc (same convention as IF_FALSE).
+        // NaN: !(NaN op x) is always true, so the branch IS taken — correct because
+        // we negate the same compare result that IF_FALSE would have tested.
+
+        case Opcode.JMP_NLT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() < rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
+            } else {
+                double jnlt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jnlt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jnlt_b < jnlt_c;
+            }
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_NLE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() <= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
+            } else {
+                double jnle_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jnle_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jnle_b <= jnle_c;
+            }
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_NGT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() > rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
+            } else {
+                double jngt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jngt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jngt_b > jngt_c;
+            }
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_NGE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() >= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+            } else {
+                double jnge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jnge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jnge_b >= jnge_c;
+            }
+            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_LT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() < rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
+            } else {
+                double jlt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jlt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jlt_b < jlt_c;
+            }
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_LE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() <= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
+            } else {
+                double jle_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jle_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jle_b <= jle_c;
+            }
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_GT: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() > rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
+            } else {
+                double jgt_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jgt_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jgt_b > jgt_c;
+            }
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.JMP_GE: {
+            bool jmp_result;
+            if (rb.is_fastint() && rc.is_fastint()) {
+                jmp_result = rb.get_fastint() >= rc.get_fastint();
+            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
+                jmp_result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
+            } else if (rb.is_string() && rc.is_string()) {
+                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+            } else {
+                double jge_b = vm_to_number(vm,rb);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (ds.needs_restart) break;
+                double jge_c = vm_to_number(vm,rc);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                jmp_result = jge_b >= jge_c;
+            }
+            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            continue;
+        }
+
+        case Opcode.INSTANCEOF: {
+            // ES5 §11.8.6: RelationalExpression instanceof ShiftExpression
+            // ra may alias rb (compiler optimization), so read rb before writing ra.
+            TVal lval = *rb;
+            TVal rval = *rc;
+            ra.set_boolean(false);
+
+            if (rval.is_lightfunc()) {
+                // LIGHTFUNC builtins are callable; look up their prototype
+                uint fn_idx = (uint)(usz)rval.get_heapptr();
+                HObject* proto_obj = lightfunc_get_proto(vm, fn_idx);
+                if (proto_obj != null && lval.is_object()) {
+                    HObject* lbh = (HObject*)lval.get_heapptr();
+                    if (lbh.is_prototype_of(proto_obj)) {
+                        ra.set_boolean(true);
+                    }
+                }
+                continue;
+            }
+
+            if (!rval.is_object()) {
+                // TypeError: right-hand side must be an object
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not an object");
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_val);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_val);
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+
+            HObject* rfunc = (HObject*)rval.get_heapptr();
+            if (rfunc == null || !rfunc.is_callable()) {
+                // TypeError: right-hand side must be callable
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not callable");
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_val);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_val);
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+
+            // ES6 §12.10.4: Check Symbol.hasInstance on the constructor
+            if (vm.heap.hasinstance_symbol != null) {
+                HString* hasinst_key = vm.heap.hasinstance_symbol;
+                TVal? hasinst_val = rfunc.get_prop_proto(hasinst_key);
+                if (try hasinst_fn = hasinst_val) {
+                    bool hasinst_callable = hasinst_fn.is_lightfunc() ||
+                        (hasinst_fn.is_object() && hasinst_fn.get_heapptr() != null &&
+                         ((HObject*)hasinst_fn.get_heapptr()).is_callable());
+                    if (hasinst_callable) {
+                        // Call @@hasInstance with this=rval, arg=lval
+                        TVal result = vm.heap.call_fn(vm, hasinst_fn, &lval, 1, rval);
+                        if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                        ra.set_boolean(builtins::builtin_to_boolean(&result));
+                        continue;
+                    }
+                }
+            }
+
+            // §15.3.5.3 step 1: If Type(lval) is not Object → false
+            if (!lval.is_object()) {
+                continue;
+            }
+
+            // Get rval.prototype
+            HString* proto_key_str = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+            TVal proto_val = get_prop_with_proto(rfunc, proto_key_str);
+            if (!proto_val.is_object()) {
+                // ES5 §15.3.5.3 step 3: If Type(O) is not Object, throw a TypeError.
+                // But gracefully handle missing .prototype by returning false.
+                ra.set_boolean(false);
+                continue;
+            }
+
+            HObject* proto_obj = (HObject*)proto_val.get_heapptr();
+            HObject* cur = (HObject*)lval.get_heapptr();
+            if (cur.is_prototype_of(proto_obj)) {
+                ra.set_boolean(true);
+            }
+            continue;
+        }
+
+        case Opcode.IN: {
+            // ES5 §11.8.7: RelationalExpression in ShiftExpression
+            // Right side must be an object; TypeError otherwise.
+            // Returns true if the object has a property with the given name
+            // (own or inherited — check via [[HasProperty]]).
+            //
+            // NOTE: Read rb (key) BEFORE writing ra, because ra may alias rb
+            // (compiler can emit IN r3, r3, r4 when result overwrites the key).
+            if (!rc.is_object()) {
+                ra.set_boolean(false);
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* msg_val = intern_string(vm, "in requires an object");
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_val);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_val);
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+
+            HObject* obj = (HObject*)rc.get_heapptr();
+
+            // Fast path: dense array / arguments indexed check (numeric keys)
+            if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && (rb.is_fastint() || rb.is_number())) {
+                long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
+                if (idx_long >= 0 && idx_long < (long)obj.array_size) {
+                    TVal? av = obj.get_array_idx((uint)idx_long);
+                    if (try v = av) {
+                        ra.set_boolean(true);
+                        continue;
+                    }
+                    // Array hole — fall through to prototype chain lookup
+                } else {
+                    // Index out of bounds — check prototype only
+                    void* key = get_prop_key(vm, rb);
+                    if (key != null) {
+                        ra.set_boolean(obj.prototype != null && obj.prototype.has_prop_proto(key));
+                    } else {
+                        ra.set_boolean(false);
+                    }
+                    continue;
+                }
+            }
+
+            // Fast path: dense array with string key that might be an index
+            if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && rb.is_string()) {
+                HString* skey = (HString*)rb.get_heapptr();
+                uint skey_idx = skey.array_index();
+                if (skey_idx != hstring::ARRIDX_NONE && skey_idx < (uint)obj.array_size) {
+                    TVal? av = obj.get_array_idx(skey_idx);
+                    if (try v = av) {
+                        ra.set_boolean(true);
+                        continue;
+                    }
+                }
+            }
+
+            void* key = get_prop_key(vm, rb);
+            if (key != null) {
+                // STRING exotic: integer index keys in [0, clen) are own properties served lazily.
+                if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+                    HString* key_hstr = (HString*)key;
+                    if (key_hstr != null && key_hstr.is_arridx()) {
+                        HString* prim_str = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+                        if (prim_str != null && key_hstr.array_index() < prim_str.char_length()) {
+                            ra.set_boolean(true);
+                            continue;
+                        }
+                    }
+                }
+                ra.set_boolean(obj.has_prop_proto(key));
+            } else {
+                ra.set_boolean(false);
+            }
+            continue;
+        }
+
         // === CONTROL FLOW ===
+        case Opcode.JUMP: {
+            int sabc = insn.get_sabc();
+            int target = (int)((long)(ds.curr_pc - ds.code_base) + (long)sabc);
+            if (target < (ds.curr_pc - ds.code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
+            ds.curr_pc = ds.code_base + target;
+            continue;
+        }
 
-        if (catch err = dispatch_control_flow(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
+        case Opcode.IF_TRUE:
+            if (is_truthy(ra)) {
+                int sbx = insn.get_sbc();
+                int target = (int)((long)(ds.curr_pc - ds.code_base) + (long)sbx);
+                if (target < (ds.curr_pc - ds.code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
+                ds.curr_pc = ds.code_base + target;
+            }
+            continue;
+
+        case Opcode.IF_FALSE:
+            if (!is_truthy(ra)) {
+                int sbx = insn.get_sbc();
+                int target = (int)((long)(ds.curr_pc - ds.code_base) + (long)sbx);
+                if (target < (ds.curr_pc - ds.code_base)) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } }
+                ds.curr_pc = ds.code_base + target;
+            }
+            continue;
+
         // === PROPERTY ACCESS ===
+        // GETPROPC_CACHED is the warm monomorphic IC read — the single hottest
+        // property op in tight loops (`p.x`). Inlined; all other property ops
+        // (and the IC-miss downgrade path) go through dispatch_property.
+        case Opcode.GETPROPC_CACHED: {
+            // Specialized GETPROPC: IC is known warm. Only checks shape_id + prop_alloc.
+            // Falls back to GETPROPC if the check fails (shape changed or props reallocated).
+            TVal key_tval = ds.constants[(uint)insn.c];
+            HString* key_hstr = (HString*)key_tval.get_heapptr();
+            if (rb.is_object() && ds.ic_base != null) {
+                HObject* hobj = (HObject*)rb.get_heapptr();
+                uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                hobject::ICEntry* ic = ds.ic_base + pc_off;
+                if (ic.shape_id == hobj.shape_id) {
+                    HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
+                    if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
+                        TVal ic_val = *ic.prop_value_ptr;
+                        if (!ic_val.is_heap_allocated()) {
+                            *ra = ic_val;
+                        } else {
+                            vm.heap.tval_copy_ref(ra, &ic_val);
+                            track_heap_store(ds.act, ra, (uint)insn.a);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // IC miss or ds.ic_base null: downgrade back to GETPROPC and re-execute
+            ds.curr_pc[-1] = bytecode::make_abc(bytecode::Opcode.GETPROPC,
+                                            (uint)insn.a, (uint)insn.b, (uint)insn.c);
+            ds.curr_pc--;
+            continue;
+        }
+        case Opcode.GETPROP:
+        case Opcode.GETPROPC:
+        case Opcode.GETPROPC2:
+        case Opcode.PUTPROP:
+        case Opcode.DELPROP:
+            if (catch err = dispatch_property(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_property(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === OBJECT / ARRAY CREATION ===
+        case Opcode.NEWOBJ:
+        case Opcode.NEWARR:
+        case Opcode.NEWREGEXP:
+        case Opcode.SETALEN:
+        case Opcode.ARRSPRD:
+        case Opcode.OBJSPRD:
+        case Opcode.SPREAD_ARG:
+            if (catch err = dispatch_objects(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_objects(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === FUNCTION CALLS ===
+        case Opcode.CALL:
+        case Opcode.CALL_S:
+        case Opcode.CALL_PROP:
+        case Opcode.SETPROTO:
+        case Opcode.SUPER_CALL:
+        case Opcode.SUPER_CALL_S:
+        case Opcode.NEWTARGET:
+        case Opcode.NEW_OBJ:
+        case Opcode.NEW_OBJ_S:
+        case Opcode.TAILCALL:
+            if (catch err = dispatch_calls(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_calls(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === GENERATORS ===
+        case Opcode.LOAD_RESUME:
+        case Opcode.AWAIT:
+        case Opcode.YIELD:
+        case Opcode.YIELD_STAR:
+            if (catch err = dispatch_generators(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_generators(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === RETURNS ===
-        if (catch err = dispatch_returns(&ds, op, ra)) { return err~; }
-        continue;
+        // RET / RETUNDEF are extremely hot in recursion; inline them here.
+        // RET_GEN / RETUNDEF_GEN are generator-only and stay out-of-line.
+        case Opcode.RET: {
+            // Safe point: run deferred GC before returning to caller
+            if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
+            // Check for active finally catchers: if we're returning through
+            // a try-finally, save the return value and jump to the finally
+            // handler.  After ENDFINALLY, the saved value will be used.
+            Catcher* ret_cat = (Catcher*)ds.act.cat;
+            if (ret_cat != null && ret_cat.finally_pc != null) {
+                // Save return value
+                ret_cat.return_val = *ra;
+                // If PENDING_RETURN is already set, we're inside the finally
+                // block that was entered due to an earlier return.  Just update
+                // the return value and let execution continue normally —
+                // ENDFINALLY at the end of the finally block will complete the
+                // return with the new value.  Without this check, we'd loop
+                // infinitely back to the same finally block.
+                if (!(ret_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                    // Jump to finally handler
+                    ds.curr_pc = ret_cat.finally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
+                }
+                continue;
+            }
 
-        // === VARIABLE ACCESS ===
+            // Inline handle_return — eliminates function call overhead on every return.
+            TVal val = *ra;
+            Activation* callee_act = &vm.activations[vm.activation_count - 1];
+            TVal* callee_result = callee_act.retval;
 
-        if (catch err = dispatch_var_access(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
+            // Protect the return value: if its only reference lives in a
+            // callee register, decref_callee_regs below would free it.
+            bool val_pinned = false;
+            if (val.is_heap_allocated() && val.get_heapptr() != null) {
+                ((HeapHeader*)val.get_heapptr()).incref();
+                val_pinned = true;
+            }
+
+            // Decref callee registers before popping
+            decref_callee_regs(vm, callee_act);
+
+            vm.activation_count--;
+
+            // Async function: settle promise with return value and return the promise
+            if ((callee_act.flags & ACT_FLAG_ASYNC) != 0 && callee_act.async_promise != null) {
+                builtins::promise_settle(callee_act.async_promise, 1, &val, vm.heap);
+                builtins::promise_trigger_reactions(callee_act.async_promise, vm.heap, (void*)vm);
+                // Release pin on original return value (promise now holds a ref)
+                if (val_pinned) {
+                    vm.heap.decref_tval(&val);
+                }
+                // Replace val with promise; its birth ref (refcount=1) acts as the pin
+                val.set_object(callee_act.async_promise);
+                val_pinned = true;
+            }
+
+            if (vm.activation_count == 0) {
+                vm.heap.tval_copy_ref(&vm.return_val, &val);
+                if (val_pinned) vm.heap.decref_tval(&val);
+                ds.halt = true;
+                ds.halt_value = vm.return_val;
+                continue;
+            }
+            // Write return value to caller's result register
+            if (callee_result != null) {
+                // Constructor: if callee returned an object, use it; otherwise use 'this'
+                if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                    if (val.is_object()) {
+                        vm.heap.tval_copy_ref(callee_result, &val);
+                    } else {
+                        vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
+                    }
+                } else {
+                    // Fast path: skip refcounting when return value is not a heap ref
+                    if (!val.is_heap_allocated()) {
+                        if (callee_result.is_heap_allocated()) {
+                            vm.heap.decref_tval(callee_result);
+                        }
+                        *callee_result = val;
+                    } else if (val_pinned) {
+                        // Transfer the pin reference: decref dst, raw write.
+                        vm.heap.decref_tval(callee_result);
+                        *callee_result = val;
+                        val_pinned = false;
+                    } else {
+                        vm.heap.tval_copy_ref(callee_result, &val);
+                    }
+                }
+            }
+            if (val_pinned) vm.heap.decref_tval(&val);
+            // Restore caller state inline — skip outer loop restart.
+            ds.act = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = ds.act.bottom;
+            vm.valstack_top = ds.act.caller_valstack_top;
+            CompiledFunction* caller_func = (CompiledFunction*)ds.act.func;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                ds.code_base = caller_func.code;
+                ds.code_count = caller_func.code_count;
+                ds.code_end = ds.code_base + ds.code_count;
+                ds.constants = caller_func.constants;
+                ds.ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                ds.var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
+                ds.nregs = caller_func.num_regs;
+            }
+            ds.curr_pc = ds.act.curr_pc;
+            ds.regs_base = ds.act.bottom;
+            continue;
+        }
+
+        case Opcode.RETUNDEF: {
+            // Safe point: run deferred GC before returning to caller
+            if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); }
+            // Check for active finally catchers (same as RET)
+            Catcher* ret2_cat = (Catcher*)ds.act.cat;
+            if (ret2_cat != null && ret2_cat.finally_pc != null) {
+                ret2_cat.return_val.set_undefined();
+                if (!(ret2_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret2_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
+                    ds.curr_pc = ret2_cat.finally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
+                }
+                continue;
+            }
+
+            TVal undef_val;
+            undef_val.set_undefined();
+
+            // Inline handle_return — eliminates function call overhead.
+            Activation* callee_act = &vm.activations[vm.activation_count - 1];
+            TVal* callee_result = callee_act.retval;
+
+            // Decref callee registers before popping
+            decref_callee_regs(vm, callee_act);
+
+            vm.activation_count--;
+
+            // Async function: settle promise with undefined, return promise
+            bool async_ret = false;
+            if ((callee_act.flags & ACT_FLAG_ASYNC) != 0 && callee_act.async_promise != null) {
+                builtins::promise_settle(callee_act.async_promise, 1, &undef_val, vm.heap);
+                builtins::promise_trigger_reactions(callee_act.async_promise, vm.heap, (void*)vm);
+                undef_val.set_object(callee_act.async_promise);
+                async_ret = true;
+            }
+
+            if (vm.activation_count == 0) {
+                vm.heap.tval_copy_ref(&vm.return_val, &undef_val);
+                if (async_ret) vm.heap.decref_tval(&undef_val);
+                ds.halt = true;
+                ds.halt_value = vm.return_val;
+                continue;
+            }
+            // Write return value to caller's result register
+            if (callee_result != null) {
+                // Constructor: return 'this' (the newly created object)
+                if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                    vm.heap.tval_copy_ref(callee_result, &callee_act.this_binding);
+                } else {
+                    if (callee_result.is_heap_allocated()) {
+                        vm.heap.decref_tval(callee_result);
+                    }
+                    *callee_result = undef_val;
+                }
+            }
+            // Restore caller state inline — skip outer loop restart.
+            ds.act = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = ds.act.bottom;
+            vm.valstack_top = ds.act.caller_valstack_top;
+            CompiledFunction* caller_func = (CompiledFunction*)ds.act.func;
+            if (caller_func != vm.current_func) {
+                vm.current_func = caller_func;
+                ds.code_base = caller_func.code;
+                ds.code_count = caller_func.code_count;
+                ds.code_end = ds.code_base + ds.code_count;
+                ds.constants = caller_func.constants;
+                ds.ic_base = (hobject::ICEntry*)caller_func.ic_entries;
+                ds.var_ic_base = (hobject::VarICEntry*)caller_func.var_ic_entries;
+                ds.nregs = caller_func.num_regs;
+            }
+            ds.curr_pc = ds.act.curr_pc;
+            ds.regs_base = ds.act.bottom;
+            continue;
+        }
+        case Opcode.RET_GEN:
+        case Opcode.RETUNDEF_GEN:
+            if (catch err = dispatch_returns(&ds, op, ra)) { return err~; }
+            continue;
+
+        // === VARIABLE ACCESS (inlined: hot in var-heavy / recursive code) ===
+        case Opcode.GETVAR: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    // --- Variable IC fast path ---
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)ds.act.lex_env) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                if (b.get_prop_flags(vic.prop_idx).is_accessor) {
+                                    // Accessor property: fall through to slow path which invokes getter
+                                } else {
+                                    TVal v = b.prop_values()[vic.prop_idx];
+                                    if (!env::is_tdz_sentinel(&v)) {
+                                        // ENV_STRICT: GETVAR read traps removed — for needs_env=false
+                                        // lex_env == parent env, so a hit here is a legitimate parent
+                                        // lookup, not own-local. Own-local leaks surface as 'not defined'
+                                        // throws and are caught by test/test_register_locals.js.
+                                        vm.heap.tval_copy_ref(ra, &v);
+                                        track_heap_store(ds.act, ra, (uint)insn.a);
+                                        break;
+                                    }
+                                    // TDZ: fall through to slow path (error)
+                                }
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path: full environment chain walk ---
+                    bool found = false;
+                    EnvRecord* ic_env = null;
+                    int ic_prop_idx = -1;
+
+                    // Search lexical environment first (for let/const bindings)
+                    EnvRecord* cur = ds.act.lex_env;
+                    while (cur != null) {
+                        int idx = cur.bindings.find_prop_idx(key);
+                        if (idx >= 0) {
+                            // ENV_STRICT: GETVAR read traps removed — for needs_env=false
+                            // lex_env == parent env, so a hit here is a legitimate parent
+                            // lookup, not own-local. Own-local leaks surface as 'not defined'
+                            // throws and are caught by test/test_register_locals.js.
+
+                            TVal v_raw = cur.bindings.prop_values()[idx];
+                            if (env::is_tdz_sentinel(&v_raw)) {
+                                HString* name_hstr = (HString*)key;
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.ref_err_proto;
+                                    char[types::ERROR_MSG_BUF] buf;
+                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
+                                                             name_hstr.get_cstr());
+                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                        HString* msg_str = intern_string(vm, buf[:len]);
+                                        TVal msg_val;
+                                        msg_val.set_string(msg_str);
+                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                    }
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        return vm_uncaught_error(vm, &err_val);
+                                    }
+                                    found = true; // prevent duplicate error
+                                } else {
+                                    return VM_ERROR~;
+                                }
+                            } else if (cur.bindings.get_prop_flags((uint)idx).is_accessor) {
+                                // Accessor property: invoke getter
+                                TVal getter = hobject::hobject_access_getter(v_raw);
+                                if (!getter.is_undefined() && !getter.is_null() && vm.heap.call_fn != null) {
+                                    TVal this_tv;
+                                    this_tv.set_object(cur.bindings);
+                                    TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
+                                    if (vm.heap.has_error) {
+                                        // Propagate error from getter
+                                        vm.has_error = true;
+                                        return VM_ERROR~;
+                                    }
+                                    vm.heap.tval_copy_ref(ra, &getter_val);
+                                } else {
+                                    ra.set_undefined();
+                                }
+                                track_heap_store(ds.act, ra, (uint)insn.a);
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
+                            } else {
+                                vm.heap.tval_copy_ref(ra, &v_raw);
+                                track_heap_store(ds.act, ra, (uint)insn.a);
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
+                            }
+                            break;
+                        }
+                        cur = cur.parent;
+                    }
+
+                    if (!found && ds.act.lex_env != ds.act.var_env) {
+                        // Not in lex_env — search var_env (only needed with `with` blocks)
+                        EnvRecord* vcur = ds.act.var_env;
+                        while (vcur != null) {
+                            int vidx = vcur.bindings.find_prop_idx(key);
+                            if (vidx >= 0) {
+                                // ENV_STRICT: no trap here. For needs_env=false
+                                // functions ds.act.var_env IS the parent env (no
+                                // own scope), so a binding found at this hop is a
+                                // legitimate parent/global lookup, not an own-local
+                                // access. A genuine own-local leak instead surfaces
+                                // as a "not defined" throw (its DECLVAR was elided
+                                // and nothing else defines it), caught by the corpus.
+
+                                if (vcur.bindings.get_prop_flags((uint)vidx).is_accessor) {
+                                    TVal gs_slot = vcur.bindings.prop_values()[vidx];
+                                    TVal getter = hobject::hobject_access_getter(gs_slot);
+                                    if (!getter.is_undefined() && !getter.is_null() && vm.heap.call_fn != null) {
+                                        TVal this_tv;
+                                        this_tv.set_object(vcur.bindings);
+                                        TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
+                                        if (vm.heap.has_error) { vm.has_error = true; return VM_ERROR~; }
+                                        vm.heap.tval_copy_ref(ra, &getter_val);
+                                    } else {
+                                        ra.set_undefined();
+                                    }
+                                } else {
+                                    TVal v2 = vcur.bindings.prop_values()[vidx];
+                                    vm.heap.tval_copy_ref(ra, &v2);
+                                }
+                                track_heap_store(ds.act, ra, (uint)insn.a);
+                                found = true;
+                                break;
+                            }
+                            vcur = vcur.parent;
+                        }
+                    }
+
+                    if (found) {
+                        // Populate IC
+                        if (ds.var_ic_base != null && ic_env != null) {
+                            uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                            hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                            vic.env = ic_env;
+                            vic.bindings = ic_env.bindings;
+                            vic.shape_id = ic_env.bindings.shape_id;
+                            vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                            vic.prop_idx = (ushort)ic_prop_idx;
+                            if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
+                            vic.key = key;
+                            if (key != null) { ((types::HeapHeader*)key).incref(); }
+                            vic.search_head = (void*)ds.act.lex_env;
+                        }
+                    } else {
+                        // ReferenceError: variable not declared
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.ref_err_proto;
+                            char[types::ERROR_MSG_BUF] buf;
+                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not defined",
+                                                     name_hstr.get_cstr());
+                            if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                HString* msg_str = intern_string(vm, buf[:len]);
+                                TVal msg_val;
+                                msg_val.set_string(msg_str);
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val);
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                    }
+                } else {
+                    ra.set_undefined();
+                }
+            } else {
+                ra.set_undefined();
+            }
+            continue;
+        }
+
+        case Opcode.TYPEOFIDENT: {
+            // ES5 §11.4.3: typeof on an unresolvable reference returns "undefined"
+            // instead of throwing ReferenceError.
+            // ES6: typeof on a TDZ variable THROWS ReferenceError.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    // --- Variable IC fast path ---
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)ds.act.lex_env) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                // Accessor properties store a getter/setter pair, not the
+                                // actual value.  Fall through to slow path which invokes the getter.
+                                if (b.get_prop_flags(vic.prop_idx).is_accessor) {
+                                    // Invalidate IC — slow path will handle it.
+                                } else {
+                                    TVal v = b.prop_values()[vic.prop_idx];
+                                    if (!env::is_tdz_sentinel(&v)) {
+                                        // ENV_STRICT: TYPEOFIDENT read traps removed — for needs_env=false
+                                        // lex_env == parent env, so a hit here is a legitimate parent
+                                        // lookup, not own-local. Own-local leaks surface as 'not defined'
+                                        // throws and are caught by test/test_register_locals.js.
+                                        HString* ts = typeof_string(vm, &v);
+                                        vm.heap.set_reg_string(ra, ts);
+                                        break;
+                                    }
+                                    // TDZ: fall through to slow path (error)
+                                }
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path ---
+                    bool found = false;
+                    EnvRecord* ic_env = null;
+                    int ic_prop_idx = -1;
+
+                    // Search lexical environment first (for let/const bindings)
+                    EnvRecord* cur = ds.act.lex_env;
+                    while (cur != null) {
+                        int idx = cur.bindings.find_prop_idx(key);
+                        if (idx >= 0) {
+                            // ENV_STRICT: TYPEOFIDENT read traps removed — for needs_env=false
+                            // lex_env == parent env, so a hit here is a legitimate parent
+                            // lookup, not own-local. Own-local leaks surface as 'not defined'
+                            // throws and are caught by test/test_register_locals.js.
+
+                            TVal v_raw = cur.bindings.prop_values()[idx];
+                            if (env::is_tdz_sentinel(&v_raw)) {
+                                // TDZ: throw ReferenceError (ES6 behavior)
+                                HString* name_hstr = (HString*)key;
+                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                                if (try err = err_raw) {
+                                    err.prototype = vm.heap.ref_err_proto;
+                                    char[types::ERROR_MSG_BUF] buf;
+                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
+                                                             name_hstr.get_cstr());
+                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                        HString* msg_str = intern_string(vm, buf[:len]);
+                                        TVal msg_val;
+                                        msg_val.set_string(msg_str);
+                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                                    }
+                                    TVal err_val;
+                                    err_val.set_object(err);
+                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        return vm_uncaught_error(vm, &err_val);
+                                    }
+                                } else {
+                                    return VM_ERROR~;
+                                }
+                            } else if (cur.bindings.get_prop_flags((uint)idx).is_accessor) {
+                                // Accessor property: invoke getter for typeof
+                                TVal getter = hobject::hobject_access_getter(v_raw);
+                                if (!getter.is_undefined() && !getter.is_null() && vm.heap.call_fn != null) {
+                                    TVal this_tv;
+                                    this_tv.set_object(cur.bindings);
+                                    TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
+                                    if (vm.heap.has_error) {
+                                        // Propagate error from getter
+                                        vm.has_error = true;
+                                        return VM_ERROR~;
+                                    }
+                                    HString* ts = typeof_string(vm, &getter_val);
+                                    vm.heap.set_reg_string(ra, ts);
+                                } else {
+                                    // No getter → typeof returns "undefined"
+                                    HString* ts = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
+                                    vm.heap.set_reg_string(ra, ts);
+                                }
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
+                            } else {
+                                HString* ts = typeof_string(vm, &v_raw);
+                                vm.heap.set_reg_string(ra, ts);
+                                found = true;
+                                ic_env = cur;
+                                ic_prop_idx = idx;
+                            }
+                            break;
+                        }
+                        cur = cur.parent;
+                    }
+
+                    if (!found) {
+                        // Not in lex_env — search var_env
+                        EnvRecord* vcur2 = ds.act.var_env;
+                        while (vcur2 != null) {
+                            int vidx2 = vcur2.bindings.find_prop_idx(key);
+                            if (vidx2 >= 0) {
+                                // ENV_STRICT: no trap here (var_env == parent env
+                                // when needs_env=false; see GETVAR note above).
+
+                                if (vcur2.bindings.get_prop_flags((uint)vidx2).is_accessor) {
+                                    TVal gs_slot2 = vcur2.bindings.prop_values()[vidx2];
+                                    TVal getter2 = hobject::hobject_access_getter(gs_slot2);
+                                    if (!getter2.is_undefined() && !getter2.is_null() && vm.heap.call_fn != null) {
+                                        TVal this_tv2;
+                                        this_tv2.set_object(vcur2.bindings);
+                                        TVal getter_val2 = vm.heap.call_fn(vm, getter2, null, 0, this_tv2);
+                                        if (vm.heap.has_error) { vm.has_error = true; return VM_ERROR~; }
+                                        HString* ts2 = typeof_string(vm, &getter_val2);
+                                        vm.heap.set_reg_string(ra, ts2);
+                                    } else {
+                                        HString* ts2 = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
+                                        vm.heap.set_reg_string(ra, ts2);
+                                    }
+                                } else {
+                                    TVal v2 = vcur2.bindings.prop_values()[vidx2];
+                                    HString* ts = typeof_string(vm, &v2);
+                                    vm.heap.set_reg_string(ra, ts);
+                                }
+                                found = true;
+                                break;
+                            }
+                            vcur2 = vcur2.parent;
+                        }
+                        if (!found) {
+                            // Unresolvable reference → "undefined" (no error)
+                            HString* ts = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
+                            vm.heap.set_reg_string(ra, ts);
+                        }
+                    }
+
+                    // Populate IC (skip for unresolvable — no env to cache)
+                    if (found && ds.var_ic_base != null && ic_env != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        vic.env = ic_env;
+                        vic.bindings = ic_env.bindings;
+                        vic.shape_id = ic_env.bindings.shape_id;
+                        vic.generation = vm.heap.shapes[ic_env.bindings.shape_id].generation;
+                        vic.prop_idx = (ushort)ic_prop_idx;
+                        if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
+                        vic.key = key;
+                        if (key != null) { ((types::HeapHeader*)key).incref(); }
+                        vic.search_head = (void*)ds.act.lex_env;
+                    }
+                } else {
+                    ra.set_undefined();
+                }
+            } else {
+                ra.set_undefined();
+            }
+            continue;
+        }
+
+        case Opcode.PUTVAR: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    // ENV_STRICT TODO: own-vs-parent check for lex_env and var_env walks.
+                    // Would need to introspect env_try_put_lex or rewrite walk here.
+                    // Combined single-walk: check lex_env, writability, and update in one pass
+                    int put_result = env::env_try_put_lex(ds.act.lex_env, key, *ra);
+                    if (put_result == -1) {
+                        // Const violation — throw TypeError
+                        HString* name_hstr = (HString*)key;
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.type_err_proto;
+                            char[types::ERROR_MSG_BUF] buf;
+                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Assignment to constant variable '%s'",
+                                                     name_hstr.get_cstr());
+                            if (len > 0 && len < types::ERROR_MSG_BUF) {
+                                HString* msg_str = intern_string(vm, buf[:len]);
+                                TVal msg_val;
+                                msg_val.set_string(msg_str);
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                            }
+                            TVal err_val;
+                            err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val);
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    } else if (put_result == 0) {
+                        // Not in lex_env — fall through to var_env
+                        env::env_put(ds.act.var_env, key, *ra);
+                    }
+                    // put_result == 1: already updated in lex_env
+                    // Release ra's ref — the binding now owns the reference.
+                    // Without this, ra holds a stale ref into the next iteration,
+                    // causing strings to leak (not reach rc=0 on binding overwrite).
+                    vm.heap.decref_tval(ra);
+                    ra.set_undefined();
+                }
+            }
+            continue;
+        }
+
+        case Opcode.DECLVAR: {
+            // Declare a `var` binding in the immediate var_env only (no chain walk).
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    $if types::ENV_STRICT:
+                    if (vm.current_func.needs_env() == false) { unreachable("ENV_STRICT: needs_env=false fn touched own env: DECLVAR"); }
+                    $endif
+
+                    // --- VarIC fast path: skip find_prop_idx on repeat calls ---
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        if (vic.env == (void*)ds.act.var_env && vic.key == key) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b != null && b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                // Direct write — skip find_prop_idx + put_prop overhead
+                                TVal* pv = &b.prop_values()[vic.prop_idx];
+                                if (hobject::_active_heap != null && pv.is_string()) {
+                                    ((heap::Heap*)hobject::_active_heap).decref_tval(pv);
+                                }
+                                *pv = *ra;
+                                if (hobject::_active_heap != null && ra.is_string()) {
+                                    void* ptr = ra.get_heapptr();
+                                    if (ptr != null) ((types::HeapHeader*)ptr).incref();
+                                }
+                                break;
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path: full env_declare ---
+                    env::env_declare(ds.act.var_env, key, *ra);
+
+                    // Populate VarIC for next time
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        HObject* b = ds.act.var_env.bindings;
+                        if (b != null) {
+                            int idx = b.find_prop_idx(key);
+                            if (idx >= 0) {
+                                vic.env = (void*)ds.act.var_env;
+                                vic.bindings = (void*)b;
+                                vic.shape_id = b.shape_id;
+                                vic.generation = vm.heap.shapes[b.shape_id].generation;
+                                vic.prop_idx = (ushort)idx;
+                                vic.key = key;
+                                vic.search_head = null;
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        case Opcode.PUTLEX: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    $if types::ENV_STRICT:
+                    if (vm.current_func.needs_env() == false) { unreachable("ENV_STRICT: needs_env=false fn touched own env: PUTLEX"); }
+                    $endif
+
+                    env::env_declare_lex(ds.act.lex_env, key, *ra);
+                }
+            }
+            continue;
+        }
+
+        case Opcode.PUTLEX_C: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    $if types::ENV_STRICT:
+                    if (vm.current_func.needs_env() == false) { unreachable("ENV_STRICT: needs_env=false fn touched own env: PUTLEX_C"); }
+                    $endif
+
+                    ds.act.lex_env.bindings.put_prop(key, *ra, hobject::PROP_FLAGS_EC);
+                }
+            }
+            continue;
+        }
+
+        case Opcode.INITTZ: {
+            // Store the TDZ sentinel for a variable name in the current
+            // lexical environment.  This marks the binding as uninitialized
+            // so that GETVAR throws a ReferenceError (temporal dead zone)
+            // if the variable is accessed before its PUTLEX/PUTLEX_C.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+
+                    $if types::ENV_STRICT:
+                    if (vm.current_func.needs_env() == false) { unreachable("ENV_STRICT: needs_env=false fn touched own env: INITTZ"); }
+                    $endif
+
+                    TVal tdz = env::tdz_sentinel();
+                    ds.act.lex_env.bindings.put_prop(key, tdz, hobject::PROP_FLAGS_WEC);
+                }
+            }
+            continue;
+        }
+
+        case Opcode.DELVAR:
+            ra.set_boolean(true);
+            continue;
+
         // === CLOSURES ===
+        case Opcode.CLOSURE:
+        case Opcode.GETBOUND:
+            if (catch err = dispatch_closures(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_closures(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
-        // === ITEraTOR ===
+        // === ITERATOR ===
+        case Opcode.INITFOR:
+        case Opcode.NEXTFOR:
+            if (catch err = dispatch_iterator(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_iterator(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === EXCEPTION HANDLING ===
+        case Opcode.TRY:
+        case Opcode.ENDTRY:
+        case Opcode.THROW:
+        case Opcode.CATCH:
+        case Opcode.FINALLY:
+        case Opcode.ENDFINALLY:
+            if (catch err = dispatch_exceptions(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_exceptions(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         // === MISC ===
+        case Opcode.NOP:
+        case Opcode.DEBUGGER:
+        case Opcode.BREAK:
+        case Opcode.CONTINUE:
+        case Opcode.INITGET:
+        case Opcode.INITSET:
+        case Opcode.INITSETI:
+        case Opcode.CSVARI:
+        case Opcode.PUSH_LEX:
+        case Opcode.POP_LEX:
+        case Opcode.REQUIRE_OBJ:
+            if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
 
-        if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }
-        continue;
         default:
             return VM_ERROR~;
         }
