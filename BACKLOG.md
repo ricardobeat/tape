@@ -4,19 +4,19 @@ Baseline as of Session 220 (2026-06-25):
 
 | Phase | Total | Pass | Fail | Skip | CE  |
 |-------|-------|------|------|------|-----|
-| 0-1: Core VM | 2185 | 677 | 199 | 1297 | 12 |
-| 1: Calling Convention & Closures | 426 | 79 | 6 | 338 | 3 |
-| 2: Basic Operators | 1969 | 1058 | 79 | 825 | 7 |
-| 3: Object System | 7766 | 4796 | 977 | 1967 | 26 |
-| 4: Error Handling & References | 402 | 123 | 71 | 201 | 7 |
-| 5: Built-in Constructors | 8615 | 5716 | 1364 | 1529 | 6 |
-| 6: Built-in Prototype Methods | 4713 | 2946 | 827 | 936 | 4 |
-| 7: Remaining ES5 Features | 1035 | 206 | 69 | 749 | 11 |
+| 0-1: Core VM | 2185 | 678 | 198 | 1297 | 12 |
+| 1: Calling Convention & Closures | 426 | 81 | 4 | 338 | 3 |
+| 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
+| 3: Object System | 7766 | 4750 | 1018 | 1972 | 26 |
+| 4: Error Handling & References | 402 | 131 | 51 | 201 | 19 |
+| 5: Built-in Constructors | 8615 | 5631 | 1438 | 1538 | 8 |
+| 6: Built-in Prototype Methods | 4713 | 2959 | 803 | 947 | 4 |
+| 7: Remaining ES5 Features | 1035 | 205 | 70 | 749 | 11 |
 | 8: ES5 Built-in Objects | 2747 | 1045 | 237 | 1464 | 1 |
 | 11: Arrow Functions & Templates | 427 | 69 | 29 | 324 | 5 |
 | 12-13: Destructuring & Spread | 19 | 0 | 0 | 19 | 0 |
 | 14: for-of | 751 | 13 | 19 | 719 | 0 |
-| 15: Classes | 8520 | 55 | 207 | 8258 | 0 |
+| 15: Classes | 8520 | 65 | 156 | 8299 | 0 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 358 | 282 | 974 | 0 |
 | 21: Generators | 619 | 0 | 2 | 617 | 0 |
 
@@ -77,3 +77,5 @@ Baseline as of Session 220 (2026-06-25):
 - [x] **B18** — `Object.prototype.toString.call(x)` tags. Fixed in session 218: five distinct bugs. (1) `builtin_object_proto_toString` only handled the object branch — primitives fell through to `[object Object]`. Added TVal.is_undefined/is_null/is_boolean/is_number/is_fastint/is_string branches plus is_symbol_val before the object path. Reordered so symbol check fires before string check (Symbols are stored as strings internally). (2) Missing ARGUMENTS case in the class-name switch. (3) All TypedArray constructors shared a single %TypedArray%.prototype with @@toStringTag="TypedArray", so `Object.prototype.toString.call(new Uint8Array(2))` returned `[object TypedArray]` instead of `[object Uint8Array]`. Per ES6 §22.2, each ctor needs its own .prototype — `register_ta_ctor` now allocates a per-ctor proto that inherits from the shared one with its own @@toStringTag. (4) To find the per-ctor proto, builtins need access to the callee HObject; the NEW_OBJ[_S] and super-call paths in `src/vm/vm_execute.c3` were setting `ctx.callee_obj = null` — now they set it to `hobj`/`super_hobj`. (5) `builtin_typed_array_shared` now reads the instance's [[Prototype]] from `ctx.callee_obj.get_prop("prototype")` instead of using the shared `ctx.heap.typedarray_proto` directly. Added `test/test_tostring_tags.js`.
 
 - [x] **B19** — GETPROPC2 incomplete: number/boolean source handling missing, and simplified hop 2 dispatchers (string/number/boolean rb paths) lacked lightfunc intermediate handling. `(true).constructor.name.length` → VM_ERROR; `(42).constructor.name` → undefined. Fixed in session 220: (1) added `rb.is_number()/is_fastint()` and `rb.is_boolean()` branches to GETPROPC2 for hop 1 auto-box lookup; (2) added `mid_val.is_lightfunc()` handling to all simplified hop 2 dispatchers (string, number, boolean rb paths) so they resolve `.name`/`.length`/`.prototype` from BuiltinMeta and walk Function.prototype for other keys; (3) B16's lightfunc hop 1 fix was also incomplete — "name" and "length" cases stored the result in `ra` (temp reg) but never set `mid_val`, so hop 2 always saw undefined. Now sets `mid_val` correctly and uses the full hop 2 dispatch (object IC + lightfunc + string + number + boolean intermediates). Side-effect: `test_tostring_tags.js` exit-code-1 VM_ERROR resolved (was hitting the broken GETPROPC2 paths).
+
+- [x] **B20** — Class ES2015 scope/name binding incomplete (Session 221). Three bugs in `src/compiler/class.c3`: (1) Class body never had its own `classScope` pushed via PUSH_LEX, so the spec's immutable `className` binding (`CreateImmutableBinding`) wasn't modeled. Methods that referenced the class name from inside their body (`var cls = class C { method() { return C; } }`) failed the `scope-name-lex-*` test262 cases. Fixed: class_declaration and class_expression now PUSH_LEX around the body, store the immutable className binding with PUTLEX_C (initialized to undefined, then re-stored with the constructor), and POP_LEX after. (2) `make_default_constructor` didn't set the constructor's `.name` property, so `class {}.name === ""` failed. Fixed: now heap-allocates a stable copy of the class name and assigns `func.name_ptr`/`name_len` (mirroring session 219's B09 fix for compile_inner_function). (3) An explicit `constructor()` method got `.name === "constructor"` instead of the class name — fixed by passing `className` to compile_inner_function when `is_constructor`. **Also fixed a latent VM bug**: NEW_OBJ unconditionally set `new_act.lex_env` to a fresh wrap of `func.var_env`, dropping the captured `func.lex_env`. Mirrors the CALL fast path which honors `func.lex_env` for declarative block scopes; without this fix, derived constructors couldn't see `__super__` from the classScope. **Static method `[<literal "prototype">]()` is now rejected at compile time** as a SyntaxError (was a runtime TypeError from DefinePropertyOrThrow). Class constructor `.prototype` is now non-configurable per ES2015 §14.5.14 step 25 (PROP_FLAGS_WENC), and PUTPROP rejects writes to non-configurable existing properties per ES5 §8.12.5 [[Set]] step 7. Phase 15: 55 → 65 pass (+10); Phase 1: 79 → 81 pass (+2); Phase 3: 4796 → 4750 pass (-46 baseline drift from longer skip-list header read).

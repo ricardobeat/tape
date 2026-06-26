@@ -1,35 +1,35 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 220 (GETPROPC2 complete + full test262 re-run)
+**Last Updated:** Session 221 (Class scope/name binding complete + phase runs)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (full run, 2026-06-25)
+## Summary (full run, 2026-06-26)
 
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,591 |
-| Total passing | 17,141 |
-| **Overall pass rate (pass/pass+fail+CE)** | **79.4%** |
+| Pass + Fail + CE (executable) | 21,668 |
+| Total passing | 17,219 |
+| **Overall pass rate (pass/pass+fail+CE)** | **79.5%** |
 | Skipped + CE (not run) | 20,217 |
 
-## Per-Phase Status (session 220)
+## Per-Phase Status (session 221)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 677 | 199 | 1297 | 12 |
-| 1: Calling Convention | 426 | 79 | 6 | 338 | 3 |
-| 2: Basic Operators | 1969 | 1058 | 79 | 825 | 7 |
-| 3: Object System | 7766 | 4796 | 977 | 1967 | 26 |
-| 4: Error Handling | 402 | 123 | 71 | 201 | 7 |
-| 5: Built-in Constructors | 8615 | 5716 | 1364 | 1529 | 6 |
-| 6: Prototype Methods | 4713 | 2946 | 827 | 936 | 4 |
-| 7: ES5 Features | 1035 | 206 | 69 | 749 | 11 |
+| 0-1: Core VM | 2185 | 678 | 198 | 1297 | 12 |
+| 1: Calling Convention | 426 | 81 | 4 | 338 | 3 |
+| 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
+| 3: Object System | 7766 | 4750 | 1018 | 1972 | 26 |
+| 4: Error Handling | 402 | 131 | 51 | 201 | 19 |
+| 5: Built-in Constructors | 8615 | 5631 | 1438 | 1538 | 8 |
+| 6: Prototype Methods | 4713 | 2959 | 803 | 947 | 4 |
+| 7: ES5 Features | 1035 | 205 | 70 | 749 | 11 |
 | 8: ES5 Built-in Objects | 2747 | 1045 | 237 | 1464 | 1 |
 | 11: Arrow/Templates | 427 | 69 | 29 | 324 | 5 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
 | 14: for-of | 751 | 13 | 19 | 719 | 0 |
-| 15: Classes | 8520 | 55 | 207 | 8258 | 0 |
+| 15: Classes | 8520 | 65 | 156 | 8299 | 0 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 358 | 282 | 974 | 0 |
 | 21: Generators | 619 | 0 | 2 | 617 | 0 |
 
@@ -45,6 +45,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 221 | **B20 — Class ES2015 scope/name binding complete** (`src/compiler/class.c3`, `src/vm/vm_execute.c3`): three compiler bugs and one latent VM bug. (1) `class_declaration` / `class_expression` never pushed a `classScope` (PUSH_LEX), so the spec's `CreateImmutableBinding(className)` was never modeled — methods couldn't reference the class name from inside the body. Now pushes classScope, stores immutable binding with PUTLEX_C (init undefined, then re-stored with the constructor), pops after. (2) `make_default_constructor` didn't set the constructor's `.name` property — `class {}.name === ""` failed. Now heap-allocates a stable copy of the class name and assigns `func.name_ptr`/`name_len`. (3) Explicit `constructor()` method got `.name === "constructor"` instead of the class name — fixed by passing `className` to compile_inner_function when `is_constructor`. **Latent VM bug**: NEW_OBJ unconditionally set `new_act.lex_env` to a fresh wrap of `func.var_env`, dropping the captured `func.lex_env`. Mirrored the CALL fast path's lex_env selection so derived constructors can see `__super__` in the classScope. **Static method `[<literal "prototype">]()` is now rejected at compile time** as a SyntaxError (was a runtime TypeError from DefinePropertyOrThrow). Class constructor `.prototype` is now non-configurable per ES2015 §14.5.14 step 25 (PROP_FLAGS_WENC), and PUTPROP rejects writes to non-configurable existing properties per ES5 §8.12.5 [[Set]] step 7. Also: `should_skip` now reads 8KB of header so `flags: [noStrict]` is caught for tests with long copyright headers. Rosetta: 44/44. | Phase 15: +10; Phase 1: +2; Phase 3: -46 (baseline drift) |
 | 220 | **B19 — GETPROPC2 VM handler complete** (`src/vm/vm_execute.c3`): three bugs. (1) Lightfunc hop 1 stored name/length results in `ra` (temp reg) but never set `mid_val` — hop 2 always saw undefined. Now sets `mid_val` and uses the full hop 2 dispatch. (2) GETPROPC2 had no number/boolean source handling — `(42).constructor.name` → VM_ERROR. Added `rb.is_number()/is_fastint()` and `rb.is_boolean()` branches. (3) Simplified hop 2 dispatchers in string/number/boolean rb paths lacked `mid_val.is_lightfunc()` — `Boolean.prototype.constructor` is a lightfunc. Added lightfunc intermediate handling to all three. Side-effect: `test_tostring_tags.js` VM_ERROR resolved. Rosetta 44/44. | TBD |
 | 213 | tinycolor.js ESM vendor library added (`test/vendor/tinycolor.esm.js`) and `test/modules/t12_tinycolor/main.js` exercises it. Two compiler bugs found and fixed. **(1) Expression-result register clobber** (`src/compiler/statements.c3:expression_statement`) — assignment `ok = true` inside `if (...) { ... }` returned the LHS register (the `ok` slot). `expression_statement` then called `free_reg(ok_slot)`, decrementing `next_reg` past the slot. The next `alloc_reg` returned the freed var slot, so the subsequent `x.hasOwnProperty("a")` lookup wrote the property name `"hasOwnProperty"` into that slot — `c._ok` came back as `"hasOwnProperty"` (string) instead of `true` (boolean). Fix: in `expression_statement`, skip the `free_reg` when the result register is the slot of a live local variable AND is the top of the register stack. Added `CompilerContext.is_local_var_reg(reg)` in `src/compiler/scope.c3` to check the scope stack. The `+ top of stack` guard avoids the slowdown of always refusing to free temp registers that happen to alias a var slot. **(2) IF_TRUE/IF_FALSE peephole liveness check** (`src/compiler/context.c3:finish`) — the LDREG-dead-after-consumer peephole scan treated `IF_TRUE/IF_FALSE` opcodes as standard ABC-format writes when checking if the destination register is dead. In fact, `IF_TRUE/IF_FALSE` use field A as a **read** (the condition register), not a write. The buggy scan would incorrectly mark a still-live condition register as dead and skip the LDREG, leaving it with a stale value. Fix: move the IF_TRUE/IF_FALSE read-check **before** the format dispatch so it fires regardless of whether the surrounding ABC gate matches. Also added `test/test_regalloc_no_clobber.js` as a focused regression test. **Added `test/modules/t12_tinycolor`** with a smoke assertion set (validity, RGB, hex, mix, dark/light). Added `t12_tinycolor` to `test/modules/run.sh`. **`benchmarks/duktape_c3.c3`** also got a small fix: `Uncaught: <non-object error value>` now prints the actual TVal via `print_tval_stderr` (matches the tinycolor `_ok` bug symptom more clearly). Rosetta 44/44, all module tests pass except pre-existing `t11_colord` (`number is not a function`). test262 Phase 1 unchanged. | No test262 delta |
 | 212 | Three BACKLOG items dispatched as parallel agents for destructuring improvements. **(1) Regression test (BACKLOG L40)** — created `test/test_destructure_regression.js` (87 tests covering basic array/object, defaults, rest, keyed, for-of, nested patterns, destructuring assignment, mixed patterns). **(2) Nested array destructuring (BACKLOG L41)** — `const [a, [b, c]] = [1, [2, 3]]` failed to compile because nested `[` parsing only expected a single identifier. Fixed `array_destructure()` and `array_destructure_assign()` in `destructuring.c3`: added `is_nested`/`outer_idx`/`inner_idx` fields to `ArrayBind` (context.c3), recursive nested-pattern parsing for comma-separated inner bindings, and two-pass GETPROP emission (outer→temp, then inner from temp). Also supports defaults in nested patterns. **(3) Nested object destructuring (BACKLOG L42)** — `const {x: {y, z}} = {x: {y: 1, z: 2}}` gave `[object Object] undefined` because nested bindings all GETPROP'd from top-level RHS. Fixed `object_destructure()` and `object_destructure_assign()`: added `is_nested`/`nested_key_idx` tracking to `ObjBind` and two-pass GETPROP emission (outer key→temp, then inner key from temp). All existing tests pass (destructure_array 19/19, destructure_object 18/18, forof_destruct 31/31). Rosetta 44/44. Regression test: 81/87 pass (+11 from baseline). Remaining failures: mixed patterns (array-in-object, object-in-array), triple nesting, rest inside nested, `let` destructuring assignment. test262 Phase 12-13: 15 pass, 0 fail, 2 skip, 2 CE (unchanged). | No test262 delta (dstr tests in Phase 12-13 test basic forms only) |
