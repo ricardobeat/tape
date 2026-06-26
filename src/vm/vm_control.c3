@@ -7,6 +7,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
 import duktape::builtins;
+import libc;
 
 // ============================================================================
 // vm_control — return / variable access / closure / iterator / exceptions / misc

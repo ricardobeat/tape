@@ -194,6 +194,7 @@ struct Dispatch {
     Activation* act;
     Instruction* code_base;
     uint code_count;
+    Instruction* code_end;
     TVal* constants;
     hobject::ICEntry* ic_base;
     hobject::VarICEntry* var_ic_base;
