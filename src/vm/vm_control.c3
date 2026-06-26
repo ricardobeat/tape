@@ -7675,3 +7675,67 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
     return (TVal){};
 }
 
+/// Sub-dispatch for LDREG, LDCONST, LDINT, LDINTX, LDUNDEF, LDNULL, LDTRUE, LDFALSE, LDTHIS opcodes.
+fn TVal? dispatch_load_store(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
+    Vm* vm = ds.vm;
+    switch (op) {
+        case Opcode.LDREG:
+            // Fast path: if source is not a heap ref (fastint, undefined, etc.),
+            // skip full refcounting — only decref dst if it held a heap pointer.
+            if (!rb.is_heap_allocated()) {
+                if (ra.is_heap_allocated()) {
+                    vm.heap.decref_tval(ra);
+                }
+                *ra = *rb;
+            } else {
+                vm.heap.tval_copy_ref(ra, rb);
+                track_heap_store(ds.act, ra, (uint)insn.a);
+            }
+            return (TVal){};
+
+        case Opcode.LDCONST: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                vm.heap.tval_copy_ref(ra, &ds.constants[bc]);
+            } else {
+                ra.set_undefined();
+            }
+            return (TVal){};
+        }
+
+        case Opcode.LDINT:
+            ra.set_fastint((long)insn.get_sbc());
+            return (TVal){};
+
+        case Opcode.LDINTX: {
+            long ix_high = ra.get_fastint();
+            ra.set_fastint((ix_high << 16) | (long)insn.get_bc());
+            return (TVal){};
+        }
+
+        case Opcode.LDUNDEF:
+            ra.set_undefined();
+            return (TVal){};
+
+        case Opcode.LDNULL:
+            ra.set_null();
+            return (TVal){};
+
+        case Opcode.LDTRUE:
+            ra.set_boolean(true);
+            return (TVal){};
+
+        case Opcode.LDFALSE:
+            ra.set_boolean(false);
+            return (TVal){};
+
+        case Opcode.LDTHIS:
+            vm.heap.tval_copy_ref(ra, &ds.act.this_binding);
+            track_heap_store(ds.act, ra, (uint)insn.a);
+            return (TVal){};
+
+        default:
+            return (TVal){};
+    }
+}
+

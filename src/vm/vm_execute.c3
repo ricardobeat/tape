@@ -519,61 +519,12 @@ fn TVal? Vm.run(Vm* vm) {
 
         // === LOAD / STORE ===
 
-        case Opcode.LDREG:
-            // Fast path: if source is not a heap ref (fastint, undefined, etc.),
-            // skip full refcounting — only decref dst if it held a heap pointer.
-            if (!rb.is_heap_allocated()) {
-                if (ra.is_heap_allocated()) {
-                    vm.heap.decref_tval(ra);
-                }
-                *ra = *rb;
-            } else {
-                vm.heap.tval_copy_ref(ra, rb);
-                track_heap_store(ds.act, ra, (uint)insn.a);
-            }
-            break;
-
-        case Opcode.LDCONST: {
-            uint bc = insn.get_bc();
-            if (bc < vm.current_func.const_count) {
-                vm.heap.tval_copy_ref(ra, &ds.constants[bc]);
-            } else {
-                ra.set_undefined();
-            }
-            break;
+        case Opcode.LDREG: {
+            // Forward to dispatch_load_store function (handles all LOAD/STORE opcodes)
+            if (catch err = dispatch_load_store(&ds, op, ra, rb, rc, insn)) { return err~; }
+            continue;
         }
-
-        case Opcode.LDINT:
-            ra.set_fastint((long)insn.get_sbc());
-            break;
-
-        case Opcode.LDINTX: {
-            long ix_high = ra.get_fastint();
-            ra.set_fastint((ix_high << 16) | (long)insn.get_bc());
-            break;
-        }
-
-        case Opcode.LDUNDEF:
-            ra.set_undefined();
-            break;
-
-        case Opcode.LDNULL:
-            ra.set_null();
-            break;
-
-        case Opcode.LDTRUE:
-            ra.set_boolean(true);
-            break;
-
-        case Opcode.LDFALSE:
-            ra.set_boolean(false);
-            break;
-
-        case Opcode.LDTHIS:
-            vm.heap.tval_copy_ref(ra, &ds.act.this_binding);
-            track_heap_store(ds.act, ra, (uint)insn.a);
-            break;
-
+            continue;
         // === ARITHMETIC ===
 
         if (catch err = dispatch_arith(&ds, op, ra, rb, rc, insn)) { return err~; }
