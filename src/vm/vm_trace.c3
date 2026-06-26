@@ -1,0 +1,61 @@
+module duktape::vm;
+
+import duktape::types;
+import duktape::bytecode;
+import duktape::hstring;
+import duktape::hobject;
+import std::io;
+
+// ============================================================================
+// VM trace helpers (for --trace-vm)
+// ============================================================================
+
+/// Print a TVal to stderr (for --trace-vm debugging).
+fn void trace_print_tval(TVal* v) {
+    switch (v.get_tag()) {
+        case types::TValTag.UNDEFINED:  io::eprintf("undef");    break;
+        case types::TValTag.NULL_VAL:   io::eprintf("null");     break;
+        case types::TValTag.BOOLEAN:    io::eprintf(v.get_boolean() ? "true" : "false"); break;
+        case types::TValTag.FASTINT:    io::eprintf("%d", v.get_fastint()); break;
+        case types::TValTag.NUMBER:     io::eprintf("%g", v.get_number()); break;
+        case types::TValTag.STRING: {
+            HString* s = (HString*)v.get_heapptr();
+            if (s != null) {
+                char[] d = s.get_data();
+                io::eprintf("\"");
+                for (usz i = 0; i < d.len; i++) { io::eprintf("%c", d[i]); }
+                io::eprintf("\"");
+            } else { io::eprintf("(null)"); }
+            break;
+        }
+        case types::TValTag.OBJECT: {
+            HObject* o = (HObject*)v.get_heapptr();
+            if (o != null) { io::eprintf("[object %d]", (int)o.flags.obj_class.ordinal); }
+            else           { io::eprintf("[object (null)]"); }
+            break;
+        }
+        default: io::eprintf("<?>"); break;
+    }
+}
+
+/// Trace a single instruction before dispatch (for --trace-vm).
+/// Writes to stderr so it doesn't interfere with program output.
+fn void trace_instruction(Vm* vm, Instruction* ip, uint offset,
+                          TVal* ra, TVal* rb, TVal* rc,
+                          TVal* regs_base, Activation* act) {
+    char[160] line_buf;
+    usz written = ip.disassemble(line_buf[..]);
+    uint end = written < (usz)line_buf.len ? (uint)written : line_buf.len;
+    io::eprintf("[0x%04X] %s  | ", offset, (String)line_buf[0:end]);
+
+    // Print register values for the operands
+    ushort a = (ushort)ip.a;
+    ushort b = (ushort)ip.b;
+    ushort c = (ushort)ip.c;
+    io::eprintf("r%d=", a); trace_print_tval(ra);
+    io::eprintf(" r%d=", b); trace_print_tval(rb);
+    if (c != 0 || ip.op != Opcode.NOP) {
+        io::eprintf(" r%d=", c); trace_print_tval(rc);
+    }
+    io::eprintf("\n");
+}

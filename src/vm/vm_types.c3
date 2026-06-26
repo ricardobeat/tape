@@ -183,3 +183,22 @@ struct Vm {
     TVal throw_value;
     bool throw_pending;
 }
+
+// ============================================================================
+// Per-frame dispatch state — bundled so sub-dispatch functions can be
+// extracted into separate files without threading 12 parameters.
+// ============================================================================
+
+struct Dispatch {
+    Vm* vm;
+    Activation* act;
+    Instruction* code_base;
+    uint code_count;
+    TVal* constants;
+    hobject::ICEntry* ic_base;
+    hobject::VarICEntry* var_ic_base;
+    uint nregs;
+    TVal* regs_base;
+    Instruction* curr_pc;
+    bool needs_restart;
+}
