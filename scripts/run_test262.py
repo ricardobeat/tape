@@ -307,8 +307,11 @@ def should_skip(path, es5_only=False):
         return True
 
     try:
+        # Read enough to cover long copyright/info headers (some tests have
+        # >2KB of front-matter before the `flags:` line).  8KB is well below
+        # typical test body size so we don't accidentally include test code.
         with open(path) as f:
-            header = f.read(2000)
+            header = f.read(8192)
     except OSError:
         return True
 

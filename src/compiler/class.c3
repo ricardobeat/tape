@@ -16,7 +16,10 @@ import std::io;
 /// Create a default constructor CompiledFunction without using the lexer.
 /// has_super: if true, creates `constructor(...args) { super(...args); }`
 /// otherwise creates `constructor() {}`.
-fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super) {
+/// class_name: when non-empty, used as the constructor's name property
+/// (per ES2015 §14.5.14 step 17 + SetFunctionName, a class declaration's
+/// default constructor inherits the class name as its .name).
+fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] class_name) {
     void* raw = hp.alloc_func(hp.heap_udata, CompiledFunction::size);
     if (raw == null) return COMPILE_ERROR~;
     libc::memset(raw, 0, CompiledFunction::size);
@@ -24,6 +27,24 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super) {
     CompiledFunction* func = (CompiledFunction*)raw;
     func.flags.htype = HType.OBJECT;
     func.flags.is_constructable = true;
+    // Class constructor: .prototype is non-configurable per ES2015 §14.5.14
+    // step 25.  CLOSURE checks this flag and uses PROP_FLAGS_WENC (configurable=false).
+    func.flags.is_class_ctor = true;
+
+    // Set the constructor's name from the class name (per ES2015 SetFunctionName).
+    // Heap-allocate so the name lives as long as the function (was session 219's
+    // B09 fix for compile_inner_function; apply same here).
+    if (class_name.len > 0) {
+        char* name_heap = (char*)hp.alloc_func(hp.heap_udata, (usz)class_name.len + 1);
+        if (name_heap == null) {
+            hp.free_func(hp.heap_udata, raw);
+            return COMPILE_ERROR~;
+        }
+        for (usz i = 0; i < class_name.len; i++) name_heap[i] = class_name[i];
+        name_heap[class_name.len] = 0;
+        func.name_ptr = name_heap;
+        func.name_len = (uint)class_name.len;
+    }
 
     if (has_super) {
         // constructor(...args) { super(...args); }
@@ -100,15 +121,55 @@ fn void? CompilerContext.class_declaration(&self) {
     self.expect(TokenType.CLASS)!;
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
 
-    // Class name binding: let-like (block-scoped, TDZ)
+    // ES6 §14.5.14 Runtime Semantics: ClassDefinitionEvaluation creates a
+    // fresh lexical environment (classScope) as a child of the current
+    // LexicalEnvironment, with an *immutable* CreateImmutableBinding for the
+    // class name.  Methods and the constructor close over classScope, so the
+    // class name resolves to the constructor inside the class body but is
+    // shadowed by the outer scope from outside.
+    //
+    // We model this with PUSH_LEX (allocate classScope) and PUTLEX_C
+    // (mark the binding non-writable, which is what immutable binding maps
+    // to in our env: PUTVAR on a non-writable binding throws TypeError).
+    // Then we POP_LEX after storing the constructor into the OUTER let
+    // binding (so `Foo` resolves to the constructor from the outer scope).
+
+    // Outer let-style binding: holds the constructor after the class evaluates.
+    // Same as the existing let/const treatment for class declarations.
     ushort class_reg = self.declare_var(name_tok.str_value, LET);
     uint class_name_idx = self.add_string_constant(name_tok.str_value);
 
-    // Parse extends clause and class body
-    ushort ctor_reg = self.parse_class_tail()!;
+    // Push the classScope (child of current lex_env).
+    self.emit_simple(Opcode.PUSH_LEX);
 
-    // Store the constructor in the class binding
+    // Initialize the immutable className binding with undefined as a TDZ-like
+    // placeholder.  PUTLEX_C stores the value AND marks the binding non-writable.
+    // The binding is later overwritten with the constructor — PUTLEX_C on an
+    // existing entry just re-stores the value (put_prop is overwrite-in-place),
+    // which matches spec step 14's "InitializeReferencedBinding" semantics on
+    // an uninitialized immutable binding.
+    {
+        ushort tmp_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDUNDEF, (uint)tmp_reg, 0, 0);
+        self.emit_a_bc(Opcode.PUTLEX_C, (uint)tmp_reg, class_name_idx);
+        self.free_reg(tmp_reg);
+    }
+
+    // Parse extends clause and class body.  Methods CLOSURE here, capturing
+    // classScope as their lex_env so the class name resolves to the
+    // constructor from inside method bodies.
+    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value)!;
+
+    // Initialize the classScope's immutable binding with the constructor value
+    // (overwriting the TDZ placeholder).
     self.emit_abc(Opcode.LDREG, (uint)class_reg, (uint)ctor_reg, 0);
+    self.emit_a_bc(Opcode.PUTLEX_C, (uint)class_reg, class_name_idx);
+
+    // Pop the classScope — methods retain it via CLOSURE capture.
+    self.emit_simple(Opcode.POP_LEX);
+
+    // Store the constructor into the OUTER let binding so `Foo` resolves to
+    // the constructor from outside the class declaration as well.
     self.emit_a_bc(Opcode.PUTLEX, (uint)class_reg, class_name_idx);
     self.free_reg(ctor_reg);
 }
@@ -118,25 +179,50 @@ fn void? CompilerContext.class_declaration(&self) {
 fn ushort? CompilerContext.class_expression(&self) {
     self.expect(TokenType.CLASS)!;
 
-    // Optional class name (only visible inside the class body)
+    // Optional class name (only visible inside the class body).
     char[] name;
     uint class_name_idx = 0;
     ushort name_reg = MAX_REGISTERS;
+    bool has_name = false;
     if (self.check(TokenType.IDENTIFIER)) {
         Token name_tok = self.advance()!;
         name = name_tok.str_value;
-        // For named class expressions, bind the name in the class scope
+        // For named class expressions, track the name on the scope stack so
+        // inner function expressions can resolve it (name inference).
         name_reg = self.declare_var(name, LET);
         class_name_idx = self.add_string_constant(name);
+        has_name = true;
     }
 
-    // Parse extends clause and class body
-    ushort ctor_reg = self.parse_class_tail()!;
+    // Push classScope only when we have a class name — the immutable binding
+    // is the only thing the spec puts in classScope, and anonymous class
+    // expressions don't need one.  When we DO push, the classScope is a child
+    // of the current lex env; methods CLOSURE'd inside capture it.
+    if (has_name) {
+        self.emit_simple(Opcode.PUSH_LEX);
 
-    // For named class expressions, bind the name to the constructor
-    if (name_reg != MAX_REGISTERS) {
+        // Initialize the immutable className binding with undefined
+        // (PUTLEX_C marks it non-writable → PUTVAR throws TypeError).
+        {
+            ushort tmp_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDUNDEF, (uint)tmp_reg, 0, 0);
+            self.emit_a_bc(Opcode.PUTLEX_C, (uint)tmp_reg, class_name_idx);
+            self.free_reg(tmp_reg);
+        }
+    }
+
+    // Parse extends clause and class body.
+    // Anonymous class expression: pass empty name so default constructor
+    // has empty .name (per ES2015 anonymous class expression).
+    ushort ctor_reg = self.parse_class_tail_with_name(name)!;
+
+    // For named class expressions, initialize the classScope's immutable
+    // binding with the constructor, then pop classScope.  Methods retain it
+    // via CLOSURE capture, so `C` inside methods resolves to the class.
+    if (has_name) {
         self.emit_abc(Opcode.LDREG, (uint)name_reg, (uint)ctor_reg, 0);
-        self.emit_a_bc(Opcode.PUTLEX, (uint)name_reg, class_name_idx);
+        self.emit_a_bc(Opcode.PUTLEX_C, (uint)name_reg, class_name_idx);
+        self.emit_simple(Opcode.POP_LEX);
     }
 
     return ctor_reg;
@@ -144,7 +230,9 @@ fn ushort? CompilerContext.class_expression(&self) {
 
 /// Parse the tail of a class: optional `extends` clause + class body.
 /// Returns the register holding the constructor function.
-fn ushort? CompilerContext.parse_class_tail(&self) {
+/// `class_name`: when non-empty, the default constructor inherits this name
+/// as its `.name` property (ES2015 §14.5.14 + SetFunctionName).
+fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) {
     // Save state for restoration after class body
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
@@ -200,18 +288,30 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         uint computed_key_inner_idx = 0xFFFFFFFF;
 
         if (self.check(TokenType.LBRACKET)) {
-            // Computed property name: [expr]
-            self.advance()!; // consume `[`
-            has_computed_key = true;
-
-            // Compile key expression as a 0-arg inner function
-            CompiledFunction* key_func = self.compile_key_expr()!;
-            self.expect(TokenType.RBRACKET)!;
-
-            computed_key_inner_idx = self.add_inner_func(key_func);
-
-            // Still need a method name for compile_inner_function (used as debug name)
-            method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+            self.advance()!;  // consume `[`
+            // ES2015 §14.5.13 step 1: a computed key whose *literal string value* is
+            // "prototype" combined with `static` is an early SyntaxError (covered by
+            // §14.5.1's "static method named prototype" rule — test262
+            // static-method-non-configurable-err).  Detect that literal-string form
+            // at compile time so we can reject it cleanly instead of waiting for a
+            // runtime TypeError out of DefinePropertyOrThrow.
+            if (self.check(TokenType.STRING)) {
+                Token str_tok = self.advance()!;
+                self.expect(TokenType.RBRACKET)!;
+                has_computed_key = false;
+                // Reuse the IDENTIFIER / string / static-prototype early-error check
+                // below by treating the string as a fixed-name method token.
+                method_name = str_tok;
+                // Fall through to the static-prototype check below.
+            } else {
+                // Generic computed key (variable, expression, etc.): compile the key
+                // expression as a 0-arg inner function, evaluated at class instantiation.
+                has_computed_key = true;
+                CompiledFunction* key_func = self.compile_key_expr()!;
+                self.expect(TokenType.RBRACKET)!;
+                computed_key_inner_idx = self.add_inner_func(key_func);
+                method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+            }
         } else if (self.check(TokenType.IDENTIFIER)
                || lexer::keyword_to_string(self.peek_type()).len > 0) {
             // IDENTIFIER or any keyword (extends, class, if, return, etc.) as method name
@@ -323,9 +423,19 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
         // ES2015 §14.5.13: getter/setter methods in class bodies have a name
         // prefixed with "get " or "set " (matching object literal semantics).
         // For a computed key ([expr]) the name is the empty string per spec.
+        // The constructor method's name is special — per ES2015 §14.5.14
+        // ClassDefinitionEvaluation + §14.3.7 DefineMethod, the constructor's
+        // name is the className (passed via DefineMethod).  For an anonymous
+        // class, that means the constructor's name is "" (per spec).
         char[128] method_name_buf;
         usz method_name_len = 0;
-        if (has_computed_key) {
+        if (is_constructor) {
+            // Constructor's name = className (empty for anonymous class)
+            if (class_name.len < 128) {
+                for (usz i = 0; i < class_name.len; i++) method_name_buf[i] = class_name[i];
+                method_name_len = class_name.len;
+            }
+        } else if (has_computed_key) {
             // Leave name empty — the actual key is computed at class evaluation time.
             method_name_len = 0;
         } else if (is_getter || is_setter) {
@@ -369,7 +479,7 @@ fn ushort? CompilerContext.parse_class_tail(&self) {
     // If no constructor was specified, create a default one
     if (ctor_inner_idx == 0xFFFFFFFF) {
         heap::Heap* hp = (heap::Heap*)self.heap;
-        CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding);
+        CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding, class_name);
         if (catch err = ctor_func_raw) {
             return COMPILE_ERROR~;
         }

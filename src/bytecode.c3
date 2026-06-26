@@ -821,6 +821,11 @@ bitstruct FuncFlags : uint {
     bool  needs_lex_bridge: 19;
     /// Function is an ESM module body (top-level import/export).
     bool  is_module        : 20;
+    /// Function is a class constructor (ES2015 §14.5.14 step 25: the
+    /// resulting constructor's .prototype is non-configurable, so static
+    /// `class.prototype = ...` must throw TypeError).  When false, .prototype
+    /// uses PROP_FLAGS_WEC (configurable=true).
+    bool  is_class_ctor    : 21;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -942,6 +947,14 @@ macro bool CompiledFunction.is_async(&self) {
 /// Returns `true` when the function can be used as a constructor.
 macro bool CompiledFunction.is_constructable(&self) {
     return self.flags.is_constructable;
+}
+
+/// Returns `true` when the function is an ES2015 class constructor.  Such
+/// functions have a non-configurable .prototype property (ES6 §14.5.14
+/// step 25) and must throw TypeError on `Object.defineProperty(ctor, ...)`
+/// or static-method redefinition of .prototype.
+macro bool CompiledFunction.is_class_ctor(&self) {
+    return self.flags.is_class_ctor;
 }
 
 /// Returns `true` when the function has no local bindings and the CALL fast

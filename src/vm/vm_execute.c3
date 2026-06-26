@@ -3606,7 +3606,6 @@ fn TVal? Vm.run(Vm* vm) {
                                 HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
                                 if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
                                     CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
-
                                     // Stage the call frame above the caller's live registers:
                                     // PUTPROP's A/B/C are arbitrary live locals, so A+1.. cannot
                                     // be used as scratch (unlike GETPROP where A is a fresh temp).
@@ -3673,6 +3672,32 @@ fn TVal? Vm.run(Vm* vm) {
                                 err.prototype = vm.heap.type_err_proto;
                                 HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
                                 HString* msg_val = intern_string(vm, "Cannot assign to read only property");
+                                TVal msg_tv;
+                                msg_tv.set_string(msg_val);
+                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                                TVal err_val;
+                                err_val.set_object(err);
+                                if (!vm_throw_value(vm, err_val, act, &curr_pc, &needs_restart)) {
+                                    return vm_uncaught_error(vm, &err_val);
+                                }
+                            } else {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        } else if (!exist_flags.configurable) {
+                            // ES5 §8.12.5 [[Set]] step 7: when assigning to an existing
+                            // property whose [[Configurable]] is false, the new descriptor
+                            // defaults to {writable:true, enumerable:true, configurable:true}.
+                            // Per IsCompatiblePropertyDescriptor (ES5 §8.2.2), this rejects
+                            // because new.configurable=true but existing.configurable=false.
+                            // ES2015 §14.5.13 step 11 (static-method placement) hits this:
+                            //   class C { static ['prototype']() {} }
+                            // F.prototype is non-configurable, so PUTPROP must throw.
+                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (try err = err_raw) {
+                                err.prototype = vm.heap.type_err_proto;
+                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                                HString* msg_val = intern_string(vm, "Cannot redefine property: existing is non-configurable");
                                 TVal msg_tv;
                                 msg_tv.set_string(msg_val);
                                 err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
@@ -5966,7 +5991,22 @@ fn TVal? Vm.run(Vm* vm) {
                     new_act.lex_env = ctor_var_env;
                 }
             } else {
-                new_act.lex_env = ctor_var_env;
+                // Use the captured lex_env so block-scoped let/const bindings
+                // from the enclosing function body are visible.  Mirrors the
+                // CALL fast path (line ~4503) which also honors func.lex_env
+                // when it's a *declarative* (block) scope.  Without this,
+                // constructors for `class B extends A { constructor() { super(); } }`
+                // can't see the classScope's `__super__` binding — the
+                // constructor's CLOSURE captures func.lex_env = classScope but
+                // NEW_OBJ was unconditionally resetting it to ctor_var_env.
+                EnvRecord* cap_lex_noname = (*hobj.extra_ptr()).func.lex_env;
+                if (cap_lex_noname != null
+                    && cap_lex_noname != ctor_var_env
+                    && cap_lex_noname.is_declarative) {
+                    new_act.lex_env = cap_lex_noname;
+                } else {
+                    new_act.lex_env = ctor_var_env;
+                }
             }
             new_act.cat = null;
             new_act.curr_pc = target.code;
@@ -7613,7 +7653,14 @@ fn TVal? Vm.run(Vm* vm) {
 
                     // Arrow functions don't get a .prototype property (ES6 §14.2.16)
                     if (!template.is_arrow()) {
-                        // ES5 §13.2: create .prototype property (plain object with .constructor)
+                        // ES5 §13.2: create .prototype property (plain object with .constructor).
+                        // For class constructors, ES2015 §14.5.14 step 25 requires the
+                        // resulting constructor's .prototype to be non-configurable so
+                        // that `class C { static ['prototype']() {} }` throws TypeError
+                        // (the static-method-non-configurable-err test262 case).
+                        hobject::PropFlags proto_pflags = template.is_class_ctor()
+                            ? hobject::PROP_FLAGS_WENC
+                            : hobject::PROP_FLAGS_WEC;
                         HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try proto_obj = proto_obj_raw) {
                             if (template.is_generator() && vm.heap.generator_proto != null) {
@@ -7633,7 +7680,7 @@ fn TVal? Vm.run(Vm* vm) {
                             HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
                             TVal proto_tv;
                             proto_tv.set_object(proto_obj);
-                            func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+                            func_obj.put_prop(proto_key, proto_tv, proto_pflags);
                         }
                     }
 

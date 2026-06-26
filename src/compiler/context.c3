@@ -1058,6 +1058,10 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.num_regs = self.max_reg;
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
+    // Class constructors get non-configurable .prototype per ES2015 §14.5.14.
+    // in_class_body is set while parsing the class body (which contains the
+    // constructor method) and is_constructable is set for that method.
+    func.flags.is_class_ctor = self.is_constructable && self.in_class_body;
     func.flags.is_generator = self.is_generator;
     func.flags.is_async = self.is_async;
     func.flags.uses_arguments = self.uses_arguments;

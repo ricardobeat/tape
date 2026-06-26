@@ -265,6 +265,16 @@ const PropFlags PROP_FLAGS_EC = {
     .is_accessor  = false
 };
 
+/// Convenience constant: non-configurable data property (writable, enumerable).
+/// Used for ES2015 class constructor .prototype property (ES6 §14.5.14
+/// step 25): writable=true, enumerable=false, configurable=false.
+const PropFlags PROP_FLAGS_WENC = {
+    .writable     = true,
+    .enumerable   = false,
+    .configurable = false,
+    .is_accessor  = false
+};
+
 /// Convenience constant: accessor property (enumerable, configurable).
 /// Used for getter/setter properties in object literals and class bodies.
 const PropFlags PROP_FLAGS_ACCESSOR = {

@@ -4,6 +4,8 @@ import duktape::compiler;
 import duktape::vm;
 import duktape::heap;
 import duktape::env;
+import duktape::hobject;
+import duktape::hstring;
 import duktape::lexer;
 import duktape::types;
 import duktape::bytecode;
@@ -29,6 +31,29 @@ fn int main(String[] args) {
     if (try ff = func) { f = ff; } else { io::eprintfn("Compile failed"); return 1; }
 
     TVal? result = v.execute(f);
-    if (catch err = result) { io::eprintfn("VM error: %s (at execute)", err); return 1; }
+    if (catch err = result) {
+        io::eprintfn("VM error: %s (at execute)", err);
+        if (v.heap.has_error) {
+            // Print uncaught error message
+            TVal* err_val = &v.heap.error_value;
+            if (err_val.is_object()) {
+                HObject* err_obj = (HObject*)err_val.get_heapptr();
+                if (err_obj != null) {
+                    HString* msg_key = (HString*)v.heap.strs[heap::BuiltinStr.MESSAGE];
+                    TVal? msg_tv_opt = err_obj.get_prop(msg_key);
+                    if (try msg_tv = msg_tv_opt) {
+                        if (msg_tv.is_string()) {
+                            HString* msg_str = (HString*)msg_tv.get_heapptr();
+                            char[] msg_data = msg_str.get_data();
+                            io::eprintf("Uncaught: ");
+                            for (usz i = 0; i < msg_data.len; i++) io::eprintf("%c", msg_data[i]);
+                            io::eprintf("\n");
+                        }
+                    }
+                }
+            }
+        }
+        return 1;
+    }
     return 0;
 }
