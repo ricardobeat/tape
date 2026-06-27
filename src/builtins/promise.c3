@@ -433,6 +433,17 @@ fn void builtin_promise(BuiltinContext* ctx) {
     (*resolve_func.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
     resolve_func.flags.callable = true;
     resolve_func.prototype = heap.function_proto;
+    // Per ES2015 §25.4.1.5.1: resolve/reject callbacks have length=1, name="".
+    HString* len_key = builtin_intern_string(heap, "length");
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        resolve_func.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    HString* name_key = builtin_intern_string(heap, "name");
+    if (name_key != null) {
+        TVal name_tv; name_tv.set_string(builtin_intern_string(heap, ""));
+        resolve_func.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
     HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
     TVal promise_ref;
     promise_ref.set_object(promise);
@@ -447,6 +458,14 @@ fn void builtin_promise(BuiltinContext* ctx) {
     (*reject_func.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
     reject_func.flags.callable = true;
     reject_func.prototype = heap.function_proto;
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        reject_func.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    if (name_key != null) {
+        TVal name_tv; name_tv.set_string(builtin_intern_string(heap, ""));
+        reject_func.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
     reject_func.put_prop(promise_key, promise_ref, hobject::PROP_FLAGS_WEC);
 
     TVal resolve_tv;
@@ -657,7 +676,19 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
     if (catch err = resolve_raw) return null;
     HObject* resolve_fn = resolve_raw;
     resolve_fn.flags.callable = true;
+    resolve_fn.prototype = heap.function_proto;
     (*resolve_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
+    // Set length=1, name="" per ES2015 §25.4.1.3.2 (PromiseCapability records)
+    HString* len_key = builtin_intern_string(heap, "length");
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        resolve_fn.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    HString* name_key = builtin_intern_string(heap, "name");
+    if (name_key != null) {
+        TVal name_tv; name_tv.set_string(builtin_intern_string(heap, ""));
+        resolve_fn.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
     if (promise_key != null) {
         TVal wrapper_tv; wrapper_tv.set_object(wrapper);
         resolve_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);
@@ -669,7 +700,16 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
     if (catch err = reject_raw) return null;
     HObject* reject_fn = reject_raw;
     reject_fn.flags.callable = true;
+    reject_fn.prototype = heap.function_proto;
     (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        reject_fn.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    if (name_key != null) {
+        TVal name_tv; name_tv.set_string(builtin_intern_string(heap, ""));
+        reject_fn.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
     if (promise_key != null) {
         TVal wrapper_tv; wrapper_tv.set_object(wrapper);
         reject_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);

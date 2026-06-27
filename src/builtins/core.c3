@@ -1289,6 +1289,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 261: return { "toLocaleString", 0 };
         case 262: return { "toLocaleDateString", 0 };
         case 263: return { "toLocaleTimeString", 0 };
+        case 264: return { "", 1 };  // Promise resolve callback (no name)
+        case 265: return { "", 1 };  // Promise reject callback (no name)
         case 301: return { "toDateString", 0 };
         case 302: return { "toTimeString", 0 };
         case 303: return { "replaceAll", 2 };
