@@ -696,6 +696,9 @@ fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
 }
 
 /// Strict equality comparison for Array.prototype.indexOf / lastIndexOf.
+/// ECMA-262 SameValueNonNumeric semantics: primitives compare by value,
+/// heap pointers compare by identity. NaN compares unequal to NaN (per
+/// indexOf/lastIndexOf spec, which uses IsStrictlyEqual, not SameValue).
 fn bool array_strict_equals(TVal a, TVal b) {
     if (a.get_tag() == b.get_tag()) {
         switch (a.get_tag()) {
@@ -707,6 +710,13 @@ fn bool array_strict_equals(TVal a, TVal b) {
                 return a.get_number() == b.get_number();
             case FASTINT:   return a.get_fastint() == b.get_fastint();
             case STRING:    return a.get_heapptr() == b.get_heapptr();
+            case OBJECT:
+            case BUFFER:
+            case POINTER:
+            case LIGHTFUNC:
+            case BIGINT:
+                // Identity comparison: same heap pointer (or same lightfunc slot).
+                return a.get_heapptr() == b.get_heapptr();
             default: return false;
         }
     }
@@ -1735,10 +1745,20 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
 
     TVal search_elem = ctx.regs[ctx.base_reg];
 
-    // Get fromIndex (default 0)
+    // Get fromIndex (default 0) — per ES5 §15.4.4.14 step 3.
+    // builtin_to_integer handles Infinity / -Infinity / NaN / hex strings.
     double relative_start = 0.0;
     if (ctx.argc > 1) {
         relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+    }
+
+    // Per ES5 §15.4.4.14 step 4: compute k from n (ToInteger of fromIndex).
+    // If n ≥ len → return -1 (handles Infinity cleanly).
+    // If n < 0 → k = max(len + n, 0) (n is finite here, since Infinity already returned).
+    // Else → k = n.
+    if (relative_start >= (double)len) {
+        ctx.result.set_fastint(-1);
+        return;
     }
 
     uint k;
@@ -1746,7 +1766,7 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
         double tmp = (double)len + relative_start;
         k = tmp < 0 ? 0 : (uint)(long)tmp;
     } else {
-        k = relative_start > (double)len ? len : (uint)(long)relative_start;
+        k = (uint)(long)relative_start;
     }
 
     for (; k < len; k++) {
@@ -1779,18 +1799,25 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
 
     TVal search_elem = ctx.regs[ctx.base_reg];
 
-    // Get fromIndex (default len - 1)
+    // Get fromIndex (default len - 1) — per ES5 §15.4.4.15 step 3.
     double relative_start = (double)(len - 1);
     if (ctx.argc > 1) {
         relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
     }
 
-    int k;
-    if (relative_start < 0) {
+    // Per ES5 §15.4.4.15 step 4: compute k from n (ToInteger of fromIndex).
+    // If n ≥ len → k = len - 1 (handles Infinity correctly).
+    // If n < 0 → k = len + n. If len+n < 0 → no match (-1).
+    // Else → k = min(n, len - 1).
+    // Note: len == 0 means k starts at -1 → loop doesn't execute → -1.
+    long k;
+    if (relative_start >= (double)len) {
+        k = (long)len - 1;
+    } else if (relative_start < 0) {
         double tmp = (double)len + relative_start;
-        k = tmp < 0 ? -1 : (int)(long)tmp;
+        k = tmp < 0 ? -1 : (long)tmp;
     } else {
-        k = relative_start > (double)len ? (int)len - 1 : (int)(long)relative_start;
+        k = (long)relative_start;
     }
 
     for (; k >= 0; k--) {
