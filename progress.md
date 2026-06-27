@@ -1,37 +1,37 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 222 (vm_execute.c3 split — complete)
+**Last Updated:** Session 224 (Array prototype + iteration fixes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (full run, 2026-06-26)
+## Summary (full run, 2026-06-27)
 
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,668 |
-| Total passing | 17,219 |
-| **Overall pass rate (pass/pass+fail+CE)** | **79.5%** |
-| Skipped + CE (not run) | 20,217 |
+| Pass + Fail + CE (executable) | 21,998 |
+| Total passing | 17,667 |
+| **Overall pass rate (pass/pass+fail+CE)** | **80.3%** |
+| Skipped + CE (not run) | 19,810 |
 
-## Per-Phase Status (session 221)
+## Per-Phase Status (session 224)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 678 | 198 | 1297 | 12 |
-| 1: Calling Convention | 426 | 81 | 4 | 338 | 3 |
+| 0-1: Core VM | 2185 | 682 | 194 | 1297 | 12 |
+| 1: Calling Convention | 426 | 81 | 3 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 4750 | 1018 | 1972 | 26 |
-| 4: Error Handling | 402 | 131 | 51 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5631 | 1438 | 1538 | 8 |
-| 6: Prototype Methods | 4713 | 2959 | 803 | 947 | 4 |
-| 7: ES5 Features | 1035 | 205 | 70 | 749 | 11 |
-| 8: ES5 Built-in Objects | 2747 | 1045 | 237 | 1464 | 1 |
-| 11: Arrow/Templates | 427 | 69 | 29 | 324 | 5 |
+| 3: Object System | 7766 | 5039 | 730 | 1971 | 26 |
+| 4: Error Handling | 402 | 138 | 44 | 201 | 19 |
+| 5: Built-in Constructors | 8615 | 5953 | 1117 | 1538 | 7 |
+| 6: Prototype Methods | 4713 | 3129 | 634 | 945 | 5 |
+| 7: ES5 Features | 1035 | 207 | 68 | 749 | 11 |
+| 8: ES5 Built-in Objects | 2747 | 1078 | 174 | 1494 | 1 |
+| 11: Arrow/Templates | 427 | 69 | 28 | 325 | 5 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
-| 14: for-of | 751 | 13 | 19 | 719 | 0 |
-| 15: Classes | 8520 | 65 | 156 | 8299 | 0 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 358 | 282 | 974 | 0 |
-| 21: Generators | 619 | 0 | 2 | 617 | 0 |
+| 14: for-of | 751 | 13 | 15 | 719 | 4 |
+| 15: Classes | 8520 | 64 | 157 | 8265 | 34 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 365 | 261 | 978 | 10 |
+| 21: Generators | 619 | 0 | 0 | 619 | 0 |
 
 ## Test Infrastructure
 
