@@ -154,9 +154,27 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
         default: mon_name = "???"; break;
     }
 
-    return (usz)libc::snprintf(buf, buf_size, "%s %s %02d %04d %02d:%02d:%02d GMT%c%02d%02d",
+    long year_val = (long)tm.tm_year + 1900L;
+    // ES6 §21.4.3.4 ToDateString: positive years use 4-digit zero-padded,
+    // negative years in [-9999, 0) use "-%04d" (5 chars with sign + 4 digits).
+    // For abs(year) >= 10000 use the full integer width (no padding).
+    // localtime_r may produce wrong values for years outside [1900, 2100] on
+    // some platforms; the year we use here is only valid for those ranges.
+    // For pre-1900 dates we fall back to a manual format via the break-time
+    // helper below — but in this code path we only reach format_to_string for
+    // years where localtime_r is reliable.
+    char[24] year_str;
+    if (year_val < 0 && year_val > -10000) {
+        libc::snprintf(&year_str[0], 24, "-%04ld", -year_val);
+    } else if (year_val <= -10000) {
+        libc::snprintf(&year_str[0], 24, "%ld", year_val);
+    } else {
+        libc::snprintf(&year_str[0], 24, "%04ld", year_val);
+    }
+
+    return (usz)libc::snprintf(buf, buf_size, "%s %s %02d %s %02d:%02d:%02d GMT%c%02d%02d",
         wday_name, mon_name,
-        tm.tm_mday, tm.tm_year + 1900,
+        tm.tm_mday, &year_str[0],
         tm.tm_hour, tm.tm_min, tm.tm_sec,
         tz_sign, offs_hours, offs_mins);
 }
@@ -532,8 +550,29 @@ fn void builtin_date(BuiltinContext* ctx) {
                 time_val = arg.get_number_or_fastint();
             } else if (arg.is_undefined() || arg.is_null()) {
                 time_val = now;
+            } else if (arg.is_object() && arg.get_heapptr() != null) {
+                // ES6 §20.3.2.2 step 3.a: when value is a Date object, use
+                // thisTimeValue(value) — read [[DateValue]] directly without
+                // calling valueOf/toString. Note: Date.prototype is a DATE
+                // object that lacks [[DateValue]]; date_this_time_value throws
+                // TypeError for it, which matches ES6 step 3.a.i.
+                HObject* arg_obj = (HObject*)arg.get_heapptr();
+                if (arg_obj.get_class() == hobject::ObjClass.DATE) {
+                    time_val = date_this_time_value(ctx, arg);
+                    if (ctx.should_throw) { return; }
+                } else {
+                    // Non-Date object: call ToPrimitive via ToNumber
+                    Vm* v = (Vm*)ctx.vm;
+                    time_val = vm::vm_to_number(v, arg);
+                    if (v.throw_pending) {
+                        ctx.should_throw = true;
+                        ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                        v.throw_pending = false;
+                        return;
+                    }
+                }
             } else {
-                // Object: call ToNumber (invokes valueOf/toString)
+                // Other primitive (boolean, symbol): call ToNumber
                 Vm* v = (Vm*)ctx.vm;
                 time_val = vm::vm_to_number(v, arg);
                 if (v.throw_pending) {
@@ -720,15 +759,35 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
         }
     }
 
-    if (year >= 0 && year < 100) year += 1900;
-
-    // NaN propagation: if any argument is NaN, result is NaN (ES5 §15.9.4.3)
-    if (math::is_nan(year) || math::is_nan(month) ||
-        math::is_nan(day) || math::is_nan(hour) ||
-        math::is_nan(min) || math::is_nan(sec) || math::is_nan(ms)) {
+    // Per ES6 §21.4.1.15 (MakeDay) and §21.4.1.14 (MakeTime): if any of the
+    // year, month, date, hour, minute, second, or ms values is not finite
+    // (i.e., NaN or ±Infinity), the result is NaN. ES5 §15.9.4.3 only
+    // mentions NaN, but ES6 §20.3.3.4 step 7 requires the same isFinite check
+    // for the spec-defined MakeDay/MakeTime operations.
+    if (!math::is_finite(year) || !math::is_finite(month) ||
+        !math::is_finite(day) || !math::is_finite(hour) ||
+        !math::is_finite(min) || !math::is_finite(sec) || !math::is_finite(ms)) {
         ctx.result.set_number(double::nan);
         return;
     }
+
+    // Per ES6 §20.3.3.4 Date.UTC, MakeDay/MakeTime each apply ToInteger to
+    // their respective inputs (§21.4.1.14, §21.4.1.15). ToInteger(x) is
+    // trunc(x) toward zero for finite x. Done after is_finite check so we
+    // don't UB on ±Infinity. Step 8: if 0 ≤ ToInteger(y) ≤ 99, yr is
+    // 1900+ToInteger(y); otherwise yr is ToInteger(y).
+    long year_int = (long)math::trunc(year);
+    if (year_int >= 0 && year_int <= 99) {
+        year = (double)year_int + 1900.0;
+    } else {
+        year = (double)year_int;
+    }
+    month = (double)(long)math::trunc(month);
+    day = (double)(long)math::trunc(day);
+    hour = (double)(long)math::trunc(hour);
+    min = (double)(long)math::trunc(min);
+    sec = (double)(long)math::trunc(sec);
+    ms = (double)(long)math::trunc(ms);
 
     // For Date.UTC, the time is in UTC. We compute days from epoch using
     // simple calendar math (no timezone offset).
@@ -877,8 +936,20 @@ fn void builtin_date_proto_toDateString(BuiltinContext* ctx) {
         default: mon_name = "???"; break;
     }
     char[types::FORMAT_BUF] buf;
-    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%s %s %02d %04d",
-        wday_name, mon_name, (int)day, (int)year);
+    // ES6 §21.4.3.4 ToDateString year format: 4-digit zero-padded positive;
+    // "-%04d" for negative year in [-9999, 0); full integer for |y| >= 10000.
+    // We write the year into a temp buffer first to support all forms, then
+    // copy into buf. Use snprintf with the appropriate width format.
+    char[24] year_str;
+    if (year < 0 && year > -10000) {
+        libc::snprintf(&year_str[0], 24, "-%04ld", -year);
+    } else if (year <= -10000) {
+        libc::snprintf(&year_str[0], 24, "%ld", year);
+    } else {
+        libc::snprintf(&year_str[0], 24, "%04ld", year);
+    }
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%s %s %02d %s",
+        wday_name, mon_name, (int)day, &year_str[0]);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
     ctx.result.set_string(result);
 }
@@ -1008,11 +1079,42 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     // Step 4: Return ? Invoke(O, "toISOString")
     // Look up "toISOString" on O, then call it with O as the receiver.
     // If the property is missing or not callable, Invoke throws TypeError.
+    // Per ES6 §7.3.1 GetV, accessor properties must invoke their getter; use
+    // find_accessor_proto to handle both data and accessor (getter-defined)
+    // properties correctly.
     if (object_val.is_object() && object_val.get_heapptr() != null) {
         HObject* obj = (HObject*)object_val.get_heapptr();
         HString* toiso_key = builtin_intern_string(ctx.heap, "toISOString");
-        TVal? toiso_val = obj.get_prop_proto(toiso_key);
-        if (try toiso_fn = toiso_val) {
+        hobject::AccessorResult acc = obj.find_accessor_proto(toiso_key, true);
+        TVal toiso_fn;
+        TVal call_this = object_val;
+        bool found = acc.found;
+        if (acc.found) {
+            // Accessor found: invoke the getter with the owning object as `this`
+            // to get the actual toISOString function (per ES6 §7.3.1 GetV).
+            Vm* v = (Vm*)ctx.vm;
+            TVal getter_this;
+            getter_this.set_object(acc.this_obj);
+            toiso_fn = ctx.heap.call_fn(v, acc.accessor_fn, null, 0, getter_this);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.heap.has_error = false;
+                return;
+            }
+            // For an accessor on the prototype chain, Invoke's "this" must be O,
+            // not the object that owns the accessor. acc.this_obj is the owner.
+            call_this = object_val;
+        } else {
+            // Data property or no property: fall back to get_prop_proto.
+            TVal? toiso_val = obj.get_prop_proto(toiso_key);
+            if (try tv = toiso_val) {
+                toiso_fn = tv;
+                found = true;
+            } else {
+                toiso_fn.set_undefined();
+            }
+        }
+        if (found) {
             bool callable = false;
             if (toiso_fn.is_object() && toiso_fn.get_heapptr() != null) {
                 HObject* fn_hobj = (HObject*)toiso_fn.get_heapptr();
@@ -1022,7 +1124,8 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
             }
             if (callable) {
                 Vm* v = (Vm*)ctx.vm;
-                TVal result = ctx.heap.call_fn(v, toiso_fn, null, 0, object_val);
+                // Invoke calls with empty arguments list (per spec).
+                TVal result = ctx.heap.call_fn(v, toiso_fn, null, 0, call_this);
                 if (ctx.heap.has_error) {
                     ctx.should_throw = true;
                     // The error is already set on the VM — propagate it.
@@ -1998,9 +2101,10 @@ fn void date_pad2(char* buf, long val) {
     else { buf[0] = (char)(val / 10 + 48); buf[1] = (char)(val % 10 + 48); }
 }
 
-/// Helper: pad integer to 4 digits
+/// Helper: pad |val| (positive) to 4 digits, buf[0..3].
+/// Callers handle sign separately. For dates, val is always 0..9999 here.
 fn void date_pad4(char* buf, long val) {
-    buf[0] = (char)(val / 1000 + 48);
+    buf[0] = (char)(val / 1000 % 10 + 48);
     buf[1] = (char)(val / 100 % 10 + 48);
     buf[2] = (char)(val / 10 % 10 + 48);
     buf[3] = (char)(val % 10 + 48);
@@ -2121,24 +2225,23 @@ fn void builtin_date_proto_toUTCString(BuiltinContext* ctx) {
     long year, month, day, wday, hour, min, sec;
     date_break_time_utc(tv, &year, &month, &day, &wday, &hour, &min, &sec);
     char[7][] day_names = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    char[7][] mon_names = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    char[12][] mon_names = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    // ES6 §21.4.3.4 ToDateString year format: 4-digit zero-padded positive;
+    // "-%04d" for negative year in [-9999, 0); full integer for |y| >= 10000.
+    char[24] year_str;
+    if (year < 0 && year > -10000) {
+        libc::snprintf(&year_str[0], 24, "-%04ld", -year);
+    } else if (year <= -10000) {
+        libc::snprintf(&year_str[0], 24, "%ld", year);
+    } else {
+        libc::snprintf(&year_str[0], 24, "%04ld", year);
+    }
     char[types::FORMAT_BUF] buf;
-    // "Thu, 01 Jan 1970 00:00:00 GMT"
-    buf[0] = day_names[wday][0]; buf[1] = day_names[wday][1]; buf[2] = day_names[wday][2];
-    buf[3] = ','; buf[4] = ' ';
-    date_pad2(&buf[5], day);
-    buf[7] = ' ';
-    buf[8] = mon_names[month][0]; buf[9] = mon_names[month][1]; buf[10] = mon_names[month][2];
-    buf[11] = ' ';
-    date_pad4(&buf[12], year);
-    buf[16] = ' ';
-    date_pad2(&buf[17], hour);
-    buf[19] = ':';
-    date_pad2(&buf[20], min);
-    buf[22] = ':';
-    date_pad2(&buf[23], sec);
-    buf[25] = ' '; buf[26] = 'G'; buf[27] = 'M'; buf[28] = 'T';
-    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[0:29]));
+    // "Thu, 01 Jan 1970 00:00:00 GMT" / "Thu, 01 Jan -0001 00:00:00 GMT"
+    usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%.3s, %02d %.3s %s %02d:%02d:%02d GMT",
+        &day_names[wday][0], (int)day, &mon_names[month][0],
+        &year_str[0], (int)hour, (int)min, (int)sec);
+    ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
 }
 
 // ============================================================================
