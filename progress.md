@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 227 (String.prototype.split limit=undefined fix)
+**Last Updated:** Session 230 (RegExp SymbolSplit, Object.entries, Promise.prototype)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (full run, 2026-06-27)
@@ -8,29 +8,29 @@
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,524 |
-| Total passing | 17,666 |
-| **Overall pass rate (pass/pass+fail+CE)** | **82.1%** |
-| Skipped + CE (not run) | 20,284 |
+| Pass + Fail + CE (executable) | 21,584 |
+| Total passing | 17,700 |
+| **Overall pass rate (pass/pass+fail+CE)** | **82.0%** |
+| Skipped + CE (not run) | 20,224 |
 
-## Per-Phase Status (session 227)
+## Per-Phase Status (session 230)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 684 | 192 | 1297 | 12 |
-| 1: Calling Convention | 426 | 80 | 4 | 339 | 3 |
+| 0-1: Core VM | 2185 | 681 | 195 | 1297 | 12 |
+| 1: Calling Convention | 426 | 81 | 3 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 4951 | 817 | 1971 | 27 |
-| 4: Error Handling | 402 | 134 | 48 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5892 | 1177 | 1538 | 8 |
-| 6: Prototype Methods | 4713 | 3086 | 675 | 945 | 7 |
+| 3: Object System | 7766 | 4919 | 849 | 1971 | 27 |
+| 4: Error Handling | 402 | 135 | 47 | 201 | 19 |
+| 5: Built-in Constructors | 8615 | 5883 | 1186 | 1538 | 8 |
+| 6: Prototype Methods | 4713 | 3116 | 646 | 945 | 7 |
 | 7: ES5 Features | 1035 | 207 | 68 | 749 | 11 |
-| 8: ES5 Built-in Objects | 2747 | 1066 | 186 | 1494 | 1 |
-| 11: Arrow/Templates | 427 | 68 | 29 | 325 | 5 |
+| 8: ES5 Built-in Objects | 2747 | 1060 | 192 | 1494 | 1 |
+| 11: Arrow/Templates | 427 | 69 | 28 | 325 | 5 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
 | 14: for-of | 751 | 13 | 15 | 719 | 4 |
-| 15: Classes | 8520 | 64 | 157 | 8265 | 34 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 365 | 261 | 978 | 10 |
+| 15: Classes | 8520 | 63 | 158 | 8265 | 34 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 370 | 256 | 978 | 10 |
 | 21: Generators | 619 | 0 | 0 | 619 | 0 |
 
 ## Test Infrastructure
@@ -45,6 +45,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 230 | Three BACKLOG items in a single pass. **RegExp[Symbol.split]** (`src/builtins/regexp.c3`): previous implementation pushed a substring on every match (zero-length or not), so `"hello".split(/(?:)/g)` returned six empty strings. Replaced with QuickJS's SymbolSplit algorithm — track a segment-start `p` separate from the search position `q`, push `[p, q)` only when the match consumed at least one character (`e > p`), advance `q` by 1 on zero-length matches, and always emit the tail entry. Also anchored each `re_exec` call to `q` by accepting only matches with `out_start == q`, so `"abc".split(/$/g)` correctly returns `["abc"]` instead of `[""]`. **String.prototype.replace** (`src/builtins/string.c3`): two corrections. `$nn` parsing now follows ES6 §21.1.3.14 step 14.f exactly — try two digits, fall back to one if the two-digit index is out of range. The previous version only accepted `$1`..`$9`, missing `$02` (capture 2 in a regex with ≥2 groups), and emitted the literal `$n` for in-range captures that failed to match instead of the spec-mandated empty substitution. `String.prototype.replace` now uses the VM-aware `builtin_to_string_vm` for the search value in the string branch, so `replace({toString: () => "AB"}, ...)` correctly finds "AB" instead of returning "[object Object]" lookup miss. **Object.entries** (`src/builtins/object.c3`): mirrored the lazy String exotic enumeration already in `Object.values` — entries now iterates indexed characters for `Object.entries("abc")` and returns `[["0","a"],["1","b"],["2","c"]]` (was empty). **Promise.prototype** (`src/builtins/promise.c3`): Promise.prototype was being allocated with `ObjClass.PROMISE`, which made it pass the `IsPromise` check in `then`. Per ES6 §25.4.5 the prototype must be an ordinary object. Switched to `ObjClass.OBJECT`. Phase 5 +71, Phase 6 +30, Phase 17 +5. Rosetta 44/44. | Phase 5 +71, Phase 6 +30, Phase 17 +5 |
 | 222 | **vm_execute.c3 split — complete** (`src/vm/vm_trace.c3`, `src/vm/vm_types.c3`, `src/vm/vm_execute.c3`, `src/vm/vm_control.c3`). The 8181-line vm_execute.c3 is split into 16 sub-dispatch functions in vm_control.c3 (7741 lines) + a 593-line Vm.run orchestrator. The Dispatch struct (added earlier) bundles per-frame state (vm, act, code_base, code_count, code_end, constants, ic_base, var_ic_base, nregs, regs_base, curr_pc, needs_restart) for the sub-dispatch calls. **Key insight**: inner `break;`/`continue;` in case bodies must ALL be converted to `return (TVal){};` because the sub-dispatch function has no enclosing loop — loop-exit `break;` would exit the function's switch (wrong) and `continue;` would be a syntax error. Naked cases (`case X: stmt; break;` without an enclosing `{}` block) like DELVAR work correctly — the function's switch handles them via the `default:` fall-through. The FIRST section in the main switch (LOAD/STORE) needs a `case Opcode.LDREG:` wrapper around the dispatch call to satisfy the compiler. **16 sub-dispatch functions**: dispatch_returns, dispatch_var_access, dispatch_closures, dispatch_iterator, dispatch_exceptions, dispatch_misc, dispatch_arith, dispatch_unary, dispatch_bitwise, dispatch_compare, dispatch_control_flow, dispatch_property, dispatch_objects, dispatch_calls, dispatch_generators, dispatch_load_store — covering all 84 user opcodes. vm_execute.c3: 8181 → 593 lines (-93%). **Verified**: rosetta 44/44, test262 phase 0-1: 681 pass (matches baseline), test262 phase 15: 65 pass (matches baseline 65 from session 221). | No test262 delta (pure refactor) |
 | 220 | **B19 — GETPROPC2 VM handler complete** (`src/vm/vm_execute.c3`): three bugs. (1) Lightfunc hop 1 stored name/length results in `ra` (temp reg) but never set `mid_val` — hop 2 always saw undefined. Now sets `mid_val` and uses the full hop 2 dispatch. (2) GETPROPC2 had no number/boolean source handling — `(42).constructor.name` → VM_ERROR. Added `rb.is_number()/is_fastint()` and `rb.is_boolean()` branches. (3) Simplified hop 2 dispatchers in string/number/boolean rb paths lacked `mid_val.is_lightfunc()` — `Boolean.prototype.constructor` is a lightfunc. Added lightfunc intermediate handling to all three. Side-effect: `test_tostring_tags.js` VM_ERROR resolved. Rosetta 44/44. | TBD |
 | 213 | tinycolor.js ESM vendor library added (`test/vendor/tinycolor.esm.js`) and `test/modules/t12_tinycolor/main.js` exercises it. Two compiler bugs found and fixed. **(1) Expression-result register clobber** (`src/compiler/statements.c3:expression_statement`) — assignment `ok = true` inside `if (...) { ... }` returned the LHS register (the `ok` slot). `expression_statement` then called `free_reg(ok_slot)`, decrementing `next_reg` past the slot. The next `alloc_reg` returned the freed var slot, so the subsequent `x.hasOwnProperty("a")` lookup wrote the property name `"hasOwnProperty"` into that slot — `c._ok` came back as `"hasOwnProperty"` (string) instead of `true` (boolean). Fix: in `expression_statement`, skip the `free_reg` when the result register is the slot of a live local variable AND is the top of the register stack. Added `CompilerContext.is_local_var_reg(reg)` in `src/compiler/scope.c3` to check the scope stack. The `+ top of stack` guard avoids the slowdown of always refusing to free temp registers that happen to alias a var slot. **(2) IF_TRUE/IF_FALSE peephole liveness check** (`src/compiler/context.c3:finish`) — the LDREG-dead-after-consumer peephole scan treated `IF_TRUE/IF_FALSE` opcodes as standard ABC-format writes when checking if the destination register is dead. In fact, `IF_TRUE/IF_FALSE` use field A as a **read** (the condition register), not a write. The buggy scan would incorrectly mark a still-live condition register as dead and skip the LDREG, leaving it with a stale value. Fix: move the IF_TRUE/IF_FALSE read-check **before** the format dispatch so it fires regardless of whether the surrounding ABC gate matches. Also added `test/test_regalloc_no_clobber.js` as a focused regression test. **Added `test/modules/t12_tinycolor`** with a smoke assertion set (validity, RGB, hex, mix, dark/light). Added `t12_tinycolor` to `test/modules/run.sh`. **`benchmarks/duktape_c3.c3`** also got a small fix: `Uncaught: <non-object error value>` now prints the actual TVal via `print_tval_stderr` (matches the tinycolor `_ok` bug symptom more clearly). Rosetta 44/44, all module tests pass except pre-existing `t11_colord` (`number is not a function`). test262 Phase 1 unchanged. | No test262 delta |
