@@ -723,18 +723,21 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     uint limit = 0xFFFFFFFF;  // 2^32 - 1
     if (ctx.argc > 1) {
         TVal limit_arg = ctx.regs[ctx.base_reg + 1];
-        // ToUint32: convert via ToNumber first (calls valueOf), then to uint32
-        double limit_num = builtin_to_number_vm(ctx, &limit_arg);
-        // Apply ToUint32: NaN→0, ±Infinity→0, then floor(mod(2^32))
-        if (limit_num != limit_num) {  // NaN
-            limit = 0;
-        } else if (limit_num == 0.0 || limit_num == double::inf || limit_num == -double::inf) {
-            limit = 0;
-        } else {
-            double two32 = 4294967296.0;
-            double n = limit_num - math::floor(limit_num / two32) * two32;
-            if (n < 0.0) n += two32;
-            limit = (uint)n;
+        // Per spec, if limit is undefined, use 2^32 - 1 (the default).
+        if (!limit_arg.is_undefined()) {
+            // ToUint32: convert via ToNumber first (calls valueOf), then to uint32
+            double limit_num = builtin_to_number_vm(ctx, &limit_arg);
+            // Apply ToUint32: NaN→0, ±Infinity→0, then floor(mod(2^32))
+            if (limit_num != limit_num) {  // NaN
+                limit = 0;
+            } else if (limit_num == 0.0 || limit_num == double::inf || limit_num == -double::inf) {
+                limit = 0;
+            } else {
+                double two32 = 4294967296.0;
+                double n = limit_num - math::floor(limit_num / two32) * two32;
+                if (n < 0.0) n += two32;
+                limit = (uint)n;
+            }
         }
     }
 
