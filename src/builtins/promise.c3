@@ -1207,14 +1207,14 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create Promise.prototype.  Allocated as PROMISE class so the GC
-    // mark case for ObjClass.PROMISE is exercised, but initialized via
-    // promise_init so the extra fields are well-defined.
-    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
+    // Create Promise.prototype. Per ES6 §25.4.5 the prototype is an
+    // ordinary object (ObjClass.OBJECT) — it must NOT carry the
+    // [[PromiseState]] internal slot that Promise instances have, or
+    // Promise.prototype.then would pass the IsPromise check.
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
-    proto.prototype = null;
-    promise_init(proto);
+    proto.prototype = heap.object_proto;
     heap.promise_proto = proto;
 
     if (!register_string_proto_method(proto, heap, "then",    BUILTIN_PROMISE_PROTO_THEN))    return false;
