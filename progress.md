@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 224 (Array prototype + iteration fixes)
+**Last Updated:** Session 225 (Array prototype + Promise fixes)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (full run, 2026-06-27)
@@ -8,27 +8,27 @@
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,998 |
-| Total passing | 17,667 |
-| **Overall pass rate (pass/pass+fail+CE)** | **80.3%** |
-| Skipped + CE (not run) | 19,810 |
+| Pass + Fail + CE (executable) | 21,524 |
+| Total passing | 17,824 |
+| **Overall pass rate (pass/pass+fail+CE)** | **82.8%** |
+| Skipped + CE (not run) | 20,284 |
 
-## Per-Phase Status (session 224)
+## Per-Phase Status (session 225)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 682 | 194 | 1297 | 12 |
-| 1: Calling Convention | 426 | 81 | 3 | 339 | 3 |
+| 0-1: Core VM | 2185 | 683 | 193 | 1297 | 12 |
+| 1: Calling Convention | 426 | 82 | 2 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 5039 | 730 | 1971 | 26 |
-| 4: Error Handling | 402 | 138 | 44 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5953 | 1117 | 1538 | 7 |
-| 6: Prototype Methods | 4713 | 3129 | 634 | 945 | 5 |
-| 7: ES5 Features | 1035 | 207 | 68 | 749 | 11 |
-| 8: ES5 Built-in Objects | 2747 | 1078 | 174 | 1494 | 1 |
+| 3: Object System | 7766 | 5028 | 741 | 1971 | 26 |
+| 4: Error Handling | 402 | 135 | 47 | 201 | 19 |
+| 5: Built-in Constructors | 8615 | 5936 | 1133 | 1538 | 8 |
+| 6: Prototype Methods | 4713 | 3115 | 647 | 945 | 6 |
+| 7: ES5 Features | 1035 | 208 | 67 | 749 | 11 |
+| 8: ES5 Built-in Objects | 2747 | 1065 | 187 | 1494 | 1 |
 | 11: Arrow/Templates | 427 | 69 | 28 | 325 | 5 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
-| 14: for-of | 751 | 13 | 15 | 719 | 4 |
+| 14: for-of | 751 | 14 | 14 | 719 | 4 |
 | 15: Classes | 8520 | 64 | 157 | 8265 | 34 |
 | 17-20: Map/Set/Symbol/Promise | 1614 | 365 | 261 | 978 | 10 |
 | 21: Generators | 619 | 0 | 0 | 619 | 0 |
