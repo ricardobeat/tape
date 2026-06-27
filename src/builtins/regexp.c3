@@ -1047,56 +1047,106 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
     rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
 
     uint arr_idx = 0;
-    int search_pos = 0;
+    int q = 0;          // current search position
+    int p = 0;          // segment start (= last match end after a non-empty match)
     HString* len_key = builtin_intern_string(ctx.heap, "length");
 
-    while (search_pos <= input_len && arr_idx < limit) {
+    // Empty string edge case: if no match, return [""]; if any match, return [].
+    if (input_len == 0) {
+        int[re_bindings::RE_MAX_CAPTURES] caps0_s;
+        int[re_bindings::RE_MAX_CAPTURES] caps0_e;
+        libc::memset(&caps0_s, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+        libc::memset(&caps0_e, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+        int os0 = 0;
+        int oe0 = 0;
+        int onc0 = 0;
+        int r0 = re_bindings::re_exec(
+            re_data, input, input_len, 0,
+            &os0, &oe0, &onc0, &caps0_s, &caps0_e, re_bindings::RE_MAX_CAPTURES
+        );
+        if (r0 != re_bindings::RE_MATCH) {
+            TVal elem; elem.set_string(builtin_intern_string(ctx.heap, ""));
+            arr.put_prop(ctx.heap.int_to_hstring(0), elem, hobject::PROP_FLAGS_WEC);
+            TVal lv; lv.set_fastint(1);
+            arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
+        } else {
+            TVal lv; lv.set_fastint(0);
+            arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.result.set_object(arr);
+        return;
+    }
+
+    // ES6 §21.2.5.11 step 14 (SymbolSplit loop): the segment start `p` and
+    // search position `q` diverge on zero-length matches. After a zero-length
+    // match at q we advance q by 1 without pushing anything; only when the
+    // regex consumes at least one char (e > p) do we push [p, q) and update
+    // both p and q to e. This matches QuickJS's js_regexp_Symbol_split.
+    while (q < input_len && arr_idx < limit) {
+        int[re_bindings::RE_MAX_CAPTURES] caps_s;
+        int[re_bindings::RE_MAX_CAPTURES] caps_e;
+        libc::memset(&caps_s, 0, re_bindings::RE_MAX_CAPTURES * int::size);
+        libc::memset(&caps_e, 0, re_bindings::RE_MAX_CAPTURES * int::size);
         int out_start = 0;
         int out_end = 0;
         int out_num_captures = 0;
-        int[re_bindings::RE_MAX_CAPTURES] caps_start;
-        int[re_bindings::RE_MAX_CAPTURES] caps_end;
-        libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
 
         int result = re_bindings::re_exec(
-            re_data, input, input_len, search_pos,
+            re_data, input, input_len, q,
             &out_start, &out_end, &out_num_captures,
-            &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
+            &caps_s, &caps_e, re_bindings::RE_MAX_CAPTURES
         );
-        if (result != re_bindings::RE_MATCH) break;
-
-        // Substring before match
-        uint substr_len = (uint)out_start - (uint)search_pos;
-        HString* substr;
-        if (substr_len == 0) {
-            substr = builtin_intern_string(ctx.heap, "");
-        } else if (substr_len < 256) {
-            char[256] tmp;
-            for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(usz)search_pos + i];
-            substr = builtin_intern_string(ctx.heap, tmp[:substr_len]);
-        } else {
-            substr = builtin_intern_string(ctx.heap, input[search_pos : substr_len]);
+        int e = out_end;
+        if (e > input_len) e = input_len;
+        // Only accept a match that begins exactly at q — lre_exec may
+        // return a match at any position >= start_offset, but SymbolSplit
+        // must anchor to q to behave like a sticky scan.
+        if (result != re_bindings::RE_MATCH || out_start != q || e == p) {
+            // No match, match not at q, or zero-length match that didn't
+            // advance past the current segment: advance q by 1.
+            q++;
+            continue;
         }
-        TVal elem; elem.set_string(substr);
-        arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
-        arr_idx++;
 
-        // Capture groups
+        // Push substring [p, q)
+        {
+            uint substr_len = (uint)q - (uint)p;
+            HString* substr;
+            if (substr_len == 0) {
+                substr = builtin_intern_string(ctx.heap, "");
+            } else if (substr_len < 256) {
+                char[256] tmp;
+                for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(uint)p + i];
+                substr = builtin_intern_string(ctx.heap, tmp[:substr_len]);
+            } else {
+                substr = builtin_intern_string(ctx.heap, input[p : substr_len]);
+            }
+            TVal elem; elem.set_string(substr);
+            arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
+            arr_idx++;
+            if (arr_idx >= limit) {
+                TVal lv; lv.set_fastint((long)arr_idx);
+                arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
+                ctx.result.set_object(arr);
+                return;
+            }
+        }
+
+        // Push capture groups
         int num_caps = out_num_captures;
         if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
         for (int i = 0; i < num_caps && arr_idx < limit; i++) {
             TVal cap_elem;
-            if (caps_start[i] >= 0 && caps_end[i] >= 0) {
-                usz cap_len = (usz)(caps_end[i] - caps_start[i]);
+            if (caps_s[i] >= 0 && caps_e[i] >= 0) {
+                usz cap_len = (usz)(caps_e[i] - caps_s[i]);
                 if (cap_len == 0) {
                     cap_elem.set_string(builtin_intern_string(ctx.heap, ""));
                 } else if (cap_len < 256) {
                     char[256] cap_buf;
-                    for (usz j = 0; j < cap_len; j++) cap_buf[j] = input[(usz)caps_start[i] + j];
+                    for (usz j = 0; j < cap_len; j++) cap_buf[j] = input[(uint)caps_s[i] + j];
                     cap_elem.set_string(builtin_intern_string(ctx.heap, cap_buf[:cap_len]));
                 } else {
-                    cap_elem.set_string(builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
+                    cap_elem.set_string(builtin_intern_string(ctx.heap, input[caps_s[i] : cap_len]));
                 }
             } else {
                 cap_elem.set_undefined();
@@ -1105,26 +1155,22 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
             arr_idx++;
         }
 
-        if (out_end == search_pos) {
-            search_pos = out_end + 1;
-            if (search_pos > input_len) break;
-        } else {
-            search_pos = out_end;
-        }
+        p = e;
+        q = e;
     }
 
-    // Remaining part
-    if (arr_idx < limit && search_pos <= input_len) {
-        uint substr_len = (uint)input_len - (uint)search_pos;
+    // Tail: ES6 §21.2.5.11 step 16. Always push [p, input_len), even when
+    // it is empty — that's how V8/QuickJS get an empty tail entry for the
+    // case "abc".split(/[a-z]/) which yields ["", "", "", ""].
+    if (arr_idx < limit) {
+        uint substr_len = (uint)input_len - (uint)p;
         HString* substr;
-        if (substr_len == 0) {
-            substr = builtin_intern_string(ctx.heap, "");
-        } else if (substr_len < 256) {
+        if (substr_len < 256) {
             char[256] tmp;
-            for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(usz)search_pos + i];
+            for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(uint)p + i];
             substr = builtin_intern_string(ctx.heap, tmp[:substr_len]);
         } else {
-            substr = builtin_intern_string(ctx.heap, input[search_pos : substr_len]);
+            substr = builtin_intern_string(ctx.heap, input[p : substr_len]);
         }
         TVal elem; elem.set_string(substr);
         arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
