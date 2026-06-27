@@ -2556,13 +2556,17 @@ fn void builtin_array_proto_forEach(BuiltinContext* ctx) {
     }
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
+    // Per ES5 §15.4.4.18 step 2: IsCallable(callbackfn) must be true even
+    // when argc < 1 (i.e. callbackfn is undefined). Always check so the
+    // TypeError is thrown.
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -2582,12 +2586,14 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    // Per ES5 §15.4.4.19 step 2: IsCallable(callbackfn) must be true even
+    // when argc < 1. Always check so the TypeError is thrown.
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -2596,6 +2602,7 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     arr.prototype = ctx.heap.array_proto;
     uint aj = 0;
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         // ES5 §15.4.4.19 step 8.c: invoke the callback for every index k in
         // [0, len) — for holes in sparse inputs, pass undefined as the value.
         TVal v;
@@ -2629,12 +2636,12 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -2643,6 +2650,7 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     arr.prototype = ctx.heap.array_proto;
     uint aj = 0;
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -2674,15 +2682,16 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -2708,15 +2717,16 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, (uint)k, ctx.heap, ctx, &v)) {
@@ -2742,15 +2752,16 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, (uint)k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, (uint)k, ctx.heap, ctx, &v)) {
@@ -2778,15 +2789,16 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -2812,15 +2824,16 @@ fn void builtin_array_proto_every(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -2844,15 +2857,16 @@ fn void builtin_array_proto_some(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    TVal cb_val;
+    if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
+    if (!arr_check_callback(cb_val, ctx)) return;
+    TVal callback = cb_val;
     uint len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
-        return;
-    }
-    TVal callback = ctx.regs[ctx.base_reg];
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
     for (uint k = 0; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
