@@ -2786,12 +2786,50 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
     }
+    // STRING exotic: integer indices [0, char_length) are enumerable own
+    // properties served lazily via the exotic_stringobj flag.
+    uint stringobj_len = 0;
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) stringobj_len = prim.char_length();
+        count += stringobj_len;
+    }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
     uint idx = 0;
+    // STRING exotic indices first (matches Object.keys ordering and matches
+    // the spec enumeration of indexed character properties).
+    if (stringobj_len > 0) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        char* data = prim.get_cstr();
+        for (uint i = 0; i < stringobj_len; i++) {
+            HString* key_s = ctx.heap.int_to_hstring((long)i);
+            if (key_s == null) continue;
+            // Build single-character string value.
+            char[2] ch_buf;
+            ch_buf[0] = data[i];
+            ch_buf[1] = 0;
+            HString* ch_hstr = builtin_intern_string(ctx.heap, ch_buf[:1]);
+            TVal ch_val; ch_val.set_string(ch_hstr);
+            // Append [key, value] pair
+            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err_ex = pair_raw) continue;
+            HObject* pair = pair_raw;
+            pair.prototype = ctx.heap.array_proto;
+            TVal key_tv; key_tv.set_string(key_s);
+            array_set_elem(pair, 0, key_tv, ctx.heap);
+            array_set_elem(pair, 1, ch_val, ctx.heap);
+            TVal len_tv; len_tv.set_fastint(2);
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+            TVal pair_tv; pair_tv.set_object(pair);
+            array_set_elem(arr, idx, pair_tv, ctx.heap);
+            idx++;
+        }
+    }
     // Named properties → [key, value] pairs
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
