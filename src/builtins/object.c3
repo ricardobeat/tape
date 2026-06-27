@@ -2880,6 +2880,11 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
     }
+    // String exotic: integer indices [0, char_length) are own enumerable
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) count += prim.char_length();
+    }
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
@@ -2898,6 +2903,39 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         if (!obj.array_part()[i].is_undefined()) {
             array_set_elem(arr, idx, obj.array_part()[i], ctx.heap);
             idx++;
+        }
+    }
+    // String exotic: serve indexed character properties lazily
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            usz blen = prim.blen;
+            char[] data = prim.get_data();
+            usz byte_pos = 0;
+            uint ch_idx = 0;
+            while (byte_pos < blen && ch_idx < prim.char_length()) {
+                usz char_start = byte_pos;
+                // Single-byte ASCII fast path: top 2 bits are 00, not 10.
+                if (byte_pos < blen && (data[byte_pos] & 0x80) == 0) {
+                    byte_pos++;
+                } else {
+                    // Multi-byte UTF-8: count continuation bytes (top 2 bits == 10).
+                    byte_pos++;  // skip the leading byte
+                    while (byte_pos < blen && (data[byte_pos] & 0xC0) == 0x80) { byte_pos++; }
+                }
+                char[8] one;
+                usz copy_len = byte_pos - char_start;
+                if (copy_len >= one.len) copy_len = one.len - 1;
+                for (usz j = 0; j < copy_len; j++) { one[j] = data[char_start + j]; }
+                one[copy_len] = 0;
+                HString*? ch_raw = builtin_intern_string(ctx.heap, one[:copy_len]);
+                if (try ch = ch_raw) {
+                    TVal ch_tv; ch_tv.set_string(ch);
+                    array_set_elem(arr, idx, ch_tv, ctx.heap);
+                    idx++;
+                }
+                ch_idx++;
+            }
         }
     }
     // Set .length
