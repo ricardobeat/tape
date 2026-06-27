@@ -1084,22 +1084,37 @@ fn HString* builtin_replace_substitute(Heap* heap, HString* replace_str,
                 i++;
                 continue;
             }
-            if (next >= '1' && next <= '9') {
-                int group_idx = next - '1';
-                i++;
-                if (i + 1 < rep_len && rep[i + 1] >= '0' && rep[i + 1] <= '9') {
-                    int two_digit = (next - '0') * 10 + (rep[i + 1] - '0');
-                    if (two_digit <= num_caps) {
-                        group_idx = two_digit - 1;
-                        i++;
+            // ES6 §21.1.3.14 step 14.f: "$" followed by 1 or more decimal
+            // digits refers to a capture group. We try 2 digits first; if
+            // the resulting index > num_caps, fall back to 1 digit.
+            if (next >= '0' && next <= '9') {
+                int digit_count = 1;
+                int index = next - '0';
+                if (i + 2 < rep_len && rep[i + 2] >= '0' && rep[i + 2] <= '9') {
+                    int two_digit = index * 10 + (rep[i + 2] - '0');
+                    if (two_digit > 0 && two_digit <= num_caps) {
+                        index = two_digit;
+                        digit_count = 2;
                     }
                 }
-                if (group_idx < num_caps && group_idx >= 0 &&
-                    caps_start[group_idx] >= 0 && caps_end[group_idx] >= 0) {
-                    for (usz j = (usz)caps_start[group_idx]; j < (usz)caps_end[group_idx] && offset < 4096; j++) {
-                        buf[offset++] = input[j];
+                if (index >= 1 && index <= num_caps) {
+                    if (caps_start[index - 1] >= 0 && caps_end[index - 1] >= 0) {
+                        for (usz j = (usz)caps_start[index - 1]; j < (usz)caps_end[index - 1] && offset < 4096; j++) {
+                            buf[offset++] = input[j];
+                        }
                     }
+                    // Otherwise capture is undefined → empty substitution.
+                    i += (usz)digit_count;
+                    continue;
                 }
+                // Index out of range (0 or > num_caps): emit the entire
+                // "$<digits>" sequence literally per spec.
+                buf[offset++] = '$';
+                buf[offset++] = (char)next;
+                if (digit_count == 2) {
+                    buf[offset++] = rep[i + 2];
+                }
+                i += (usz)digit_count;
                 continue;
             }
         }
@@ -1329,7 +1344,11 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     }
 
     // ── String searchValue ──────────────────────────────────────────────
-    HString* search_hstr = builtin_to_string(ctx.heap, search_val);
+    // ES6 §21.1.3.14 step 5: ToString(searchValue) — must call user-defined
+    // toString on objects. Use the VM-aware variant so toString can throw
+    // and propagate the exception.
+    HString* search_hstr = builtin_to_string_vm(ctx, search_val);
+    if (ctx.should_throw) return;
     if (search_hstr == null) {
         ctx.result.set_undefined();
         return;
