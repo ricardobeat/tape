@@ -386,13 +386,34 @@ fn void builtin_promise(BuiltinContext* ctx) {
     }
 
     TVal executor = ctx.regs[ctx.base_reg];
-    if (!executor.is_object() || executor.get_heapptr() == null) {
-        ctx.result.set_object(promise);
+    // ES2015 §25.6.3.1 step 2: throw TypeError if IsCallable(executor) is false.
+    // An executor is callable iff it's an object with is_callable() or a lightfunc.
+    bool exec_callable = executor.is_lightfunc();
+    HObject* exec_func = null;
+    if (executor.is_object() && executor.get_heapptr() != null) {
+        exec_func = (HObject*)executor.get_heapptr();
+        exec_callable = exec_func.is_callable();
+    }
+    if (!exec_callable) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_e = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Promise resolver undefined is not a function");
+        if (msg_key != null && msg_str != null) {
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
         return;
     }
 
-    HObject* exec_func = (HObject*)executor.get_heapptr();
-    if ((*exec_func.extra_ptr()).func.comp_func == null && (*exec_func.extra_ptr()).func.builtin_fn_index < 0) {
+    if (exec_func != null && (*exec_func.extra_ptr()).func.comp_func == null && (*exec_func.extra_ptr()).func.builtin_fn_index < 0) {
         ctx.result.set_object(promise);
         return;
     }
