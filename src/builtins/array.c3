@@ -1301,7 +1301,8 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    uint len = array_get_length(obj, ctx.heap);
+    uint len;
+    if (!array_to_length_checked(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
     // Get relativeStart (argument 0)
     double relative_start = 0.0;
@@ -1314,7 +1315,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         double tmp = (double)len + relative_start;
         actual_start = tmp < 0 ? 0 : (uint)(long)tmp;
     } else {
-        actual_start = relative_start > (double)len ? len : (uint)(long)relative_start;
+        actual_start = relative_start >= (double)len ? len : (uint)(long)relative_start;
     }
 
     // Get actualDeleteCount
@@ -1339,6 +1340,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     result.prototype = ctx.heap.array_proto;
 
     for (uint i = 0; i < actual_delete_count; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
         if (arr_has_prop(obj, actual_start + i, ctx.heap)) {
             if (arr_get_elem_vm(obj, actual_start + i, ctx.heap, ctx, &elem)) {
@@ -1358,6 +1360,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     if (item_count < actual_delete_count) {
         uint shift_len = len - actual_start - actual_delete_count;
         for (uint k = 0; k < shift_len; k++) {
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal elem;
             if (arr_has_prop(obj, actual_start + actual_delete_count + k, ctx.heap)) {
                 if (arr_get_elem_vm(obj, actual_start + actual_delete_count + k, ctx.heap, ctx, &elem)) {
@@ -1373,6 +1376,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     } else if (item_count > actual_delete_count) {
         uint shift_len = len - actual_start - actual_delete_count;
         for (uint k = shift_len; k > 0; k--) {
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             uint from = actual_start + actual_delete_count + k - 1;
             uint to = actual_start + item_count + k - 1;
             TVal elem;
