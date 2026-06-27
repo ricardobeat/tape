@@ -974,7 +974,35 @@ fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, val, false);  // hint "number"
-        if (vm_ptr.throw_pending || prim.is_object()) return 0.0 / 0.0;
+        if (vm_ptr.throw_pending) {
+            // Propagate the thrown error (TypeError from to_primitive_value).
+            ctx.should_throw = true;
+            ctx.throw_value = vm_ptr.throw_value;
+            return 0.0 / 0.0;
+        }
+        if (prim.is_object()) {
+            // Both valueOf and toString returned non-primitives — ES2022
+            // §7.1.1.1 step 3 throws TypeError. Synthesize a TypeError and
+            // flag it on the context so the calling builtin propagates.
+            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+            if (try err = err_raw) {
+                err.prototype = ctx.heap.type_err_proto;
+                HString* msg_str = builtin_intern_string(ctx.heap, "Cannot convert object to primitive value");
+                if (msg_str != null) {
+                    TVal msg_val;
+                    msg_val.set_string(msg_str);
+                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                    if (msg_key != null) {
+                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+                TVal err_val;
+                err_val.set_object(err);
+                ctx.throw_value = err_val;
+            }
+            ctx.should_throw = true;
+            return 0.0 / 0.0;
+        }
         return builtin_to_number_getdouble(ctx, &prim);
     }
     TVal num;
