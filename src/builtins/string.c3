@@ -38,7 +38,14 @@ fn void populate_string_indexed_props(HObject* obj, HString* s, Heap* heap) {
 fn void builtin_string(BuiltinContext* ctx) {
     HString* s;
     if (ctx.argc > 0) {
-        s = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        // Use the VM-aware variant so ToString on objects properly invokes
+        // the toString/valueOf chain via Symbol.toPrimitive semantics.
+        s = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (s == null) {
+            // Caller already has ctx.should_throw set if applicable.
+            ctx.result.set_undefined();
+            return;
+        }
     } else {
         s = builtin_intern_string(ctx.heap, "");
     }
