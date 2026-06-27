@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 225 (Array prototype + Promise fixes)
+**Last Updated:** Session 226 (Object.values String exotic fix)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (full run, 2026-06-27)
@@ -9,18 +9,18 @@
 |---|---|
 | Total tests measured | 41,808 |
 | Pass + Fail + CE (executable) | 21,524 |
-| Total passing | 17,824 |
-| **Overall pass rate (pass/pass+fail+CE)** | **82.8%** |
+| Total passing | 17,801 |
+| **Overall pass rate (pass/pass+fail+CE)** | **82.7%** |
 | Skipped + CE (not run) | 20,284 |
 
-## Per-Phase Status (session 225)
+## Per-Phase Status (session 226)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
 | 0-1: Core VM | 2185 | 683 | 193 | 1297 | 12 |
 | 1: Calling Convention | 426 | 82 | 2 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 5028 | 741 | 1971 | 26 |
+| 3: Object System | 7766 | 5005 | 763 | 1971 | 27 |
 | 4: Error Handling | 402 | 135 | 47 | 201 | 19 |
 | 5: Built-in Constructors | 8615 | 5936 | 1133 | 1538 | 8 |
 | 6: Prototype Methods | 4713 | 3115 | 647 | 945 | 6 |

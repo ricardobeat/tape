@@ -1,13 +1,13 @@
 # Duktape C3 — Backlog
 
-Baseline as of Session 225 (2026-06-27):
+Baseline as of Session 226 (2026-06-27):
 
 | Phase | Total | Pass | Fail | Skip | CE  |
 |-------|-------|------|------|------|-----|
 | 0-1: Core VM | 2185 | 682 | 194 | 1297 | 12 |
 | 1: Calling Convention & Closures | 426 | 82 | 2 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 5028 | 741 | 1971 | 26 |
+| 3: Object System | 7766 | 5005 | 763 | 1971 | 27 |
 | 4: Error Handling & References | 402 | 135 | 47 | 201 | 19 |
 | 5: Built-in Constructors | 8615 | 5936 | 1133 | 1538 | 8 |
 | 6: Built-in Prototype Methods | 4713 | 3115 | 647 | 945 | 6 |
