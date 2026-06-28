@@ -151,6 +151,10 @@ const uint BUILTIN_DATE_PROTO_TOLOCALEDATESTRING = 262;
 const uint BUILTIN_DATE_PROTO_TOLOCALETIMESTRING = 263;
 const uint BUILTIN_PROMISE_RESOLVE_CALLBACK     = 264;
 const uint BUILTIN_PROMISE_REJECT_CALLBACK      = 265;
+const uint BUILTIN_PROMISE_ALL_RESOLVE_ELEMENT  = 336;
+const uint BUILTIN_PROMISE_ALL_REJECT_ELEMENT   = 337;
+const uint BUILTIN_PROMISE_RACE_RESOLVE_ELEMENT = 338;
+const uint BUILTIN_PROMISE_RACE_REJECT_ELEMENT  = 339;
 
 // Iterator protocol
 const uint BUILTIN_ARRAY_ITERATOR_NEXT        = 269;
@@ -219,7 +223,7 @@ const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
 const uint BUILTIN_ASYNC_RESUME               = 330;
 const uint BUILTIN_ASYNC_REJECT               = 331;
 
-const uint BUILTIN_COUNT                       = 336;
+const uint BUILTIN_COUNT                       = 340;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1854,6 +1858,10 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PRINT] = &builtin_print,
     [BUILTIN_PROMISE] = &builtin_promise,
     [BUILTIN_PROMISE_ALL] = &builtin_promise_all,
+    [BUILTIN_PROMISE_ALL_RESOLVE_ELEMENT] = &builtin_promise_all_resolve_element,
+    [BUILTIN_PROMISE_ALL_REJECT_ELEMENT] = &builtin_promise_all_reject_element,
+    [BUILTIN_PROMISE_RACE_RESOLVE_ELEMENT] = &builtin_promise_race_resolve_element,
+    [BUILTIN_PROMISE_RACE_REJECT_ELEMENT] = &builtin_promise_race_reject_element,
     [BUILTIN_PROMISE_ALLSETTLED] = &builtin_promise_allsettled,
     [BUILTIN_PROMISE_ANY] = &builtin_promise_any,
     [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,

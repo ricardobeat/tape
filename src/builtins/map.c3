@@ -161,7 +161,9 @@ fn void builtin_map(BuiltinContext* ctx) {
                         TVal v = array_get_elem(pair_obj, 1, ctx.heap);
                         int found = map_find_key(map, k);
                         if (found >= 0) {
-                            map.array_part()[(uint)found + 1] = v;
+                            TVal* v_slot = &map.array_part()[(uint)found + 1];
+                            if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+                            *v_slot = v;
                         } else {
                             uint cnt = map.array_used;
                             map.set_array_idx(cnt, k);
@@ -222,7 +224,9 @@ fn void builtin_map(BuiltinContext* ctx) {
                         TVal v = array_get_elem(pair_obj, 1, ctx.heap);
                         int found = map_find_key(map, k);
                         if (found >= 0) {
-                            map.array_part()[(uint)found + 1] = v;
+                            TVal* v_slot = &map.array_part()[(uint)found + 1];
+                            if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+                            *v_slot = v;
                         } else {
                             uint cnt = map.array_used;
                             map.set_array_idx(cnt, k);
@@ -250,7 +254,10 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
 
     int found = map_find_key(map, key);
     if (found >= 0) {
-        map.array_part()[(uint)found + 1] = value;
+        // Update existing entry's value — decref old string value if any.
+        TVal* v_slot = &map.array_part()[(uint)found + 1];
+        if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+        *v_slot = value;
     } else {
         uint cnt = map.array_used;
         map.set_array_idx(cnt, key);
@@ -263,12 +270,19 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
 
 // ============================================================================
 // Map.prototype.size getter — ES6 §23.1.3.10
+// Counts non-empty entries (since delete marks slots as undefined).
 // ============================================================================
 fn void builtin_map_proto_size_get(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) return;
-    uint entry_count = map.array_used / 2;
-    ctx.result.set_fastint((long)entry_count);
+    uint count = 0;
+    TVal* arr = map.array_part();
+    if (arr != null) {
+        for (uint i = 0; i + 1 < map.array_used; i += 2) {
+            if (!arr[i].is_undefined()) count++;
+        }
+    }
+    ctx.result.set_fastint((long)count);
 }
 
 // ============================================================================
@@ -303,6 +317,8 @@ fn void builtin_map_proto_has(BuiltinContext* ctx) {
 
 // ============================================================================
 // Map.prototype.delete(key) — ES6 §23.1.3.3
+// Per ES6 spec, deletion marks the entry as "empty" (does not remove the slot)
+// so concurrent iteration sees the deletion but new entries appear at the end.
 // ============================================================================
 fn void builtin_map_proto_delete(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
@@ -312,15 +328,16 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
     TVal key = ctx.regs[ctx.base_reg];
     int found = map_find_key(map, key);
     if (found >= 0) {
-        uint cnt = map.array_used;
-        // Shift elements down to fill the gap
-        for (uint i = (uint)found; i + 2 < cnt; i++) {
-            map.array_part()[i] = map.array_part()[i + 2];
-        }
-        // Clear the last two slots
-        map.array_part()[cnt - 2].set_undefined();
-        map.array_part()[cnt - 1].set_undefined();
-        map.array_used = (ushort)(cnt - 2);
+        // Mark slots as undefined rather than shifting — iteration over the
+        // map must skip empty slots but new entries (added during forEach)
+        // must still be visited. array_used stays as high water mark so the
+        // iterator walks the full range.
+        TVal* k_slot = &map.array_part()[(uint)found];
+        TVal* v_slot = &map.array_part()[(uint)found + 1];
+        if (k_slot.is_string()) ctx.heap.decref_tval(k_slot);
+        if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+        k_slot.set_undefined();
+        v_slot.set_undefined();
 
         ctx.result.set_boolean(true);
     } else {
@@ -403,29 +420,36 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    uint idx = (*iter.extra_ptr()).iter.index * 2;  // Map entries are [k0,v0,k1,v1,...]
+    uint slot_idx = (*iter.extra_ptr()).iter.index * 2;  // Map entries are [k0,v0,k1,v1,...]
     uint kind = (*iter.extra_ptr()).iter.kind;
 
     bool done = false;
     TVal value;
     value.set_undefined();
 
-    if (idx < target.array_used) {
+    // Skip over empty (deleted) slots — array_used is high water mark,
+    // and array_part() may contain undefined-keyed slots from deletes.
+    while (slot_idx < target.array_used && target.array_part() != null &&
+           target.array_part()[slot_idx].is_undefined()) {
+        slot_idx += 2;
+    }
+
+    if (slot_idx < target.array_used) {
         TVal* entries = target.array_part();
         if (entries != null) {
             if (kind == 1) {
-                // keys: return key at idx
-                value = entries[idx];
+                // keys: return key at slot_idx
+                value = entries[slot_idx];
             } else if (kind == 0) {
-                // values: return value at idx+1
-                value = entries[idx + 1];
+                // values: return value at slot_idx+1
+                value = entries[slot_idx + 1];
             } else {
                 // entries: return [key, value]
                 HObject*? pair_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
                 if (try pair = pair_raw) {
                     pair.prototype = heap.array_proto;
-                    pair.set_array_idx(0, entries[idx]);
-                    pair.set_array_idx(1, entries[idx + 1]);
+                    pair.set_array_idx(0, entries[slot_idx]);
+                    pair.set_array_idx(1, entries[slot_idx + 1]);
                     pair.array_used = 2;
                     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
                     if (len_key != null) {
@@ -436,7 +460,7 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
                     value.set_object(pair);
                 }
             }
-            (*iter.extra_ptr()).iter.index += 1;
+            (*iter.extra_ptr()).iter.index = (slot_idx / 2) + 1;
         } else {
             done = true;
         }
@@ -508,14 +532,18 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
         return;
     }
 
-    // ES6 §23.1.3.5 — forEach iterates all entries and calls callbackfn(value, key, map).
+    // ES6 §23.1.3.5 — forEach iterates all non-empty entries and calls
+    // callbackfn(value, key, map). Entries deleted before being visited are
+    // skipped; entries added during forEach (appended) are visited.
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
 
-    uint count = map.array_used;
-    for (uint i = 0; i + 1 < count; i += 2) {
-        TVal key = map.array_part()[i];
-        TVal value = map.array_part()[i + 1];
+    TVal* entries = map.array_part();
+    uint used = map.array_used;
+    for (uint i = 0; i + 1 < used; i += 2) {
+        TVal key = entries[i];
+        if (key.is_undefined()) continue;  // skip deleted slot
+        TVal value = entries[i + 1];
 
         TVal[3] args;
         args[0] = value;
@@ -529,6 +557,9 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
+        // After callback, refresh used (entries may have been added).
+        used = map.array_used;
+        entries = map.array_part();
     }
 
     ctx.result.set_undefined();

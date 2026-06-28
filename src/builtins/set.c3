@@ -179,11 +179,19 @@ fn void builtin_set_proto_add(BuiltinContext* ctx) {
 
 // ============================================================================
 // Set.prototype.size getter — ES6 §23.2.3.9
+// Counts non-empty entries (since delete marks slots as undefined).
 // ============================================================================
 fn void builtin_set_proto_size_get(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) return;
-    ctx.result.set_fastint((long)set.array_used);
+    uint count = 0;
+    TVal* arr = set.array_part();
+    if (arr != null) {
+        for (uint i = 0; i < set.array_used; i++) {
+            if (!arr[i].is_undefined()) count++;
+        }
+    }
+    ctx.result.set_fastint((long)count);
 }
 
 // ============================================================================
@@ -201,6 +209,8 @@ fn void builtin_set_proto_has(BuiltinContext* ctx) {
 
 // ============================================================================
 // Set.prototype.delete(value) — ES6 §23.2.3.4
+// Per ES6 spec, deletion marks the entry as "empty" rather than shifting so
+// concurrent iteration sees the deletion and new entries appear at the end.
 // ============================================================================
 fn void builtin_set_proto_delete(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
@@ -210,13 +220,10 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
     TVal value = ctx.regs[ctx.base_reg];
     int found = set_find_value(set, value);
     if (found >= 0) {
-        uint cnt = set.array_used;
-        // Shift elements down
-        for (uint i = (uint)found; i + 1 < cnt; i++) {
-            set.array_part()[i] = set.array_part()[i + 1];
-        }
-        set.array_part()[cnt - 1].set_undefined();
-        set.array_used = (ushort)(cnt - 1);
+        TVal* slot = &set.array_part()[(uint)found];
+        if (slot.is_string()) ctx.heap.decref_tval(slot);
+        slot.set_undefined();
+        // array_used stays at high water mark; iteration skips empty slots.
 
         ctx.result.set_boolean(true);
     } else {
@@ -305,8 +312,16 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
     TVal value;
     value.set_undefined();
 
+    // Skip over empty (deleted) slots — array_used is high water mark,
+    // and array_part() may contain undefined slots from deletes.
+    TVal* entries = target.array_part();
+    if (entries != null) {
+        while (idx < target.array_used && entries[idx].is_undefined()) {
+            idx++;
+        }
+    }
+
     if (idx < target.array_used) {
-        TVal* entries = target.array_part();
         if (entries != null) {
             TVal item = entries[idx];
             if (kind == 1 || kind == 0) {
@@ -329,7 +344,7 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
                     value.set_object(pair);
                 }
             }
-            (*iter.extra_ptr()).iter.index += 1;
+            (*iter.extra_ptr()).iter.index = idx + 1;
         } else {
             done = true;
         }
@@ -407,8 +422,11 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
 
-    for (uint i = 0; i < set.array_used; i++) {
-        TVal value = set.array_part()[i];
+    TVal* entries = set.array_part();
+    uint used = set.array_used;
+    for (uint i = 0; i < used; i++) {
+        TVal value = entries[i];
+        if (value.is_undefined()) continue;  // skip deleted slot
 
         TVal[3] args;
         args[0] = value;
@@ -422,6 +440,9 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
+        // After callback, refresh used (entries may have been added).
+        used = set.array_used;
+        entries = set.array_part();
     }
 
     ctx.result.set_undefined();
