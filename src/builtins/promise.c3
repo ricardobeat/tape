@@ -622,6 +622,14 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
             *ctx.result = val;
             return;
         }
+        // Check for thenables (non-Promise objects with callable .then)
+        HObject*? coerced = promise_coerce_thenable(ctx.heap, val, ctx.vm);
+        if (catch err_c = coerced) {
+            // promise_coerce_thenable returns null for non-thenables — that's valid
+        } else {
+            ctx.result.set_object(coerced);
+            return;
+        }
     }
 
     HObject*? prom_raw = promise_create(ctx.heap);
