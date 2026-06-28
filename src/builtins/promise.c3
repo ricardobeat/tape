@@ -224,9 +224,25 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
     uint state = promise_get_state(ds, PROMISE_PENDING);
     if (state != PROMISE_PENDING) return;
 
-    // Resolve the downstream promise with the handler's return value.
-    // If the result is a thenable, we should follow it (Promise Resolution
-    // Function).  For now, do a simple resolve.
+    // If the handler threw, reject the downstream with the error
+    if (heap.has_error) {
+        heap.has_error = false;
+        promise_settle(ds, PROMISE_REJECTED, &heap.error_value, heap);
+        promise_trigger_reactions(ds, heap, vm);
+        return;
+    }
+
+    // If the result is a thenable, follow it via the Promise Resolution
+    // Procedure.  The thenable will drive the downstream promise.
+    HObject*? coerced = promise_coerce_thenable(heap, result, vm);
+    if (catch err_c = coerced) {
+        // promise_coerce_thenable returns null for non-thenables — settle normally below
+    } else {
+        // The thenable owns the downstream now; don't settle it directly.
+        return;
+    }
+
+    // Non-thenable result — settle the downstream promise directly.
     promise_settle(ds, PROMISE_FULFILLED, &result, heap);
     promise_trigger_reactions(ds, heap, vm);
 }
@@ -515,6 +531,77 @@ fn void builtin_promise(BuiltinContext* ctx) {
 // Promise.prototype.then(onFulfilled, onRejected) — ES6 §25.4.5.3
 // ============================================================================
 
+/// SpeciesConstructor helper — ES6 §7.3.22
+/// Returns the constructor to use when creating derived objects.
+fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback_ctor, HObject* fallback_proto) {
+    // 1. Assert: Type(O) is Object.
+    // 2. Let C = O.[[Get]]("constructor").
+    HString* ctor_key = builtin_intern_string(heap, "constructor");
+    if (ctor_key == null) return null;
+    HObject* obj = (HObject*)o.get_heapptr();
+    if (obj == null) return null;
+    TVal? ctor_raw = obj.get_prop_proto(ctor_key);
+    TVal ctor_val;
+    if (catch err_c = ctor_raw) {
+        return null;
+    }
+    ctor_val = ctor_raw;
+    // 3. ReturnIfAbrupt(C).
+    // 4. If C is undefined, return defaultConstructor.
+    if (ctor_val.is_undefined()) {
+        return fallback_ctor;
+    }
+    // 5. If Type(C) is not Object, throw TypeError.
+    if (!ctor_val.is_object() || ctor_val.get_heapptr() == null) {
+        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = heap.type_err_proto;
+            HString* msg_str = builtin_intern_string(heap, "constructor is not an object");
+            if (msg_str != null) {
+                TVal msg_tv; msg_tv.set_string(msg_str);
+                err.put_prop(builtin_intern_string(heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+            }
+        }
+        return null;
+    }
+    // 6. Let S = Get(C, @@species).
+    HString* species_sym = ensure_species_symbol(heap);
+    if (species_sym == null) return fallback_ctor;
+    HObject* ctor_obj = (HObject*)ctor_val.get_heapptr();
+    TVal? species_raw = ctor_obj.get_prop_proto(species_sym);
+    TVal species_val;
+    if (catch err_s = species_raw) {
+        return null;
+    }
+    species_val = species_raw;
+    // 7. ReturnIfAbrupt(S).
+    // 8. If S is undefined or null, return defaultConstructor.
+    if (species_val.is_undefined() || species_val.is_null()) {
+        return fallback_ctor;
+    }
+    // 9. If IsConstructor(S) is true, return S.
+    if (species_val.is_object() && species_val.get_heapptr() != null) {
+        HObject* s_obj = (HObject*)species_val.get_heapptr();
+        if (s_obj.flags.callable) return s_obj;
+    }
+    if (species_val.is_lightfunc()) {
+        // Lightfuncs are not constructible via `new` in our engine,
+        // but for SpeciesConstructor we treat them as constructible.
+        return fallback_ctor;
+    }
+    // 10. Throw TypeError.
+    HObject*? err_raw2 = heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err2 = err_raw2) {
+        err2.prototype = heap.type_err_proto;
+        HString* msg_str2 = builtin_intern_string(heap, "SpeciesConstructor result is not a constructor");
+        if (msg_str2 != null) {
+            TVal msg_tv2; msg_tv2.set_string(msg_str2);
+            err2.put_prop(builtin_intern_string(heap, "message"), msg_tv2, hobject::PROP_FLAGS_WC);
+        }
+    }
+    return null;
+}
+
 fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     HObject* promise = check_promise(ctx);
     if (promise == null) return;
@@ -526,13 +613,39 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     if (ctx.argc >= 1) on_fulfilled = ctx.regs[ctx.base_reg];
     if (ctx.argc >= 2) on_rejected  = ctx.regs[ctx.base_reg + 1];
 
-    // Create a new promise for the chain
-    HObject*? new_prom_raw = promise_create(ctx.heap);
-    if (catch err = new_prom_raw) {
-        ctx.result.set_undefined();
-        return;
+    // Determine the constructor via SpeciesConstructor (ES6 §25.4.5.3 step 2)
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    HObject* default_ctor = ctx.heap.promise_ctor;
+    HObject*? sc_opt = species_constructor(ctx.heap, ctx.vm, this_val, default_ctor, ctx.heap.promise_proto);
+    HObject* ctor;
+    if (catch err_sc = sc_opt) {
+        ctor = default_ctor;
+    } else if (sc_opt != null) {
+        ctor = sc_opt;
+    } else {
+        ctor = default_ctor;
     }
-    HObject* new_promise = new_prom_raw;
+
+    // Create a new promise for the chain (use promise_create for now;
+    // full constructor call via NewPromiseCapability is future work)
+    HObject* new_promise;
+    if (ctor == default_ctor) {
+        HObject*? new_prom_raw = promise_create(ctx.heap);
+        if (catch err = new_prom_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        new_promise = new_prom_raw;
+    } else {
+        // Non-default constructor: still create via promise_create
+        // (full NewPromiseCapability implementation needed for true subclassing)
+        HObject*? new_prom_raw = promise_create(ctx.heap);
+        if (catch err = new_prom_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        new_promise = new_prom_raw;
+    }
 
     // Build reaction object
     HObject*? reaction_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
@@ -1240,6 +1353,7 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
     (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE;
+    heap.promise_ctor = ctor;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

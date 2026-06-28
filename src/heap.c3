@@ -215,6 +215,8 @@ struct Heap {
     HObject* weakset_proto;
     HObject* symbol_proto;
     HObject* promise_proto;
+    /// Promise constructor function (lazily cached, rooted via this field)
+    HObject* promise_ctor;
     HObject* generator_proto;
     HObject* generator_func_proto; // GeneratorFunction.prototype (ES6 §25.2.3)
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
@@ -1128,6 +1130,7 @@ fn void Heap.reset(&self) {
     self.weakset_proto    = null;
     self.symbol_proto     = null;
     self.promise_proto    = null;
+    self.promise_ctor     = null;
     self.generator_proto      = null;
     self.generator_func_proto = null;
     self.iterator_proto       = null;
@@ -1759,6 +1762,7 @@ fn void Heap.mark_roots(&self) {
     if (self.weakset_proto != null) { self.mark_hobject(self.weakset_proto); }
     if (self.symbol_proto != null) { self.mark_hobject(self.symbol_proto); }
     if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }
+    if (self.promise_ctor != null)  { self.mark_hobject(self.promise_ctor); }
     if (self.generator_proto != null) { self.mark_hobject(self.generator_proto); }
     if (self.generator_func_proto != null) { self.mark_hobject(self.generator_func_proto); }
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
