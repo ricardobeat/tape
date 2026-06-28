@@ -324,6 +324,195 @@ fn TVal vm_call_handler_fn_impl(void* vm_ptr, TVal handler, TVal* arg) {
     return vm_call_fn_impl(vm_ptr, handler, arg, 1, undef);
 }
 
+/// Implementation of Heap.construct_fn — `new Fn(args)` semantics.
+/// Allocates a fresh this, runs the constructor with ACT_FLAG_CONSTRUCT,
+/// and returns the resulting instance.  Used by Promise combinators for
+/// NewPromiseCapability(C).
+fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
+    Vm* vm = (Vm*)vm_ptr;
+    TVal undef;
+    undef.set_undefined();
+    if (vm == null) return undef;
+    Heap* heap = vm.heap;
+
+    // Lightfuncs can't be constructors.
+    if (func.is_lightfunc()) return undef;
+    if (!func.is_object() || func.get_heapptr() == null) return undef;
+    HObject* ctor = (HObject*)func.get_heapptr();
+    if (ctor == null || !ctor.flags.callable) return undef;
+
+    // Allocate a fresh plain object as `this`.
+    HObject*? new_this_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err_t = new_this_raw) return undef;
+    HObject* new_this = new_this_raw;
+    new_this.prototype = heap.object_proto;
+    TVal this_tv;
+    this_tv.set_object(new_this);
+
+    CompiledFunction* target = (*ctor.extra_ptr()).func.comp_func;
+    if (target == null || target.num_regs == 0) {
+        // Built-in constructor — dispatch directly.
+        if (ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
+            int builtin_idx = (*ctor.extra_ptr()).func.builtin_fn_index;
+            // For Promise, allocate as PROMISE class so builtin_promise
+            // initialises the right internal slots.
+            if (builtin_idx == (int)builtins::BUILTIN_PROMISE) {
+                HObject*? prom_this_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
+                if (catch err_p = prom_this_raw) return undef;
+                HObject* prom_this = prom_this_raw;
+                prom_this.prototype = heap.promise_proto;
+                builtins::promise_init(prom_this);
+                this_tv.set_object(prom_this);
+                new_this = prom_this;
+            }
+            TVal[18] temp_regs;
+            temp_regs[0] = func;
+            temp_regs[1] = this_tv;
+            for (uint i = 0; i < nargs && i < 16; i++) {
+                temp_regs[2 + i] = args[i];
+            }
+            builtins::BuiltinContext bctx;
+            bctx.vm = vm;
+            bctx.regs = &temp_regs;
+            bctx.base_reg = 2;
+            bctx.argc = (ushort)nargs;
+            bctx.result = &temp_regs[0];
+            bctx.heap = heap;
+            bctx.this_val = this_tv;
+            bctx.is_constructor = true;
+            bctx.needs_re_dispatch = false;
+            bctx.re_nargs = 0;
+            bctx.global_env = vm.global_env;
+            bctx.should_throw = false;
+            bctx.callee_obj = ctor;
+            builtins::dispatch_builtin((uint)builtin_idx, &bctx);
+            if (bctx.should_throw) {
+                vm.throw_pending = true;
+                vm.heap.tval_copy_ref(&vm.throw_value, &bctx.throw_value);
+                return undef;
+            }
+            TVal result = *bctx.result;
+            if (result.is_object()) return result;
+            if (result.is_undefined()) return this_tv;
+            return result;
+        }
+        return undef;
+    }
+
+    // Compiled user-defined function: set up a constructor activation.
+    uint nregs = target.num_regs;
+    if (vm.activation_count >= MAX_CALLS) return undef;
+    if (!vm.valstack_top || !vm.valstack) return undef;
+    uint needed_slots = (uint)((char*)vm.valstack_top - (char*)vm.valstack) / TVal::size + nregs;
+    if (needed_slots > vm.valstack_size / TVal::size) {
+        if (!ensure_valstack(vm, needed_slots)) return undef;
+    }
+
+    // Save current VM state for restoration after the constructor returns.
+    uint saved_act_count = vm.activation_count;
+    TVal* saved_valstack_bottom = vm.valstack_bottom;
+    TVal* saved_valstack_top = vm.valstack_top;
+    TVal* saved_valstack = vm.valstack;
+    CompiledFunction* saved_current_func = vm.current_func;
+    void* saved_resume_gen = vm.heap.resume_gen;
+
+    Activation[MAX_CALLS] saved_acts;
+    libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
+
+    TVal* frame = vm.valstack_top;
+    vm.activation_count++;
+    Activation* act = &vm.activations[vm.activation_count - 1];
+
+    EnvRecord* cfn_var_env = (*ctor.extra_ptr()).func.var_env;
+    if (try fv_cfn = env::env_create_function_scope(heap, (*ctor.extra_ptr()).func.var_env)) {
+        cfn_var_env = fv_cfn;
+    }
+    act.func = target;
+    act.parent = null;
+    act.var_env = cfn_var_env;
+    act.lex_env = cfn_var_env;
+    act.cat = null;
+    act.curr_pc = target.code;
+    act.async_promise = null;
+    act.async_gen_state = null;
+    act.bottom = frame;
+    act.retval = null;
+    act.flags = ACT_FLAG_CONSTRUCT
+              | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
+    act.max_heap_reg = 0;
+    act.caller_valstack_top = frame + nregs;
+    act.this_binding = this_tv;
+    act.new_target = ctor;
+
+    for (uint i = 0; i < nregs; i++) {
+        frame[i].set_undefined();
+    }
+    uint copy_n = nargs < nregs ? nargs : nregs;
+    for (uint i = 0; i < copy_n; i++) {
+        vm.heap.tval_copy_ref(&frame[i], &args[i]);
+    }
+    if (target.uses_arguments()) {
+        HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+        if (try args_obj = args_obj_raw) {
+            for (uint ai = 0; ai < nargs; ai++) {
+                args_obj.set_array_idx(ai, frame[ai]);
+            }
+            args_obj.prototype = vm.heap.object_proto;
+            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+            if (length_key != null) {
+                TVal length_tv;
+                length_tv.set_fastint((long)nargs);
+                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+            }
+        }
+    }
+
+    vm.valstack_top = frame + nregs;
+    vm.valstack_bottom = frame;
+    vm.current_func = target;
+
+    TVal? result_opt = Vm.run(vm);
+    TVal result;
+    if (try r = result_opt) {
+        result = r;
+    } else {
+        result = vm.return_val;
+    }
+
+    // ES6 §12.3.5.2: if constructor returns an object, that's the new instance.
+    TVal final_this = this_tv;
+    if (result.is_object() && result.get_heapptr() != null) {
+        final_this = result;
+    }
+
+    // Relocate saved pointers if valstack moved during the constructor run.
+    long reloc = (char*)vm.valstack - (char*)saved_valstack;
+    if (reloc != 0) {
+        saved_valstack_bottom = (TVal*)((char*)saved_valstack_bottom + reloc);
+        saved_valstack_top = (TVal*)((char*)saved_valstack_top + reloc);
+        for (uint i = 0; i < saved_act_count; i++) {
+            saved_acts[i].bottom = (TVal*)((char*)saved_acts[i].bottom + reloc);
+            if (saved_acts[i].retval != null) {
+                saved_acts[i].retval = (TVal*)((char*)saved_acts[i].retval + reloc);
+            }
+            if (saved_acts[i].caller_valstack_top != null) {
+                saved_acts[i].caller_valstack_top = (TVal*)((char*)saved_acts[i].caller_valstack_top + reloc);
+            }
+        }
+    }
+
+    // Restore VM state.
+    vm.activation_count = saved_act_count;
+    vm.current_func = saved_current_func;
+    libc::memcpy(&vm.activations, &saved_acts, saved_act_count * Activation::size);
+    vm.valstack_bottom = saved_valstack_bottom;
+    vm.valstack_top = saved_valstack_top;
+    vm.heap.resume_gen = (GeneratorState*)saved_resume_gen;
+
+    vm.heap.drain_microtasks((void*)vm);
+    return final_this;
+}
+
 fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     // Set up initial activation (matches outer executor setup)
     Activation* entry_act = &vm.activations[0];

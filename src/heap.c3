@@ -35,6 +35,10 @@ alias MicrotaskAfterFn = fn void(void* heap, void* vm, TVal result, TVal downstr
 /// Returns the result TVal.
 alias VmCallFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs, TVal this_val);
 
+/// Function pointer type for `new` semantics: invoke a JS function as a
+/// constructor and return the resulting this.
+alias VmConstructFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs);
+
 // --- Faults ---------------------------------------------------------------
 
 faultdef HEAP_ALLOC_FAULT;
@@ -267,6 +271,7 @@ struct Heap {
     // VM callback for calling JS functions from builtins (set by vm_create)
     VmCallHandlerFn     call_handler_fn;
     VmCallFn            call_fn;
+    VmConstructFn       construct_fn;
     /// Callback to mark activation-record env bindings during GC (set by vm_create).
     MarkActivationsFn   mark_activations_fn;
 
@@ -299,13 +304,6 @@ struct Heap {
 
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
-
-    // Promise resolve/reject target stack (synchronous executor calls only).
-    // Before calling a Promise executor, push the target promise; resolve/reject
-    // lightfuncs read from the top; pop after the executor returns.
-    HObject**  promise_resolve_stack;
-    uint       promise_resolve_top;
-    uint       promise_resolve_cap;
 
     // Microtask queue — enqueued by promise_trigger_reactions, drained after
     // each top-level script execution and after vm_call_fn_impl returns.
@@ -546,14 +544,6 @@ fn Heap*? create(
     if (h.mega_cache != null) {
         libc::memset(h.mega_cache, 0, MEGA_CACHE_SIZE * hobject::MegamorphicEntry::size);
     }
-
-    // Allocate Promise resolve/reject target stack (16 slots initial)
-    h.promise_resolve_cap = 16;
-    h.promise_resolve_stack = (HObject**)afn(udata, HObject*::size * 16);
-    if (h.promise_resolve_stack != null) {
-        libc::memset(h.promise_resolve_stack, 0, HObject*::size * 16);
-    }
-    h.promise_resolve_top = 0;
 
     // Allocate microtask queue (32 entries initial = 16 handler+arg pairs)
     h.microtask_capacity = 16;
@@ -942,12 +932,6 @@ fn void Heap.destroy(&self) {
     if (self.gray_objects != null) {
         self.free_func(self.heap_udata, self.gray_objects);
         self.gray_objects = null;
-    }
-
-    // Free promise resolve stack
-    if (self.promise_resolve_stack != null) {
-        self.free_func(self.heap_udata, self.promise_resolve_stack);
-        self.promise_resolve_stack = null;
     }
 
     // Free shape system

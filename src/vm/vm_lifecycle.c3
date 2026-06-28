@@ -70,6 +70,7 @@ fn Vm*? vm_create(Heap* heap) {
 
     heap.call_handler_fn = &vm_call_handler_fn_impl;
     heap.call_fn = &vm_call_fn_impl;
+    heap.construct_fn = &vm_construct_fn_impl;
     heap.microtask_after_fn = &builtins::promise_microtask_after;
 
     return vm;

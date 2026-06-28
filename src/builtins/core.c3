@@ -227,7 +227,9 @@ const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
 const uint BUILTIN_ASYNC_RESUME               = 330;
 const uint BUILTIN_ASYNC_REJECT               = 331;
 
-const uint BUILTIN_COUNT                       = 344;
+const uint BUILTIN_PROMISE_SYNTHETIC_EXECUTOR  = 344;
+
+const uint BUILTIN_COUNT                       = 345;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1872,6 +1874,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROMISE_ANY] = &builtin_promise_any,
     [BUILTIN_PROMISE_ANY_RESOLVE_ELEMENT] = &builtin_promise_any_resolve_element,
     [BUILTIN_PROMISE_ANY_REJECT_ELEMENT] = &builtin_promise_any_reject_element,
+    [BUILTIN_PROMISE_SYNTHETIC_EXECUTOR] = &builtin_promise_synthetic_executor,
     [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,
     [BUILTIN_PROMISE_PROTO_FINALLY] = &builtin_promise_proto_finally,
     [BUILTIN_PROMISE_PROTO_THEN] = &builtin_promise_proto_then,
