@@ -286,6 +286,15 @@ struct Heap {
     HString*            replace_symbol;
     HString*            split_symbol;
 
+    // Cached Symbol.species (lazily created, rooted via this field).
+    HString*            species_symbol;
+    // Cached Symbol.unscopables (lazily created, rooted via this field).
+    HString*            unscopables_symbol;
+    // Cached Symbol.matchAll (lazily created, rooted via this field).
+    HString*            matchall_symbol;
+    // Cached Symbol.asyncIterator (lazily created, rooted via this field).
+    HString*            asynciterator_symbol;
+
     // Microtask completion callback (set by builtins init, resolves downstream promises)
     MicrotaskAfterFn    microtask_after_fn;
 
@@ -1160,6 +1169,10 @@ fn void Heap.reset(&self) {
     self.search_symbol = null;
     self.replace_symbol = null;
     self.split_symbol = null;
+    self.species_symbol = null;
+    self.unscopables_symbol = null;
+    self.matchall_symbol = null;
+    self.asynciterator_symbol = null;
 
     // Reset shape system — free all shapes and transition table, then reinit
     if (self.trans_table != null) {
@@ -1834,6 +1847,12 @@ fn void Heap.mark_roots(&self) {
     if (self.replace_symbol != null) { ((HeapHeader*)self.replace_symbol).set_reachable(); }
     if (self.split_symbol != null)   { ((HeapHeader*)self.split_symbol).set_reachable(); }
 
+    // Mark cached Symbol.species, Symbol.unscopables, Symbol.matchAll, Symbol.asyncIterator
+    if (self.species_symbol != null)       { ((HeapHeader*)self.species_symbol).set_reachable(); }
+    if (self.unscopables_symbol != null)   { ((HeapHeader*)self.unscopables_symbol).set_reachable(); }
+    if (self.matchall_symbol != null)      { ((HeapHeader*)self.matchall_symbol).set_reachable(); }
+    if (self.asynciterator_symbol != null) { ((HeapHeader*)self.asynciterator_symbol).set_reachable(); }
+
     // Mark global checkpoint keys
     for (uint i = 0; i < self.checkpoint_count; i++) {
         HString* key = (HString*)self.checkpoint_keys[i];
@@ -2040,19 +2059,23 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check cached well-known symbols
-    HString*[8] cached_syms = {
+    HString*[12] cached_syms = {
         self.iterator_symbol, self.toprimitive_symbol,
         self.concatspreadable_symbol, self.hasinstance_symbol,
         self.match_symbol, self.search_symbol,
-        self.replace_symbol, self.split_symbol
+        self.replace_symbol, self.split_symbol,
+        self.species_symbol, self.unscopables_symbol,
+        self.matchall_symbol, self.asynciterator_symbol
     };
-    ZString[8] cached_sym_names = {
+    ZString[12] cached_sym_names = {
         "iterator_symbol", "toprimitive_symbol",
         "concatspreadable_symbol", "hasinstance_symbol",
         "match_symbol", "search_symbol",
-        "replace_symbol", "split_symbol"
+        "replace_symbol", "split_symbol",
+        "species_symbol", "unscopables_symbol",
+        "matchall_symbol", "asynciterator_symbol"
     };
-    for (uint i = 0; i < 8; i++) {
+    for (uint i = 0; i < 12; i++) {
         if (cached_syms[i] != null) {
             if (!self.validate_hobject((HeapHeader*)cached_syms[i], cached_sym_names[i])) errors++;
             checked++;

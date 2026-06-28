@@ -28,6 +28,10 @@ fn HObject* check_weakmap(BuiltinContext* ctx) {
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
+        TVal err_val;
+        err_val.set_object(err);
+        ctx.should_throw = true;
+        ctx.throw_value = err_val;
     }
     return null;
 }

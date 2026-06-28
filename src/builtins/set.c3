@@ -61,12 +61,6 @@ fn void builtin_set(BuiltinContext* ctx) {
     HObject* set = set_raw;
     set.prototype = ctx.heap.set_proto;
 
-    // Set size property
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint(0);
-    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
     // If iterable argument, populate set
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
@@ -82,8 +76,6 @@ fn void builtin_set(BuiltinContext* ctx) {
                     }
                 }
             }
-            size_val.set_fastint((long)set.array_used);
-            set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
         }
     }
 
@@ -104,14 +96,17 @@ fn void builtin_set_proto_add(BuiltinContext* ctx) {
         set.set_array_idx(set.array_used, value);
     }
 
-    // Update size
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint((long)set.array_used);
-    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
     // Return the set
     ctx.result.set_object(set);
+}
+
+// ============================================================================
+// Set.prototype.size getter — ES6 §23.2.3.9
+// ============================================================================
+fn void builtin_set_proto_size_get(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) return;
+    ctx.result.set_fastint((long)set.array_used);
 }
 
 // ============================================================================
@@ -146,11 +141,6 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
         set.array_part()[cnt - 1].set_undefined();
         set.array_used = (ushort)(cnt - 1);
 
-        HString* size_key = builtin_intern_string(ctx.heap, "size");
-        TVal size_val;
-        size_val.set_fastint((long)set.array_used);
-        set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
         ctx.result.set_boolean(true);
     } else {
         ctx.result.set_boolean(false);
@@ -169,11 +159,6 @@ fn void builtin_set_proto_clear(BuiltinContext* ctx) {
         set.array_part()[i].set_undefined();
     }
     set.array_used = 0;
-
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint(0);
-    set.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     ctx.result.set_undefined();
 }
@@ -430,11 +415,43 @@ proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
-    // Add .size property (will be updated on each mutation)
-    HString* size_key = builtin_intern_string(heap, "size");
-    TVal size_tv;
-    size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_NWC);
+    // Register .size as a getter accessor property (ES6 §23.2.3.9)
+    {
+        HString* size_key = builtin_intern_string(heap, "size");
+        if (size_key != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET_PROTO_SIZE_GET;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            // Set .name = "get size"
+            char[] fn_name = "get size";
+            HString* name_str = builtin_intern_string(heap, fn_name);
+            if (name_str != null) {
+                TVal name_tv;
+                name_tv.set_string(name_str);
+                HString* name_key = builtin_intern_string(heap, "name");
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (length_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(0);
+                fn_obj.put_prop(length_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+            TVal getter_tv;
+            getter_tv.set_object(fn_obj);
+            TVal undef;
+            undef.set_undefined();
+            hobject::PropFlags acc_flags;
+            acc_flags.writable = false;
+            acc_flags.enumerable = false;
+            acc_flags.configurable = true;
+            acc_flags.is_accessor = true;
+            proto.put_prop(size_key, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
+        }
+    }
 
     // Create Set constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);

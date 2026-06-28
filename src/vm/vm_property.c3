@@ -248,12 +248,33 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // Check if this is a Symbol (0xFF-prefixed string)
                 HString* h_str = (HString*)rb.get_heapptr();
                 if (h_str != null && h_str.is_symbol() && vm.heap.symbol_proto != null) {
-                    // Auto-box symbol primitive: walk Symbol.prototype chain
+                    // Auto-box symbol primitive: create a temporary wrapper object
+                    // so that accessor properties (like description getter) work correctly.
                     HString* key = get_prop_key(vm, rc);
                     if (key != null) {
-                        TVal? result = vm.heap.symbol_proto.get_prop_proto(key);
-                        if (try v = result) {
-                            vm.heap.tval_copy_ref(ra, &v);
+                        HObject*? wrapper_raw = vm.heap.alloc_object(hobject::ObjClass.SYMBOL);
+                        HObject* wrapper;
+                        if (try w = wrapper_raw) {
+                            wrapper = w;
+                            wrapper.prototype = vm.heap.symbol_proto;
+                            // Store the symbol primitive as [[SymbolData]]
+                            wrapper.extra_ptr().prim.primitive_value = *rb;
+                        } else {
+                            ra.set_undefined();
+                            return (TVal){};
+                        }
+                        hobject::PropLookupResult res = wrapper.get_prop_or_accessor_proto(key, true);
+                        if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                            TVal wrapper_tv;
+                            wrapper_tv.set_object(wrapper);
+                            if (invoke_getter(vm, &res.acc, &wrapper_tv, (uint)insn.a,
+                                              ds.act, &ds.curr_pc, &ds.needs_restart, ds.regs_base)) {
+                                ds.regs_base = ds.act.bottom;
+                                return (TVal){};
+                            }
+                            return (TVal){};
+                        } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                            vm.heap.tval_copy_ref(ra, &res.data_val);
                             track_heap_store(ds.act, ra, (uint)insn.a);
                         } else {
                             ra.set_undefined();
@@ -609,9 +630,30 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     HString* h_str = (HString*)rb.get_heapptr();
                     if (h_str != null && h_str.is_symbol() && vm.heap.symbol_proto != null) {
                         if (key_hstr != null) {
-                            TVal? result = vm.heap.symbol_proto.get_prop_proto((void*)key_hstr);
-                            if (try v = result) {
-                                vm.heap.tval_copy_ref(ra, &v);
+                            // Auto-box symbol primitive: create a temporary wrapper object
+                            // so that accessor properties (like description getter) work correctly.
+                            HObject*? wrapper_raw = vm.heap.alloc_object(hobject::ObjClass.SYMBOL);
+                            HObject* wrapper;
+                            if (try w = wrapper_raw) {
+                                wrapper = w;
+                                wrapper.prototype = vm.heap.symbol_proto;
+                                wrapper.extra_ptr().prim.primitive_value = *rb;
+                            } else {
+                                ra.set_undefined();
+                                return (TVal){};
+                            }
+                            hobject::PropLookupResult res = wrapper.get_prop_or_accessor_proto(key_hstr, true);
+                            if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                                TVal wrapper_tv;
+                                wrapper_tv.set_object(wrapper);
+                                if (invoke_getter(vm, &res.acc, &wrapper_tv, (uint)insn.a,
+                                                  ds.act, &ds.curr_pc, &ds.needs_restart, ds.regs_base)) {
+                                    ds.regs_base = ds.act.bottom;
+                                    return (TVal){};
+                                }
+                                return (TVal){};
+                            } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                                vm.heap.tval_copy_ref(ra, &res.data_val);
                                 track_heap_store(ds.act, ra, (uint)insn.a);
                             } else {
                                 ra.set_undefined();

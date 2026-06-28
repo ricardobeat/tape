@@ -90,6 +90,10 @@ fn HObject* check_map(BuiltinContext* ctx) {
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
         }
+        TVal err_val;
+        err_val.set_object(err);
+        ctx.should_throw = true;
+        ctx.throw_value = err_val;
     }
     return null;
 }
@@ -118,12 +122,6 @@ fn void builtin_map(BuiltinContext* ctx) {
     HObject* map = map_raw;
     map.prototype = ctx.heap.map_proto;
 
-    // Set size property
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint(0);
-    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
     // If iterable argument, populate map
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
@@ -147,10 +145,6 @@ fn void builtin_map(BuiltinContext* ctx) {
                         map.set_array_idx(cnt, k);
                         map.set_array_idx(cnt + 1, v);
                     }
-                    // Update size
-                    uint entry_count = map.array_used / 2;
-                    size_val.set_fastint((long)entry_count);
-                    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
                 }
             }
         }
@@ -179,14 +173,18 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
         map.set_array_idx(cnt + 1, value);
     }
 
-    // Update size property
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint((long)(map.array_used / 2));
-    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
     // Return the map itself
     ctx.result.set_object(map);
+}
+
+// ============================================================================
+// Map.prototype.size getter — ES6 §23.1.3.10
+// ============================================================================
+fn void builtin_map_proto_size_get(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) return;
+    uint entry_count = map.array_used / 2;
+    ctx.result.set_fastint((long)entry_count);
 }
 
 // ============================================================================
@@ -240,11 +238,6 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
         map.array_part()[cnt - 1].set_undefined();
         map.array_used = (ushort)(cnt - 2);
 
-        HString* size_key = builtin_intern_string(ctx.heap, "size");
-        TVal size_val;
-        size_val.set_fastint((long)(map.array_used / 2));
-        map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
-
         ctx.result.set_boolean(true);
     } else {
         ctx.result.set_boolean(false);
@@ -264,12 +257,6 @@ fn void builtin_map_proto_clear(BuiltinContext* ctx) {
         map.array_part()[i].set_undefined();
     }
     map.array_used = 0;
-
-    // Update size
-    HString* size_key = builtin_intern_string(ctx.heap, "size");
-    TVal size_val;
-    size_val.set_fastint(0);
-    map.put_prop(size_key, size_val, hobject::PROP_FLAGS_WEC);
 
     ctx.result.set_undefined();
 }
@@ -530,11 +517,43 @@ proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
-    // Add .size property (will be updated on each mutation)
-    HString* size_key = builtin_intern_string(heap, "size");
-    TVal size_tv;
-    size_tv.set_fastint(0);
-    proto.put_prop(size_key, size_tv, hobject::PROP_FLAGS_NWC);
+    // Register .size as a getter accessor property (ES6 §23.1.3.10)
+    {
+        HString* size_key = builtin_intern_string(heap, "size");
+        if (size_key != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_PROTO_SIZE_GET;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            // Set .name = "get size"
+            char[] fn_name = "get size";
+            HString* name_str = builtin_intern_string(heap, fn_name);
+            if (name_str != null) {
+                TVal name_tv;
+                name_tv.set_string(name_str);
+                HString* name_key = builtin_intern_string(heap, "name");
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (length_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(0);
+                fn_obj.put_prop(length_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+            TVal getter_tv;
+            getter_tv.set_object(fn_obj);
+            TVal undef;
+            undef.set_undefined();
+            hobject::PropFlags acc_flags;
+            acc_flags.writable = false;
+            acc_flags.enumerable = false;
+            acc_flags.configurable = true;
+            acc_flags.is_accessor = true;
+            proto.put_prop(size_key, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
+        }
+    }
 
     // Create Map constructor as a proper function object
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
