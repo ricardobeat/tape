@@ -1318,13 +1318,45 @@ fn TVal? Vm.run(Vm* vm) {
                 continue;
             }
 
-            // Get rval.prototype
+            // Get rval.prototype — ES6 §7.3.19 OrdinaryHasInstance step 4: Let P be Get(C, "prototype").
+            // Get() must invoke accessor getters (per ES6 §7.3.1), so we first
+            // check for an accessor property in the prototype chain and call
+            // its getter; otherwise fall back to the raw data-property value.
             HString* proto_key_str = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
-            TVal proto_val = get_prop_with_proto(rfunc, proto_key_str);
+            TVal proto_val;
+            AccessorResult acc = rfunc.find_accessor_proto(proto_key_str, true);
+            if (acc.found) {
+                // ES6 §7.3.1 Get(O, P) — if accessor has a getter, call it with
+                // `this` bound to the original receiver (rfunc). The getter
+                // may throw or return any value.
+                TVal this_for_getter;
+                this_for_getter.set_object(rfunc);
+                proto_val = vm.heap.call_fn(vm, acc.accessor_fn, null, 0, this_for_getter);
+                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+            } else {
+                proto_val = get_prop_with_proto(rfunc, proto_key_str);
+            }
             if (!proto_val.is_object()) {
-                // ES5 §15.3.5.3 step 3: If Type(O) is not Object, throw a TypeError.
-                // But gracefully handle missing .prototype by returning false.
-                ra.set_boolean(false);
+                // ES6 §7.3.19 OrdinaryHasInstance step 6: If Type(P) is not
+                // Object, throw a TypeError exception. The spec does NOT
+                // allow the silent-false fallback — the result must always
+                // be defined (or an abrupt completion).
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* msg_val = intern_string(vm, "'prototype' property is not an object");
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_val);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_val);
+                    }
+                } else {
+                    return VM_ERROR~;
+                }
                 continue;
             }
 

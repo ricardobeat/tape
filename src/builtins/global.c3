@@ -244,9 +244,18 @@ fn void builtin_eval(BuiltinContext* ctx) {
     func_tv.set_object(func_obj);
     ctx.regs[ctx.base_reg - 2] = func_tv;
 
-    // Set this binding to the global object (required for indirect eval per §10.4.2)
-    if (ctx.global_env != null && ctx.global_env.bindings != null) {
-        TVal this_tv;
+    // Set this binding per ES6 §18.2.1.2:
+    //   - Indirect eval: thisArg = the global object
+    //   - Direct eval: thisArg = the calling context's this binding
+    // The re-dispatch CALL handler runs the eval'd function with `this`
+    // in the (base_reg - 1) slot — we set it here to the appropriate value.
+    TVal this_tv;
+    if (is_direct_eval && ctx.argc > 0) {
+        // For direct eval, the caller's `this` is the same value passed in
+        // the re-dispatch slot by the CALL handler. The CALL handler
+        // already populated the slot, so we don't override it.
+    } else if (ctx.global_env != null && ctx.global_env.bindings != null) {
+        // Indirect eval (or no caller): `this` = global object.
         this_tv.set_object(ctx.global_env.bindings);
         ctx.regs[ctx.base_reg - 1] = this_tv;
     }

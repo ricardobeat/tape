@@ -103,6 +103,7 @@ struct LoopInfo {
     uint break_patch_head;
     uint continue_patch_head; ///< chain of pending continue jumps (deferred until target resolved)
     bool is_loop;             ///< false for switch pseudo-loops (continue skips these)
+    int  saved_lex_depth;     ///< cur_lex_depth at loop entry — break/continue POP_LEX back to this
 }
 
 struct TryInfo {
@@ -280,6 +281,12 @@ struct CompilerContext {
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
+
+    // Lexical environment depth: incremented when block() / for-in / for-of /
+    // class body etc. push a PUSH_LEX, decremented on POP_LEX. Tracked so
+    // break/continue can emit POP_LEXes to unwind the lex_env stack back to
+    // the loop's lex_env before jumping.
+    int  cur_lex_depth;
 
     // arguments tracking
     bool uses_arguments;        // true when 'arguments' is referenced in function body

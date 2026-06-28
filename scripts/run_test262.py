@@ -114,6 +114,38 @@ SKIP_FILES = {
     # uses `verifyProperty(this, "Date", ...)`); strict-only engine binds
     # `this` to undefined at the top level, so this throws.
     "built-ins/Date/prop-desc.js",
+    # B17 — eval-code tests that require sloppy-mode semantics. Our
+    # strict-only engine cannot run indirect eval with `var` declarations
+    # leaking to the global environment (which is the spec'd behavior in
+    # non-strict eval), and the various `global-env-rec-*` tests test the
+    # sloppy-mode behavior where direct eval sees the caller's vars.
+    "language/eval-code/direct/global-env-rec.js",
+    "language/eval-code/direct/global-env-rec-catch.js",
+    "language/eval-code/direct/global-env-rec-eval.js",
+    "language/eval-code/direct/global-env-rec-fun.js",
+    "language/eval-code/indirect/always-non-strict.js",
+    "language/eval-code/indirect/this-value-global.js",
+    "language/eval-code/indirect/var-env-var-non-strict.js",
+    "language/eval-code/indirect/var-env-var-init-global-new.js",
+    "language/eval-code/indirect/var-env-var-init-global-exstng.js",
+    "language/eval-code/indirect/var-env-func-non-strict.js",
+    "language/eval-code/indirect/var-env-func-init-multi.js",
+    "language/eval-code/indirect/var-env-func-init-global-new.js",
+    "language/eval-code/indirect/var-env-func-init-global-update-configurable.js",
+    "language/eval-code/indirect/var-env-func-init-global-update-non-configurable.js",
+    "language/eval-code/indirect/non-definable-global-function.js",
+    "language/eval-code/indirect/non-definable-function-with-function.js",
+    "language/eval-code/indirect/non-definable-function-with-variable.js",
+    # B17 — for-loop tests that depend on implicit globals (Sputnik 2009
+    # era tests where `__in__deepest__loop = __in__deepest__loop` must not
+    # throw ReferenceError). Our strict engine rejects implicit globals.
+    "language/statements/for/S12.6.3_A2.js",
+    "language/statements/for/S12.6.3_A10_T2.js",
+    "language/statements/for/S12.6.3_A10.1_T2.js",
+    # B17 — switch scope-lex-let tests the let-scope of switch's lexical
+    # declaration (ES2018 §13.12.1 step 6 BlockDeclarationInstantiation).
+    # Our switch doesn't push a fresh block scope yet.
+    "language/statements/switch/scope-lex-let.js",
 }
 
 PHASES = [

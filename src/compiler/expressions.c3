@@ -667,11 +667,21 @@ fn ushort? CompilerContext.unary_expr(&self) {
                 self.last_was_member = false;
                 // op_del is the A register of the patched DELPROP (boolean).
                 return op_del;
+            } else if (self.last_was_getvar) {
+                // `delete IdentifierReference` — Annex B.3.1 (ES5 11.4.1 step 1):
+                // strict mode rejects this as a SyntaxError. Sloppy mode runs
+                // the deletion against the variable environment. Since this
+                // engine is strict-only, we always reject.
+                self.last_was_getvar = false;
+                return self.fail("delete of an unqualified identifier in strict mode")~;
             } else {
-                // Delete of a non-reference (variable, literal, etc.).
-                // ES5 §11.4.1 / ES6 §12.5.3: SyntaxError in strict mode.
-                // Strict-only engine: always reject (early SyntaxError).
-                return self.fail("delete of a variable name is not allowed in strict mode")~;
+                // Delete of a non-reference (literal, expression result, etc.).
+                // ES6 §12.5.3.2 step 3: If Type(ref) is not Reference, return true.
+                // The operand was evaluated as a value (not a property/var
+                // reference), so per the runtime semantics we just return true.
+                ushort t = self.alloc_reg();
+                self.emit_abc(Opcode.LDTRUE, (uint)t, 0, 0);
+                return t;
             }
 
         case TokenType.INC:

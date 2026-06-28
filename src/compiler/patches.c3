@@ -45,6 +45,11 @@ fn void CompilerContext.push_loop(&self, uint continue_target, bool is_loop) {
         self.loop_stack[self.loop_depth].break_patch_head = NO_PATCH;
         self.loop_stack[self.loop_depth].continue_patch_head = NO_PATCH;
         self.loop_stack[self.loop_depth].is_loop = is_loop;
+        // Capture the lex_env depth AT loop entry, so break/continue can
+        // emit the right number of POP_LEXes to unwind back to the loop's
+        // lex_env. Any nested block with a PUSH_LEX adds to cur_lex_depth;
+        // the break/continue must pop those extras before jumping.
+        self.loop_stack[self.loop_depth].saved_lex_depth = self.cur_lex_depth;
         self.loop_depth++;
     }
 }

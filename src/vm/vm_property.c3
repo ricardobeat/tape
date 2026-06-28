@@ -2046,6 +2046,30 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             // A = delete B[C], where B = object, C = property key
             // Returns boolean: true if deleted or not found,
             // false if the property exists and is non-configurable.
+
+            // ES6 §12.5.3.2 step 5.b: ToObject(base) — throws TypeError
+            // for null/undefined. This must run BEFORE the value check,
+            // because the runtime semantics require ToObject on the base.
+            if (rb.is_null() || rb.is_undefined()) {
+                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = vm.heap.type_err_proto;
+                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* msg_val = intern_string(vm, "Cannot delete property of null or undefined");
+                    TVal msg_tv;
+                    msg_tv.set_string(msg_val);
+                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                    TVal err_val;
+                    err_val.set_object(err);
+                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_val);
+                    }
+                    return (TVal){};
+                } else {
+                    return VM_ERROR~;
+                }
+            }
+
             ra.set_boolean(true);
 
             if (rb.is_object()) {
@@ -2088,8 +2112,10 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                 }
             }
-            // For null, undefined, and other primitives:
-            // [[Delete]] on a non-object base always returns true.
+            // For other primitives (number, string, boolean), the spec's
+            // ToObject() would box them — but our base is already a primitive
+            // TVal, so property deletion on it returns true (the property
+            // simply doesn't exist on the boxed wrapper).
             return (TVal){};
         }
 

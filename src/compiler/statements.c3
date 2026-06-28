@@ -360,6 +360,7 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     bool has_lex = num_lex > 0;
     if (has_lex) {
         self.emit_simple(Opcode.PUSH_LEX);
+        self.cur_lex_depth++;
     }
 
     // TDZ-initialize every let/const declaration found by the pre-scan.
@@ -397,6 +398,7 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     // Pop the lexical scope, removing any let/const bindings from this block
     if (has_lex) {
         self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
     }
 
     self.pop_scope_to(saved_depth);
@@ -1812,6 +1814,12 @@ fn void? CompilerContext.for_statement(&self) {
     // ----------------------------------------------------------------
     // Step 2: Emit initial JUMP → cond_label and record body_label.
     // ----------------------------------------------------------------
+    // ES6 §13.7.4.8: ForBodyEvaluation starts with V=undefined. In eval mode,
+    // reset eval_acc_reg once before the loop so an empty or never-iterated
+    // loop returns undefined per the spec.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
     uint cond_jump = 0;
     bool has_empty_cond = !has_cond;
     if (!has_empty_cond) {
@@ -1853,6 +1861,17 @@ fn void? CompilerContext.for_statement(&self) {
     // ----------------------------------------------------------------
     // continue_target placeholder = body_label; updated to incr_label after body.
     self.push_loop(body_label, true);
+
+    // ES6 §13.7.4.8 ForBodyEvaluation: in eval mode, reset eval_acc_reg to
+    // undefined at the top of the body each iteration. This matches the
+    // expected behavior for test262 cases like
+    // `for/head-init-var-check-empty-inc-empty-completion.js` where a
+    // break inside the body should leave eval_acc_reg at undefined, not the
+    // value of the previous iteration's last expression statement.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     self.statement()!;
 
     // Save the lexer state after the body — this is where the outer parser
@@ -2209,6 +2228,14 @@ fn void? CompilerContext.switch_statement(&self) {
     // is_loop=false so continue skips this entry.
     self.push_loop(self.code_count, false);
 
+    // ES6 §13.12.9: CaseBlockEvaluation's initial value is V=undefined.
+    // In eval mode, reset eval_acc_reg so a switch with no matching case
+    // (or an empty CaseBlock) returns undefined per the spec, not the
+    // previous expression statement's value.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     // Track all body entries (cases and default) in source order
     uint[64] body_addrs;
     uint[64] ft_jump_addrs;
@@ -2399,7 +2426,22 @@ fn void? CompilerContext.break_statement(&self) {
         return COMPILE_ERROR~;
     }
 
-    // Unlabeled break — break out of the innermost loop or switch
+    // Unlabeled break — break out of the innermost loop or switch.
+    // ES6 §13.13.1 BreakStatement : break ; — must be enclosed by an
+    // IterationStatement or SwitchStatement. If there is none, this is a
+    // SyntaxError (the BREAK opcode would otherwise dangle with no patch).
+    if (self.loop_depth == 0) {
+        return self.fail("'break' is only valid inside a loop or switch")~;
+    }
+    // Unwind the lex_env stack back to the loop's depth. Any nested blocks
+    // that pushed PUSH_LEX must be popped before the break jumps, otherwise
+    // the loop's outer-scope GETVARs will resolve to the wrong env.
+    int loop_idx = (int)self.loop_depth - 1;
+    int target_lex = self.loop_stack[loop_idx].saved_lex_depth;
+    while (self.cur_lex_depth > target_lex) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
     uint jump_addr = self.emit_jump(Opcode.BREAK);
     self.add_break_patch(jump_addr);
 
@@ -2424,6 +2466,12 @@ fn void? CompilerContext.continue_statement(&self) {
                     return COMPILE_ERROR~;
                 }
                 uint loop_idx = self.labels[i].loop_index;
+                // Unwind lex_env stack back to the labeled loop's depth.
+                int target_lex = self.loop_stack[loop_idx].saved_lex_depth;
+                while (self.cur_lex_depth > target_lex) {
+                    self.emit_simple(Opcode.POP_LEX);
+                    self.cur_lex_depth--;
+                }
                 // Use deferred patching so the continue target can be updated
                 // after the body is compiled (needed for rotated for-loops where
                 // continue_target is set to incr_label after body compilation).
@@ -2445,6 +2493,12 @@ fn void? CompilerContext.continue_statement(&self) {
         loop_idx--;
     }
     if (loop_idx >= 0) {
+        // Unwind lex_env stack back to the loop's depth.
+        int target_lex = self.loop_stack[loop_idx].saved_lex_depth;
+        while (self.cur_lex_depth > target_lex) {
+            self.emit_simple(Opcode.POP_LEX);
+            self.cur_lex_depth--;
+        }
         // Emit placeholder jump and add to continue_patch_head for deferred patching
         uint jump_addr = self.emit_jump(Opcode.CONTINUE);
         self.loop_stack[loop_idx].continue_patch_head =
