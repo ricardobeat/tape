@@ -26,7 +26,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 ra.set_fastint(rb.get_fastint());
             } else {
                 double unp_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(unp_b);
             }
             return (TVal){};
@@ -42,7 +42,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 }
             } else {
                 double unm_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(-unm_b);
             }
             return (TVal){};
@@ -51,7 +51,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             // Bitwise NOT always produces Int32, always fits in FASTINT
         {
             int bnot_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(~bnot_b));
             return (TVal){};
         }
@@ -78,7 +78,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             } else {
                 // Slow path: convert to number, increment, store back
                 double d = vm_to_number(vm,ra);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(d + 1.0);
             }
             return (TVal){};
@@ -87,7 +87,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 ra.set_fastint(ra.get_fastint() - 1L);
             } else {
                 double d = vm_to_number(vm,ra);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(d - 1.0);
             }
             return (TVal){};
@@ -155,7 +155,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                 }
                             } else {
                                 double d = vm_to_number(vm,&old_val);
-                                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                                 double new_d = d + (is_inc ? 1.0 : -1.0);
                                 b.prop_values()[vic.prop_idx].set_number(new_d);
                                 ra.set_number(new_d);
@@ -245,7 +245,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         }
                     } else {
                         double d = vm_to_number(vm,&old_val);
-                        if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                        if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                         double new_d = d + (is_inc ? 1.0 : -1.0);
                         cur.bindings.prop_values()[idx].set_number(new_d);
                         ra.set_number(new_d);
@@ -274,7 +274,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             }
                         } else {
                             double d = vm_to_number(vm,&v2);
-                            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                             new_val.set_number(d + (is_inc ? 1.0 : -1.0));
                         }
                         env::env_put(ds.act.var_env, key, new_val);

@@ -38,13 +38,28 @@ fn void populate_string_indexed_props(HObject* obj, HString* s, Heap* heap) {
 fn void builtin_string(BuiltinContext* ctx) {
     HString* s;
     if (ctx.argc > 0) {
-        // Use the VM-aware variant so ToString on objects properly invokes
-        // the toString/valueOf chain via Symbol.toPrimitive semantics.
-        s = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
-        if (s == null) {
-            // Caller already has ctx.should_throw set if applicable.
-            ctx.result.set_undefined();
-            return;
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        // Per ES2019+ §7.1.12, ToString(symbol) wraps as "Symbol(description)".
+        // builtin_to_string_vm leaves symbol HString unchanged; wrap explicitly here.
+        if (arg.is_string()) {
+            HString* hs = (HString*)arg.get_heapptr();
+            if (hs != null && hs.is_symbol()) {
+                s = builtin_to_string(ctx.heap, arg);
+                if (s == null) {
+                    // Should never happen: builtin_to_string never fails for symbol storage
+                    ctx.result.set_undefined();
+                    return;
+                }
+            } else {
+                s = hs;
+            }
+        } else {
+            s = builtin_to_string_vm(ctx, arg);
+            if (s == null) {
+                // Caller already has ctx.should_throw set if applicable.
+                ctx.result.set_undefined();
+                return;
+            }
         }
     } else {
         s = builtin_intern_string(ctx.heap, "");

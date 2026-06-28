@@ -511,6 +511,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                 for (uint i = 0; i < int_count; i++) {
                     uint si = sort_buf[i * 2 + 1];
                     HString* key = (HString*)obj.prop_key_at(si);
+                    if (key.is_symbol()) continue;  // Skip symbol keys
                     key_buf[key_count++] = key;
                 }
                 ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
@@ -518,10 +519,12 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
     // Phase 2: non-index named properties (insertion order)
+    // ES5 §15.2.3.4: getOwnPropertyNames returns ONLY string keys (no symbols)
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_arridx()) continue;
+            if (key.is_symbol()) continue;  // Skip symbol keys
             key_buf[key_count++] = key;
         }
     }
@@ -1020,22 +1023,38 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         return;
     }
     TVal key_val = ctx.regs[ctx.base_reg + 1];
-    // Use ToPropertyKey (not just ToString) so that objects with
-    // toString/valueOf get properly coerced per ES5 §8.10.1 step 1.
-    HString* key_hstr = builtin_to_string_vm(ctx, &key_val);
-    if (key_hstr == null) {
-        // builtin_to_string_vm returns null when ToPrimitive fails.
-        // If throw_pending is set, propagate the error (e.g. TypeError).
-        if (ctx.vm != null) {
-            Vm* vm_ptr = (Vm*)ctx.vm;
-            if (vm_ptr.throw_pending) {
-                ctx.should_throw = true;
-                ctx.throw_value = vm_ptr.throw_value;
-                return;
-            }
+    // ES2015+ ToPropertyKey: if key is already a string (including symbols,
+    // which we represent as STRING tag with is_symbol flag), use it directly.
+    // Only convert objects (ToPrimitive) and primitives (ToString) otherwise.
+    HString* key_hstr;
+    if (key_val.is_string()) {
+        // Includes both regular strings and symbols (STRING tag + is_symbol flag)
+        key_hstr = (HString*)key_val.get_heapptr();
+        if (key_hstr == null) {
+            ctx.result.set_undefined();
+            return;
         }
-        ctx.result.set_undefined();
-        return;
+    } else if (key_val.is_object()) {
+        key_hstr = builtin_to_string_vm(ctx, &key_val);
+        if (key_hstr == null) {
+            if (ctx.vm != null) {
+                Vm* vm_ptr = (Vm*)ctx.vm;
+                if (vm_ptr.throw_pending) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = vm_ptr.throw_value;
+                    return;
+                }
+            }
+            ctx.result.set_undefined();
+            return;
+        }
+    } else {
+        // ToString for primitives (excluding symbols which were handled above)
+        key_hstr = builtin_to_string(ctx.heap, &key_val);
+        if (key_hstr == null) {
+            ctx.result.set_undefined();
+            return;
+        }
     }
     void* key = key_hstr;
 

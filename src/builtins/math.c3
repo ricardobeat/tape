@@ -63,16 +63,19 @@ fn void builtin_math_round(BuiltinContext* ctx) {
         ctx.result.set_number(double::nan);
     } else if (math::is_inf(x) || x == 0.0) {
         ctx.result.set_number(x);
+    } else if (x > 0.0 && x < 0.5) {
+        // Per ES2018+ §20.2.2.34: Math.round(x) for 0 < x < 0.5 returns +0
+        ctx.result.set_number(0.0);
+    } else if (x < 0.0 && x >= -0.5) {
+        // Per ES2018+ §20.2.2.34: Math.round(x) for -0.5 ≤ x ≤ -0 returns -0
+        ctx.result.set_number(-0.0);
     } else {
-        // round half up (away from zero)
+        // Round half away from zero
         double frac = x - math::floor(x);
         if (frac < 0.5) {
             ctx.result.set_number(math::floor(x));
-        } else if (frac > 0.5) {
-            ctx.result.set_number(math::ceil(x));
         } else {
-            // exactly 0.5 — round away from zero
-            ctx.result.set_number(math::floor(x) + 1.0);
+            ctx.result.set_number(math::ceil(x));
         }
     }
 }
@@ -83,12 +86,24 @@ fn void builtin_math_max(BuiltinContext* ctx) {
         return;
     }
     double max = math_arg(ctx, 0);
+    // ES6 §20.2.2.24: if any argument is NaN, the result is NaN
     for (ushort i = 1; i < ctx.argc; i++) {
         double v = math_arg(ctx, i);
         if (math::is_nan(v)) {
             max = double::nan;
-        } else if (v > max || math::is_nan(max)) {
-            max = v;
+            continue;
+        }
+        // Abstract Relational Comparison: +0 > -0, NaN treated as missing
+        if (max != v) {
+            if (v > max) {
+                max = v;
+            }
+        } else {
+            // max == v. Handle +0 vs -0: -0 < +0 per spec.
+            // If v is +0 and max is -0, v wins.
+            if (v == 0.0 && max == 0.0 && !math::signbit(v) && math::signbit(max)) {
+                max = v;
+            }
         }
     }
     ctx.result.set_number(max);
@@ -100,12 +115,24 @@ fn void builtin_math_min(BuiltinContext* ctx) {
         return;
     }
     double min = math_arg(ctx, 0);
+    // ES6 §20.2.2.25: if any argument is NaN, the result is NaN
     for (ushort i = 1; i < ctx.argc; i++) {
         double v = math_arg(ctx, i);
         if (math::is_nan(v)) {
             min = double::nan;
-        } else if (v < min || math::is_nan(min)) {
-            min = v;
+            continue;
+        }
+        // Abstract Relational Comparison: +0 > -0, NaN treated as missing
+        if (min != v) {
+            if (v < min) {
+                min = v;
+            }
+        } else {
+            // min == v. Handle +0 vs -0: -0 < +0 per spec.
+            // If v is -0 and min is +0, v wins.
+            if (v == 0.0 && min == 0.0 && math::signbit(v) && !math::signbit(min)) {
+                min = v;
+            }
         }
     }
     ctx.result.set_number(min);
@@ -115,11 +142,30 @@ fn void builtin_math_pow(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
     double y = math_arg(ctx, 1);
     ctx.result.set_number(0.0);
-    if (math::is_nan(y) && x != 1.0) {
-        ctx.result.set_number(double::nan);
-    } else {
-        ctx.result.set_number(math_pow(x, y));
+    // ES6 §20.2.2.26 Math.pow(x, y):
+    // 1. If y is NaN, the result is NaN (unless x is 1)
+    // 2. If y is +0 or -0, the result is 1, even if x is NaN
+    // 3. If x is +1, the result is 1, even if y is NaN or ±∞
+    // 4. If |x| is 1 and y is ±∞, the result is NaN
+    if (x == 1.0) {
+        ctx.result.set_number(1.0);
+        return;
     }
+    if (y == 0.0) {
+        ctx.result.set_number(1.0);
+        return;
+    }
+    if (math::is_nan(y)) {
+        ctx.result.set_number(double::nan);
+        return;
+    }
+    if (math::is_inf(y)) {
+        if (x == -1.0) {
+            ctx.result.set_number(double::nan);
+            return;
+        }
+    }
+    ctx.result.set_number(math_pow(x, y));
 }
 
 fn void builtin_math_sqrt(BuiltinContext* ctx) {
@@ -239,8 +285,12 @@ fn void builtin_math_cbrt(BuiltinContext* ctx) {
 }
 
 fn void builtin_math_hypot(BuiltinContext* ctx) {
-    // ES6 §20.2.2.18 Math.hypot(...): Infinity propagates; NaN only propagates
-    // if no argument is Infinity. Zero-arg call returns +0.
+    // ES6 §20.2.2.18 Math.hypot(...):
+    // - Coerce all args to Number FIRST (in argument order)
+    // - If any coercion throws, propagate the throw immediately
+    // - After successful coercion: if any arg was +∞ or -∞, return +∞
+    // - If any arg was NaN (and no arg was ±∞), return NaN
+    // - Otherwise return sqrt(sum of squares)
     if (ctx.argc == 0) {
         ctx.result.set_number(0.0);
         return;
@@ -249,7 +299,21 @@ fn void builtin_math_hypot(BuiltinContext* ctx) {
     bool saw_nan = false;
     double result = 0.0;
     for (ushort i = 0; i < ctx.argc; i++) {
-        double v = math_arg(ctx, i);
+        // Coerce first; if it throws, bail out (do not process later args).
+        double v;
+        if (ctx.vm != null) {
+            Vm* v_ptr = (Vm*)ctx.vm;
+            v = vm::vm_to_number(v_ptr, &ctx.regs[ctx.base_reg + i]);
+            if (v_ptr.throw_pending) {
+                ctx.should_throw = true;
+                ctx.throw_value = v_ptr.throw_value;
+                v_ptr.throw_pending = false;
+                ctx.result.set_number(double::nan);
+                return;
+            }
+        } else {
+            v = math_arg(ctx, i);
+        }
         if (math::is_inf(v)) { saw_infinity = true; continue; }
         if (math::is_nan(v)) { saw_nan = true; continue; }
         result = result + v * v;

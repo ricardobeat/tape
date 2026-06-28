@@ -653,22 +653,22 @@ fn TVal? Vm.run(Vm* vm) {
             TVal prim_c = *rc;
             // ES5 §11.6.1: + operator uses ToPrimitive with no hint (default "number")
             if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, false); }
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, false); }
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             TValTag pt_b = prim_b.get_tag();
             TValTag pt_c = prim_c.get_tag();
             if (pt_b == STRING || pt_c == STRING) {
                 HString*? left_str = vm_to_string(vm, &prim_b);
                 if (vm.throw_pending) {
-                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     continue;
                 }
                 HString*? right_str = vm_to_string(vm, &prim_c);
                 if (vm.throw_pending) {
-                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     continue;
                 }
                 if (try ls = left_str && try rs = right_str) {
@@ -718,9 +718,9 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double add_b = vm_to_number(vm,&prim_b);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 double add_c = vm_to_number(vm,&prim_c);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(add_b + add_c);
             }
         }
@@ -735,10 +735,10 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double sub_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double sub_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(sub_b - sub_c);
             }
             continue;
@@ -754,20 +754,20 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double mul_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double mul_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number(mul_b * mul_c);
             }
             continue;
 
         case Opcode.DIV: {
             double div_b = vm_to_number(vm,rb);
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             double div_c = vm_to_number(vm,rc);
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_number(div_b / div_c);
             continue;
         }
@@ -783,20 +783,20 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             } else {
                 double mod_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double mod_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 ra.set_number((mod_b % mod_c));
             }
             continue;
 
         case Opcode.EXP: {
             double exp_b = vm_to_number(vm,rb);
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             double exp_c = vm_to_number(vm,rc);
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_number(math::pow(exp_b, exp_c));
             continue;
         }
@@ -821,10 +821,10 @@ fn TVal? Vm.run(Vm* vm) {
             // Bitwise ops always produce Int32, always fit in FASTINT
         {
             int band_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int band_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(band_b & band_c));
             continue;
         }
@@ -832,10 +832,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BOR:
         {
             int bor_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int bor_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(bor_b | bor_c));
             continue;
         }
@@ -843,10 +843,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.BXOR:
         {
             int bxor_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int bxor_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(bxor_b ^ bxor_c));
             continue;
         }
@@ -854,10 +854,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.SHL:
         {
             int shl_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int shl_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             continue;
         }
@@ -865,10 +865,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.SHR:
         {
             int shr_b = toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int shr_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             continue;
         }
@@ -876,10 +876,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.USHR:
         {
             uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             int  ushr_c = toint32(vm_to_number(vm,rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             continue;
         }
@@ -887,12 +887,12 @@ fn TVal? Vm.run(Vm* vm) {
         // === COMPARISON ===
         case Opcode.EQ:
             ra.set_boolean(abstract_eq(vm, rb, rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             continue;
 
         case Opcode.NEQ:
             ra.set_boolean(!abstract_eq(vm, rb, rc));
-            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             continue;
 
         case Opcode.SEQ: {
@@ -994,10 +994,10 @@ fn TVal? Vm.run(Vm* vm) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
                 double lt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double lt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 result = lt_b < lt_c;
             }
             ra.set_boolean(result);
@@ -1014,10 +1014,10 @@ fn TVal? Vm.run(Vm* vm) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
                 double le_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double le_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 result = le_b <= le_c;
             }
             ra.set_boolean(result);
@@ -1034,10 +1034,10 @@ fn TVal? Vm.run(Vm* vm) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
                 double gt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double gt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 result = gt_b > gt_c;
             }
             ra.set_boolean(result);
@@ -1054,10 +1054,10 @@ fn TVal? Vm.run(Vm* vm) {
                 result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
                 double ge_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double ge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 result = ge_b >= ge_c;
             }
             ra.set_boolean(result);
@@ -1082,10 +1082,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
                 double jnlt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jnlt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jnlt_b < jnlt_c;
             }
             if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1102,10 +1102,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
                 double jnle_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jnle_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jnle_b <= jnle_c;
             }
             if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1122,10 +1122,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
                 double jngt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jngt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jngt_b > jngt_c;
             }
             if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1142,10 +1142,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
                 double jnge_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jnge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jnge_b >= jnge_c;
             }
             if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1162,10 +1162,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
             } else {
                 double jlt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jlt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jlt_b < jlt_c;
             }
             if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1182,10 +1182,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
             } else {
                 double jle_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jle_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jle_b <= jle_c;
             }
             if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1202,10 +1202,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
             } else {
                 double jgt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jgt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jgt_b > jgt_c;
             }
             if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
@@ -1222,10 +1222,10 @@ fn TVal? Vm.run(Vm* vm) {
                 jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
             } else {
                 double jge_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
                 double jge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return VM_ERROR~;
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 jmp_result = jge_b >= jge_c;
             }
             if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
