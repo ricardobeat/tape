@@ -875,6 +875,21 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
+    // Get the constructor (this value) as C per ES6 §25.4.4.1 step 3
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    TVal resolve_fn;
+    resolve_fn.set_undefined();
+    HString* resolve_key = builtin_intern_string(ctx.heap, "resolve");
+    if (resolve_key != null && this_ctor_val.is_object() && this_ctor_val.get_heapptr() != null) {
+        HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+        TVal? rf = ctor_obj.get_prop_proto(resolve_key);
+        if (catch err_rf = rf) {
+            // fall through — use undefined resolve
+        } else {
+            resolve_fn = rf;
+        }
+    }
+
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -934,25 +949,30 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        if (elem.is_object() && elem.get_heapptr() != null) {
-            HObject* elem_obj = (HObject*)elem.get_heapptr();
-            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
-                if (state == PROMISE_FULFILLED) {
-                    TVal val = promise_get_result(elem_obj);
-                    arr.set_array_idx((uint)i, val);
+        // Normalize via C.resolve(elem) if constructor has a callable resolve
+        if (resolve_fn.is_lightfunc() ||
+            (resolve_fn.is_object() && resolve_fn.get_heapptr() != null &&
+             ((HObject*)resolve_fn.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0] = elem;
+            TVal resolved = ctx.heap.call_fn(ctx.vm, resolve_fn, &args[0], 1, this_ctor_val);
+            if (resolved.is_object() && resolved.get_heapptr() != null) {
+                HObject* res_obj = (HObject*)resolved.get_heapptr();
+                if (res_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    uint state = promise_get_state(res_obj, PROMISE_PENDING);
+                    if (state == PROMISE_FULFILLED) {
+                        elem = promise_get_result(res_obj);
+                    } else if (state == PROMISE_REJECTED) {
+                        TVal rej_val = promise_get_result(res_obj);
+                        promise_settle(promise, PROMISE_REJECTED, &rej_val, ctx.heap);
+                        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+                        rejected = true;
+                        break;
+                    }
+                    // Pending: skip (deferred resolution not yet implemented)
                     remaining--;
-                } else if (state == PROMISE_REJECTED) {
-                    TVal val = promise_get_result(elem_obj);
-                    promise_settle(promise, PROMISE_REJECTED, &val, ctx.heap);
-                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
-                    rejected = true;
-                    break;
-                } else {
-                    // Pending — skip (no async support yet)
-                    remaining--;
+                    continue;
                 }
-                continue;
             }
         }
 
@@ -1252,6 +1272,20 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
 
+    // Get the constructor (this value) as C
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    TVal resolve_fn;
+    resolve_fn.set_undefined();
+    HString* resolve_key = builtin_intern_string(ctx.heap, "resolve");
+    if (resolve_key != null && this_ctor_val.is_object() && this_ctor_val.get_heapptr() != null) {
+        HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+        TVal? rf = ctor_obj.get_prop_proto(resolve_key);
+        if (catch err_rf = rf) {
+        } else {
+            resolve_fn = rf;
+        }
+    }
+
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -1293,24 +1327,32 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
             elem.set_undefined();
         }
 
-        if (elem.is_object() && elem.get_heapptr() != null) {
-            HObject* elem_obj = (HObject*)elem.get_heapptr();
-            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
-                if (state == PROMISE_FULFILLED) {
-                    TVal val = promise_get_result(elem_obj);
-                    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
-                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
-                    settled = true;
-                    break;
-                } else if (state == PROMISE_REJECTED) {
-                    TVal val = promise_get_result(elem_obj);
-                    promise_settle(promise, PROMISE_REJECTED, &val, ctx.heap);
-                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
-                    settled = true;
-                    break;
+        // Normalize via C.resolve(elem)
+        if (resolve_fn.is_lightfunc() ||
+            (resolve_fn.is_object() && resolve_fn.get_heapptr() != null &&
+             ((HObject*)resolve_fn.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0] = elem;
+            TVal resolved = ctx.heap.call_fn(ctx.vm, resolve_fn, &args[0], 1, this_ctor_val);
+            if (resolved.is_object() && resolved.get_heapptr() != null) {
+                HObject* res_obj = (HObject*)resolved.get_heapptr();
+                if (res_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    uint state = promise_get_state(res_obj, PROMISE_PENDING);
+                    if (state == PROMISE_FULFILLED) {
+                        TVal val = promise_get_result(res_obj);
+                        promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
+                        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+                        settled = true;
+                        break;
+                    } else if (state == PROMISE_REJECTED) {
+                        TVal val = promise_get_result(res_obj);
+                        promise_settle(promise, PROMISE_REJECTED, &val, ctx.heap);
+                        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+                        settled = true;
+                        break;
+                    }
+                    continue;
                 }
-                continue;
             }
         }
 
