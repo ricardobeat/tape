@@ -1039,6 +1039,9 @@ fn void builtin_promise_all_resolve_element(BuiltinContext* ctx) {
                 }
                 promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
                 promise_trigger_reactions(outer, heap, ctx.vm);
+                if (!heap.microtask_draining) {
+                    heap.drain_microtasks(ctx.vm);
+                }
             }
         }
     }
@@ -1145,6 +1148,9 @@ fn void builtin_promise_race_resolve_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_FULFILLED, &value, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            if (!heap.microtask_draining) {
+                heap.drain_microtasks(ctx.vm);
+            }
         }
     }
 }
@@ -1193,6 +1199,9 @@ fn void builtin_promise_race_reject_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_REJECTED, &reason, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            if (!heap.microtask_draining) {
+                heap.drain_microtasks(ctx.vm);
+            }
         }
     }
 }
@@ -1235,6 +1244,458 @@ fn void promise_attach_element_callbacks(HObject* promise, HObject* fulfill_fn, 
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state != PROMISE_PENDING) {
         promise_trigger_reactions(promise, heap, vm);
+    }
+}
+
+// ============================================================================
+// Helper: handle a resolved-thenable synchronously for the combinator loop.
+//
+// When `C.resolve(elem)` returns a thenable (not a Promise), the spec requires
+// us to call `.then` on it. If the thenable's `then` is synchronous, the
+// wrapper Promise is settled before we can attach reactions — so the
+// attached reactions are queued as microtasks. That breaks tests that
+// assert synchronous behavior after the combinator call returns.
+//
+// This helper handles BOTH paths:
+//   - Synchronous: extract result/reason from the wrapper, call the
+//     element callback directly. This matches reference engines that
+//     drain microtasks inline.
+//   - Asynchronous (still pending): attach reactions for later draining.
+//
+// Returns true if the wrapper is already settled and the callback was
+// invoked synchronously. The caller should `continue` to the next element
+// in that case.
+// ============================================================================
+fn bool promise_attach_thenable_element_callbacks(
+    Heap* heap, void* vm, TVal resolved, HObject* fulfill_fn, HObject* reject_fn
+) {
+    if (!resolved.is_object() || resolved.get_heapptr() == null) return false;
+    HObject* wrapper = (HObject*)resolved.get_heapptr();
+
+    // If the wrapper is already settled, run the callback directly via a
+    // synthetic call. This handles synchronously-settled thenables.
+    uint state = promise_get_state(wrapper, PROMISE_PENDING);
+    if (state != PROMISE_PENDING) {
+        TVal result = promise_get_result(wrapper);
+        HObject* cb = (state == PROMISE_FULFILLED) ? fulfill_fn : reject_fn;
+
+        // Build a synthetic context so we can dispatch_builtin directly.
+        // Layout: [callee, this, arg0, padding]
+        TVal[4] temp;
+        temp[0].set_object((void*)cb);
+        temp[1].set_undefined();
+        temp[2] = result;
+        temp[3].set_undefined();
+        BuiltinContext cb_ctx;
+        cb_ctx.vm = vm;
+        cb_ctx.heap = heap;
+        cb_ctx.regs = &temp;
+        cb_ctx.base_reg = 2;
+        cb_ctx.argc = 1;
+        cb_ctx.result = &temp[0];
+        cb_ctx.this_val.set_undefined();
+        cb_ctx.is_constructor = false;
+        cb_ctx.needs_re_dispatch = false;
+        cb_ctx.re_nargs = 0;
+        cb_ctx.global_env = null;
+        cb_ctx.should_throw = false;
+        cb_ctx.callee_obj = cb;
+        dispatch_builtin(
+            (uint)(*cb.extra_ptr()).func.builtin_fn_index,
+            &cb_ctx
+        );
+        return true;
+    }
+
+    // Pending: attach reactions for async settling.
+    promise_attach_element_callbacks(wrapper, fulfill_fn, reject_fn, heap, vm);
+    return true;
+}
+
+// ============================================================================
+// Promise.allSettled element-tracking helpers (ES2020 §25.6.4.5)
+//
+// Like Promise.all but tracks BOTH fulfill and reject for each element.
+// The shared state holds the result array (indexed by element position) and
+// a remaining count. When remaining hits zero, settle outer with the array.
+//
+// Hidden props on each element callback:
+//   \xFFstate   — shared state object
+//   \xFFidx     — index in the result array
+// ============================================================================
+
+/// Promise.allSettled per-element fulfill handler.
+/// Creates {status: "fulfilled", value: x} at result[idx], decrements
+/// remaining, settles outer with the full array when remaining reaches 0.
+fn void builtin_promise_allsettled_resolve_element(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    if (ctx.callee_obj == null) return;
+
+    HString* state_key = builtin_intern_string(heap, "\xFFstate");
+    HString* idx_key = builtin_intern_string(heap, "\xFFidx");
+    HString* arr_key = builtin_intern_string(heap, "\xFFarr");
+    HString* remaining_key = builtin_intern_string(heap, "\xFFremaining");
+    HString* outer_key = builtin_intern_string(heap, "\xFFouter");
+    if (state_key == null || idx_key == null) return;
+
+    TVal? state_opt = ctx.callee_obj.get_prop(state_key);
+    HObject* state = null;
+    if (try sv = state_opt) {
+        if (sv.is_object() && sv.get_heapptr() != null) state = (HObject*)sv.get_heapptr();
+    }
+    if (state == null) return;
+
+    TVal? idx_opt = ctx.callee_obj.get_prop(idx_key);
+    usz idx = 0;
+    if (try iv = idx_opt) {
+        if (iv.is_fastint()) idx = (usz)iv.get_fastint();
+    }
+
+    TVal value;
+    value.set_undefined();
+    if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
+
+    // Build {status: "fulfilled", value: x}
+    HObject*? result_obj_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (try result_obj = result_obj_raw) {
+        result_obj.prototype = heap.object_proto;
+        HString* status_key = builtin_intern_string(heap, "status");
+        HString* value_key = builtin_intern_string(heap, "value");
+        TVal fulfilled_status;
+        fulfilled_status.set_string(builtin_intern_string(heap, "fulfilled"));
+        if (status_key != null) result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
+        if (value_key != null) result_obj.put_prop(value_key, value, hobject::PROP_FLAGS_WEC);
+        TVal result_tv;
+        result_tv.set_object(result_obj);
+
+        // Store into result array at idx
+        if (arr_key != null) {
+            TVal? arr_opt = state.get_prop(arr_key);
+            HObject* arr = null;
+            if (try av = arr_opt) {
+                if (av.is_object() && av.get_heapptr() != null) arr = (HObject*)av.get_heapptr();
+            }
+            if (arr != null) {
+                arr.set_array_idx((uint)idx, result_tv);
+                if ((uint)idx + 1 > *arr.array_len_ptr()) {
+                    array_set_length(arr, (uint)idx + 1, heap);
+                }
+            }
+        }
+    }
+
+    // Decrement remaining
+    if (remaining_key != null) {
+        TVal? rem_opt = state.get_prop(remaining_key);
+        long remaining = 0;
+        if (try rv = rem_opt) {
+            if (rv.is_fastint()) remaining = rv.get_fastint();
+        }
+        remaining -= 1;
+        TVal new_rem; new_rem.set_fastint(remaining);
+        state.put_prop(remaining_key, new_rem, hobject::PROP_FLAGS_WEC);
+
+        if (remaining == 0 && outer_key != null) {
+            TVal? outer_opt = state.get_prop(outer_key);
+            HObject* outer = null;
+            if (try ov = outer_opt) {
+                if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
+            }
+            if (outer != null && arr_key != null) {
+                TVal arr_val;
+                TVal? arr_opt2 = state.get_prop(arr_key);
+                if (try av2 = arr_opt2) {
+                    arr_val = av2;
+                } else {
+                    arr_val.set_undefined();
+                }
+                promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
+                promise_trigger_reactions(outer, heap, ctx.vm);
+                // Drain microtasks inline so combinator-result checks
+                // (e.g. test262 "call-resolve-element") see the outer
+                // settled and any executor callback fired.
+                if (!heap.microtask_draining) {
+                    heap.drain_microtasks(ctx.vm);
+                }
+            }
+        }
+    }
+}
+
+/// Promise.allSettled per-element reject handler.
+/// Creates {status: "rejected", reason: x} at result[idx], decrements
+/// remaining, settles outer when remaining reaches 0.
+fn void builtin_promise_allsettled_reject_element(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    if (ctx.callee_obj == null) return;
+
+    HString* state_key = builtin_intern_string(heap, "\xFFstate");
+    HString* idx_key = builtin_intern_string(heap, "\xFFidx");
+    HString* arr_key = builtin_intern_string(heap, "\xFFarr");
+    HString* remaining_key = builtin_intern_string(heap, "\xFFremaining");
+    HString* outer_key = builtin_intern_string(heap, "\xFFouter");
+    if (state_key == null || idx_key == null) return;
+
+    TVal? state_opt = ctx.callee_obj.get_prop(state_key);
+    HObject* state = null;
+    if (try sv = state_opt) {
+        if (sv.is_object() && sv.get_heapptr() != null) state = (HObject*)sv.get_heapptr();
+    }
+    if (state == null) return;
+
+    TVal? idx_opt = ctx.callee_obj.get_prop(idx_key);
+    usz idx = 0;
+    if (try iv = idx_opt) {
+        if (iv.is_fastint()) idx = (usz)iv.get_fastint();
+    }
+
+    TVal reason;
+    reason.set_undefined();
+    if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
+
+    HObject*? result_obj_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (try result_obj = result_obj_raw) {
+        result_obj.prototype = heap.object_proto;
+        HString* status_key = builtin_intern_string(heap, "status");
+        HString* reason_key = builtin_intern_string(heap, "reason");
+        TVal rejected_status;
+        rejected_status.set_string(builtin_intern_string(heap, "rejected"));
+        if (status_key != null) result_obj.put_prop(status_key, rejected_status, hobject::PROP_FLAGS_WEC);
+        if (reason_key != null) result_obj.put_prop(reason_key, reason, hobject::PROP_FLAGS_WEC);
+        TVal result_tv;
+        result_tv.set_object(result_obj);
+
+        if (arr_key != null) {
+            TVal? arr_opt = state.get_prop(arr_key);
+            HObject* arr = null;
+            if (try av = arr_opt) {
+                if (av.is_object() && av.get_heapptr() != null) arr = (HObject*)av.get_heapptr();
+            }
+            if (arr != null) {
+                arr.set_array_idx((uint)idx, result_tv);
+                if ((uint)idx + 1 > *arr.array_len_ptr()) {
+                    array_set_length(arr, (uint)idx + 1, heap);
+                }
+            }
+        }
+    }
+
+    if (remaining_key != null) {
+        TVal? rem_opt = state.get_prop(remaining_key);
+        long remaining = 0;
+        if (try rv = rem_opt) {
+            if (rv.is_fastint()) remaining = rv.get_fastint();
+        }
+        remaining -= 1;
+        TVal new_rem; new_rem.set_fastint(remaining);
+        state.put_prop(remaining_key, new_rem, hobject::PROP_FLAGS_WEC);
+
+        if (remaining == 0 && outer_key != null) {
+            TVal? outer_opt = state.get_prop(outer_key);
+            HObject* outer = null;
+            if (try ov = outer_opt) {
+                if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
+            }
+            if (outer != null && arr_key != null) {
+                TVal arr_val;
+                TVal? arr_opt2 = state.get_prop(arr_key);
+                if (try av2 = arr_opt2) {
+                    arr_val = av2;
+                } else {
+                    arr_val.set_undefined();
+                }
+                promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
+                promise_trigger_reactions(outer, heap, ctx.vm);
+                if (!heap.microtask_draining) {
+                    heap.drain_microtasks(ctx.vm);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Promise.any element-tracking helpers (ES2021 §25.6.4.3)
+//
+// First-fulfill-wins: when an element fulfills, settle outer with the value
+// immediately. When an element rejects, store the reason. If all elements
+// reject, settle outer with an AggregateError holding the reasons.
+//
+// Shared state:
+//   \xFFouter       — outer promise
+//   \xFFerrors      — errors array (rejection reasons in iteration order)
+//   \xFFremaining   — pending count (decremented on reject; if 0, all rejected)
+//   \xFFrejected    — "settled" flag (any fulfill wins immediately)
+// ============================================================================
+
+/// Promise.any per-element fulfill handler (first-fulfill-wins).
+/// Settles the outer promise with the value, ignoring subsequent events.
+fn void builtin_promise_any_resolve_element(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    if (ctx.callee_obj == null) return;
+
+    HString* state_key = builtin_intern_string(heap, "\xFFstate");
+    HString* outer_key = builtin_intern_string(heap, "\xFFouter");
+    HString* rej_key = builtin_intern_string(heap, "\xFFrejected");
+    if (state_key == null) return;
+
+    TVal? state_opt = ctx.callee_obj.get_prop(state_key);
+    HObject* state = null;
+    if (try sv = state_opt) {
+        if (sv.is_object() && sv.get_heapptr() != null) state = (HObject*)sv.get_heapptr();
+    }
+    if (state == null) return;
+
+    // Check if already settled
+    bool already_settled = false;
+    if (rej_key != null) {
+        TVal? rej_opt = state.get_prop(rej_key);
+        if (try rj = rej_opt) {
+            if (rj.is_boolean() && rj.get_boolean()) already_settled = true;
+        }
+    }
+    if (already_settled) return;
+
+    // Mark settled
+    if (rej_key != null) {
+        TVal rej_tv; rej_tv.set_boolean(true);
+        state.put_prop(rej_key, rej_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    TVal value;
+    value.set_undefined();
+    if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
+
+    if (outer_key != null) {
+        TVal? outer_opt = state.get_prop(outer_key);
+        HObject* outer = null;
+        if (try ov = outer_opt) {
+            if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
+        }
+        if (outer != null) {
+            promise_settle(outer, PROMISE_FULFILLED, &value, heap);
+            promise_trigger_reactions(outer, heap, ctx.vm);
+            if (!heap.microtask_draining) {
+                heap.drain_microtasks(ctx.vm);
+            }
+        }
+    }
+}
+
+/// Promise.any per-element reject handler.
+/// Stores reason in errors[idx], decrements remaining. If remaining hits 0,
+/// settle outer with an AggregateError(errors).
+fn void builtin_promise_any_reject_element(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    if (ctx.callee_obj == null) return;
+
+    HString* state_key = builtin_intern_string(heap, "\xFFstate");
+    HString* idx_key = builtin_intern_string(heap, "\xFFidx");
+    HString* errors_key = builtin_intern_string(heap, "\xFFerrors");
+    HString* remaining_key = builtin_intern_string(heap, "\xFFremaining");
+    HString* outer_key = builtin_intern_string(heap, "\xFFouter");
+    HString* rej_key = builtin_intern_string(heap, "\xFFrejected");
+    if (state_key == null || idx_key == null) return;
+
+    TVal? state_opt = ctx.callee_obj.get_prop(state_key);
+    HObject* state = null;
+    if (try sv = state_opt) {
+        if (sv.is_object() && sv.get_heapptr() != null) state = (HObject*)sv.get_heapptr();
+    }
+    if (state == null) return;
+
+    // If a fulfill has already settled the outer, ignore late rejections
+    bool already_settled = false;
+    if (rej_key != null) {
+        TVal? rej_opt = state.get_prop(rej_key);
+        if (try rj = rej_opt) {
+            if (rj.is_boolean() && rj.get_boolean()) already_settled = true;
+        }
+    }
+    if (already_settled) return;
+
+    TVal? idx_opt = ctx.callee_obj.get_prop(idx_key);
+    usz idx = 0;
+    if (try iv = idx_opt) {
+        if (iv.is_fastint()) idx = (usz)iv.get_fastint();
+    }
+
+    TVal reason;
+    reason.set_undefined();
+    if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
+
+    // Store reason at errors[idx]
+    if (errors_key != null) {
+        TVal? errors_opt = state.get_prop(errors_key);
+        HObject* errors_arr = null;
+        if (try ev = errors_opt) {
+            if (ev.is_object() && ev.get_heapptr() != null) errors_arr = (HObject*)ev.get_heapptr();
+        }
+        if (errors_arr != null) {
+            errors_arr.set_array_idx((uint)idx, reason);
+            if ((uint)idx + 1 > *errors_arr.array_len_ptr()) {
+                array_set_length(errors_arr, (uint)idx + 1, heap);
+            }
+        }
+    }
+
+    // Decrement remaining
+    if (remaining_key != null) {
+        TVal? rem_opt = state.get_prop(remaining_key);
+        long remaining = 0;
+        if (try rv = rem_opt) {
+            if (rv.is_fastint()) remaining = rv.get_fastint();
+        }
+        remaining -= 1;
+        TVal new_rem; new_rem.set_fastint(remaining);
+        state.put_prop(remaining_key, new_rem, hobject::PROP_FLAGS_WEC);
+
+        if (remaining == 0 && outer_key != null) {
+            // All rejected — settle outer with AggregateError
+            TVal? outer_opt = state.get_prop(outer_key);
+            HObject* outer = null;
+            if (try ov = outer_opt) {
+                if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
+            }
+            if (outer != null) {
+                TVal errors_val;
+                if (errors_key != null) {
+                    TVal? ev_opt = state.get_prop(errors_key);
+                    if (try ev2 = ev_opt) {
+                        errors_val = ev2;
+                    } else {
+                        errors_val.set_undefined();
+                    }
+                } else {
+                    errors_val.set_undefined();
+                }
+
+                HString* msg = builtin_intern_string(heap, "All promises were rejected");
+                TVal msg_tv;
+                msg_tv.set_string(msg);
+
+                HObject*? agg_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+                TVal agg_tv;
+                agg_tv.set_undefined();
+                if (try agg = agg_raw) {
+                    agg.prototype = heap.aggregate_err_proto;
+                    HString* errors_prop_key = builtin_intern_string(heap, "errors");
+                    if (errors_prop_key != null) {
+                        agg.put_prop(errors_prop_key, errors_val, hobject::PROP_FLAGS_WEC);
+                    }
+                    HString* msg_key = builtin_intern_string(heap, "message");
+                    if (msg_key != null) {
+                        agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                    }
+                    agg_tv.set_object(agg);
+                }
+                promise_settle(outer, PROMISE_REJECTED, &agg_tv, heap);
+                promise_trigger_reactions(outer, heap, ctx.vm);
+                if (!heap.microtask_draining) {
+                    heap.drain_microtasks(ctx.vm);
+                }
+            }
+        }
     }
 }
 
@@ -1344,6 +1805,15 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
                     promise_attach_element_callbacks(res_obj, fulfill_fn, reject_fn, ctx.heap, ctx.vm);
                     continue;
                 }
+                // Non-Promise object: might be a thenable. Coerce and
+                // handle synchronously-settled wrappers via the helper.
+                HObject*? wrapper_raw = promise_coerce_thenable(ctx.heap, r, ctx.vm);
+                if (try wrapper = wrapper_raw) {
+                    TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+                    if (promise_attach_thenable_element_callbacks(ctx.heap, ctx.vm, wrapper_tv, fulfill_fn, reject_fn)) {
+                        continue;
+                    }
+                }
             }
             elem = r;
         }
@@ -1369,6 +1839,21 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     TVal iterable;
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Get the constructor (this value) as C per ES2020 §25.6.4.3 step 3
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    TVal resolve_fn;
+    resolve_fn.set_undefined();
+    HString* resolve_key = builtin_intern_string(ctx.heap, "resolve");
+    if (resolve_key != null && this_ctor_val.is_object() && this_ctor_val.get_heapptr() != null) {
+        HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+        TVal? rf = ctor_obj.get_prop_proto(resolve_key);
+        if (catch err_rf = rf) {
+            // fall through — use undefined resolve
+        } else {
+            resolve_fn = rf;
+        }
+    }
 
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
@@ -1413,67 +1898,80 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
-    usz remaining = len;
+    // Pre-allocate result objects so indices are stable (each per-element
+    // callback fills in its slot).  This matches the spec's [[Values]] list
+    // semantics where each entry starts as a placeholder and is mutated in
+    // place by the fulfill/reject handler.
     HString* status_key = builtin_intern_string(ctx.heap, "status");
     HString* value_key = builtin_intern_string(ctx.heap, "value");
     HString* reason_key = builtin_intern_string(ctx.heap, "reason");
-    TVal fulfilled_status;
-    fulfilled_status.set_string(builtin_intern_string(ctx.heap, "fulfilled"));
-    TVal rejected_status;
-    rejected_status.set_string(builtin_intern_string(ctx.heap, "rejected"));
+    TVal pending_status;
+    pending_status.set_string(builtin_intern_string(ctx.heap, "pending"));
+    TVal undef; undef.set_undefined();
+    for (usz i = 0; i < len; i++) {
+        HObject*? placeholder_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try placeholder = placeholder_raw) {
+            placeholder.prototype = ctx.heap.object_proto;
+            if (status_key != null) placeholder.put_prop(status_key, pending_status, hobject::PROP_FLAGS_WEC);
+            if (value_key != null) placeholder.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
+            if (reason_key != null) placeholder.put_prop(reason_key, undef, hobject::PROP_FLAGS_WEC);
+            TVal ptv; ptv.set_object(placeholder);
+            arr.set_array_idx((uint)i, ptv);
+        }
+    }
+    array_set_length(arr, (uint)len, ctx.heap);
+
+    // Shared state for deferred resolution.
+    HObject*? state_raw = promise_create_all_state(ctx.heap, promise, arr, len);
+    if (catch err = state_raw) {
+        ctx.result.set_object(promise);
+        return;
+    }
+    HObject* state = state_raw;
 
     for (usz i = 0; i < len; i++) {
         TVal elem = array_get_elem(obj, (uint)i, ctx.heap);
 
-        if (elem.is_object() && elem.get_heapptr() != null) {
-            HObject* elem_obj = (HObject*)elem.get_heapptr();
-            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
+        HObject*? fulfill_raw = promise_create_element_callback(ctx.heap, BUILTIN_PROMISE_ALLSETTLED_RESOLVE_ELEMENT, state, i);
+        HObject*? reject_raw = promise_create_element_callback(ctx.heap, BUILTIN_PROMISE_ALLSETTLED_REJECT_ELEMENT, state, i);
+        if (catch err_f = fulfill_raw) continue;
+        if (catch err_r = reject_raw) continue;
+        HObject* fulfill_fn = fulfill_raw;
+        HObject* reject_fn = reject_raw;
 
-                HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-                if (try result_obj = result_obj_raw) {
-                    result_obj.prototype = ctx.heap.object_proto;
-
-                    if (state == PROMISE_FULFILLED) {
-                        result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
-                        TVal val = promise_get_result(elem_obj);
-                        result_obj.put_prop(value_key, val, hobject::PROP_FLAGS_WEC);
-                    } else if (state == PROMISE_REJECTED) {
-                        result_obj.put_prop(status_key, rejected_status, hobject::PROP_FLAGS_WEC);
-                        TVal val = promise_get_result(elem_obj);
-                        result_obj.put_prop(reason_key, val, hobject::PROP_FLAGS_WEC);
-                    } else {
-                        result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
-                        TVal undef;
-                        undef.set_undefined();
-                        result_obj.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal result_tv;
-                    result_tv.set_object(result_obj);
-                    arr.set_array_idx((uint)i, result_tv);
+        // Normalize via C.resolve(elem)
+        if (resolve_fn.is_lightfunc() ||
+            (resolve_fn.is_object() && resolve_fn.get_heapptr() != null &&
+             ((HObject*)resolve_fn.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0] = elem;
+            TVal r = ctx.heap.call_fn(ctx.vm, resolve_fn, &args[0], 1, this_ctor_val);
+            if (r.is_object() && r.get_heapptr() != null) {
+                HObject* res_obj = (HObject*)r.get_heapptr();
+                if (res_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    promise_attach_element_callbacks(res_obj, fulfill_fn, reject_fn, ctx.heap, ctx.vm);
+                    continue;
                 }
-                remaining--;
-                continue;
+                // Non-Promise object: might be a thenable. Coerce it so
+                // we can attach callbacks per spec step z.
+                HObject*? wrapper_raw = promise_coerce_thenable(ctx.heap, r, ctx.vm);
+                if (try wrapper = wrapper_raw) {
+                    TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+                    if (promise_attach_thenable_element_callbacks(ctx.heap, ctx.vm, wrapper_tv, fulfill_fn, reject_fn)) {
+                        continue;
+                    }
+                }
             }
+            elem = r;
         }
 
-        HObject*? result_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (try result_obj = result_obj_raw) {
-            result_obj.prototype = ctx.heap.object_proto;
-            result_obj.put_prop(status_key, fulfilled_status, hobject::PROP_FLAGS_WEC);
-            result_obj.put_prop(value_key, elem, hobject::PROP_FLAGS_WEC);
-            TVal result_tv;
-            result_tv.set_object(result_obj);
-            arr.set_array_idx((uint)i, result_tv);
-        }
-        remaining--;
-    }
-
-    if (remaining == 0) {
-        TVal arr_val;
-        arr_val.set_object(arr);
-        promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
-        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+        // Non-Promise element: invoke the fulfill callback directly with the value.
+        TVal saved_this = ctx.regs[ctx.base_reg - 1];
+        ctx.regs[ctx.base_reg - 1].set_object((void*)fulfill_fn);
+        ctx.regs[ctx.base_reg] = elem;
+        ctx.argc = 1;
+        builtin_promise_allsettled_resolve_element(ctx);
+        ctx.regs[ctx.base_reg - 1] = saved_this;
     }
 
     ctx.result.set_object(promise);
@@ -1487,6 +1985,20 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     TVal iterable;
     iterable.set_undefined();
     if (ctx.argc >= 1) iterable = ctx.regs[ctx.base_reg];
+
+    // Get the constructor (this value) as C per ES2021 §25.6.4.3 step 3
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    TVal resolve_fn;
+    resolve_fn.set_undefined();
+    HString* resolve_key = builtin_intern_string(ctx.heap, "resolve");
+    if (resolve_key != null && this_ctor_val.is_object() && this_ctor_val.get_heapptr() != null) {
+        HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+        TVal? rf = ctor_obj.get_prop_proto(resolve_key);
+        if (catch err_rf = rf) {
+        } else {
+            resolve_fn = rf;
+        }
+    }
 
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
@@ -1511,13 +2023,14 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     }
 
     if (!has_len || len == 0) {
-        TVal errors_tv;
-        errors_tv.set_undefined();
+        // Empty iterable: reject with AggregateError(errors=[]).
         HString* msg = builtin_intern_string(ctx.heap, "All promises were rejected");
         TVal msg_tv;
         msg_tv.set_string(msg);
 
         HObject*? agg_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        TVal agg_tv;
+        agg_tv.set_undefined();
         if (try agg = agg_raw) {
             agg.prototype = ctx.heap.aggregate_err_proto;
             HString* errors_key = builtin_intern_string(ctx.heap, "errors");
@@ -1530,20 +2043,14 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             }
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        }
-
-        TVal agg_tv;
-        agg_tv.set_undefined();
-        if (try agg2 = agg_raw) {
-            agg_tv.set_object(agg2);
+            agg_tv.set_object(agg);
         }
         promise_settle(promise, PROMISE_REJECTED, &agg_tv, ctx.heap);
         ctx.result.set_object(promise);
         return;
     }
 
-    usz remaining = len;
-    usz rejected_count = 0;
+    // Pre-allocate errors array.
     HObject*? errors_arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     HObject* errors_arr = null;
     if (try arr = errors_arr_raw) {
@@ -1551,68 +2058,83 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         errors_arr = arr;
     }
 
-    for (usz i = 0; i < len; i++) {
-        TVal elem = array_get_elem(obj, (uint)i, ctx.heap);
-
-        if (elem.is_object() && elem.get_heapptr() != null) {
-            HObject* elem_obj = (HObject*)elem.get_heapptr();
-            if (elem_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                uint state = promise_get_state(elem_obj, PROMISE_PENDING);
-                if (state == PROMISE_FULFILLED) {
-                    TVal val = promise_get_result(elem_obj);
-                    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
-                    promise_trigger_reactions(promise, ctx.heap, ctx.vm);
-                    ctx.result.set_object(promise);
-                    return;
-                } else if (state == PROMISE_REJECTED) {
-                    if (errors_arr != null) {
-                        TVal val = promise_get_result(elem_obj);
-                        errors_arr.set_array_idx((uint)(rejected_count), val);
-                    }
-                    rejected_count++;
-                } else {
-                    if (errors_arr != null) {
-                        TVal undef;
-                        undef.set_undefined();
-                        errors_arr.set_array_idx((uint)(rejected_count), undef);
-                    }
-                    rejected_count++;
-                }
-                remaining--;
-                continue;
-            }
+    // Shared state for deferred resolution. \xFFerrors holds the rejection
+    // reasons (one per element); \xFFrejected is repurposed as "settled"
+    // (first fulfill wins immediately).
+    HObject*? state_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    HObject* state = null;
+    if (try sr = state_raw) {
+        sr.prototype = ctx.heap.object_proto;
+        HString* outer_key = builtin_intern_string(ctx.heap, "\xFFouter");
+        HString* errors_key = builtin_intern_string(ctx.heap, "\xFFerrors");
+        HString* remaining_key = builtin_intern_string(ctx.heap, "\xFFremaining");
+        HString* rejected_key = builtin_intern_string(ctx.heap, "\xFFrejected");
+        if (outer_key != null) {
+            TVal outer_tv; outer_tv.set_object(promise);
+            sr.put_prop(outer_key, outer_tv, hobject::PROP_FLAGS_WEC);
         }
-
-        promise_settle(promise, PROMISE_FULFILLED, &elem, ctx.heap);
-        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+        if (errors_key != null && errors_arr != null) {
+            TVal errors_tv; errors_tv.set_object(errors_arr);
+            sr.put_prop(errors_key, errors_tv, hobject::PROP_FLAGS_WEC);
+        }
+        if (remaining_key != null) {
+            TVal rem_tv; rem_tv.set_fastint((long)len);
+            sr.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+        }
+        if (rejected_key != null) {
+            TVal rej_tv; rej_tv.set_boolean(false);
+            sr.put_prop(rejected_key, rej_tv, hobject::PROP_FLAGS_WEC);
+        }
+        state = sr;
+    }
+    if (state == null) {
         ctx.result.set_object(promise);
         return;
     }
 
-    if (remaining == 0) {
-        TVal errors_val;
-        if (errors_arr != null) {
-            errors_val.set_object(errors_arr);
-        } else {
-            errors_val.set_undefined();
+    for (usz i = 0; i < len; i++) {
+        TVal elem = array_get_elem(obj, (uint)i, ctx.heap);
+
+        HObject*? fulfill_raw = promise_create_element_callback(ctx.heap, BUILTIN_PROMISE_ANY_RESOLVE_ELEMENT, state, i);
+        HObject*? reject_raw = promise_create_element_callback(ctx.heap, BUILTIN_PROMISE_ANY_REJECT_ELEMENT, state, i);
+        if (catch err_f = fulfill_raw) continue;
+        if (catch err_r = reject_raw) continue;
+        HObject* fulfill_fn = fulfill_raw;
+        HObject* reject_fn = reject_raw;
+
+        // Normalize via C.resolve(elem)
+        if (resolve_fn.is_lightfunc() ||
+            (resolve_fn.is_object() && resolve_fn.get_heapptr() != null &&
+             ((HObject*)resolve_fn.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0] = elem;
+            TVal r = ctx.heap.call_fn(ctx.vm, resolve_fn, &args[0], 1, this_ctor_val);
+            if (r.is_object() && r.get_heapptr() != null) {
+                HObject* res_obj = (HObject*)r.get_heapptr();
+                if (res_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                    promise_attach_element_callbacks(res_obj, fulfill_fn, reject_fn, ctx.heap, ctx.vm);
+                    continue;
+                }
+                // Non-Promise object: might be a thenable.
+                HObject*? wrapper_raw = promise_coerce_thenable(ctx.heap, r, ctx.vm);
+                if (try wrapper = wrapper_raw) {
+                    TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+                    if (promise_attach_thenable_element_callbacks(ctx.heap, ctx.vm, wrapper_tv, fulfill_fn, reject_fn)) {
+                        continue;
+                    }
+                }
+            }
+            elem = r;
         }
 
-        HObject*? agg_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        TVal agg_tv;
-        agg_tv.set_undefined();
-        if (try agg = agg_raw) {
-            agg.prototype = ctx.heap.aggregate_err_proto;
-            HString* errors_key = builtin_intern_string(ctx.heap, "errors");
-            agg.put_prop(errors_key, errors_val, hobject::PROP_FLAGS_WEC);
-            HString* msg = builtin_intern_string(ctx.heap, "All promises were rejected");
-            TVal msg_tv;
-            msg_tv.set_string(msg);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            agg.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            agg_tv.set_object(agg);
-        }
-        promise_settle(promise, PROMISE_REJECTED, &agg_tv, ctx.heap);
-        promise_trigger_reactions(promise, ctx.heap, ctx.vm);
+        // Non-Promise element: fulfill wins immediately.
+        TVal saved_this = ctx.regs[ctx.base_reg - 1];
+        ctx.regs[ctx.base_reg - 1].set_object((void*)fulfill_fn);
+        ctx.regs[ctx.base_reg] = elem;
+        ctx.argc = 1;
+        builtin_promise_any_resolve_element(ctx);
+        ctx.regs[ctx.base_reg - 1] = saved_this;
+        return;
     }
 
     ctx.result.set_object(promise);
@@ -1710,7 +2232,15 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
                     promise_attach_element_callbacks(res_obj, fulfill_fn, reject_fn, ctx.heap, ctx.vm);
                     continue;
                 }
-                // Non-Promise resolved value: fire fulfill callback immediately.
+                // Non-Promise object: might be a thenable.
+                HObject*? wrapper_raw = promise_coerce_thenable(ctx.heap, resolved, ctx.vm);
+                if (try wrapper = wrapper_raw) {
+                    TVal wrapper_tv; wrapper_tv.set_object(wrapper);
+                    if (promise_attach_thenable_element_callbacks(ctx.heap, ctx.vm, wrapper_tv, fulfill_fn, reject_fn)) {
+                        continue;
+                    }
+                }
+                // Non-Promise non-thenable resolved value: fire fulfill callback immediately.
                 TVal saved_this = ctx.regs[ctx.base_reg - 1];
                 ctx.regs[ctx.base_reg - 1].set_object((void*)fulfill_fn);
                 ctx.regs[ctx.base_reg] = resolved;

@@ -155,6 +155,10 @@ const uint BUILTIN_PROMISE_ALL_RESOLVE_ELEMENT  = 336;
 const uint BUILTIN_PROMISE_ALL_REJECT_ELEMENT   = 337;
 const uint BUILTIN_PROMISE_RACE_RESOLVE_ELEMENT = 338;
 const uint BUILTIN_PROMISE_RACE_REJECT_ELEMENT  = 339;
+const uint BUILTIN_PROMISE_ALLSETTLED_RESOLVE_ELEMENT = 340;
+const uint BUILTIN_PROMISE_ALLSETTLED_REJECT_ELEMENT  = 341;
+const uint BUILTIN_PROMISE_ANY_RESOLVE_ELEMENT        = 342;
+const uint BUILTIN_PROMISE_ANY_REJECT_ELEMENT         = 343;
 
 // Iterator protocol
 const uint BUILTIN_ARRAY_ITERATOR_NEXT        = 269;
@@ -223,7 +227,7 @@ const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
 const uint BUILTIN_ASYNC_RESUME               = 330;
 const uint BUILTIN_ASYNC_REJECT               = 331;
 
-const uint BUILTIN_COUNT                       = 340;
+const uint BUILTIN_COUNT                       = 344;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1863,7 +1867,11 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROMISE_RACE_RESOLVE_ELEMENT] = &builtin_promise_race_resolve_element,
     [BUILTIN_PROMISE_RACE_REJECT_ELEMENT] = &builtin_promise_race_reject_element,
     [BUILTIN_PROMISE_ALLSETTLED] = &builtin_promise_allsettled,
+    [BUILTIN_PROMISE_ALLSETTLED_RESOLVE_ELEMENT] = &builtin_promise_allsettled_resolve_element,
+    [BUILTIN_PROMISE_ALLSETTLED_REJECT_ELEMENT] = &builtin_promise_allsettled_reject_element,
     [BUILTIN_PROMISE_ANY] = &builtin_promise_any,
+    [BUILTIN_PROMISE_ANY_RESOLVE_ELEMENT] = &builtin_promise_any_resolve_element,
+    [BUILTIN_PROMISE_ANY_REJECT_ELEMENT] = &builtin_promise_any_reject_element,
     [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,
     [BUILTIN_PROMISE_PROTO_FINALLY] = &builtin_promise_proto_finally,
     [BUILTIN_PROMISE_PROTO_THEN] = &builtin_promise_proto_then,
