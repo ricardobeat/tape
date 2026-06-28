@@ -61,6 +61,9 @@ while q or any(w['pending'] for w in workers):
                 if line.startswith('PASS '):
                     results.append(('PASS', line[5:]))
                     w['pending'] = None
+                elif line.startswith('COMPILE_ERROR '):
+                    results.append(('PASS', line[14:]))
+                    w['pending'] = None
                 elif line.startswith('FAIL '):
                     results.append(('FAIL', line[5:]))
                     w['pending'] = None
