@@ -1051,6 +1051,32 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
 
 /// Create the shared state object for Promise.all / Promise.race tracking.
 /// `cap_resolve` and `cap_reject` are the capability's resolve/reject TVals;
+
+/// Invoke the capability's resolve or reject via call_fn if it is callable.
+/// Used by per-element callbacks after settling the outer promise to meet
+/// the spec's promiseCapability.[[Resolve]](valuesArray) requirement.
+fn void capability_invoke(Heap* heap, void* vm, HObject* state, TVal* val, bool is_resolve, TVal this_val) {
+    if (state == null || heap.call_fn == null || vm == null) return;
+    char[] key_name = is_resolve ? "\xFFcap_resolve" : "\xFFcap_reject";
+    HString* key = builtin_intern_string(heap, key_name);
+    if (key == null) return;
+    TVal? cap_opt = state.get_prop(key);
+    TVal capr;
+    capr.set_undefined();
+    if (try cv = cap_opt) capr = cv;
+    // Only invoke if callable (user-defined function or lightfunc).
+    if (capr.is_lightfunc() ||
+        (capr.is_object() && capr.get_heapptr() != null &&
+         ((HObject*)capr.get_heapptr()).is_callable())) {
+        TVal[1] cap_args;
+        cap_args[0] = *val;
+        TVal cap_ret = heap.call_fn(vm, capr, &cap_args[0], 1, this_val);
+        if (heap.has_error) heap.has_error = false;
+    }
+}
+
+/// Create the shared state object for Promise.all / Promise.race tracking.
+/// `cap_resolve` and `cap_reject` are the capability's resolve/reject TVals;
 /// they are stored on the state so element callbacks can invoke the spec's
 /// promiseCapability.[[Resolve]](valuesArray) step when the outer promise
 /// settles.  Either may be the JS undefined when no constructor's resolve
@@ -1219,6 +1245,7 @@ fn void builtin_promise_all_resolve_element(BuiltinContext* ctx) {
                 }
                 promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
                 promise_trigger_reactions(outer, heap, ctx.vm);
+                capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 if (!heap.microtask_draining) {
                     heap.drain_microtasks(ctx.vm);
                 }
@@ -1276,6 +1303,7 @@ fn void builtin_promise_all_reject_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_REJECTED, &reason, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            capability_invoke(heap, ctx.vm, state, &reason, false, ctx.this_val);
         }
     }
 }
@@ -1328,6 +1356,7 @@ fn void builtin_promise_race_resolve_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_FULFILLED, &value, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            capability_invoke(heap, ctx.vm, state, &value, true, ctx.this_val);
             if (!heap.microtask_draining) {
                 heap.drain_microtasks(ctx.vm);
             }
@@ -1379,6 +1408,7 @@ fn void builtin_promise_race_reject_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_REJECTED, &reason, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            capability_invoke(heap, ctx.vm, state, &reason, false, ctx.this_val);
             if (!heap.microtask_draining) {
                 heap.drain_microtasks(ctx.vm);
             }
@@ -1591,6 +1621,7 @@ fn void builtin_promise_allsettled_resolve_element(BuiltinContext* ctx) {
                 }
                 promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
                 promise_trigger_reactions(outer, heap, ctx.vm);
+                capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 // Drain microtasks inline so combinator-result checks
                 // (e.g. test262 "call-resolve-element") see the outer
                 // settled and any executor callback fired.
@@ -1686,6 +1717,7 @@ fn void builtin_promise_allsettled_reject_element(BuiltinContext* ctx) {
                 }
                 promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
                 promise_trigger_reactions(outer, heap, ctx.vm);
+                capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 if (!heap.microtask_draining) {
                     heap.drain_microtasks(ctx.vm);
                 }
@@ -1755,6 +1787,7 @@ fn void builtin_promise_any_resolve_element(BuiltinContext* ctx) {
         if (outer != null) {
             promise_settle(outer, PROMISE_FULFILLED, &value, heap);
             promise_trigger_reactions(outer, heap, ctx.vm);
+            capability_invoke(heap, ctx.vm, state, &value, true, ctx.this_val);
             if (!heap.microtask_draining) {
                 heap.drain_microtasks(ctx.vm);
             }
@@ -1871,6 +1904,7 @@ fn void builtin_promise_any_reject_element(BuiltinContext* ctx) {
                 }
                 promise_settle(outer, PROMISE_REJECTED, &agg_tv, heap);
                 promise_trigger_reactions(outer, heap, ctx.vm);
+                capability_invoke(heap, ctx.vm, state, &agg_tv, false, ctx.this_val);
                 if (!heap.microtask_draining) {
                     heap.drain_microtasks(ctx.vm);
                 }
@@ -2232,6 +2266,25 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     }
     HObject* promise = prom_raw;
 
+    HObject*? hole_raw_any = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    TVal cap_resolve_tv; cap_resolve_tv.set_undefined();
+    TVal cap_reject_tv; cap_reject_tv.set_undefined();
+    if (try hole_any = hole_raw_any) {
+        hole_any.prototype = ctx.heap.object_proto;
+        if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole_any)) {
+            PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
+            cap_resolve_tv.set_object(cap_fb.resolve_func);
+            cap_reject_tv.set_object(cap_fb.reject_func);
+        } else {
+            cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_any);
+            cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_any);
+        }
+    } else {
+        PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
+        cap_resolve_tv.set_object(cap_fb.resolve_func);
+        cap_reject_tv.set_object(cap_fb.reject_func);
+    }
+
     usz len = 0;
     bool has_len = false;
     HObject* obj = null;
@@ -2309,6 +2362,14 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         if (rejected_key != null) {
             TVal rej_tv; rej_tv.set_boolean(false);
             sr.put_prop(rejected_key, rej_tv, hobject::PROP_FLAGS_WEC);
+        }
+        HString* cap_r_key = builtin_intern_string(ctx.heap, "\xFFcap_resolve");
+        HString* cap_j_key = builtin_intern_string(ctx.heap, "\xFFcap_reject");
+        if (cap_r_key != null) {
+            sr.put_prop(cap_r_key, cap_resolve_tv, hobject::PROP_FLAGS_WEC);
+        }
+        if (cap_j_key != null) {
+            sr.put_prop(cap_j_key, cap_reject_tv, hobject::PROP_FLAGS_WEC);
         }
         state = sr;
     }
