@@ -604,8 +604,11 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null) downstream_constructable = tobj.flags.constructable;
     }
-    // ES5 §15.3.4.5: Bound functions do NOT implement [[Construct]].
-    bound_obj.flags.constructable = false;
+    // ES6 §19.2.1.3: BoundFunctionCreate produces a function exotic object
+    // whose [[Construct]] internally invokes the target [[Construct]] — so
+    // the bound function IS constructable iff the target is. (ES5 §15.3.4.5
+    // had bound functions as non-constructable; ES6 changed this in 2015.)
+    bound_obj.flags.constructable = downstream_constructable;
 
     // Store bound data as internal properties (non-enumerable, non-writable, non-configurable)
     // Key: use special strings "\x00bound_downstream", "\x00bound_this", "\x00bound_args"

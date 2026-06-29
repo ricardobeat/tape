@@ -420,8 +420,8 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
 
     TVal* frame = vm.valstack_top;
-    vm.activation_count++;
-    Activation* act = &vm.activations[vm.activation_count - 1];
+    vm.activation_count = 1;
+    Activation* act = &vm.activations[0];
 
     EnvRecord* cfn_var_env = (*ctor.extra_ptr()).func.var_env;
     if (try fv_cfn = env::env_create_function_scope(heap, (*ctor.extra_ptr()).func.var_env)) {

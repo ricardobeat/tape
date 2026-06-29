@@ -554,11 +554,18 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
+            // Regular function declarations are constructable per ES2015 §14.1.2 —
+            // save/restore the flag around the inner compile so nested functions
+            // inherit it.
+            bool saved_is_constructable = self.is_constructable;
+            self.is_constructable = true;
+
             self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
             self.is_async = false;
 
             self.is_generator = saved_gen;
+            self.is_constructable = saved_is_constructable;
 
             // Add to inner functions table
             uint inner_idx = self.add_inner_func(inner);
@@ -796,11 +803,18 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
+            // Regular function declarations are constructable per ES2015 §14.1.2 —
+            // save/restore the flag around the inner compile so nested functions
+            // inherit it.
+            bool saved_is_constructable = self.is_constructable;
+            self.is_constructable = true;
+
             self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
             self.is_async = false;
 
             self.is_generator = saved_gen;
+            self.is_constructable = saved_is_constructable;
 
             // Add to inner functions table
             uint inner_idx = self.add_inner_func(inner);
@@ -1742,6 +1756,13 @@ fn ushort? CompilerContext.function_expr(&self) {
     bool saved_is_async = self.is_async;
     self.is_async = false;
 
+    // Function expressions are constructable per ES2015 §14.1.2 — they can be
+    // invoked with `new` unless they're arrow functions (handled in arrow
+    // parsers) or method shorthand (constructor sets is_constructable=false
+    // explicitly). Save/restore so nested functions inherit constructability.
+    bool saved_is_constructable = self.is_constructable;
+    self.is_constructable = true;
+
     // Check for generator star: function* name?() {}
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
@@ -1784,6 +1805,8 @@ fn ushort? CompilerContext.function_expr(&self) {
 
     // Restore generator flag (async already reset above)
     self.is_generator = saved_is_generator;
+    // Restore constructable flag
+    self.is_constructable = saved_is_constructable;
 
     // Add to inner functions table
     uint inner_idx = self.add_inner_func(inner);

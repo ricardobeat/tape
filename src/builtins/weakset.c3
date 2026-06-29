@@ -50,6 +50,24 @@ fn int weakset_find_value(HObject* ws, TVal val) {
 // WeakSet constructor (ES6 §23.4.1)
 // ============================================================================
 fn void builtin_weakset(BuiltinContext* ctx) {
+    // ES6 §23.4.1.1 step 1: throw TypeError if NewTarget is undefined.
+    if (!ctx.is_constructor) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Constructor WeakSet requires 'new'");
+        if (msg_str != null) {
+            TVal msg_val; msg_val.set_string(msg_str);
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
     HObject*? ws_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKSET);
     if (catch err = ws_raw) {
         ctx.result.set_undefined();

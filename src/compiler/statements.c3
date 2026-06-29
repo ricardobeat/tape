@@ -2586,6 +2586,13 @@ fn void? CompilerContext.function_declaration(&self) {
     bool saved_is_async = self.is_async;
     self.is_async = false;
 
+    // Regular function declarations are constructable per ES2015 §14.1.2 — they
+    // can be invoked with `new` if they aren't arrow functions or methods with
+    // super. Save/restore the constructable flag around the inner compile so
+    // nested functions inside it inherit it.
+    bool saved_is_constructable = self.is_constructable;
+    self.is_constructable = true;
+
     // Check for generator star: function* name() {}
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
@@ -2603,6 +2610,8 @@ fn void? CompilerContext.function_declaration(&self) {
 
     // Restore generator flag (async already reset above)
     self.is_generator = saved_is_generator;
+    // Restore constructable flag (arrow fns/methods strip it via their own save/restore)
+    self.is_constructable = saved_is_constructable;
 
     // Add to inner functions table
     uint inner_idx = self.add_inner_func(inner);

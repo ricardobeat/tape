@@ -53,6 +53,24 @@ fn int set_find_value(HObject* set, TVal val) {
 // Set constructor (ES6 §23.2.1)
 // ============================================================================
 fn void builtin_set(BuiltinContext* ctx) {
+    // ES6 §23.2.1.1 step 1: throw TypeError if NewTarget is undefined.
+    if (!ctx.is_constructor) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Constructor Set requires 'new'");
+        if (msg_str != null) {
+            TVal msg_val; msg_val.set_string(msg_str);
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
     HObject*? set_raw = ctx.heap.alloc_object(hobject::ObjClass.SET);
     if (catch err = set_raw) {
         ctx.result.set_undefined();

@@ -50,6 +50,24 @@ fn int weakmap_find_key(HObject* wm, TVal key) {
 // WeakMap constructor (ES6 §23.3.1)
 // ============================================================================
 fn void builtin_weakmap(BuiltinContext* ctx) {
+    // ES6 §23.3.1.1 step 1: throw TypeError if NewTarget is undefined.
+    if (!ctx.is_constructor) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, "Constructor WeakMap requires 'new'");
+        if (msg_str != null) {
+            TVal msg_val; msg_val.set_string(msg_str);
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
     HObject*? wm_raw = ctx.heap.alloc_object(hobject::ObjClass.WEAKMAP);
     if (catch err = wm_raw) {
         ctx.result.set_undefined();

@@ -3,12 +3,12 @@ module duktape::builtins;
 import duktape::types;
 import libc;
 import duktape::hstring;
+import std::io;
 
 import duktape::heap;
 import duktape::hobject;
 import duktape::env;
 import duktape::bytecode;
-import std::io;
 
 // ============================================================================
 // Promise helpers (ES6 §25.4)
@@ -421,8 +421,10 @@ fn PromiseCapability promise_new_capability(Heap* heap, HObject* promise) {
     }
     HObject* reject_func = reject_raw;
     resolve_func.flags.callable = true;
+    resolve_func.flags.constructable = false;
     resolve_func.prototype = heap.function_proto;
     reject_func.flags.callable = true;
+    reject_func.flags.constructable = false;
     reject_func.prototype = heap.function_proto;
 
     // Index must be assigned last so the function isn't callable-but-unbound
@@ -480,6 +482,7 @@ fn HObject*? promise_create_synthetic_executor(Heap* heap, HObject* hole) {
     HObject* fn_obj = fn_raw;
     (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_SYNTHETIC_EXECUTOR;
     fn_obj.flags.callable = true;
+    fn_obj.flags.constructable = false;
     fn_obj.prototype = heap.function_proto;
 
     HString* len_key = builtin_intern_string(heap, "length");
@@ -525,8 +528,52 @@ fn bool promise_new_capability_full(Heap* heap, void* vm, TVal c_tv, HObject* ho
         }
         return true;
     }
-    // Custom constructor: NOT yet implemented — falls back to caller.
-    return false;
+    // Custom constructor: call Construct(C, [executor]) per ES6 §25.4.1.6.
+    if (heap.construct_fn == null || vm == null) return false;
+    HObject*? exec_raw = promise_create_synthetic_executor(heap, hole);
+    if (catch err = exec_raw) return false;
+    HObject* exec_obj = exec_raw;
+    TVal exec_tv; exec_tv.set_object(exec_obj);
+    TVal result_tv = heap.construct_fn(vm, c_tv, &exec_tv, 1);
+    if (heap.has_error) {
+        heap.has_error = false;
+        return false;
+    }
+    // If construct_fn returned without an object, the constructor threw or
+    // was not a valid constructor — fall back to the builtin pair.
+    if (!result_tv.is_object() || result_tv.get_heapptr() == null) return false;
+    // Per ES6 §25.4.1.5 step 7/8: if [[Resolve]] / [[Reject]] are still
+    // undefined (executor never called, or threw), the capability is invalid
+    // and the outer site must throw a TypeError. Detect this here so callers
+    // like Promise.resolve / Promise.reject see the failure.
+    HString* r_key = builtin_intern_string(heap, "\xFFcap_resolve_tv");
+    HString* j_key = builtin_intern_string(heap, "\xFFcap_reject_tv");
+    bool resolve_set = false;
+    bool reject_set = false;
+    if (r_key != null && hole != null) {
+        if (try rv = hole.get_prop(r_key)) {
+            resolve_set = rv.is_lightfunc() || (rv.is_object() && rv.get_heapptr() != null
+                && ((HObject*)rv.get_heapptr()).is_callable());
+        }
+    }
+    if (j_key != null && hole != null) {
+        if (try jv = hole.get_prop(j_key)) {
+            reject_set = jv.is_lightfunc() || (jv.is_object() && jv.get_heapptr() != null
+                && ((HObject*)jv.get_heapptr()).is_callable());
+        }
+    }
+    if (!resolve_set || !reject_set) {
+        // Capability is incomplete — wipe back to undefined and report failure.
+        TVal undef2; undef2.set_undefined();
+        if (r_key != null && hole != null) {
+            hole.put_prop(r_key, undef2, hobject::PROP_FLAGS_WEC);
+        }
+        if (j_key != null && hole != null) {
+            hole.put_prop(j_key, undef2, hobject::PROP_FLAGS_WEC);
+        }
+        return false;
+    }
+    return true;
 }
 
 /// Read back the resolve TVal stored by NewPromiseCapability.
@@ -547,6 +594,25 @@ fn TVal promise_hole_get_reject(Heap* heap, HObject* hole) {
     if (k == null) return j;
     if (try v = hole.get_prop(k)) return v;
     return j;
+}
+
+/// Throw a TypeError into a builtin's ctx for an incomplete PromiseCapability.
+/// Used by combinators (Promise.all, Promise.race, Promise.any, …
+/// Promise.allSettled) when NewPromiseCapability fails — per ES6 §25.4.4.x
+/// the algorithm returns IfAbrupt (TypeError) when the capability is invalid.
+fn void promise_capability_incomplete_throw(BuiltinContext* ctx) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap,
+            "Promise capability not initialized by constructor");
+        if (msg_str != null) {
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
 }
 
 /// Create a resolve/reject capability object (internal).
@@ -589,6 +655,25 @@ fn TVal promise_try_get_value(HObject* obj) {
 // ============================================================================
 
 fn void builtin_promise(BuiltinContext* ctx) {
+    // ES6 §25.4.3.1 step 1: If NewTarget is undefined, throw a TypeError exception.
+    if (!ctx.is_constructor) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_e = err_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Promise cannot be called without 'new'");
+        if (msg_key != null && msg_str != null) {
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
@@ -745,6 +830,35 @@ fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback
 /// so the combinator can read them via cap_resolve/cap_reject later.  Per
 /// ES6 §25.4.1.6 the executor may call resolve/reject at any time, even
 /// after the function returns — we don't synchronously invoke anything here.
+///
+/// Implements ES6 §25.4.1.5.1 GetCapabilitiesExecutor Functions:
+///   1. If promiseCapability.[[Resolve]] is not undefined → throw TypeError.
+///   2. If promiseCapability.[[Reject]] is not undefined → throw TypeError.
+///   3. If resolve/reject non-callable → throw TypeError.
+///   4. Otherwise copy resolve/reject into the hole and return.
+fn bool is_callable_tval(TVal v) {
+    if (v.is_lightfunc()) return true;
+    if (v.is_object() && v.get_heapptr() != null) {
+        HObject* o = (HObject*)v.get_heapptr();
+        return o.is_callable();
+    }
+    return false;
+}
+
+fn void promise_throw_typeerror(BuiltinContext* ctx, String msg) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err_e = err_raw) return;
+    HObject* err = err_raw;
+    err.prototype = ctx.heap.type_err_proto;
+    HString* msg_str = builtin_intern_string(ctx.heap, msg);
+    if (msg_str != null) {
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+    }
+    ctx.should_throw = true;
+    ctx.throw_value.set_object(err);
+}
+
 fn void builtin_promise_synthetic_executor(BuiltinContext* ctx) {
     if (ctx.callee_obj == null) return;
     HString* hole_key = builtin_intern_string(ctx.heap, "\xFFhole");
@@ -755,15 +869,41 @@ fn void builtin_promise_synthetic_executor(BuiltinContext* ctx) {
         if (hv.is_object() && hv.get_heapptr() != null) hole = (HObject*)hv.get_heapptr();
     }
     if (hole == null) return;
+
+    // ES6 §25.4.1.5.1 steps 1–2: AlreadyCalled guards (any prior resolve/reject
+    // captured in the hole triggers a TypeError).
+    HString* r_already_key = builtin_intern_string(ctx.heap, "\xFFcap_resolve_tv");
+    HString* j_already_key = builtin_intern_string(ctx.heap, "\xFFcap_reject_tv");
+    if (r_already_key != null) {
+        if (try pv = hole.get_prop(r_already_key)) {
+            if (!pv.is_undefined()) {
+                promise_throw_typeerror(ctx, "executor already called with non-undefined values");
+                return;
+            }
+        }
+    }
+    if (j_already_key != null) {
+        if (try pv = hole.get_prop(j_already_key)) {
+            if (!pv.is_undefined()) {
+                promise_throw_typeerror(ctx, "executor already called with non-undefined values");
+                return;
+            }
+        }
+    }
+
+    // ES6 §25.4.1.5.1 steps 5–6: resolve/reject may be non-callable.
+    // Per the spec the executor itself never throws for non-callable resolve/
+    // reject — it's NewPromiseCapability step 8/9 that throws TypeError after
+    // Construct returns. So we set the slot to whatever the user passed and
+    // let the post-Construct check (in promise_new_capability_full) throw if
+    // it's non-callable.
     if (ctx.argc >= 1) {
         TVal resolve_tv = ctx.regs[ctx.base_reg];
-        HString* r_key = builtin_intern_string(ctx.heap, "\xFFcap_resolve_tv");
-        if (r_key != null) hole.put_prop(r_key, resolve_tv, hobject::PROP_FLAGS_WEC);
+        if (r_already_key != null) hole.put_prop(r_already_key, resolve_tv, hobject::PROP_FLAGS_WEC);
     }
     if (ctx.argc >= 2) {
         TVal reject_tv = ctx.regs[ctx.base_reg + 1];
-        HString* j_key = builtin_intern_string(ctx.heap, "\xFFcap_reject_tv");
-        if (j_key != null) hole.put_prop(j_key, reject_tv, hobject::PROP_FLAGS_WEC);
+        if (j_already_key != null) hole.put_prop(j_already_key, reject_tv, hobject::PROP_FLAGS_WEC);
     }
 }
 
@@ -893,6 +1033,81 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
     val.set_undefined();
     if (ctx.argc >= 1) val = ctx.regs[ctx.base_reg];
 
+    // Determine the constructor C = this value (ES6 §25.4.4.5 step 1).
+    // The fast path applies only when C is the default Promise. For a custom
+    // constructor we must run NewPromiseCapability(C) so the resulting Promise
+    // is owned by C and so things like Promise.resolve.call(fn) trigger fn().
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    bool is_default_promise = this_ctor_val.is_object()
+        && this_ctor_val.get_heapptr() != null
+        && (HObject*)this_ctor_val.get_heapptr() == ctx.heap.promise_ctor;
+    if (!is_default_promise) {
+        // If C is the species Promise itself but we got here somehow, fall
+        // through; else create a capability and use it.
+        HObject*? cap_hole_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try cap_hole = cap_hole_raw) {
+            cap_hole.prototype = ctx.heap.object_proto;
+            if (promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, cap_hole)) {
+                // If x is already a Promise, return it unchanged (per step 2).
+                if (val.is_object() && val.get_heapptr() != null) {
+                    HObject* obj = (HObject*)val.get_heapptr();
+                    if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                        *ctx.result = val;
+                        return;
+                    }
+                }
+                // For non-Promise x: invoke the capability's [[Resolve]]
+                // with `val` per ES6 §25.4.4.5 step 4. The returned Promise from
+                // the constructor is ignored; spec value comes from
+                // promiseCapability.[[Promise]].
+                TVal cap_resolve = promise_hole_get_resolve(ctx.heap, cap_hole);
+                if (cap_resolve.is_object() && cap_resolve.get_heapptr() != null
+                    && ((HObject*)cap_resolve.get_heapptr()).is_callable()) {
+                    HObject*? inner_raw = ctx.heap.alloc_object(hobject::ObjClass.PROMISE);
+                    if (catch err = inner_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* inner = inner_raw;
+                    TVal inner_tv; inner_tv.set_object(inner);
+                    // Hook the capability's resolve to settle `inner`.
+                    HString* promise_key = builtin_intern_string(ctx.heap, "\xFFpromise");
+                    if (promise_key != null) {
+                        TVal cur_p; cur_p.set_object(inner);
+                        HObject* cap_obj = (HObject*)cap_resolve.get_heapptr();
+                        cap_obj.put_prop(promise_key, cur_p, hobject::PROP_FLAGS_WEC);
+                    }
+                    TVal r_args = val;
+                    TVal undef2; undef2.set_undefined();
+                    ctx.heap.call_fn(ctx.vm, cap_resolve, &r_args, 1, undef2);
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        return;
+                    }
+                    ctx.result.set_object(inner);
+                    return;
+                }
+            } else {
+                // ES6 §25.4.1.5 step 7/8: capability is incomplete — throw TypeError.
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err_e = err_raw) {
+                    err_e.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap,
+                        "Promise capability not initialized by constructor");
+                    if (msg_str != null) {
+                        TVal msg_tv; msg_tv.set_string(msg_str);
+                        err_e.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err_e);
+                    return;
+                }
+            }
+        }
+    }
+
     // If already a Promise, return it
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
@@ -929,6 +1144,76 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
     TVal reason;
     reason.set_undefined();
     if (ctx.argc >= 1) reason = ctx.regs[ctx.base_reg];
+
+    // ES6 §25.4.4.4 step 1 — for custom C, run NewPromiseCapability(C).
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    bool is_default_promise = this_ctor_val.is_object()
+        && this_ctor_val.get_heapptr() != null
+        && (HObject*)this_ctor_val.get_heapptr() == ctx.heap.promise_ctor;
+    if (!is_default_promise) {
+        HObject*? cap_hole_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try cap_hole = cap_hole_raw) {
+            cap_hole.prototype = ctx.heap.object_proto;
+            if (promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, cap_hole)) {
+                // Per ES6 §25.4.4.4 step 4: invoke the capability's [[Reject]]
+                // with `reason` and `this=undefined`. The returned Promise from
+                // the constructor is ignored; the outer spec value is from the
+                // call's resolve/reject path. We must surface any throw from
+                // the user-supplied reject so test262 capability-invocation-error
+                // passes.
+                TVal cap_reject = promise_hole_get_reject(ctx.heap, cap_hole);
+                if (cap_reject.is_object() && cap_reject.get_heapptr() != null
+                    && ((HObject*)cap_reject.get_heapptr()).is_callable()) {
+                    TVal r_args = reason;
+                    TVal undef; undef.set_undefined();
+                    TVal rtv = ctx.heap.call_fn(ctx.vm, cap_reject, &r_args, 1, undef);
+                    if (ctx.heap.has_error) {
+                        // Propagate into ctx.should_throw.
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        return;
+                    }
+                    // Use the reject's downstream promise (the one captured by
+                    // the inner Promise.create()) as our result.
+                    HString* promise_key = builtin_intern_string(ctx.heap, "\xFFpromise");
+                    if (promise_key != null && cap_reject.is_object()) {
+                        HObject* cap_obj = (HObject*)cap_reject.get_heapptr();
+                        if (try pv = cap_obj.get_prop(promise_key)) {
+                            TVal res_tv = pv;
+                            ctx.result.set_object((HObject*)res_tv.get_heapptr());
+                            return;
+                        }
+                    }
+                    // Fallback: create a fresh promise and reject it.
+                    HObject*? inner_raw = ctx.heap.alloc_object(hobject::ObjClass.PROMISE);
+                    if (catch err = inner_raw) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                    HObject* inner = inner_raw;
+                    promise_settle(inner, PROMISE_REJECTED, &reason, ctx.heap);
+                    ctx.result.set_object(inner);
+                    return;
+                }
+            } else {
+                // ES6 §25.4.1.5 step 7/8: capability is incomplete — throw TypeError.
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err_e = err_raw) {
+                    err_e.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap,
+                        "Promise capability not initialized by constructor");
+                    if (msg_str != null) {
+                        TVal msg_tv; msg_tv.set_string(msg_str);
+                        err_e.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err_e);
+                    return;
+                }
+            }
+        }
+    }
 
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
@@ -983,6 +1268,7 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
     if (catch err = resolve_raw) return null;
     HObject* resolve_fn = resolve_raw;
     resolve_fn.flags.callable = true;
+    resolve_fn.flags.constructable = false;
     resolve_fn.prototype = heap.function_proto;
     (*resolve_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_CALLBACK;
     // Set length=1, name="" per ES2015 §25.4.1.3.2 (PromiseCapability records)
@@ -1007,6 +1293,7 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
     if (catch err = reject_raw) return null;
     HObject* reject_fn = reject_raw;
     reject_fn.flags.callable = true;
+    reject_fn.flags.constructable = false;
     reject_fn.prototype = heap.function_proto;
     (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_REJECT_CALLBACK;
     if (len_key != null) {
@@ -1129,6 +1416,7 @@ fn HObject*? promise_create_element_callback(Heap* heap, uint builtin_index, HOb
     HObject* cb = fn_raw;
     (*cb.extra_ptr()).func.builtin_fn_index = (int)builtin_index;
     cb.flags.callable = true;
+    cb.flags.constructable = false;
     cb.prototype = heap.function_proto;
 
     HString* len_key = builtin_intern_string(heap, "length");
@@ -1967,6 +2255,16 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             arr.prototype = ctx.heap.array_proto;
             arr_val.set_object(arr);
         }
+        // Per ES6 §25.4.4.1 step 7: even for an empty iterable we must
+        // construct the capability so user-defined ctors get observed.
+        HObject*? hole_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try hole = hole_raw) {
+            hole.prototype = ctx.heap.object_proto;
+            if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole)) {
+                promise_capability_incomplete_throw(ctx);
+                return;
+            }
+        }
         promise_settle(promise, PROMISE_FULFILLED, &arr_val, ctx.heap);
         ctx.result.set_object(promise);
         return;
@@ -1990,14 +2288,13 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     if (try hole = hole_raw) {
         hole.prototype = ctx.heap.object_proto;
         if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole)) {
-            // Fallback: built-in resolve/reject pair bound to `promise`.
-            PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
-            cap_resolve_tv.set_object(cap_fb.resolve_func);
-            cap_reject_tv.set_object(cap_fb.reject_func);
-        } else {
-            cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole);
-            cap_reject_tv = promise_hole_get_reject(ctx.heap, hole);
+            // NewPromiseCapability threw — surface the TypeError here per spec
+            // (the algorithm returns IfAbrupt, not a fallback path).
+            promise_capability_incomplete_throw(ctx);
+            return;
         }
+        cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole);
+        cap_reject_tv = promise_hole_get_reject(ctx.heap, hole);
     } else {
         PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
         cap_resolve_tv.set_object(cap_fb.resolve_func);
@@ -2166,13 +2463,11 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     if (try hole_as = hole_raw_as) {
         hole_as.prototype = ctx.heap.object_proto;
         if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole_as)) {
-            PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
-            cap_resolve_tv.set_object(cap_fb.resolve_func);
-            cap_reject_tv.set_object(cap_fb.reject_func);
-        } else {
-            cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_as);
-            cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_as);
+            promise_capability_incomplete_throw(ctx);
+            return;
         }
+        cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_as);
+        cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_as);
     } else {
         PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
         cap_resolve_tv.set_object(cap_fb.resolve_func);
@@ -2272,13 +2567,11 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     if (try hole_any = hole_raw_any) {
         hole_any.prototype = ctx.heap.object_proto;
         if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole_any)) {
-            PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
-            cap_resolve_tv.set_object(cap_fb.resolve_func);
-            cap_reject_tv.set_object(cap_fb.reject_func);
-        } else {
-            cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_any);
-            cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_any);
+            promise_capability_incomplete_throw(ctx);
+            return;
         }
+        cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_any);
+        cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_any);
     } else {
         PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
         cap_resolve_tv.set_object(cap_fb.resolve_func);
@@ -2492,13 +2785,11 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     if (try hole_race = hole_raw_race) {
         hole_race.prototype = ctx.heap.object_proto;
         if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole_race)) {
-            PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
-            cap_resolve_tv.set_object(cap_fb.resolve_func);
-            cap_reject_tv.set_object(cap_fb.reject_func);
-        } else {
-            cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_race);
-            cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_race);
+            promise_capability_incomplete_throw(ctx);
+            return;
         }
+        cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole_race);
+        cap_reject_tv = promise_hole_get_reject(ctx.heap, hole_race);
     } else {
         PromiseCapability cap_fb = promise_new_capability(ctx.heap, promise);
         cap_resolve_tv.set_object(cap_fb.resolve_func);

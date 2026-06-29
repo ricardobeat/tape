@@ -1000,10 +1000,12 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
     // Layout: callee_reg = func, callee_reg+1 = this, callee_reg+2.. callee_reg+1+nargs = args
     ushort first_arg = callee_reg + 2;
 
-    // If the argument region overlaps with live registers (from an outer call),
-    // move the callee to a free area first.  Otherwise an inner call's arg setup
-    // would clobber live values (e.g. print(add(1,2)) clobbers print in r1).
-    if (first_arg < self.next_reg) {
+    // If the this slot or argument region overlaps with live registers,
+    // move the callee to a free area first.  Otherwise the LDUNDEF for
+    // 'this' (at callee_reg+1) would clobber a live value (e.g. resolve
+    // held in r1 when callee_reg=0 and next_reg=2), and inner call arg
+    // setup would clobber live values for nested calls.
+    if (callee_reg + 1 < self.next_reg) {
         ushort new_callee = self.next_reg;
         self.emit_abc(Opcode.LDREG, (uint)new_callee, (uint)callee_reg, 0);
         callee_reg = new_callee;

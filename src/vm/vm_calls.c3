@@ -1070,8 +1070,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             }
 
             HObject* super_hobj = (HObject*)super_val.get_heapptr();
-            if (super_hobj == null || !super_hobj.is_callable()) {
-                // TypeError: not callable
+            if (super_hobj == null || !super_hobj.is_callable() || !super_hobj.is_constructable()) {
+                // TypeError: not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try err2 = err_raw2) {
@@ -1403,7 +1403,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             }
 
             HObject* hobj = (HObject*)func_val.get_heapptr();
-            if (hobj == null || !hobj.is_callable()) {
+            if (hobj == null || !hobj.is_callable() || !hobj.is_constructable()) {
                 // TypeError: object is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
                 HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
