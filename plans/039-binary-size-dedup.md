@@ -19,23 +19,23 @@ Zero/low risk, first priority. Includes the disassembler compile-time gate
 
 Confirmed unreferenced via grep across `src/`. Delete outright.
 
-- [ ] `src/jit.c3:13-15` `jit_peephole_optimize` — empty body (null check only, no-op)
-- [ ] `src/builtins/function.c3:512-525` `bound_get_data` — unreferenced stub, confirmed dead by two independent audit runs
-- [ ] `src/heap.c3:773-813` `Heap.transition_shape` — unused O(N) variant, superseded
-- [ ] `src/heap.c3:2593-2602` `Heap.free_header_list` — no callers, admitted stub
-- [ ] `src/heap.c3:758-764` `hash_key_ptr` — no callers
-- [ ] `src/hstring.c3:617` `bytes_eq` — no callers
-- [ ] `src/module.c3:150-189` `default_module_normalize` — no callers, logic reimplemented inline in `call_resolve_name`
-- [ ] `src/env.c3:398-411` `env_check_const` — no callers
-- [ ] `src/env.c3:295-318` `env_put_lex` — no callers
-- [ ] `src/bytecode.c3:1055-1262` disassembler (`OPCODE_NAMES`, `disassemble`, `write_*`) — gate behind compile-time feature flag, see item below
+- [x] `src/jit.c3:13-15` `jit_peephole_optimize` — empty body (null check only, no-op) — commit `60a3a24`
+- [x] `src/builtins/function.c3:512-525` `bound_get_data` — unreferenced stub, confirmed dead by two independent audit runs — commit `fcec976`
+- [x] `src/heap.c3:773-813` `Heap.transition_shape` — unused O(N) variant, superseded — commit `5c897a1`
+- [x] `src/heap.c3:2593-2602` `Heap.free_header_list` — no callers, admitted stub — commit `713ccbd`
+- [x] `src/heap.c3:758-764` `hash_key_ptr` — no callers — commit `d7ca077`
+- [x] `src/hstring.c3:617` `bytes_eq` — no callers — commit `cade844`
+- [x] `src/module.c3:150-189` `default_module_normalize` — no callers, logic reimplemented inline in `call_resolve_name` — commit `e4920da`
+- [x] `src/env.c3:398-411` `env_check_const` — no callers — commit `7abd2a9`
+- [x] `src/env.c3:295-318` `env_put_lex` — no callers — commit `7f310c4`
+- [ ] **DEFERRED** `src/bytecode.c3:1055-1262` disassembler (`OPCODE_NAMES`, `disassemble`, `write_*`) — NOT pure dead code. Investigation found it backs real CLI features in `benchmarks/duktape_c3.c3` (`-c`/`--compile-only`, `--format json`, `-t`/`--trace-vm`), not just the trace path. Gating it out of the release build removes user-facing CLI functionality — a product decision, not a mechanical cleanup. Needs a follow-up plan: likely a new build target (e.g. `duktape_c3_debug` with `-D TRACE_VM`) that keeps these flags working, with `$if($feature(TRACE_VM))` gating in `bytecode.c3`/`vm_trace.c3`/`benchmarks/duktape_c3.c3`. Skipped for now per user decision.
 
 For each: grep-confirm zero call sites immediately before deleting (line numbers
 may have drifted since the audit). Build + run `just bench-fast 2` after each
 batch to confirm no regression. Run local test suite (not full test262 — see
 memory: avoid full test262 runs) after the full phase.
 
-## Phase 1, item 10 — Disassembler compile-time gate
+## Phase 1, item 10 — Disassembler compile-time gate (DEFERRED, see above)
 
 `src/bytecode.c3:1055-1262` — 119-entry `OPCODE_NAMES` table + `disassemble`/
 `write_*` functions are gated only by a *runtime* trace flag (sole caller
