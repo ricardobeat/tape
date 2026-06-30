@@ -782,7 +782,19 @@ fn void builtin_promise(BuiltinContext* ctx) {
     exec_args[1] = reject_tv;
     if (heap.call_fn != null && ctx.vm != null) {
         heap.call_fn(ctx.vm, executor, &exec_args[0], 2, ctx.this_val);
-        if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+        if (ctx.heap.has_error) {
+            // ES6 §25.4.3.1 step 10: abrupt completion → call reject
+            TVal err_val = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            TVal undef_this; undef_this.set_undefined();
+            heap.call_fn(ctx.vm, reject_tv, &err_val, 1, undef_this);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return;
+            }
+        }
     }
 
     ctx.result.set_object(promise);
