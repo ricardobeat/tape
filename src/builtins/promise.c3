@@ -540,6 +540,14 @@ fn bool promise_new_capability_full(Heap* heap, void* vm, TVal c_tv, HObject* ho
     TVal exec_tv; exec_tv.set_object(exec_obj);
     TVal result_tv = heap.construct_fn(vm, c_tv, &exec_tv, 1);
     if (heap.has_error) {
+        // The user's constructor threw — per ES6 §25.4.1.5 step 7
+        // "ReturnIfAbrupt(promise)", the error must propagate, NOT be
+        // converted to a generic TypeError. Stash the original error on
+        // the hole so callers can re-throw it.
+        HString* err_key = builtin_intern_string(heap, "\xFFcap_aborterror");
+        if (err_key != null && hole != null) {
+            hole.put_prop(err_key, heap.error_value, hobject::PROP_FLAGS_WEC);
+        }
         heap.has_error = false;
         return false;
     }
@@ -617,6 +625,33 @@ fn void promise_capability_incomplete_throw(BuiltinContext* ctx) {
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
     }
+}
+
+/// Re-throw an abrupt error stashed on a PromiseCapability hole from
+/// `promise_new_capability_full`'s Construct() path. Used by combinator-style
+/// call sites (Promise.resolve.call, etc.) that need to surface the user's
+/// actual exception instead of a generic TypeError.
+fn bool promise_rethrow_stored_abort(BuiltinContext* ctx, HObject* hole) {
+    if (hole == null) return false;
+    HString* err_key = builtin_intern_string(ctx.heap, "\xFFcap_aborterror");
+    if (err_key == null) return false;
+    if (catch err_get = hole.get_prop(err_key)) return false;
+    TVal? err_tv = hole.get_prop(err_key);
+    TVal abort_err;
+    if (try et = err_tv) abort_err = et;
+    if (!abort_err.is_object() || abort_err.get_heapptr() == null) return false;
+    ctx.should_throw = true;
+    ctx.throw_value = abort_err;
+    return true;
+}
+
+/// Throw the right error for an incomplete PromiseCapability — prefer the
+/// user's actual exception (stashed on the hole by `promise_new_capability_full`)
+/// over the generic TypeError. Returns true once the throw flag is set.
+fn bool promise_throw_capability_failure(BuiltinContext* ctx, HObject* hole) {
+    if (promise_rethrow_stored_abort(ctx, hole)) return true;
+    promise_capability_incomplete_throw(ctx);
+    return true;
 }
 
 /// Create a resolve/reject capability object (internal).
@@ -1094,20 +1129,12 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
                     return;
                 }
             } else {
-                // ES6 §25.4.1.5 step 7/8: capability is incomplete — throw TypeError.
-                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err_e = err_raw) {
-                    err_e.prototype = ctx.heap.type_err_proto;
-                    HString* msg_str = builtin_intern_string(ctx.heap,
-                        "Promise capability not initialized by constructor");
-                    if (msg_str != null) {
-                        TVal msg_tv; msg_tv.set_string(msg_str);
-                        err_e.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
-                    }
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err_e);
-                    return;
-                }
+                // ES6 §25.4.1.5 step 7/8: capability is incomplete or
+                // Construct() threw. Use the rethrow-stored-abort helper so
+                // the user's actual exception (if any) takes precedence over
+                // the generic TypeError.
+                promise_throw_capability_failure(ctx, cap_hole);
+                return;
             }
         }
     }
@@ -1201,20 +1228,12 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
                     return;
                 }
             } else {
-                // ES6 §25.4.1.5 step 7/8: capability is incomplete — throw TypeError.
-                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err_e = err_raw) {
-                    err_e.prototype = ctx.heap.type_err_proto;
-                    HString* msg_str = builtin_intern_string(ctx.heap,
-                        "Promise capability not initialized by constructor");
-                    if (msg_str != null) {
-                        TVal msg_tv; msg_tv.set_string(msg_str);
-                        err_e.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
-                    }
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err_e);
-                    return;
-                }
+                // ES6 §25.4.1.5 step 7/8: capability is incomplete or
+                // Construct() threw. Use the rethrow-stored-abort helper so
+                // the user's actual exception (if any) takes precedence over
+                // the generic TypeError.
+                promise_throw_capability_failure(ctx, cap_hole);
+                return;
             }
         }
     }
@@ -2265,7 +2284,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         if (try hole = hole_raw) {
             hole.prototype = ctx.heap.object_proto;
             if (!promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, hole)) {
-                promise_capability_incomplete_throw(ctx);
+                promise_throw_capability_failure(ctx, hole);
                 return;
             }
         }
