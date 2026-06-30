@@ -392,24 +392,6 @@ fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
 ///    0 = not found in lex_env (caller should fall through to env_put)
 ///   -1 = found but not writable (const violation — caller throws TypeError)
 /// This replaces the triple-walk pattern: env_has_lex + env_is_lex_writable + env_put_lex.
-/// Check whether a key is a const binding in the lex chain.
-/// Returns -1 if the key exists and is const, 0 otherwise.
-/// Does NOT write any value.
-fn int env_check_const(EnvRecord* lex_env, void* key) {
-    EnvRecord* cur = lex_env;
-    while (cur != null) {
-        int idx = cur.bindings.find_prop_idx(key);
-        if (idx >= 0) {
-            if (!cur.bindings.get_prop_flags((uint)idx).writable) {
-                return -1;
-            }
-            return 0;
-        }
-        cur = cur.parent;
-    }
-    return 0;
-}
-
 fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     EnvRecord* cur = lex_env;
     while (cur != null) {
