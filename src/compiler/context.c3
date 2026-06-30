@@ -247,6 +247,10 @@ struct CompilerContext {
     ushort last_member_obj_reg;
     ushort last_member_prop_reg;
 
+    /// Set when the current expression used optional chaining (?.).
+    /// Results of optional chains are never valid assignment targets.
+    bool last_was_optional_chain;
+
     /// Property call: the object register to use as 'this' in emit_call.
     /// Set to MAX_REGISTERS when not in a property call.
     ushort call_prop_obj_reg;

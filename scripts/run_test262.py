@@ -93,9 +93,8 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-fields-private|class-static-fields-public|"
     r"class-static-block|"
     # Other unimplemented ES features
-    r"object-rest|optional-chaining|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality|"
-    # Reflect (Proxy machinery) — not implemented
-    r"Reflect\.construct|"
+    r"object-rest|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
+    r"|Reflect\.construct"
     r")\b"
 )
 
@@ -264,6 +263,7 @@ PHASES = [
             "language/expressions/arrow-function",
             "language/expressions/template-literal",
             "language/expressions/tagged-template",
+            "language/expressions/optional-chaining",
         ],
     },
     {

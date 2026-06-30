@@ -191,6 +191,18 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     // Consume the assignment operator
     self.advance()!;
 
+    if (self.last_was_optional_chain) {
+        if (g_last_err_msg[0] == 0) {
+            g_last_err_line = self.lexer.line;
+            g_last_err_col  = self.lexer.col;
+            char[] msg = "Invalid left-hand side in assignment";
+            usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
+            libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
+            g_last_err_msg[copy_len] = 0;
+        }
+        return COMPILE_ERROR~;
+    }
+
     // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
@@ -690,6 +702,9 @@ fn ushort? CompilerContext.unary_expr(&self) {
             self.lhs_mode = true;
             ushort op_inc = self.postfix_expr()!;
             self.lhs_mode = false;
+            if (self.last_was_optional_chain) {
+                return COMPILE_ERROR~;
+            }
             // postfix_expr leaves self.last_was_getvar / self.last_was_member
             // (and the member obj/prop registers) set so we can inspect the
             // LHS shape here. Member takes priority over getvar because for
@@ -731,6 +746,9 @@ fn ushort? CompilerContext.unary_expr(&self) {
             self.lhs_mode = true;
             ushort op_dec = self.postfix_expr()!;
             self.lhs_mode = false;
+            if (self.last_was_optional_chain) {
+                return COMPILE_ERROR~;
+            }
             // See INC case above for why member takes priority over getvar.
             bool dec_was_getvar = self.last_was_getvar;
             uint dec_getvar_name_idx = self.last_getvar_name_idx;
@@ -794,6 +812,9 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 
     TokenType tt = self.peek_type();
     if (tt == TokenType.INC) {
+        if (self.last_was_optional_chain) {
+            return COMPILE_ERROR~;
+        }
         self.advance()!;
         // Save original value and convert to ToNumber (ES5 §11.3.1)
         ushort saved = self.alloc_reg();
@@ -833,6 +854,9 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     }
 
     if (tt == TokenType.DEC) {
+        if (self.last_was_optional_chain) {
+            return COMPILE_ERROR~;
+        }
         self.advance()!;
         // Save original value and convert to ToNumber (ES5 §11.3.1)
         ushort saved = self.alloc_reg();
@@ -869,16 +893,22 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 
 /// Parse call expressions: f(), f(a,b), obj.method(), obj[expr](), tag`...`.
 fn ushort? CompilerContext.call_expr(&self) {
+    self.last_was_optional_chain = false;
     ushort callee = self.member_expr()!;
 
     // If member_expr saved a property object but next token is not a call,
     // free the object register now.
     if (self.call_prop_obj_reg != MAX_REGISTERS
         && !self.check(TokenType.LPAREN)
+        && !self.check(TokenType.OPT_CHAIN)
         && !self.is_next_template()) {
         self.free_reg(self.call_prop_obj_reg);
         self.call_prop_obj_reg = MAX_REGISTERS;
     }
+
+    // Optional chaining short-circuit jump tracking
+    uint[16] opt_jump_addrs;
+    int opt_jump_count = 0;
 
     for (;;) {
         if (self.check(TokenType.LPAREN)) {
@@ -902,6 +932,11 @@ fn ushort? CompilerContext.call_expr(&self) {
                 self.call_prop_obj_reg = MAX_REGISTERS;
             }
         } else if (self.is_next_template()) {
+            // Template literal after optional chain is a SyntaxError (early error)
+            if (opt_jump_count > 0) {
+                self.fail("Template literal after optional chain is not supported");
+                return COMPILE_ERROR~;
+            }
             callee = self.emit_tagged_template(callee)!;
             // See comment in the LPAREN branch above.
             self.last_was_member = false;
@@ -947,14 +982,53 @@ fn ushort? CompilerContext.call_expr(&self) {
             }
             callee = result;
         } else if (self.match(TokenType.OPT_CHAIN)) {
-            // Optional chaining: callee?.prop or callee?.()
-            // Simplified: treat as regular property access for now
+            // Template literal after ?. is a SyntaxError
+            if (self.is_next_template()) {
+                self.fail("Template literal after optional chain is not supported");
+                return COMPILE_ERROR~;
+            }
+
+            // Emit null/undefined check on callee for short-circuit
+            ushort cmp_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDNULL, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)callee, (uint)cmp_reg);
+            uint null_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            self.emit_abc(Opcode.LDUNDEF, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)callee, (uint)cmp_reg);
+            uint undef_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            self.free_reg(cmp_reg);
+
+            opt_jump_addrs[opt_jump_count++] = null_jump;
+            opt_jump_addrs[opt_jump_count++] = undef_jump;
+
+            self.last_was_optional_chain = true;
+
+            // Process the access following ?.
             if (self.check(TokenType.LPAREN)) {
+                // a?.() — clear direct eval flag, optional chain calls are never direct eval
+                self.callee_is_eval = false;
                 callee = self.emit_call(callee)!;
-                // See comment in the LPAREN branch above.
                 self.last_was_member = false;
                 self.last_was_getvar = false;
+            } else if (self.match(TokenType.LBRACKET)) {
+                // a?.[expr] — result is never a referenceable member
+                ushort idx_reg = self.expression()!;
+                self.expect(TokenType.RBRACKET)!;
+
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
+                self.free_reg(idx_reg);
+
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                // Save object for potential this binding (inner or outer call)
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                self.call_prop_obj_reg = callee;
+                callee = result;
             } else {
+                // a?.prop — result is never a referenceable member
                 char[] prop_str = self.read_property_name()!;
                 uint prop_const = self.add_string_constant(prop_str);
 
@@ -964,12 +1038,29 @@ fn ushort? CompilerContext.call_expr(&self) {
                 ushort result = self.alloc_reg();
                 self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)prop_reg);
                 self.free_reg(prop_reg);
-                self.free_reg(callee);
+
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                // Save object for potential this binding (inner or outer call)
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                self.call_prop_obj_reg = callee;
                 callee = result;
             }
         } else {
             break;
         }
+    }
+
+    // Patch optional chaining short-circuit jumps
+    if (opt_jump_count > 0) {
+        uint skip = self.emit_jump(Opcode.JUMP);
+        for (int i = 0; i < opt_jump_count; i++) {
+            self.patch_jump(opt_jump_addrs[i]);
+        }
+        self.emit_abc(Opcode.LDUNDEF, (uint)callee, 0, 0);
+        self.patch_jump(skip);
     }
 
     return callee;
@@ -1533,7 +1624,8 @@ fn ushort? CompilerContext.member_expr(&self) {
             if (self.del_mode || self.lhs_mode) {
                 // LHS / delete mode: keep obj/prop alive for possible PUTPROP/DELPROP
                 // Also set up for potential method call 'this'
-                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
+                TokenType next_tt = self.peek_type();
+                if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
@@ -1545,9 +1637,9 @@ fn ushort? CompilerContext.member_expr(&self) {
                 if (!is_postfix) {
                     self.free_reg(prop_reg);
                 }
-                // If next token is LPAREN or a template, this is a method call.
+                // If next token is LPAREN, OPT_CHAIN, or a template, this is a method call.
                 // Track the object for 'this' setup in emit_call / emit_tagged_template.
-                if (next_tt == TokenType.LPAREN || self.is_next_template()) {
+                if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 } else if (!is_postfix) {
                     self.free_reg(obj);
@@ -1573,7 +1665,8 @@ fn ushort? CompilerContext.member_expr(&self) {
             self.last_member_prop_reg = idx_reg;
 
             if (self.del_mode || self.lhs_mode) {
-                if (self.peek_type() == TokenType.LPAREN || self.is_next_template()) {
+                TokenType next_tt2 = self.peek_type();
+                if (next_tt2 == TokenType.LPAREN || next_tt2 == TokenType.OPT_CHAIN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
@@ -1585,7 +1678,7 @@ fn ushort? CompilerContext.member_expr(&self) {
                 if (!is_postfix) {
                     self.free_reg(idx_reg);
                 }
-                if (next_tt == TokenType.LPAREN || self.is_next_template()) {
+                if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
                     self.call_prop_obj_reg = obj;
                 } else if (!is_postfix) {
                     self.free_reg(obj);

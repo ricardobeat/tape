@@ -61,10 +61,10 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-fields-private|class-static-fields-public|"
     r"class-static-block|"
     r"object-rest|explicit-resource-management|"
-    r"optional-chaining|logical-assignment|resizable-arraybuffer|"
+    r"logical-assignment|resizable-arraybuffer|"
     r"array-grouping|upsert|set-methods|"
     r"symbols-as-weakmap-keys|cross-realm|"
-    r"await-dictionary|"
+    r"await-dictionary"
     r")\b"
 )
 
