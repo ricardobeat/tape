@@ -33,3 +33,4 @@
 | [033-memory-next-steps.md](033-memory-next-steps.md) | 🔄 IN PROGRESS | GC on backward jumps (item 2) done; boxed accessor pairs (item 1) done. Remaining: default-prototype elision |
 | [034-async-await.md](034-async-await.md) | 🔄 PLANNED | Async/await compiler desugaring, Promise state refactor, microtask queue |
 | [035-enforce-strict-mode.md](035-enforce-strict-mode.md) | 🔄 PLANNED | Collapse engine to always-strict: remove `is_strict`/`ACT_FLAG_STRICT`/`is_with`/`WITH` opcode, 4 phases (compile errors → runtime checks → cleanup → runner/docs) |
+| [039-binary-size-dedup.md](039-binary-size-dedup.md) | 🔄 IN PROGRESS | Binary 1.23MB→1.12MB via build flags (082f193); Phase 1: dead code removal + disassembler gate; Phase 2: Map/Set/WeakMap/WeakSet dedup, error-throw helper, compiler/VM dedup (~4-5.5K duplicated lines found in 5-way audit) |
