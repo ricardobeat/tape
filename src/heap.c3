@@ -767,51 +767,6 @@ fn uint hash_key_ptr(void* key) @inline {
 ///
 /// If the current shape already has this key, returns the current shape
 /// (the caller should update the existing slot).
-///
-/// Otherwise, creates a new shape that extends the current one:
-/// copies all existing ShapeProperties and appends the new one.
-fn ushort Heap.transition_shape(&self, ushort cur_shape_id, void* key) {
-    if (cur_shape_id >= self.shape_count || self.shapes[cur_shape_id] == null) {
-        return cur_shape_id;
-    }
-
-    hobject::Shape* cur = self.shapes[cur_shape_id];
-
-    // If the key already exists in the shape chain, no transition needed.
-    // Walk the chain from cur up to root.
-    {
-        hobject::Shape* walk = cur;
-        while (walk != null) {
-            hobject::ShapeProperty* sp = walk.props();
-            for (uint i = 0; i < walk.own_count; i++) {
-                if (sp[i].key == key) return cur_shape_id;
-            }
-            walk = walk.parent_shape;
-        }
-    }
-
-    // Check transition table for existing child shape.
-    ushort existing = self.lookup_transition(cur_shape_id, key);
-    if (existing != SHAPE_ID_NONE) {
-        return existing;
-    }
-
-    // Allocate a new shape that extends the current one.
-    hobject::Shape* ns = hobject::shape_extend(cur, cur_shape_id, key, hobject::PROP_FLAGS_WEC);
-    if (ns == null) return cur_shape_id;
-
-    uint new_id = self.alloc_shape_slot();
-    if (new_id == SHAPE_NONE) {
-        hobject::shape_free(ns, (void*)self);
-        return cur_shape_id;
-    }
-
-    self.shapes[new_id] = ns;
-    // Register this transition for future deduplication.
-    self.insert_transition(cur_shape_id, key, (ushort)new_id);
-    return (ushort)new_id;
-}
-
 /// Transition to a new shape for a property that is KNOWN to be new.
 /// Skips the O(N) chain walk — the caller has already confirmed via
 /// find_prop_idx() that the key does not exist in the object.
