@@ -117,6 +117,8 @@ SKIP_FILES = {
     # Strict-only `this === undefined` at top-level — verifyProperty(this, ...)
     # throws "Object.getOwnPropertyDescriptor called on non-object".
     "built-ins/Map/map.js",
+    # Blocked by verifyProperty(this, ...) — strict-only engine has undefined
+    # `this` at top-level, so getOwnPropertyDescriptor throws.
     "built-ins/Set/set.js",
     "built-ins/WeakMap/weakmap.js",
     "built-ins/WeakSet/weakset.js",
