@@ -2541,21 +2541,6 @@ fn uint Heap.xorshift32(&self) {
 // Internal helpers
 // ============================================================================
 
-/**
- * Walk a doubly-linked HeapHeader list and free every node through the
- * heap's allocator.  The caller must null the list head afterwards.
- */
-fn void Heap.free_header_list(&self, HeapHeader* list) {
-    HeapHeader* cur = list;
-    while (cur != null) {
-        HeapHeader* nxt = cur.next;
-        // In a full implementation this would dispatch on h_type to
-        // free type-specific payloads first.
-        self.free_func(self.heap_udata, cur);
-        cur = nxt;
-    }
-}
-
 // ============================================================================
 // Microtask queue — PromiseJobs job queue
 // ============================================================================
