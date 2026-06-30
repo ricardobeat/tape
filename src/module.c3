@@ -144,50 +144,6 @@ fn ModuleDef* heap_find_loaded_module(Heap* heap, char[] name) {
 // Default module host callbacks
 // ============================================================================
 
-/// Default name resolver: relative path normalization.
-/// "./foo" resolves relative to base_name's directory.
-/// Bare specifiers (no leading "./" or "../") are returned as-is.
-fn char[]? default_module_normalize(char[] base_name, char[] specifier, void* udata) {
-    // Bare specifier (no leading dot) — return as-is
-    if (specifier.len == 0) return specifier;
-    if (specifier[0] != '.') return specifier;
-
-    // Relative specifier — resolve against base_name's directory
-    if (base_name.len == 0) return specifier;
-
-    // Find last '/' in base_name to get directory
-    int last_slash = -1;
-    for (usz i = 0; i < base_name.len; i++) {
-        if (base_name[i] == '/') last_slash = (int)i;
-    }
-
-    if (last_slash < 0) {
-        // No directory in base — resolve against current dir
-        return specifier;
-    }
-
-    // Build: dirname(base_name) + "/" + specifier
-    char[] dir = base_name[:last_slash + 1];
-
-    // Skip leading "./" in specifier
-    char[] rel = specifier;
-    if (rel.len >= 2 && rel[0] == '.' && rel[1] == '/') {
-        rel = rel[2..];
-    }
-
-    // Allocate result: dir + rel
-    usz total = dir.len + rel.len;
-    void* raw = libc::malloc(total + 1);
-    if (raw == null) return MODULE_ERROR~;
-    libc::memcpy(raw, dir.ptr, dir.len);
-    libc::memcpy((char*)raw + dir.len, rel.ptr, rel.len);
-    ((char*)raw)[total] = 0;
-
-    // Return as char[] — caller must free
-    char[] result = ((char*)raw)[:total];
-    return result;
-}
-
 /// Default source reader: read file from disk via libc.
 fn char[]? default_module_read(char[] normalized_name, void* udata) {
     // Null-terminate for fopen
