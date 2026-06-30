@@ -1,36 +1,36 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 238 (Phase 17-20 — Promise.resolve/reject + Map/Set dispatch + async tests)
+**Last Updated:** Session 240 (full run — compiler register-reuse fix + skip list cleanup)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
-## Summary (full run, 2026-06-27)
+## Summary (full run, 2026-07-01)
 
 | Metric | Value |
 |---|---|
 | Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,584 |
-| Total passing | 17,700 |
-| **Overall pass rate (pass/pass+fail+CE)** | **82.0%** |
-| Skipped + CE (not run) | 20,224 |
+| Pass + Fail + CE (executable) | 21,499 |
+| Total passing | 17,896 |
+| **Overall pass rate (pass/pass+fail+CE)** | **83.2%** |
+| Skipped + CE (not run) | 20,309 |
 
-## Per-Phase Status (session 230)
+## Per-Phase Status (session 240)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 684 | 192 | 1297 | 11 |
+| 0: Core VM | 2185 | 682 | 195 | 1297 | 11 |
 | 1: Calling Convention | 426 | 80 | 4 | 339 | 3 |
-| 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 4919 | 849 | 1971 | 27 |
-| 4: Error Handling | 402 | 135 | 47 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5922 | 1147 | 1538 | 6 |
-| 6: Prototype Methods | 4713 | 3116 | 646 | 945 | 7 |
-| 7: ES5 Features | 1035 | 246 | 19 | 749 | 21 |
-| 8: ES5 Built-in Objects | 2747 | 1060 | 192 | 1494 | 1 |
-| 11: Arrow/Templates | 427 | 69 | 28 | 325 | 5 |
+| 2: Basic Operators | 1969 | 1057 | 80 | 825 | 7 |
+| 3: Object System | 7766 | 4913 | 857 | 1971 | 25 |
+| 4: Error Handling | 402 | 137 | 57 | 201 | 7 |
+| 5: Built-in Constructors | 8615 | 5862 | 1209 | 1538 | 6 |
+| 6: Prototype Methods | 4713 | 3134 | 630 | 945 | 4 |
+| 7: ES5 Features | 1035 | 236 | 21 | 770 | 8 |
+| 8: ES5 Built-in Objects | 2747 | 1066 | 186 | 1494 | 1 |
+| 11: Arrow/Templates | 427 | 74 | 23 | 325 | 5 |
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
 | 14: for-of | 751 | 13 | 15 | 719 | 4 |
-| 15: Classes | 8520 | 63 | 158 | 8265 | 34 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 556 | 70 | 978 | 10 |
+| 15: Classes | 8520 | 65 | 156 | 8265 | 34 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 577 | 45 | 982 | 10 |
 | 21: Generators | 619 | 0 | 0 | 619 | 0 |
 
 ## Test Infrastructure
@@ -45,6 +45,8 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+|| 240 | **Compiler register-reuse bug fixed + full test262 rerun** (compiler/expressions.c3, scripts/run_test262.py, scripts/test262_skip.cfg, progress.md). **(1)** Fixed a 2-line compiler bug where `INC_VAR`/`DEC_VAR` in postfix `++`/`--` was emitted with `A=0` — the VM wrote the result to register 0 (first parameter slot), corrupting function params when `counter++` executed before using parameters. Changed `A=0` to `A=operand` (the dead GETVAR result register). Fixes `Map/iterable-calls-set.js`. **(2)** Removed `Map/iterable-calls-set.js` from both skip lists. Corrected categorization of `Set/set.js`, `WeakMap/weakmap.js`, `WeakSet/weakset.js` — those fail for `verifyProperty(this, ...)` at strict-mode top-level, not register reuse. **(3)** Fixed `run_test262.py` early-return mismatch (4 vs 5 values) when an empty phase has all tests skipped. **(4)** Full test262 rerun: 17,896 pass, 3,478 fail, 125 CE — 83.2% pass rate (+1.2% from session 230 baseline). Rosetta 44/44. | +196 pass overall, +1.2% |
+|| 239 | **Phase 17 — Set/Map iteration fixes + compiler register-reuse bug discovered** (set.c3, map.c3, progress.md). **(1)** Set.prototype.keys now aliases Set.prototype.values per ES6 §23.2.3.8 — both are the same function object. **(2)** Set and Map iterators mark themselves exhausted (`target = null`) when `done` becomes true, preventing new entries added after exhaustion from being yielded. Fixes `Set/prototype/values/values-iteration-mutable.js`. **(3)** Map/iterable-calls-set.js blocked by a pre-existing compiler register-reuse bug: `INC_VAR` reuses a parameter register as destination when a function writes to a free variable (e.g. `counter++`) before using its parameters. Added to skip list with rationale. Phase 17: 590 pass, 41 fail (`iterable-calls-set.js` dropped from fails). Rosetta 44/44. | Phase 17: 590 pass, 41 fail |
 | 238 | **Phase 17-20 — Map/Set dispatch through user-overridable adder, Map/Set prototype obj_class, async test runner, abort-error rethrow** (map.c3, set.c3, weakmap.c3, weakset.c3, promise.c3, builtin/core.c3, test_vm_runner/batch_test_vm.c3). Five commits / fixes from session 237 followup. **(1)** rewrote `builtin_map`/`builtin_set`/`builtin_weakmap`/`builtin_weakset` to dispatch the iterable population through the user-overridable `set`/`add` per ES6 §23.1.1.1.5/§23.2.1.1.5 `AddEntriesFromIterable` — previously they wrote directly to internal `array_part` and bypassed any user override on `Map.prototype.set` / `Set.prototype.add`. **(2)** changed `Map.prototype` and `Set.prototype` from `ObjClass.MAP`/`SET` to `ObjClass.OBJECT` so `check_map`/`check_set` guards actually reject the prototype itself — per ES6 the prototype is an ordinary object. **(3)** built-in constructors add `length`+`name` *before* the static methods (resolve/reject/all/race/...) so `Object.getOwnPropertyNames()` returns them as adjacent (length, name) for the property-order test family. **(4)** added missing `doneprintHandle.js` and `drain_microtasks` to the test runner so `flags: [async]` tests with `$DONE()` actually run. **(5)** `Promise.new_capability_full` now stashes the user's constructor exception on the cap-hole (`\xFFcap_aborterror`) so callers like `Promise.resolve.call(fn)` re-throw the actual `Test262Error` instead of a generic "capability not initialized" `TypeError`. **`builtin_promise_resolve_callback`/`reject_callback`** now set `ctx.result` to `undefined` on every early-return path (AlreadyCalled guard, non-PENDING state) so the executor never sees the resolve/reject function itself as the return value — per ES6 §25.4.1.3.x. **Bound function constructable flag** correctly tracks target (ES6 §19.2.1.3 supersedes ES5 §15.3.4.5). Phase 17-20: 468→556 pass (+88, run-to-run variance −10). Phase 5 +39, Phase 0-1 +3. Rosetta 44/44. | Phase 17-20 +88 |
 | 237 | **Phase 17-20 — Promise.resolve/reject + Map/Set NewTarget + element callbacks** (promise.c3, map.c3, set.c3, weakmap.c3, weakset.c3, function.c3, vm_calls.c3, vm_execute.c3, compiler/{expressions,functions,statements}.c3). Five fixes. **(1)** `builtin_promise` now enforces `NewTarget` (ES6 §25.4.3.1 step 1) — `Promise(fn)` throws TypeError instead of silently constructing. **(2)** `builtin_promise_resolve` / `builtin_promise_reject` now look up the constructor from `this_val` and call `NewPromiseCapability(C)`; previously they ignored the `this` slot, so `Promise.resolve.call(fn)` never invoked `fn`. **(3)** Same `NewTarget` check added to `builtin_map` / `builtin_set` / `builtin_weakmap` / `builtin_weakset` per §23.1.1 / §23.2.1 / §23.3.1 / §23.4.1. **(4)** Combinators (`Promise.all` / `race` / `any` / `allSettled`) now propagate NewPromiseCapability TypeErrors as `ReturnIfAbrupt` (the algorithm doesn't fall back to builtin resolve/reject) — was masking the executor-already-called TypeError tests. Also: `builtin_promise_synthetic_executor` now copies the user's resolve/reject into the hole without throwing on undefined (per spec, the spec checks `IsCallable` in `NewPromiseCapability` step 8/9, not inside the executor). **(5)** Function-object `constructable` flag was never set on regular function declarations / expressions — the compiler was relying on `init()` memset to land on `false`. Fixed in three sites: `function_declaration` (normal path + pre-scan path) and `function_expr`. Once the VM's `!is_constructable()` check fired (added in this session), regular `new Foo()` broke; this round-trip restores it. Bound functions now also propagate target constructability (ES6 §19.2.1.3 changed this from ES5 §15.3.4.5). Phase 17-20: 444→468 pass (+24, run-to-run variance −2), Phase 5 +39, Phase 0-1 +3. Rosetta 44/44. | Phase 17-20 +24, Phase 5 +39 |
 | 236 | **Phase 17-20 — allSettled/any deferred resolution** (promise.c3, core.c3). Four new builtin slots (340-343) for `BUILTIN_PROMISE_ALLSETTLED/ANY_{RESOLVE,REJECT}_ELEMENT`. allSettled callbacks create `{status,value/reason}` placeholders at element index and decrement a remaining counter; any callbacks follow first-fulfill-wins (rejected flag repurposed as "settled" guard). Also added thenable handling — when `C.resolve(elem)` returns a non-Promise object with `.then`, coerce via `promise_coerce_thenable` and attach callbacks (or invoke synchronously if the thenable's then is sync). New `promise_attach_thenable_element_callbacks` helper runs the element callback synchronously for sync thenables; async ones attach reactions. Element callbacks drain the microtask queue inline after settling the outer so synchronous tests see the outer's executor-resolve called before the combinator returns. Phase 17-20: 430 → ~441 pass (+11, with run-to-run variance). Rosetta 44/44. | Phase 17-20 +11 |

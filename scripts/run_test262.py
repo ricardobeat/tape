@@ -491,7 +491,7 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     total = len(tests) + skipped
 
     if not tests:
-        return (0, 0, skipped, total)
+        return (0, 0, skipped, total, 0)
 
     workers = [Worker(VM_BINARY, i) for i in range(num_workers)]
     results = []  # (path, "PASS"|"FAIL")
