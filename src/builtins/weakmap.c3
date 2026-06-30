@@ -95,22 +95,22 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
                 return;
             }
             // ES6 §23.3.1 step 7: Get(wm, "set"); must throw/return abruptly.
+            // Use builtins_generic_get which invokes prototype accessors
+            // correctly (per ES5 §8.12.3 / ES2020 §10.1.8.1 OrdinaryGet)
+            // and propagates accessor-throwing to ctx.should_throw.
             TVal wm_tv; wm_tv.set_object(wm);
             HString* set_key = builtin_intern_string(ctx.heap, "set");
             TVal adder;
             adder.set_undefined();
             if (set_key != null) {
-                if (catch err_g = wm.get_prop_proto(set_key)) {
-                    if (ctx.heap.has_error) {
-                        ctx.should_throw = true;
-                        ctx.throw_value = ctx.heap.error_value;
-                        ctx.heap.has_error = false;
-                    }
+                TVal? adder_opt = builtins::builtins_generic_get(wm, set_key, ctx);
+                if (catch err = adder_opt) {
+                    // Thrown — builtins_generic_get already propagated
+                    // the abort to ctx.should_throw. Bail.
                     ctx.result.set_undefined();
                     return;
                 }
-                TVal? adder_opt = wm.get_prop_proto(set_key);
-                if (try av = adder_opt) adder = av;
+                adder = adder_opt;
             }
             bool adder_callable = adder.is_lightfunc() ||
                 (adder.is_object() && adder.get_heapptr() != null &&

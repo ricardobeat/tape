@@ -437,6 +437,51 @@ struct BuiltinContext {
 
 alias BuiltinFunc = fn void(BuiltinContext*);
 
+/// ES5 §8.12.3 [[Get]] / ES2020 §10.1.8.1 OrdinaryGet — for builtins that
+/// need full Get semantics on a property (walks prototype chain, invokes
+/// accessor getters). Returns the resolved TVal, or faults on throw (per
+/// ES2017 §25.4.1.5 step 7 `ReturnIfAbrupt`). A `null`/missing key
+/// returns `undefined` (no fault). Used by Map/Set/WeakMap/WeakSet
+/// constructors per ES6 §23.1.1 / §23.2.1 / §23.3.1 / §23.4.1.
+fn TVal? builtins_generic_get(HObject* obj, HString* key, BuiltinContext* ctx) {
+    if (obj == null || key == null) {
+        TVal undef; undef.set_undefined();
+        return undef;
+    }
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto((void*)key, true);
+    switch (res.kind) {
+        case hobject::PropLookupKind.PROP_DATA:
+            return res.data_val;
+        case hobject::PropLookupKind.PROP_ACCESSOR: {
+            // ES5 §8.12.3 / ES2020 §10.1.8.1 step 6: invoke the accessor's
+            // getter with `this` set to the object where the accessor was
+            // found (not the receiver). For prototype accessors this is
+            // critical — calling the getter with the derived instance as
+            // `this` would trip the common pattern of "if (this is not
+            // <Class>) throw".
+            TVal getter_this;
+            getter_this.set_object(res.acc.this_obj);
+            if (ctx.vm == null) {
+                TVal undef; undef.set_undefined();
+                return undef;
+            }
+            TVal result = ctx.heap.call_fn(ctx.vm, res.acc.accessor_fn, null, 0, getter_this);
+            if (ctx.heap.has_error) {
+                // Propagate the throw into ctx; return fault so callers
+                // using `try`/`catch` can detect.
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return hobject::PROP_NOT_FOUND~;
+            }
+            return result;
+        }
+        default:
+            TVal undef; undef.set_undefined();
+            return undef;
+    }
+}
+
 // ============================================================================
 // Shared helpers
 // ============================================================================

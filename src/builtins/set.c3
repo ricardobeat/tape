@@ -99,22 +99,22 @@ fn void builtin_set(BuiltinContext* ctx) {
                 return;
             }
             // ES6 §23.2.1 step 6: Get(set, "add"); must throw/return abruptly.
+            // Use builtins_generic_get which invokes prototype accessors
+            // correctly (per ES5 §8.12.3 / ES2020 §10.1.8.1 OrdinaryGet)
+            // and propagates accessor-throwing to ctx.should_throw.
             TVal set_tv; set_tv.set_object(set);
             HString* add_key = builtin_intern_string(ctx.heap, "add");
             TVal adder;
             adder.set_undefined();
             if (add_key != null) {
-                if (catch err_g = set.get_prop_proto(add_key)) {
-                    if (ctx.heap.has_error) {
-                        ctx.should_throw = true;
-                        ctx.throw_value = ctx.heap.error_value;
-                        ctx.heap.has_error = false;
-                    }
+                TVal? adder_opt = builtins::builtins_generic_get(set, add_key, ctx);
+                if (catch err = adder_opt) {
+                    // Thrown — builtins_generic_get already propagated
+                    // the abort to ctx.should_throw. Bail.
                     ctx.result.set_undefined();
                     return;
                 }
-                TVal? adder_opt = set.get_prop_proto(add_key);
-                if (try av = adder_opt) adder = av;
+                adder = adder_opt;
             }
             bool adder_callable = adder.is_lightfunc() ||
                 (adder.is_object() && adder.get_heapptr() != null &&

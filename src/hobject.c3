@@ -1743,6 +1743,14 @@ fn AccessorResult HObject.find_accessor_proto(&self, void* key, bool want_getter
     return { .found = false };
 }
 
+/// ES5 §8.12.3 [[Get]] / ES2020 §10.1.8.1 OrdinaryGet.
+/// Walks the prototype chain, invoking accessor getters and returning the
+/// raw value or property-missing. Used by builtins that need full Get
+/// semantics (e.g. Map/Set constructors looking up `set` / `add`).
+fn PropLookupResult HObject.get_with_accessors(&self, void* key) {
+    return self.get_prop_or_accessor_proto(key, true);
+}
+
 /// Maximum prototype chain depth before we assume a cycle / infinite loop.
 const uint MAX_PROTO_DEPTH = 256;
 
