@@ -613,13 +613,6 @@ fn uint utf8_seq_len(char lead) @inline {
     return 1;  // unexpected continuation byte — skip one
 }
 
-/// Compare two byte slices for equality.
-fn bool bytes_eq(char[] a, char[] b) @inline {
-    if (a.len != b.len) { return false; }
-    if (a.len == 0) { return true; }
-    return libc::memcmp(a.ptr, b.ptr, a.len) == 0;
-}
-
 /// Fast integer-to-buffer conversion — writes decimal digits into buf.
 /// Returns the number of bytes written (excluding NUL), or 0 on overflow.
 /// buf must have capacity >= 2 bytes; 21 bytes suffices for any int64.
