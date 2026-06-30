@@ -2918,10 +2918,21 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     proto_pflags.is_accessor = false;
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
-    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-    TVal length_tv;
-    length_tv.set_fastint(1);
-    ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+    // Per ECMA-262 §17 "built-in function objects" Set order: "length", "name".
+    // We must add length+name BEFORE the static methods (resolve, reject, all,
+    // race, allSettled, any) so Object.getOwnPropertyNames() returns them
+    // first, satisfying the property-order test family.
+    {
+        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal length_tv2;
+        length_tv2.set_fastint(1);
+        ctor.put_prop(length_key, length_tv2, hobject::PROP_FLAGS_NWC);
+
+        HString* name_key = builtin_intern_string(heap, "name");
+        HString* name_hstr = builtin_intern_string(heap, "Promise");
+        TVal name_tv; name_tv.set_string(name_hstr);
+        ctor.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
 
     HString* resolve_key = builtin_intern_string(heap, "resolve");
     TVal resolve_tv;
@@ -2966,7 +2977,6 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal promise_val;
     promise_val.set_object(ctor);
-    set_func_ctor_name_length(ctor, heap, "Promise", 1);
     env::env_declare_nonenum(global_env, promise_key, promise_val);
 
     return true;

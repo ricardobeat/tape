@@ -533,8 +533,10 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create Set prototype
-    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.SET);
+    // Create Set prototype (an ordinary object per ES6 §23.2.3 — must NOT
+    // carry the SET ObjClass flag, otherwise set_check() would accept it as
+    // a valid Set and methods like clear() would skip the TypeError guard).
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;

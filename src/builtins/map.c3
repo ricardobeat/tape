@@ -642,8 +642,10 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create Map prototype
-    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.MAP);
+    // Create Map prototype (an ordinary object per ES6 §23.1.3 — must NOT
+    // carry the MAP ObjClass flag, otherwise check_map() would accept it as
+    // a valid Map and methods like .set() would skip the TypeError guard).
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
