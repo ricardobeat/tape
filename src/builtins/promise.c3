@@ -313,6 +313,8 @@ fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
 
     promise_settle(promise, PROMISE_FULFILLED, &value, heap);
     promise_trigger_reactions(promise, heap, ctx.vm);
+    // Per ES6 §25.4.1.3.2: Promise resolve functions return undefined.
+    ctx.result.set_undefined();
 }
 
 fn void builtin_promise_reject_callback(BuiltinContext* ctx) {
@@ -351,6 +353,8 @@ fn void builtin_promise_reject_callback(BuiltinContext* ctx) {
 
     promise_settle(promise, PROMISE_REJECTED, &reason, heap);
     promise_trigger_reactions(promise, heap, ctx.vm);
+    // Per ES6 §25.4.1.3.1: Promise reject functions return undefined.
+    ctx.result.set_undefined();
 }
 
 // Shared [[AlreadyCalled]] flag is held in a per-capability "cell" object

@@ -79,7 +79,7 @@ fn void builtin_set(BuiltinContext* ctx) {
     HObject* set = set_raw;
     set.prototype = ctx.heap.set_proto;
 
-    // If iterable argument, populate set via the @@iterator protocol
+    // If iterable argument, populate set per ES6 §23.2.1.1.5 AddEntriesFromIterable.
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
         if (!arg.is_null() && !arg.is_undefined()) {
@@ -98,6 +98,42 @@ fn void builtin_set(BuiltinContext* ctx) {
                 ctx.result.set_undefined();
                 return;
             }
+            // ES6 §23.2.1 step 6: Get(set, "add"); must throw/return abruptly.
+            TVal set_tv; set_tv.set_object(set);
+            HString* add_key = builtin_intern_string(ctx.heap, "add");
+            TVal adder;
+            adder.set_undefined();
+            if (add_key != null) {
+                if (catch err_g = set.get_prop_proto(add_key)) {
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                    }
+                    ctx.result.set_undefined();
+                    return;
+                }
+                TVal? adder_opt = set.get_prop_proto(add_key);
+                if (try av = adder_opt) adder = av;
+            }
+            bool adder_callable = adder.is_lightfunc() ||
+                (adder.is_object() && adder.get_heapptr() != null &&
+                 ((HObject*)adder.get_heapptr()).is_callable());
+            if (!adder_callable) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "Set.prototype.add is not callable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                }
+                ctx.result.set_undefined();
+                return;
+            }
             HObject* iterable = (HObject*)arg.get_heapptr();
             HString* iter_sym = ensure_iterator_symbol(ctx.heap);
             if (iter_sym == null) { ctx.result.set_undefined(); return; }
@@ -106,20 +142,33 @@ fn void builtin_set(BuiltinContext* ctx) {
                 (iter_fn.is_object() && iter_fn.get_heapptr() != null &&
                  ((HObject*)iter_fn.get_heapptr()).is_callable());
             if (!iter_callable) {
-                // Fall back to simple array-like iteration for backward compat
+                // Array-like fallback path.
                 uint len = array_get_length(iterable, ctx.heap);
                 for (uint i = 0; i < len; i++) {
                     TVal v = array_get_elem(iterable, i, ctx.heap);
                     if (!v.is_undefined()) {
-                        int found = set_find_value(set, v);
-                        if (found < 0) {
-                            set.set_array_idx(set.array_used, v);
+                        TVal[1] adder_args = { v };
+                        TVal set_tv2; set_tv2.set_object(set);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 1, set_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
                         }
                     }
                 }
             } else {
-                // Call iter_fn() to get the iterator
+                // Iterator-based path per ES6 §23.2.1.1.5 AddEntriesFromIterable.
                 TVal iterator = ctx.heap.call_fn(ctx.vm, iter_fn, null, 0, arg);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
                 if (!iterator.is_object() || iterator.get_heapptr() == null) {
                     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                     if (try err = err_raw) {
@@ -145,6 +194,13 @@ fn void builtin_set(BuiltinContext* ctx) {
                         break;
                     }
                     TVal result = ctx.heap.call_fn(ctx.vm, next_fn, null, 0, iterator);
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        ctx.result.set_undefined();
+                        return;
+                    }
                     if (!result.is_object() || result.get_heapptr() == null) break;
                     HObject* res_obj = (HObject*)result.get_heapptr();
                     HString* done_key = builtin_intern_string(ctx.heap, "done");
@@ -164,9 +220,15 @@ fn void builtin_set(BuiltinContext* ctx) {
                         if (try v = vv) { val = v; }
                     }
                     if (!val.is_undefined()) {
-                        int found = set_find_value(set, val);
-                        if (found < 0) {
-                            set.set_array_idx(set.array_used, val);
+                        TVal[1] adder_args = { val };
+                        TVal set_tv2; set_tv2.set_object(set);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 1, set_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
                         }
                     }
                 }

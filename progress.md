@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 236 (Phase 17-20 — allSettled/any deferred resolution)
+**Last Updated:** Session 237 (Phase 17-20 — Promise.resolve/reject + Map.newTarget + element callbacks)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (full run, 2026-06-27)
@@ -17,12 +17,12 @@
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 681 | 195 | 1297 | 12 |
-| 1: Calling Convention | 426 | 81 | 3 | 339 | 3 |
+| 0-1: Core VM | 2185 | 684 | 192 | 1297 | 11 |
+| 1: Calling Convention | 426 | 80 | 4 | 339 | 3 |
 | 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
 | 3: Object System | 7766 | 4919 | 849 | 1971 | 27 |
 | 4: Error Handling | 402 | 135 | 47 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5883 | 1186 | 1538 | 8 |
+| 5: Built-in Constructors | 8615 | 5922 | 1147 | 1538 | 6 |
 | 6: Prototype Methods | 4713 | 3116 | 646 | 945 | 7 |
 | 7: ES5 Features | 1035 | 246 | 19 | 749 | 21 |
 | 8: ES5 Built-in Objects | 2747 | 1060 | 192 | 1494 | 1 |
@@ -30,7 +30,7 @@
 | 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
 | 14: for-of | 751 | 13 | 15 | 719 | 4 |
 | 15: Classes | 8520 | 63 | 158 | 8265 | 34 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 441 | 184 | 978 | 10 |
+| 17-20: Map/Set/Symbol/Promise | 1614 | 468 | 158 | 978 | 10 |
 | 21: Generators | 619 | 0 | 0 | 619 | 0 |
 
 ## Test Infrastructure
@@ -45,6 +45,7 @@
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 237 | **Phase 17-20 — Promise.resolve/reject + Map/Set NewTarget + element callbacks** (promise.c3, map.c3, set.c3, weakmap.c3, weakset.c3, function.c3, vm_calls.c3, vm_execute.c3, compiler/{expressions,functions,statements}.c3). Five fixes. **(1)** `builtin_promise` now enforces `NewTarget` (ES6 §25.4.3.1 step 1) — `Promise(fn)` throws TypeError instead of silently constructing. **(2)** `builtin_promise_resolve` / `builtin_promise_reject` now look up the constructor from `this_val` and call `NewPromiseCapability(C)`; previously they ignored the `this` slot, so `Promise.resolve.call(fn)` never invoked `fn`. **(3)** Same `NewTarget` check added to `builtin_map` / `builtin_set` / `builtin_weakmap` / `builtin_weakset` per §23.1.1 / §23.2.1 / §23.3.1 / §23.4.1. **(4)** Combinators (`Promise.all` / `race` / `any` / `allSettled`) now propagate NewPromiseCapability TypeErrors as `ReturnIfAbrupt` (the algorithm doesn't fall back to builtin resolve/reject) — was masking the executor-already-called TypeError tests. Also: `builtin_promise_synthetic_executor` now copies the user's resolve/reject into the hole without throwing on undefined (per spec, the spec checks `IsCallable` in `NewPromiseCapability` step 8/9, not inside the executor). **(5)** Function-object `constructable` flag was never set on regular function declarations / expressions — the compiler was relying on `init()` memset to land on `false`. Fixed in three sites: `function_declaration` (normal path + pre-scan path) and `function_expr`. Once the VM's `!is_constructable()` check fired (added in this session), regular `new Foo()` broke; this round-trip restores it. Bound functions now also propagate target constructability (ES6 §19.2.1.3 changed this from ES5 §15.3.4.5). Phase 17-20: 444→468 pass (+24, run-to-run variance −2), Phase 5 +39, Phase 0-1 +3. Rosetta 44/44. | Phase 17-20 +24, Phase 5 +39 |
 | 236 | **Phase 17-20 — allSettled/any deferred resolution** (promise.c3, core.c3). Four new builtin slots (340-343) for `BUILTIN_PROMISE_ALLSETTLED/ANY_{RESOLVE,REJECT}_ELEMENT`. allSettled callbacks create `{status,value/reason}` placeholders at element index and decrement a remaining counter; any callbacks follow first-fulfill-wins (rejected flag repurposed as "settled" guard). Also added thenable handling — when `C.resolve(elem)` returns a non-Promise object with `.then`, coerce via `promise_coerce_thenable` and attach callbacks (or invoke synchronously if the thenable's then is sync). New `promise_attach_thenable_element_callbacks` helper runs the element callback synchronously for sync thenables; async ones attach reactions. Element callbacks drain the microtask queue inline after settling the outer so synchronous tests see the outer's executor-resolve called before the combinator returns. Phase 17-20: 430 → ~441 pass (+11, with run-to-run variance). Rosetta 44/44. | Phase 17-20 +11 |
 | 235 | **Phase 17-20 deferred resolution — forEach mutation + Promise combinators** (map.c3, set.c3, promise.c3, core.c3). Two BACKLOG items from the Phase 17-20 plan. **Item 3 — Map/Set forEach mutation safety** (`src/builtins/map.c3`, `src/builtins/set.c3`): `Map.prototype.delete` and `Set.prototype.delete` now mark the entry's slot(s) as undefined rather than shifting down — `array_used` becomes the high-water mark of valid indices, and iteration walks 0..array_used skipping empty slots. The size getter counts non-undefined slots (replacing the old `array_used / 2` packed-array count). Map iterator and Set iterator skip undefined-keyed slots. `Map.set` and `Map` constructor now decref the old value on update (was leaking strings). Passes the three Map mutation tests + four Set mutation tests per ES6 §23.1.3.5 / §23.2.3.6 (deleted-during-foreach, added-during-foreach, deleted-then-readded, revisits-after-delete-re-add). **Item 9 — Promise combinators full deferred resolution** (`src/builtins/promise.c3`, `src/builtins/core.c3`): added four new builtin slots (336–339) for `BUILTIN_PROMISE_ALL/RACE_{RESOLVE,REJECT}_ELEMENT`. Each input Promise gets per-element fulfill/reject callbacks that update a shared state object (remaining count + result array for all, first-settler flag for race). The callbacks carry the shared state via `\xFFstate` / `\xFFidx` hidden properties. New helpers: `promise_create_all_state`, `promise_create_element_callback`, `promise_attach_element_callbacks`. Reactions on element promises use a non-PROMISE downstream so `promise_microtask_after` returns early and the callbacks do their own work via the shared state. Also fixed a pre-existing bug in all four combinators: `obj.get_prop(&idx_tv)` was used to read array elements, but `find_prop_idx` hashes by `void*` key (TVal pointer) — never matching an array's interned-string keys. Switched to `array_get_elem`. **Bonus fix**: result array's cached `array_length` now updates via `array_set_length` after each element write so `arr.length` reports correctly. Phase 17-20: 370 → 430 pass (+60). Rosetta 44/44. | Phase 17-20 +60 |
 | 234 | **B14 — Phase 17-20 Map/Set/Symbol/Promise conformance** (symbol.c3, map.c3, set.c3, weakmap.c3, weakset.c3, promise.c3, heap.c3, vm_property.c3, core.c3). Four commits: (1) Registered 4 missing well-known symbols (species, unscopables, matchAll, asyncIterator) w/ GC roots. (2) Added Symbol.prototype.description ES2019 accessor getter. (3) Fixed Symbol auto-boxing in GETPROP/GETPROPC to invoke accessor getters. (4) Fixed Map/Set/WeakMap/WeakSet check functions throwing TypeError on non-instance. (5) Converted .size to accessor getters, removed manual updates. (6) Map/Set constructors use ES6 @@iterator protocol. (7) Prom.resolve thenable unwrapping. (8) .then handler error propagation + thenable returns. (9) SpeciesConstructor helper + Promise.prototype.then subclassing. (10) Promise.all/race use constructor resolve. Rosetta 44/44. | Foundational |

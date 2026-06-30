@@ -140,7 +140,9 @@ fn void builtin_map(BuiltinContext* ctx) {
     HObject* map = map_raw;
     map.prototype = ctx.heap.map_proto;
 
-    // If iterable argument, populate map via the @@iterator protocol
+    // If iterable argument, populate map per ES6 §23.1.1.1.5 AddEntriesFromIterable.
+    // The spec requires getting `set` (the adder) and calling it as Call(adder, map, k, v)
+    // for each entry so user-overridable .set is observed.
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
         if (!arg.is_null() && !arg.is_undefined()) {
@@ -160,8 +162,45 @@ fn void builtin_map(BuiltinContext* ctx) {
                 ctx.result.set_undefined();
                 return;
             }
+            // ES6 §23.1.1 step 6: Get(map, "set"); must throw/return abruptly.
+            TVal map_tv; map_tv.set_object(map);
+            HString* set_key = builtin_intern_string(ctx.heap, "set");
+            TVal adder;
+            adder.set_undefined();
+            if (set_key != null) {
+                if (catch err_g = map.get_prop_proto(set_key)) {
+                    // Re-throw via ctx.
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                    }
+                    ctx.result.set_undefined();
+                    return;
+                }
+                TVal? adder_opt = map.get_prop_proto(set_key);
+                if (try av = adder_opt) adder = av;
+            }
+            bool adder_callable = adder.is_lightfunc() ||
+                (adder.is_object() && adder.get_heapptr() != null &&
+                 ((HObject*)adder.get_heapptr()).is_callable());
+            if (!adder_callable) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "Map.prototype.set is not callable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                }
+                ctx.result.set_undefined();
+                return;
+            }
+            // Iterate via @@iterator if available, otherwise plain array indexing.
             HObject* iterable = (HObject*)arg.get_heapptr();
-            // Get @@iterator from the iterable
             HString* iter_sym = ensure_iterator_symbol(ctx.heap);
             if (iter_sym == null) { ctx.result.set_undefined(); return; }
             TVal iter_fn = iterable.get_prop_proto(iter_sym)!!;
@@ -169,7 +208,8 @@ fn void builtin_map(BuiltinContext* ctx) {
                 (iter_fn.is_object() && iter_fn.get_heapptr() != null &&
                  ((HObject*)iter_fn.get_heapptr()).is_callable());
             if (!iter_callable) {
-                // Fall back to simple array-like iteration for backward compat
+                // Fall back to simple array-like iteration. Per ES6 §23.1.1.2 SetStatus
+                // step 6: k = Get(next, "key"); v = Get(next, "value"); status = Call(adder, M, k, v).
                 uint len = array_get_length(iterable, ctx.heap);
                 for (uint i = 0; i < len; i++) {
                     TVal pair = array_get_elem(iterable, i, ctx.heap);
@@ -177,21 +217,28 @@ fn void builtin_map(BuiltinContext* ctx) {
                         HObject* pair_obj = (HObject*)pair.get_heapptr();
                         TVal k = array_get_elem(pair_obj, 0, ctx.heap);
                         TVal v = array_get_elem(pair_obj, 1, ctx.heap);
-                        int found = map_find_key(map, k);
-                        if (found >= 0) {
-                            TVal* v_slot = &map.array_part()[(uint)found + 1];
-                            if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
-                            *v_slot = v;
-                        } else {
-                            uint cnt = map.array_used;
-                            map.set_array_idx(cnt, k);
-                            map.set_array_idx(cnt + 1, v);
+                        TVal[2] adder_args = { k, v };
+                        TVal map_tv2; map_tv2.set_object(map);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, map_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
                         }
                     }
                 }
             } else {
-                // Call iter_fn() to get the iterator
+                // Iterator-based path per ES6 §23.1.1.1.5 AddEntriesFromIterable.
                 TVal iterator = ctx.heap.call_fn(ctx.vm, iter_fn, null, 0, arg);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
                 if (!iterator.is_object() || iterator.get_heapptr() == null) {
                     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
                     if (try err = err_raw) {
@@ -217,6 +264,13 @@ fn void builtin_map(BuiltinContext* ctx) {
                         break;
                     }
                     TVal result = ctx.heap.call_fn(ctx.vm, next_fn, null, 0, iterator);
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        ctx.result.set_undefined();
+                        return;
+                    }
                     if (!result.is_object() || result.get_heapptr() == null) break;
                     HObject* res_obj = (HObject*)result.get_heapptr();
                     HString* done_key = builtin_intern_string(ctx.heap, "done");
@@ -240,15 +294,15 @@ fn void builtin_map(BuiltinContext* ctx) {
                         HObject* pair_obj = (HObject*)val_tv.get_heapptr();
                         TVal k = array_get_elem(pair_obj, 0, ctx.heap);
                         TVal v = array_get_elem(pair_obj, 1, ctx.heap);
-                        int found = map_find_key(map, k);
-                        if (found >= 0) {
-                            TVal* v_slot = &map.array_part()[(uint)found + 1];
-                            if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
-                            *v_slot = v;
-                        } else {
-                            uint cnt = map.array_used;
-                            map.set_array_idx(cnt, k);
-                            map.set_array_idx(cnt + 1, v);
+                        TVal[2] adder_args = { k, v };
+                        TVal map_tv2; map_tv2.set_object(map);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, map_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
                         }
                     }
                 }
