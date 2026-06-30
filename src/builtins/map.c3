@@ -493,7 +493,18 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
 
     HObject* target = (*iter.extra_ptr()).iter.target;
     if (target == null) {
-        ctx.result.set_undefined();
+        // Already exhausted — return {value: undefined, done: true}
+        HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = result_raw) { ctx.result.set_undefined(); return; }
+        HObject* result = result_raw;
+        result.prototype = null;
+        TVal undef; undef.set_undefined();
+        HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+        result.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
+        HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+        TVal done_tv; done_tv.set_boolean(true);
+        result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(result);
         return;
     }
 
@@ -547,6 +558,7 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
 
     if (done) {
         value.set_undefined();
+        (*iter.extra_ptr()).iter.target = null;  // mark exhausted
     }
 
     // Create result object: {value, done}

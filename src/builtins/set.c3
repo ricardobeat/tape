@@ -388,7 +388,18 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
 
     HObject* target = (*iter.extra_ptr()).iter.target;
     if (target == null) {
-        ctx.result.set_undefined();
+        // Already exhausted — return {value: undefined, done: true}
+        HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = result_raw) { ctx.result.set_undefined(); return; }
+        HObject* result = result_raw;
+        result.prototype = null;
+        TVal undef; undef.set_undefined();
+        HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+        result.put_prop(value_key, undef, hobject::PROP_FLAGS_WEC);
+        HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+        TVal done_tv; done_tv.set_boolean(true);
+        result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(result);
         return;
     }
 
@@ -441,6 +452,7 @@ fn void builtin_set_iterator_next(BuiltinContext* ctx) {
 
     if (done) {
         value.set_undefined();
+        (*iter.extra_ptr()).iter.target = null;  // mark exhausted — no yielding after done
     }
 
     // Create result object: {value, done}
@@ -557,10 +569,19 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "delete", BUILTIN_SET_PROTO_DELETE)) return false;
     // Add .clear() method
     if (!register_string_proto_method(proto, heap, "clear", BUILTIN_SET_PROTO_CLEAR)) return false;
-    // Add .keys() method
-    if (!register_string_proto_method(proto, heap, "keys", BUILTIN_SET_PROTO_KEYS)) return false;
-    // Add .values() method
+    // Add .values() method (register FIRST so .keys can alias it)
     if (!register_string_proto_method(proto, heap, "values", BUILTIN_SET_PROTO_VALUES)) return false;
+    // .keys() must be the same function object as .values() per ES6 §23.2.3.8
+    {
+        HString* values_key = builtin_intern_string(heap, "values");
+        HString* keys_key = builtin_intern_string(heap, "keys");
+        if (values_key != null && keys_key != null) {
+            PropValue*? values_prop_opt = proto.find_prop(values_key);
+            if (try values_prop = values_prop_opt) {
+                proto.put_prop(keys_key, *values_prop, hobject::PROP_FLAGS_WC);
+            }
+        }
+    }
     // Add .entries() method
     if (!register_string_proto_method(proto, heap, "entries", BUILTIN_SET_PROTO_ENTRIES)) return false;
     // Add .forEach() method
