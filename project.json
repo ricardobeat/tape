@@ -8,7 +8,9 @@
       "type": "executable",
       "sources": [ "src", "benchmarks/duktape_c3.c3" ],
       "opt": "O3",
-      "fp-math": "relaxed"
+      "fp-math": "relaxed",
+      "panic-msg": false,
+      "debug-info": "none"
     },
     "duktape_c3_envstrict": {
       "type": "executable",
