@@ -7,14 +7,6 @@ import duktape::hobject;
 import libc;
 
 // ============================================================================
-// Peephole optimizations
-// ============================================================================
-
-fn void jit_peephole_optimize(CompiledFunction* f) {
-    if (f == null) return;
-}
-
-// ============================================================================
 // GETPROPC2 chain fusion
 // ============================================================================
 
@@ -48,9 +40,6 @@ fn void jit_fuse_getpropc_chains(CompiledFunction* f) {
 /// Called after compilation and before first execution.
 fn void jit_scan(CompiledFunction* f, Heap* h) {
     if (f == null) return;
-
-    // Run peephole optimizations
-    jit_peephole_optimize(f);
 
     // Fuse consecutive GETPROPC chains
     jit_fuse_getpropc_chains(f);
