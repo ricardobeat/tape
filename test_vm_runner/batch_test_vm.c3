@@ -145,9 +145,21 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     // Load simplified isConstructor
     if (exec_js(v, hp, ISCON_HARNESS) != 0) { io::eprintfn("  FAIL: ISCON_HARNESS"); }
 
+    // Load $DONE helper for async tests (tests with `flags: [async]`).
+    char[]? done_src_opt = file::load_temp((String)"test262/harness/doneprintHandle.js");
+    char[] done_src;
+    if (try ds = done_src_opt) {
+        done_src = ds;
+        if (exec_js(v, hp, done_src) != 0) { io::eprintfn("  FAIL: doneprintHandle.js"); }
+    }
+
     int src_rc = exec_js(v, hp, src);
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
+
+    // Drain pending microtasks so async tests (those relying on Promise / .then
+    // reactions) get a chance to run before we read __test262_fail.
+    hp.drain_microtasks(v);
 
     char[] kn = "__test262_fail";
     uint hh = hp.hash_string(kn);
