@@ -287,36 +287,6 @@ fn bool env_declare_lex(EnvRecord* lex_env, void* key, TVal val) @inline {
     return lex_env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
 }
 
-/// Store a binding in the lexical environment chain, creating or updating
-/// in the first record that already has the binding, or in the topmost record
-/// if the binding doesn't exist yet.
-/// Used by PUTVAR for assignments to let/const variables.
-/// Optimized: single find_prop_idx per scope level (not has_prop + is_prop_writable + put_prop).
-fn bool env_put_lex(EnvRecord* lex_env, void* key, TVal val) {
-    EnvRecord* cur = lex_env;
-    while (cur != null) {
-        int idx = cur.bindings.find_prop_idx(key);
-        if (idx >= 0) {
-            if (!cur.bindings.get_prop_flags((uint)idx).writable) {
-                return false;
-            }
-            TVal* pv = &cur.bindings.prop_values()[idx];
-            if (hobject::_active_heap != null) {
-                heap::Heap* h = (heap::Heap*)hobject::_active_heap;
-                if (pv.is_string()) { h.decref_tval(pv); }
-                *pv = val;
-                if (val.is_string()) { void* p = val.get_heapptr(); if (p != null) ((types::HeapHeader*)p).incref(); }
-            } else {
-                *pv = val;
-            }
-            return true;
-        }
-        cur = cur.parent;
-    }
-    // Not found in chain — create in the topmost record
-    return lex_env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
-}
-
 /// Check if a binding exists in the lexical environment chain.
 fn bool env_has_lex(EnvRecord* lex_env, void* key) @inline {
     EnvRecord* cur = lex_env;
