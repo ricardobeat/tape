@@ -509,21 +509,6 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     }
 }
 
-/// Helper for extracting bound function data from internal properties.
-fn void bound_get_data(HObject* bound_obj, TVal* downstream, TVal* bound_this,
-                       TVal* bound_args, uint* bound_argc) {
-    HString* downstream_key = null;
-    HString* this_key = null;
-    {
-        char[50] buf1 = "\\x00bound_downstream";
-        // Use a simple approach — keyed by pointer stored as internal property
-    }
-    // For simplicity, we store bound data in special internal properties.
-    // These are non-enumerable, non-writable, non-configurable properties.
-    HString* key_downstream = null;
-    // We'll use the property table directly via known interned strings
-}
-
 /// Function.prototype.bind(thisArg, ...args)
 ///
 /// Creates a new function that, when called, has its `this` bound to `thisArg`
