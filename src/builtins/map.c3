@@ -330,9 +330,15 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
         if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
         *v_slot = value;
     } else {
-        uint cnt = map.array_used;
+        ushort cnt = map.array_used;
         map.set_array_idx(cnt, key);
         map.set_array_idx(cnt + 1, value);
+        // Force HWM — set_array_idx only counts non-undefined entries,
+        // but Map needs array_used as a high-water mark so iteration
+        // and find_key cover all slots including those with undefined keys.
+        if (map.array_used <= cnt + 1) {
+            map.array_used = (ushort)(cnt + 2);
+        }
     }
 
     // Return the map itself
@@ -341,7 +347,7 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
 
 // ============================================================================
 // Map.prototype.size getter — ES6 §23.1.3.10
-// Counts non-empty entries (since delete marks slots as undefined).
+// Counts non-deleted entries (deleted slots use TAG_DELETED sentinel).
 // ============================================================================
 fn void builtin_map_proto_size_get(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
@@ -350,7 +356,7 @@ fn void builtin_map_proto_size_get(BuiltinContext* ctx) {
     TVal* arr = map.array_part();
     if (arr != null) {
         for (uint i = 0; i + 1 < map.array_used; i += 2) {
-            if (!arr[i].is_undefined()) count++;
+            if (!arr[i].is_deleted()) count++;
         }
     }
     ctx.result.set_fastint((long)count);
@@ -407,8 +413,8 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
         TVal* v_slot = &map.array_part()[(uint)found + 1];
         if (k_slot.is_string()) ctx.heap.decref_tval(k_slot);
         if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
-        k_slot.set_undefined();
-        v_slot.set_undefined();
+        k_slot.set_deleted();
+        v_slot.set_deleted();
 
         ctx.result.set_boolean(true);
     } else {
@@ -498,10 +504,10 @@ fn void builtin_map_iterator_next(BuiltinContext* ctx) {
     TVal value;
     value.set_undefined();
 
-    // Skip over empty (deleted) slots — array_used is high water mark,
-    // and array_part() may contain undefined-keyed slots from deletes.
+    // Skip over deleted slots — array_used is high water mark,
+    // and array_part() may contain TAG_DELETED slots from deletes.
     while (slot_idx < target.array_used && target.array_part() != null &&
-           target.array_part()[slot_idx].is_undefined()) {
+           target.array_part()[slot_idx].is_deleted()) {
         slot_idx += 2;
     }
 
@@ -613,7 +619,7 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
     uint used = map.array_used;
     for (uint i = 0; i + 1 < used; i += 2) {
         TVal key = entries[i];
-        if (key.is_undefined()) continue;  // skip deleted slot
+        if (key.is_deleted()) continue;  // skip deleted slot
         TVal value = entries[i + 1];
 
         TVal[3] args;

@@ -94,7 +94,12 @@ enum TValTag : char {
     LIGHTFUNC,
     /// Pointer to a heap-allocated BigInt (interned HString digit string).
     BIGINT,
+    /// Internal deletion sentinel for Set/Map entry tracking.
+    /// Not a valid ECMAScript value — used to mark array_part slots
+    /// that have been deleted, distinct from stored undefined values.
+    DELETED,
 }
+
 
 /// FASTINT uses 48-bit signed integer range (fits in NaN-box payload).
 const long FASTINT_MIN = -140737488355328L;  // -2^47
@@ -135,6 +140,7 @@ const ulong TAG_LIGHTFUNC  = 0xFFF7;  // embed: func ptr
 const ulong TAG_STRING     = 0xFFF8;  // embed: HString* ptr
 const ulong TAG_OBJECT     = 0xFFF9;  // embed: HObject* ptr
 const ulong TAG_BUFFER     = 0xFFFA;  // embed: buffer ptr
+const ulong TAG_DELETED    = 0xFFFF;  // embed: nothing (Set/Map deletion sentinel)
 
 macro ulong nanbox_encode_tagged(ulong tag, ulong payload) {
     return (tag << 48) | (payload & NANBOX_PAYLOAD_MASK);
@@ -191,6 +197,7 @@ $if USE_NANBOX:
         case TAG_POINTER:    return POINTER;
         case TAG_LIGHTFUNC:  return LIGHTFUNC;
         case TAG_BIGINT:     return BIGINT;
+        case TAG_DELETED:    return DELETED;
         default:             return UNDEFINED;
     }
 $else
@@ -242,6 +249,15 @@ $else
     return self.tag == NULL_VAL;
 $endif
 }
+
+macro bool TVal.is_deleted(&self) {
+$if USE_NANBOX:
+    return self.bits == (TAG_DELETED << 48);
+$else
+    return self.tag == DELETED;
+$endif
+}
+
 
 macro bool TVal.is_boolean(&self) {
 $if USE_NANBOX:
@@ -404,6 +420,15 @@ $if USE_NANBOX:
     self.bits = TAG_UNDEFINED << 48;
 $else
     self.tag     = UNDEFINED;
+    self.pointer = null;
+$endif
+}
+
+macro void TVal.set_deleted(&self) {
+$if USE_NANBOX:
+    self.bits = TAG_DELETED << 48;
+$else
+    self.tag     = DELETED;
     self.pointer = null;
 $endif
 }
