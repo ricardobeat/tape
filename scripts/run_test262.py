@@ -114,6 +114,12 @@ SKIP_FILES = {
     # uses `verifyProperty(this, "Date", ...)`); strict-only engine binds
     # `this` to undefined at the top level, so this throws.
     "built-ins/Date/prop-desc.js",
+    # Strict-only `this === undefined` at top-level — verifyProperty(this, ...)
+    # throws "Object.getOwnPropertyDescriptor called on non-object".
+    "built-ins/Map/map.js",
+    "built-ins/Set/set.js",
+    "built-ins/WeakMap/weakmap.js",
+    "built-ins/WeakSet/weakset.js",
     # B17 — eval-code tests that require sloppy-mode semantics. Our
     # strict-only engine cannot run indirect eval with `var` declarations
     # leaking to the global environment (which is the spec'd behavior in

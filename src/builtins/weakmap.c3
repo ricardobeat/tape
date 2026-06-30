@@ -138,25 +138,22 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
                 (iter_fn.is_object() && iter_fn.get_heapptr() != null &&
                  ((HObject*)iter_fn.get_heapptr()).is_callable());
             if (!iter_callable) {
-                uint len = array_get_length(iterable, ctx.heap);
-                for (uint i = 0; i < len; i++) {
-                    TVal pair = array_get_elem(iterable, i, ctx.heap);
-                    if (pair.is_object() && pair.get_heapptr() != null) {
-                        HObject* pair_obj = (HObject*)pair.get_heapptr();
-                        TVal k = array_get_elem(pair_obj, 0, ctx.heap);
-                        TVal v = array_get_elem(pair_obj, 1, ctx.heap);
-                        TVal[2] adder_args = { k, v };
-                        TVal wm_tv2; wm_tv2.set_object(wm);
-                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, wm_tv2);
-                        if (ctx.heap.has_error) {
-                            ctx.should_throw = true;
-                            ctx.throw_value = ctx.heap.error_value;
-                            ctx.heap.has_error = false;
-                            ctx.result.set_undefined();
-                            return;
-                        }
+                // ES2015 §7.4.1 GetIterator (sync): obj[@@iterator]() throws
+                // TypeError when @@iterator is missing. Newer specs add the
+                // array-like fallback, but V8/SpiderMonkey still throw here.
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "WeakMap: iterable argument is not iterable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
                     }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
                 }
+                ctx.result.set_undefined();
+                return;
             } else {
                 TVal iterator = ctx.heap.call_fn(ctx.vm, iter_fn, null, 0, arg);
                 if (ctx.heap.has_error) {
@@ -326,7 +323,10 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
 // ============================================================================
 
 fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
-    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.WEAKMAP);
+    // ES6 §23.3.3: WeakMap.prototype is an ordinary object — must NOT carry
+    // the WEAKMAP ObjClass flag, otherwise check_weakmap() would accept it
+    // as a valid WeakMap and prototype methods would skip the TypeError guard.
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;
@@ -383,6 +383,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal wm_val;
     wm_val.set_object(ctor);
+    set_func_ctor_name(ctor, heap, "WeakMap");
     env::env_declare_nonenum(global_env, wm_key, wm_val);
 
     return true;
