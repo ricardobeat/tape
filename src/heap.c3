@@ -755,13 +755,6 @@ fn uint Heap.alloc_shape_slot(&self) {
     return id;
 }
 
-fn uint hash_key_ptr(void* key) @inline {
-    uint h = (uint)((usz)key);
-    h ^= h >> 16; h *= 0x85EB_CA6B;
-    h ^= h >> 13; h *= 0xC2B2_AE35;
-    h ^= h >> 16;
-    return h;
-}
 
 /// Transition to a new shape that includes the given property key.
 ///
