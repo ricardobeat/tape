@@ -15,14 +15,10 @@ fn HObject* check_weakmap(BuiltinContext* ctx) {
     return check_collection_class(ctx, hobject::ObjClass.WEAKMAP, "WeakMap.prototype method called on incompatible value");
 }
 
+/// Find the index in array_part where a key matches. Returns -1 if not found.
+/// WeakMap entries are stored as [k0, v0, k1, v1, ...] in array_part.
 fn int weakmap_find_key(HObject* wm, TVal key) {
-    uint count = wm.array_used;
-    for (uint i = 0; i < count; i += 2) {
-        if (same_value_zero(wm.array_part()[i], key)) {
-            return (int)i;
-        }
-    }
-    return -1;
+    return find_in_array_part(wm, key, 2);
 }
 
 // ============================================================================

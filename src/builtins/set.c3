@@ -18,13 +18,7 @@ fn HObject* check_set(BuiltinContext* ctx) {
 /// Find the index in array_part where a value matches. Returns -1 if not found.
 /// Set entries are stored as [v0, v1, ...] in array_part.
 fn int set_find_value(HObject* set, TVal val) {
-    uint count = set.array_used;
-    for (uint i = 0; i < count; i++) {
-        if (same_value_zero(set.array_part()[i], val)) {
-            return (int)i;
-        }
-    }
-    return -1;
+    return find_in_array_part(set, val, 1);
 }
 
 // ============================================================================

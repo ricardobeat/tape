@@ -853,6 +853,23 @@ fn HObject* check_collection_class(BuiltinContext* ctx, hobject::ObjClass want, 
 }
 
 // ============================================================================
+// Array part search helper (shared by Map, Set, WeakMap, WeakSet)
+// ============================================================================
+
+/// Find the index in array_part where a value matches using SameValueZero.
+/// stride=2 for Map/WeakMap (key-value pairs), stride=1 for Set/WeakSet (values).
+/// Returns -1 if not found.
+fn int find_in_array_part(HObject* obj, TVal val, uint stride) {
+    uint count = obj.array_used;
+    for (uint i = 0; i < count; i += stride) {
+        if (same_value_zero(obj.array_part()[i], val)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ============================================================================
 // ToString helper (ES3 ToString for primitive types)
 // ============================================================================
 

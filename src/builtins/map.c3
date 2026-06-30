@@ -79,13 +79,7 @@ fn HObject* check_map(BuiltinContext* ctx) {
 /// Find the index in array_part where a key matches. Returns -1 if not found.
 /// Map entries are stored as [k0, v0, k1, v1, ...] in array_part.
 fn int map_find_key(HObject* map, TVal key) {
-    uint count = map.array_used;
-    for (uint i = 0; i < count; i += 2) {
-        if (same_value_zero(map.array_part()[i], key)) {
-            return (int)i;
-        }
-    }
-    return -1;
+    return find_in_array_part(map, key, 2);
 }
 
 // ============================================================================
