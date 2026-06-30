@@ -825,6 +825,34 @@ fn HString* builtin_intern_string(Heap* heap, char[] data) {
 }
 
 // ============================================================================
+// Collection class check helper (shared by Map, Set, WeakMap, WeakSet)
+// ============================================================================
+
+fn HObject* check_collection_class(BuiltinContext* ctx, hobject::ObjClass want, char[] type_name) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        HObject* obj = (HObject*)this_val.get_heapptr();
+        if (obj.flags.obj_class == want) return obj;
+    }
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, type_name);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        TVal err_val;
+        err_val.set_object(err);
+        ctx.should_throw = true;
+        ctx.throw_value = err_val;
+    }
+    return null;
+}
+
+// ============================================================================
 // ToString helper (ES3 ToString for primitive types)
 // ============================================================================
 

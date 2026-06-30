@@ -12,29 +12,7 @@ import duktape::env;
 // ============================================================================
 
 fn HObject* check_set(BuiltinContext* ctx) {
-    TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        HObject* obj = (HObject*)this_val.get_heapptr();
-        if (obj.flags.obj_class == hobject::ObjClass.SET) return obj;
-    }
-    // TypeError
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap,
-            "Set.prototype method called on incompatible value");
-        if (msg_str != null) {
-            TVal msg_val;
-            msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        }
-        TVal err_val;
-        err_val.set_object(err);
-        ctx.should_throw = true;
-        ctx.throw_value = err_val;
-    }
-    return null;
+    return check_collection_class(ctx, hobject::ObjClass.SET, "Set.prototype method called on incompatible value");
 }
 
 /// Find the index in array_part where a value matches. Returns -1 if not found.
