@@ -1150,7 +1150,8 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
         HObject*? coerced = promise_coerce_thenable(ctx.heap, val, ctx.vm);
         if (catch err_c = coerced) {
             // promise_coerce_thenable returns null for non-thenables — that's valid
-        } else {
+        } else if (coerced != null) {
+            // coerced is non-null → a real Promise wrapper was returned.
             ctx.result.set_object(coerced);
             return;
         }
