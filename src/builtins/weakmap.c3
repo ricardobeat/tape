@@ -78,26 +78,147 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
 
     if (ctx.argc >= 1 && ctx.is_constructor) {
         TVal arg = ctx.regs[ctx.base_reg];
-        if (arg.is_object() && arg.get_heapptr() != null) {
+        if (!arg.is_null() && !arg.is_undefined()) {
+            if (!arg.is_object()) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "WeakMap constructor argument is not an object");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                }
+                ctx.result.set_undefined();
+                return;
+            }
+            // ES6 §23.3.1 step 7: Get(wm, "set"); must throw/return abruptly.
+            TVal wm_tv; wm_tv.set_object(wm);
+            HString* set_key = builtin_intern_string(ctx.heap, "set");
+            TVal adder;
+            adder.set_undefined();
+            if (set_key != null) {
+                if (catch err_g = wm.get_prop_proto(set_key)) {
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                    }
+                    ctx.result.set_undefined();
+                    return;
+                }
+                TVal? adder_opt = wm.get_prop_proto(set_key);
+                if (try av = adder_opt) adder = av;
+            }
+            bool adder_callable = adder.is_lightfunc() ||
+                (adder.is_object() && adder.get_heapptr() != null &&
+                 ((HObject*)adder.get_heapptr()).is_callable());
+            if (!adder_callable) {
+                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try err = err_raw) {
+                    err.prototype = ctx.heap.type_err_proto;
+                    HString* msg_str = builtin_intern_string(ctx.heap, "WeakMap.prototype.set is not callable");
+                    if (msg_str != null) {
+                        TVal msg_val; msg_val.set_string(msg_str);
+                        err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_val, hobject::PROP_FLAGS_WC);
+                    }
+                    ctx.should_throw = true;
+                    ctx.throw_value.set_object(err);
+                }
+                ctx.result.set_undefined();
+                return;
+            }
             HObject* iterable = (HObject*)arg.get_heapptr();
-            uint len = array_get_length(iterable, ctx.heap);
-            for (uint i = 0; i < len; i++) {
-                TVal pair = array_get_elem(iterable, i, ctx.heap);
-                if (pair.is_object() && pair.get_heapptr() != null) {
-                    HObject* pair_obj = (HObject*)pair.get_heapptr();
-                    TVal k = array_get_elem(pair_obj, 0, ctx.heap);
-                    TVal v = array_get_elem(pair_obj, 1, ctx.heap);
-                    if (!k.is_object() || k.get_heapptr() == null) {
+            HString* iter_sym = ensure_iterator_symbol(ctx.heap);
+            if (iter_sym == null) { ctx.result.set_undefined(); return; }
+            TVal iter_fn = iterable.get_prop_proto(iter_sym)!!;
+            bool iter_callable = iter_fn.is_lightfunc() ||
+                (iter_fn.is_object() && iter_fn.get_heapptr() != null &&
+                 ((HObject*)iter_fn.get_heapptr()).is_callable());
+            if (!iter_callable) {
+                uint len = array_get_length(iterable, ctx.heap);
+                for (uint i = 0; i < len; i++) {
+                    TVal pair = array_get_elem(iterable, i, ctx.heap);
+                    if (pair.is_object() && pair.get_heapptr() != null) {
+                        HObject* pair_obj = (HObject*)pair.get_heapptr();
+                        TVal k = array_get_elem(pair_obj, 0, ctx.heap);
+                        TVal v = array_get_elem(pair_obj, 1, ctx.heap);
+                        TVal[2] adder_args = { k, v };
+                        TVal wm_tv2; wm_tv2.set_object(wm);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, wm_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
+                        }
+                    }
+                }
+            } else {
+                TVal iterator = ctx.heap.call_fn(ctx.vm, iter_fn, null, 0, arg);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
+                if (!iterator.is_object() || iterator.get_heapptr() == null) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                HObject* iter_obj = (HObject*)iterator.get_heapptr();
+                HString* next_key = builtin_intern_string(ctx.heap, "next");
+                if (next_key == null) { ctx.result.set_undefined(); return; }
+                while (true) {
+                    TVal next_fn = iter_obj.get_prop_proto(next_key)!!;
+                    if (!next_fn.is_object() || ((HObject*)next_fn.get_heapptr()) == null ||
+                        !((HObject*)next_fn.get_heapptr()).is_callable()) {
+                        break;
+                    }
+                    TVal result = ctx.heap.call_fn(ctx.vm, next_fn, null, 0, iterator);
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
                         ctx.result.set_undefined();
                         return;
                     }
-                    int found = weakmap_find_key(wm, k);
-                    if (found >= 0) {
-                        wm.array_part()[(uint)found + 1] = v;
-                    } else {
-                        uint cnt = wm.array_used;
-                        wm.set_array_idx(cnt, k);
-                        wm.set_array_idx(cnt + 1, v);
+                    if (!result.is_object() || result.get_heapptr() == null) break;
+                    HObject* res_obj = (HObject*)result.get_heapptr();
+                    HString* done_key = builtin_intern_string(ctx.heap, "done");
+                    TVal done_val;
+                    done_val.set_undefined();
+                    if (done_key != null) {
+                        TVal? dv = res_obj.get_prop_proto(done_key);
+                        if (try d = dv) { done_val = d; }
+                    }
+                    if (done_val.is_boolean() && done_val.get_boolean()) break;
+
+                    HString* value_key = builtin_intern_string(ctx.heap, "value");
+                    TVal val_tv;
+                    val_tv.set_undefined();
+                    if (value_key != null) {
+                        TVal? vv = res_obj.get_prop_proto(value_key);
+                        if (try v = vv) { val_tv = v; }
+                    }
+                    if (val_tv.is_object() && val_tv.get_heapptr() != null) {
+                        HObject* pair_obj = (HObject*)val_tv.get_heapptr();
+                        TVal k = array_get_elem(pair_obj, 0, ctx.heap);
+                        TVal v = array_get_elem(pair_obj, 1, ctx.heap);
+                        TVal[2] adder_args = { k, v };
+                        TVal wm_tv2; wm_tv2.set_object(wm);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, wm_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.result.set_undefined();
+                            return;
+                        }
                     }
                 }
             }

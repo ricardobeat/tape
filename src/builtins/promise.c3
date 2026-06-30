@@ -297,15 +297,15 @@ fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
             }
         }
     }
-    if (promise == null) return;
+    if (promise == null) { ctx.result.set_undefined(); return; }
 
     // [[AlreadyCalled]] guard: executor (or combinator) calling resolve then
     // reject must leave the promise settled by the first call only.
-    if (promise_already_called(cell, heap)) return;
+    if (promise_already_called(cell, heap)) { ctx.result.set_undefined(); return; }
     promise_mark_already_called(cell, heap);
 
     uint state = promise_get_state(promise, PROMISE_PENDING);
-    if (state != PROMISE_PENDING) return;
+    if (state != PROMISE_PENDING) { ctx.result.set_undefined(); return; }
 
     TVal value;
     value.set_undefined();
@@ -339,13 +339,13 @@ fn void builtin_promise_reject_callback(BuiltinContext* ctx) {
             }
         }
     }
-    if (promise == null) return;
+    if (promise == null) { ctx.result.set_undefined(); return; }
 
-    if (promise_already_called(cell, heap)) return;
+    if (promise_already_called(cell, heap)) { ctx.result.set_undefined(); return; }
     promise_mark_already_called(cell, heap);
 
     uint state = promise_get_state(promise, PROMISE_PENDING);
-    if (state != PROMISE_PENDING) return;
+    if (state != PROMISE_PENDING) { ctx.result.set_undefined(); return; }
 
     TVal reason;
     reason.set_undefined();
