@@ -60,6 +60,19 @@ verification pass (local tests + targeted bench-fast, not full test262).
    instead of hand-rolling. Use `src/builtins/typedarray.c3` (`builtin_typed_array_shared`)
    as the template — it's already well-factored across 9 array types.
    **Highest risk item** — weak-ref semantics (WeakMap/WeakSet GC interaction) must be preserved exactly.
+   - [x] `check_X()` unified into `check_collection_class()` — commit `4402b9a`
+   - [x] `X_find_key/value()` unified into `find_in_array_part()` — commit `b5cef04`
+   - [x] Constructors (`builtin_map`/`builtin_set`/`builtin_weakmap`/`builtin_weakset`) unified into
+     `coll_construct()` in `core.c3`, parameterized by adder name, `is_pair`, and
+     `allow_array_fallback` (the true axis of the Map/Set-vs-WeakMap/WeakSet fallback divergence —
+     WeakMap/WeakSet throw "iterable argument is not iterable" instead of falling back to
+     array-like iteration, matching V8/SpiderMonkey). Net -476 lines. Also fixed a latent UB bug
+     found during verification: `get_prop_proto(...)!!` force-unwrapped a legitimate
+     `PROP_NOT_FOUND` fault as valid TVal data in unsafe/O3 builds, causing a prior successful
+     construction's stale stack bytes to be misread as a callable `@@iterator` on a later
+     non-iterable argument. Fixed with explicit `try`/`set_undefined` handling. — commit `02de73b`
+   - [ ] `.set/.add/.get/.has/.delete` method bodies — not yet started
+   - [ ] `register_X_constructor()` functions — not yet started
 
 2. **Error-throw boilerplate**, 60-70+ call sites (~700+ lines) across nearly every builtin file
    and `vm_calls.c3`/`vm_property.c3`. Same `alloc_object(ERROR) → set prototype → intern
