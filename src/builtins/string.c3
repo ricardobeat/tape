@@ -1776,8 +1776,8 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
     double count_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (count_d < 0 || math::is_inf(count_d)) {
-        // Throw RangeError
+    if (count_d < 0 || math::is_inf(count_d) || math::is_nan(count_d)) {
+        // Throw RangeError per ES6 §21.1.3.14 step 4.
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
             err.prototype = ctx.heap.range_err_proto;
@@ -1785,8 +1785,8 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
             TVal msg_val; msg_val.set_string(msg);
             HString* msg_key = builtin_intern_string(ctx.heap, "message");
             err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            TVal err_val; err_val.set_object(err);
-            ctx.heap.curr_thread = err;
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
         }
         ctx.result.set_undefined();
         return;
