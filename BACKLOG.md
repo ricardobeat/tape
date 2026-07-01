@@ -30,7 +30,7 @@ Baseline as of Session 227 (2026-06-27):
 
 - [x] **B03** — `fn.caller` and `fn.arguments` throw TypeError. Fixed in session 216: added "caller"/"arguments" cases in GETPROP/GETPROPC lightfunc and function-object branches in `src/vm.c3`. +4 phase 4.
 
-- [ ] **B04** — `new Function("a", "a", "return;")` (duplicate parameter names) crashes with VM_ERROR instead of producing a SyntaxError compile error. Per the strict-only design, duplicate params are rejected at parse time (the `noStrict` test262 path is intended to remain as CE). If we want a clean SyntaxError instead of VM_ERROR, see `src/builtins/function.c3` Function constructor compile path. Estimated: ~15 phase 1 tests remain as CE regardless.
+- [x] **B04** — `new Function("a", "a", "return;")` (duplicate parameter names) crashes with VM_ERROR instead of producing a SyntaxError compile error. Per the strict-only design, duplicate params are rejected at parse time (the `noStrict` test262 path is intended to remain as CE). **Validated already working in session 243**: the Function constructor's `compile_function` returns a fault, the builtin correctly throws SyntaxError via `builtin_throw_no_result_change`, and the exception is catchable (and uncaught when not). No source change required — was a documentation-only fix.
 
 ---
 
@@ -38,7 +38,7 @@ Baseline as of Session 227 (2026-06-27):
 
 - [x] **B05** — `String.prototype.match` failures: missing `.index`/`.input` on non-RegExp result, non-RegExp arg didn't honor ToPrimitive (used `builtin_to_string` instead of `builtin_to_string_vm`), and ES5.1-vs-ES2015 null/undefined handling. Fixed in session 219: added the missing props, switched to `builtin_to_string_vm`, and routed missing/nullish args through `create_regexp_from_string` per ES2015 §21.1.3.10 step 4. Added `test/test_match_fixes.js`.
 
-- [ ] **B06** — `String.prototype.slice` / `String.prototype.substring` called on wrapper objects (`new Boolean(false)`, `new Number(42)`): `String.prototype.slice.call(new Boolean(false), 1)` should call `ToString` on receiver and work. Basic case works; failures are edge cases with `undefined` end argument from hoisted-but-uninitialized `var`. Needs investigation — may be TDZ/hoisting related. Estimated: ~60 phase 6 tests.
+- [x] **B06** — `String.prototype.slice` / `String.prototype.substring` called on wrapper objects (`new Boolean(false)`, `new Number(42)`): `String.prototype.slice.call(new Boolean(false), 1)` should call `ToString` on receiver and work. Basic case works; failures are edge cases with `undefined` end argument from hoisted-but-uninitialized `var`. **Fixed in session 243.** Root cause in `src/builtins/string.c3`: per ES5 §15.5.4.13/§15.5.4.15 step 6, when `end` is undefined the spec says "let end be len", but the code passed `end` through `builtin_to_integer` which returns 0.0 for UNDEFINED, so `slice(1, undefined)` returned `""` instead of `"rue"`. Both `builtin_string_proto_slice` and `builtin_string_proto_substring` now check `is_undefined()` on the end argument and use `len` directly when undefined. ToInteger(NaN) → 0 (per ES5 §9.4) and substring arg-swap behavior preserved. Phase 6: 3134 → 3339 pass (+205). Rosetta 90/95 (5 pre-existing rosetta bugs B24–B28 unchanged). Added `test/test_bug_slice_wrapper.js` (26 assertions).
 
 ---
 

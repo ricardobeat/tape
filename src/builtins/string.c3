@@ -381,7 +381,18 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
     uint len = s_hstr.blen;
 
     double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
-    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+    // Per ES5 §15.5.4.13 step 6: if end is undefined, let end be len.
+    double end_d;
+    if (ctx.argc > 1) {
+        TVal* end_arg = &ctx.regs[ctx.base_reg + 1];
+        if (end_arg.is_undefined()) {
+            end_d = (double)len;
+        } else {
+            end_d = builtin_to_integer(end_arg);
+        }
+    } else {
+        end_d = (double)len;
+    }
 
     // Handle negative start
     int start_i;
@@ -432,7 +443,18 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
     uint len = s_hstr.blen;
 
     double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
-    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+    // Per ES5 §15.5.4.15 step 6: if end is undefined, let end be len.
+    double end_d;
+    if (ctx.argc > 1) {
+        TVal* end_arg = &ctx.regs[ctx.base_reg + 1];
+        if (end_arg.is_undefined()) {
+            end_d = (double)len;
+        } else {
+            end_d = builtin_to_integer(end_arg);
+        }
+    } else {
+        end_d = (double)len;
+    }
 
     uint start = clamp_index(start_d, len);
     uint end = clamp_index(end_d, len);
