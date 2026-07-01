@@ -100,31 +100,7 @@ fn void builtin_map(BuiltinContext* ctx) {
 fn void builtin_map_proto_set(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
-
-    TVal key = ctx.regs[ctx.base_reg];
-    TVal value = ctx.regs[ctx.base_reg + 1];  // undefined if not provided
-
-    int found = map_find_key(map, key);
-    if (found >= 0) {
-        // Update existing entry's value — decref old string value if any.
-        TVal* v_slot = &map.array_part()[(uint)found + 1];
-        if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
-        *v_slot = value;
-    } else {
-        ushort cnt = map.array_used;
-        map.set_array_idx(cnt, key);
-        map.set_array_idx(cnt + 1, value);
-        // Force HWM — set_array_idx only counts non-undefined entries,
-        // but Map needs array_used as a high-water mark so iteration
-        // and find_key cover all slots including those with undefined keys.
-        if (map.array_used <= cnt + 1) {
-            map.array_used = (ushort)(cnt + 2);
-        }
-    }
-
-    // Return the map itself
-    ctx.result.set_object(map);
+    coll_set_entry(ctx, map, 2, false, "", true);
 }
 
 // ============================================================================
@@ -183,25 +159,7 @@ fn void builtin_map_proto_delete(BuiltinContext* ctx) {
     HObject* map = check_map(ctx);
     if (map == null) { ctx.result.set_undefined(); return; }
     if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
-
-    TVal key = ctx.regs[ctx.base_reg];
-    int found = map_find_key(map, key);
-    if (found >= 0) {
-        // Mark slots as undefined rather than shifting — iteration over the
-        // map must skip empty slots but new entries (added during forEach)
-        // must still be visited. array_used stays as high water mark so the
-        // iterator walks the full range.
-        TVal* k_slot = &map.array_part()[(uint)found];
-        TVal* v_slot = &map.array_part()[(uint)found + 1];
-        if (k_slot.is_string()) ctx.heap.decref_tval(k_slot);
-        if (v_slot.is_string()) ctx.heap.decref_tval(v_slot);
-        k_slot.set_deleted();
-        v_slot.set_deleted();
-
-        ctx.result.set_boolean(true);
-    } else {
-        ctx.result.set_boolean(false);
-    }
+    coll_delete(ctx, map, ctx.regs[ctx.base_reg], 2, true);
 }
 
 // ============================================================================

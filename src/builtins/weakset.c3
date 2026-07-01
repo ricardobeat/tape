@@ -39,31 +39,7 @@ fn void builtin_weakset(BuiltinContext* ctx) {
 fn void builtin_weakset_proto_add(BuiltinContext* ctx) {
     HObject* ws = check_weakset(ctx);
     if (ws == null) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
-
-    TVal value = ctx.regs[ctx.base_reg];
-    if (!value.is_object() || value.get_heapptr() == null) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used in weak set");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-        }
-        ctx.result.set_undefined();
-        return;
-    }
-
-    int found = weakset_find_value(ws, value);
-    if (found < 0) {
-        ws.set_array_idx(ws.array_used, value);
-    }
-
-    ctx.result.set_object(ws);
+    coll_add_value(ctx, ws, true, "Invalid value used in weak set", false);
 }
 
 // ============================================================================
@@ -86,21 +62,7 @@ fn void builtin_weakset_proto_delete(BuiltinContext* ctx) {
     HObject* ws = check_weakset(ctx);
     if (ws == null) { ctx.result.set_undefined(); return; }
     if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
-
-    TVal value = ctx.regs[ctx.base_reg];
-    int found = weakset_find_value(ws, value);
-    if (found >= 0) {
-        uint cnt = ws.array_used;
-        for (uint i = (uint)found; i + 1 < cnt; i++) {
-            ws.array_part()[i] = ws.array_part()[i + 1];
-        }
-        ws.array_part()[cnt - 1].set_undefined();
-        ws.array_used = (ushort)(cnt - 1);
-
-        ctx.result.set_boolean(true);
-    } else {
-        ctx.result.set_boolean(false);
-    }
+    coll_delete(ctx, ws, ctx.regs[ctx.base_reg], 1, false);
 }
 
 // ============================================================================

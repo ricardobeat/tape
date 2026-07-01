@@ -1093,6 +1093,112 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
 }
 
 // ============================================================================
+// Collection mutator helpers (shared by Map/Set/WeakMap/WeakSet .set/.add/.delete)
+// ============================================================================
+
+/// Shared body for Map.prototype.set / WeakMap.prototype.set (ES6 §23.1.3.9 / §23.3.3.5).
+/// require_object_key: true for WeakMap (throws "Invalid value used as weak map key"
+/// if the key is not an object), false for Map (any key allowed).
+/// grow_hwm: true for Map (array_used is a high-water mark that must include slots
+/// with undefined keys/values for iteration), false for WeakMap (not iterable, so
+/// set_array_idx's own count is enough — matches original WeakMap behavior exactly).
+fn void coll_set_entry(BuiltinContext* ctx, HObject* coll, uint stride, bool require_object_key,
+                        char[] invalid_key_msg, bool grow_hwm) {
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
+    TVal key = ctx.regs[ctx.base_reg];
+    if (require_object_key && (!key.is_object() || key.get_heapptr() == null)) {
+        coll_throw_no_result_change(ctx, invalid_key_msg);
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal value = ctx.regs[ctx.base_reg + 1];  // undefined if not provided
+    int found = find_in_array_part(coll, key, stride);
+    if (found >= 0) {
+        TVal* v_slot = &coll.array_part()[(uint)found + 1];
+        if (grow_hwm && v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+        *v_slot = value;
+    } else {
+        uint cnt = coll.array_used;
+        coll.set_array_idx(cnt, key);
+        coll.set_array_idx(cnt + 1, value);
+        if (grow_hwm && coll.array_used <= cnt + 1) {
+            coll.array_used = (ushort)(cnt + 2);
+        }
+    }
+    ctx.result.set_object(coll);
+}
+
+/// Shared body for Set.prototype.add / WeakSet.prototype.add (ES6 §23.2.3.1 / §23.4.3.1).
+/// require_object_value: true for WeakSet (throws "Invalid value used in weak set" if
+/// the value is not an object), false for Set (any value allowed).
+/// grow_hwm: true for Set (array_used high-water mark must include undefined slots
+/// for iteration), false for WeakSet (not iterable).
+fn void coll_add_value(BuiltinContext* ctx, HObject* coll, bool require_object_value,
+                        char[] invalid_value_msg, bool grow_hwm) {
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
+    TVal value = ctx.regs[ctx.base_reg];
+    if (require_object_value && (!value.is_object() || value.get_heapptr() == null)) {
+        coll_throw_no_result_change(ctx, invalid_value_msg);
+        ctx.result.set_undefined();
+        return;
+    }
+    int found = find_in_array_part(coll, value, 1);
+    if (found < 0) {
+        uint idx = coll.array_used;
+        coll.set_array_idx(idx, value);
+        if (grow_hwm && coll.array_used <= idx) {
+            coll.array_used = (ushort)(idx + 1);
+        }
+    }
+    ctx.result.set_object(coll);
+}
+
+/// Builds and stores a TypeError on ctx without touching ctx.result (caller sets it).
+/// Used by coll_set_entry/coll_add_value, whose original code left ctx.result
+/// untouched by the alloc_object(ERROR) call itself (only should_throw/throw_value set).
+fn void coll_throw_no_result_change(BuiltinContext* ctx, char[] msg) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
+        if (msg_str != null) {
+            TVal msg_val; msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
+}
+
+/// Shared body for Map/Set.prototype.delete (tombstone: mark deleted, keep slot —
+/// preserves array_used as a high-water mark so live iterators continue correctly)
+/// and WeakMap/WeakSet.prototype.delete (compact: shift subsequent entries down and
+/// shrink array_used — safe since Weak collections are not iterable).
+/// stride=2 for Map/WeakMap (key+value slots), stride=1 for Set/WeakSet (value only).
+fn void coll_delete(BuiltinContext* ctx, HObject* coll, TVal key, uint stride, bool tombstone) {
+    int found = find_in_array_part(coll, key, stride);
+    if (found < 0) { ctx.result.set_boolean(false); return; }
+    if (tombstone) {
+        for (uint i = 0; i < stride; i++) {
+            TVal* slot = &coll.array_part()[(uint)found + i];
+            if (slot.is_string()) ctx.heap.decref_tval(slot);
+            slot.set_deleted();
+        }
+    } else {
+        uint cnt = coll.array_used;
+        for (uint i = (uint)found; i + stride < cnt; i++) {
+            coll.array_part()[i] = coll.array_part()[i + stride];
+        }
+        for (uint i = 0; i < stride; i++) {
+            coll.array_part()[cnt - stride + i].set_undefined();
+        }
+        coll.array_used = (ushort)(cnt - stride);
+    }
+    ctx.result.set_boolean(true);
+}
+
+// ============================================================================
 // ToString helper (ES3 ToString for primitive types)
 // ============================================================================
 

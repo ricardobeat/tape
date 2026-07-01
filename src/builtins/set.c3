@@ -39,23 +39,7 @@ fn void builtin_set(BuiltinContext* ctx) {
 fn void builtin_set_proto_add(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
-
-    TVal value = ctx.regs[ctx.base_reg];
-    int found = set_find_value(set, value);
-    if (found < 0) {
-        ushort idx = set.array_used;
-        set.set_array_idx(idx, value);
-        // Force HWM tracking — set_array_idx only counts non-undefined entries,
-        // but Set needs array_used as a high-water mark so iteration and
-        // find_value cover all slots including those storing undefined.
-        if (set.array_used <= idx) {
-            set.array_used = (ushort)(idx + 1);
-        }
-    }
-
-    // Return the set
-    ctx.result.set_object(set);
+    coll_add_value(ctx, set, false, "", true);
 }
 
 // ============================================================================
@@ -97,19 +81,7 @@ fn void builtin_set_proto_delete(BuiltinContext* ctx) {
     HObject* set = check_set(ctx);
     if (set == null) { ctx.result.set_undefined(); return; }
     if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
-
-    TVal value = ctx.regs[ctx.base_reg];
-    int found = set_find_value(set, value);
-    if (found >= 0) {
-        TVal* slot = &set.array_part()[(uint)found];
-        if (slot.is_string()) ctx.heap.decref_tval(slot);
-        slot.set_deleted();
-        // array_used stays at high water mark; iteration skips deleted slots.
-
-        ctx.result.set_boolean(true);
-    } else {
-        ctx.result.set_boolean(false);
-    }
+    coll_delete(ctx, set, ctx.regs[ctx.base_reg], 1, true);
 }
 
 // ============================================================================

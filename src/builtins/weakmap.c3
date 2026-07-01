@@ -39,36 +39,7 @@ fn void builtin_weakmap(BuiltinContext* ctx) {
 fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
     if (wm == null) { ctx.result.set_undefined(); return; }
-    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
-
-    TVal key = ctx.regs[ctx.base_reg];
-    if (!key.is_object() || key.get_heapptr() == null) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid value used as weak map key");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-        }
-        ctx.result.set_undefined();
-        return;
-    }
-
-    TVal value = ctx.regs[ctx.base_reg + 1];
-    int found = weakmap_find_key(wm, key);
-    if (found >= 0) {
-        wm.array_part()[(uint)found + 1] = value;
-    } else {
-        uint cnt = wm.array_used;
-        wm.set_array_idx(cnt, key);
-        wm.set_array_idx(cnt + 1, value);
-    }
-
-    ctx.result.set_object(wm);
+    coll_set_entry(ctx, wm, 2, true, "Invalid value used as weak map key", false);
 }
 
 // ============================================================================
@@ -108,22 +79,7 @@ fn void builtin_weakmap_proto_delete(BuiltinContext* ctx) {
     HObject* wm = check_weakmap(ctx);
     if (wm == null) { ctx.result.set_undefined(); return; }
     if (ctx.argc < 1) { ctx.result.set_boolean(false); return; }
-
-    TVal key = ctx.regs[ctx.base_reg];
-    int found = weakmap_find_key(wm, key);
-    if (found >= 0) {
-        uint cnt = wm.array_used;
-        for (uint i = (uint)found; i + 2 < cnt; i++) {
-            wm.array_part()[i] = wm.array_part()[i + 2];
-        }
-        wm.array_part()[cnt - 2].set_undefined();
-        wm.array_part()[cnt - 1].set_undefined();
-        wm.array_used = (ushort)(cnt - 2);
-
-        ctx.result.set_boolean(true);
-    } else {
-        ctx.result.set_boolean(false);
-    }
+    coll_delete(ctx, wm, ctx.regs[ctx.base_reg], 2, false);
 }
 
 // ============================================================================
