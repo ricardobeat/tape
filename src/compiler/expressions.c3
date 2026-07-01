@@ -1287,29 +1287,30 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
         str_indices[0] = self.add_string_constant(head_tok.str_value);
         part_count = 1;
 
-        // Compile first expression
+        // Compile first expression, then consume its closing `}` and scan
+        // the following template part (B23 fix: parser-driven close).
         expr_regs[0] = self.expression()!;
         expr_count = 1;
+        self.expect(TokenType.RBRACE)!;
+        Token next_tok = self.lexer.scan_template_after_expr()!;
 
         // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
-        for (;;) {
-            TokenType next_tt = self.peek_type();
-            if (next_tt == TokenType.TEMPLATE_MIDDLE) {
-                Token mid_tok = self.advance()!;
-                str_indices[part_count] = self.add_string_constant(mid_tok.str_value);
-                part_count++;
+        while (next_tok.type == TokenType.TEMPLATE_MIDDLE) {
+            str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+            part_count++;
 
-                expr_regs[expr_count] = self.expression()!;
-                expr_count++;
-            } else if (next_tt == TokenType.TEMPLATE_TAIL) {
-                Token tail_tok = self.advance()!;
-                str_indices[part_count] = self.add_string_constant(tail_tok.str_value);
-                part_count++;
-                break;
-            } else {
-                return COMPILE_ERROR~;
-            }
+            expr_regs[expr_count] = self.expression()!;
+            expr_count++;
+
+            self.expect(TokenType.RBRACE)!;
+            next_tok = self.lexer.scan_template_after_expr()!;
         }
+
+        if (next_tok.type != TokenType.TEMPLATE_TAIL) {
+            return COMPILE_ERROR~;
+        }
+        str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+        part_count++;
     } else {
         return COMPILE_ERROR~;
     }
@@ -2300,8 +2301,16 @@ fn ushort? CompilerContext.primary_expr(&self) {
             ushort result_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)result_reg, head_idx));
 
-            // Parse the expression inside ${...}
+            // Parse the expression inside ${...}. The closing `}` will be a
+            // plain RBRACE token (B23 fix: the parser, not the lexer, owns
+            // the substitution's brace boundary).
             ushort expr_reg = self.expression()!;
+
+            // Consume the closing `}` and scan the next template part. This
+            // produces a TEMPLATE_MIDDLE (more substitutions follow) or a
+            // TEMPLATE_TAIL (template is complete).
+            self.expect(TokenType.RBRACE)!;
+            Token next_tok = self.lexer.scan_template_after_expr()!;
 
             // Concatenate: result = result + expr  (ADD handles string coercion)
             {
@@ -2313,49 +2322,47 @@ fn ushort? CompilerContext.primary_expr(&self) {
             }
 
             // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
-            for (;;) {
-                TokenType next_tt = self.peek_type();
-                if (next_tt == TokenType.TEMPLATE_MIDDLE) {
-                    Token mid_tok = self.advance()!;
-                    uint mid_idx = self.add_string_constant(mid_tok.str_value);
-                    ushort mid_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)mid_reg, mid_idx));
+            while (next_tok.type == TokenType.TEMPLATE_MIDDLE) {
+                uint mid_idx = self.add_string_constant(next_tok.str_value);
+                ushort mid_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)mid_reg, mid_idx));
 
-                    // Concatenate the middle text
-                    ushort concat_reg2 = self.alloc_reg();
-                    self.emit_abc(Opcode.ADD, (uint)concat_reg2, (uint)result_reg, (uint)mid_reg);
-                    self.free_reg(result_reg);
-                    self.free_reg(mid_reg);
-                    result_reg = concat_reg2;
+                // Concatenate the middle text
+                ushort concat_reg2 = self.alloc_reg();
+                self.emit_abc(Opcode.ADD, (uint)concat_reg2, (uint)result_reg, (uint)mid_reg);
+                self.free_reg(result_reg);
+                self.free_reg(mid_reg);
+                result_reg = concat_reg2;
 
-                    // Parse the next expression
-                    ushort next_expr_reg = self.expression()!;
+                // Parse the next expression; consume its closing `}` and
+                // scan the following template part.
+                ushort next_expr_reg = self.expression()!;
+                self.expect(TokenType.RBRACE)!;
+                next_tok = self.lexer.scan_template_after_expr()!;
 
-                    // Concatenate expression
-                    ushort concat_reg3 = self.alloc_reg();
-                    self.emit_abc(Opcode.ADD, (uint)concat_reg3, (uint)result_reg, (uint)next_expr_reg);
-                    self.free_reg(next_expr_reg);
-                    self.free_reg(result_reg);
-                    result_reg = concat_reg3;
-                } else if (next_tt == TokenType.TEMPLATE_TAIL) {
-                    Token tail_tok = self.advance()!;
-                    uint tail_idx = self.add_string_constant(tail_tok.str_value);
-                    ushort tail_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)tail_reg, tail_idx));
-
-                    // Concatenate the tail text
-                    ushort concat_reg4 = self.alloc_reg();
-                    self.emit_abc(Opcode.ADD, (uint)concat_reg4, (uint)result_reg, (uint)tail_reg);
-                    self.free_reg(result_reg);
-                    self.free_reg(tail_reg);
-                    result_reg = concat_reg4;
-
-                    break;
-                } else {
-                    // Expected TEMPLATE_MIDDLE or TEMPLATE_TAIL
-                    return COMPILE_ERROR~;
-                }
+                // Concatenate expression
+                ushort concat_reg3 = self.alloc_reg();
+                self.emit_abc(Opcode.ADD, (uint)concat_reg3, (uint)result_reg, (uint)next_expr_reg);
+                self.free_reg(next_expr_reg);
+                self.free_reg(result_reg);
+                result_reg = concat_reg3;
             }
+
+            if (next_tok.type != TokenType.TEMPLATE_TAIL) {
+                // Expected TEMPLATE_MIDDLE or TEMPLATE_TAIL
+                return COMPILE_ERROR~;
+            }
+
+            uint tail_idx = self.add_string_constant(next_tok.str_value);
+            ushort tail_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)tail_reg, tail_idx));
+
+            // Concatenate the tail text
+            ushort concat_reg4 = self.alloc_reg();
+            self.emit_abc(Opcode.ADD, (uint)concat_reg4, (uint)result_reg, (uint)tail_reg);
+            self.free_reg(result_reg);
+            self.free_reg(tail_reg);
+            result_reg = concat_reg4;
 
             return result_reg;
         }

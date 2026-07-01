@@ -28,9 +28,6 @@ faultdef NOT_A_KEYWORD;
 /// Maximum size for the string escape-processing buffer.
 const uint STRING_BUF_SIZE = 65536;
 
-/// Maximum nesting depth for template literals.
-const uint MAX_TEMPLATE_DEPTH = 16;
-
 // ============================================================================
 // Token types
 // ============================================================================
@@ -387,12 +384,6 @@ fn uint encode_utf8_to_buf(char[STRING_BUF_SIZE]* buf, uint offset, uint cp) {
 // Lexer state
 // ============================================================================
 
-/// Template literal parsing state.
-enum TemplateState : char {
-    NONE,       // Not inside a template literal
-    IN_EXPR,    // Inside ${...} expression of a template literal
-}
-
 struct Lexer {
     char[] source;
     uint pos;
@@ -408,16 +399,6 @@ struct Lexer {
     /// True if a line terminator was skipped between the previous and next token.
     bool seen_line_term;
     void* heap;
-
-    /// Template literal tracking
-    TemplateState template_state;
-    int template_brace_balance;
-
-    /// Stack for nested template brace balances.
-    /// When a backtick is found inside a template expression,
-    /// the current brace_balance is pushed and restored on return.
-    uint[MAX_TEMPLATE_DEPTH] template_balance_stack;
-    uint template_balance_stack_depth;
 
     char[256] ident_buf;
 }
@@ -440,7 +421,6 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.strict_mode = true;
     lex.seen_line_term = false;
     lex.heap = heap;
-    lex.template_balance_stack_depth = 0;
     return lex;
 }
 
@@ -1636,8 +1616,6 @@ fn Token? Lexer.scan_template_head(&self) {
     if (end_char == '`') {
         // No substitutions — this is a simple string template
         self.advance_char(); // consume closing backtick
-        self.template_state = TemplateState.NONE;
-        self.template_brace_balance = 0;
         Token tok = make_token(TokenType.STRING, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
@@ -1649,8 +1627,6 @@ fn Token? Lexer.scan_template_head(&self) {
         // Template expression start: "${"
         self.advance_char(); // $
         self.advance_char(); // {
-        self.template_state = TemplateState.IN_EXPR;
-        self.template_brace_balance = 1;
         Token tok = make_token(TokenType.TEMPLATE_HEAD, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
@@ -1679,16 +1655,6 @@ fn Token? Lexer.scan_template_after_expr(&self) {
     if (end_char == '`') {
         // End of template literal
         self.advance_char(); // consume closing backtick
-        if (self.template_balance_stack_depth > 0) {
-            // Return to outer template expression
-            self.template_balance_stack_depth--;
-            self.template_brace_balance = (int)self.template_balance_stack[self.template_balance_stack_depth];
-            self.template_state = TemplateState.IN_EXPR;
-        } else {
-            // Outermost template closed
-            self.template_state = TemplateState.NONE;
-            self.template_brace_balance = 0;
-        }
         Token tok = make_token(TokenType.TEMPLATE_TAIL, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
@@ -1700,8 +1666,6 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         // Another template expression: "${"
         self.advance_char(); // $
         self.advance_char(); // {
-        self.template_state = TemplateState.IN_EXPR;
-        self.template_brace_balance = 1;
         Token tok = make_token(TokenType.TEMPLATE_MIDDLE, start_line, start_col);
         tok.str_value = content;
         tok.str_owns_memory = false;
@@ -1767,50 +1731,6 @@ fn Token? Lexer.next_token(&self) {
     }
 
     char c = self.peek_char();
-
-    // In template expression mode, intercept '{' and '}' for brace tracking
-    if (self.template_state == TemplateState.IN_EXPR) {
-        if (c == '{') {
-            self.template_brace_balance++;
-            self.advance_char();
-            Token tok = make_token(TokenType.LBRACE, self.line, self.col);
-            self.current = tok;
-            return tok;
-        }
-        if (c == '}') {
-            if (self.template_brace_balance > 1) {
-                self.template_brace_balance--;
-                self.advance_char();
-                Token tok = make_token(TokenType.RBRACE, self.line, self.col);
-                self.current = tok;
-                return tok;
-            }
-            // Balance is 1 — this '}' closes the template expression
-            self.template_brace_balance = 0;
-            self.advance_char(); // consume '}'
-            // Now scan the next template part
-            Token tok = self.scan_template_after_expr()!;
-            self.current = tok;
-            return tok;
-        }
-        // Nested backtick — start a new template inside the expression
-        if (c == '`') {
-            if (self.template_balance_stack_depth < MAX_TEMPLATE_DEPTH) {
-                self.template_balance_stack[self.template_balance_stack_depth] = (uint)self.template_brace_balance;
-                self.template_balance_stack_depth++;
-            }
-            Token tok = self.scan_template_head()!;
-            // If the inner template was simple (no ${}), scan_template_head
-            // closed it and set state to NONE — restore outer expression state.
-            if (self.template_state == TemplateState.NONE && self.template_balance_stack_depth > 0) {
-                self.template_balance_stack_depth--;
-                self.template_brace_balance = (int)self.template_balance_stack[self.template_balance_stack_depth];
-                self.template_state = TemplateState.IN_EXPR;
-            }
-            self.current = tok;
-            return tok;
-        }
-    }
 
     // Number: starts with a digit, or . followed by a digit
     if (is_digit(c) || (c == '.' && self.remaining() >= 2 && is_digit(self.peek_char_at(1)))) {
