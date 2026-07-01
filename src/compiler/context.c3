@@ -658,7 +658,22 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             // encountered (a new basic block begins — we cannot prove rA dead on all
             // incoming edges).
             int sbx = self.code[i + 1].get_sbc();
-            int fused_off = sbx + 1;
+            // Bridge-pattern fix (B23/B26): if the if_false at i+1 targets another
+            // if_false/if_true (an "and-continuation" bridge), the JMP_Nxx must jump
+            // PAST the bridge to the next real branch start — otherwise the bridge's
+            // IF_FALSE reads a stale `rA` left over from the previous iteration
+            // (the JMP_Nxx skips the `LE` that would have refreshed rA).
+            // The bridge is at slot i+2+sbx; if it's an IF_FALSE/IF_TRUE, take its
+            // sbx into the fused offset.
+            int bridge_sbx = 0;
+            uint bridge_slot = (uint)((int)i + 2 + sbx);
+            if (bridge_slot < self.code_count) {
+                Opcode bop = self.code[bridge_slot].op;
+                if (bop == Opcode.IF_FALSE || bop == Opcode.IF_TRUE) {
+                    bridge_sbx = self.code[bridge_slot].get_sbc();
+                }
+            }
+            int fused_off = sbx + 1 + bridge_sbx + (bridge_sbx != 0 ? 1 : 0);
 
             // (a) fall-through scan from i+2: check rA is dead on the sequential path.
             // At each jump target encountered, also verify rA is dead starting from
