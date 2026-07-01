@@ -402,10 +402,19 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             self.emit_abc(Opcode.LDREG, (uint)left, (uint)result_reg, 0);
             self.free_reg(result_reg);
         }
-        // If LHS was resolved via GETVAR, write back to environment.
-        // PUTVAR clears the source register, so copy to a temp first
-        // so the result survives the clobber.
-        if (lhs_was_getvar) {
+        // If LHS was a member expression, write the new value back to the
+        // property via PUTPROP. `left` (== result_reg in the member case)
+        // holds the new value. This is what makes `obj.prop += rhs` and
+        // `arr[i] += rhs` actually persist. The PUTPROP path takes
+        // precedence over any stale `lhs_was_getvar` from an inner
+        // identifier resolution (e.g. `globalC[0] += 5`).
+        if (lhs_was_member) {
+            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)left);
+            self.free_reg(lhs_member_prop);
+            self.free_reg(lhs_member_obj);
+        } else if (lhs_was_getvar) {
+            // PUTVAR clears the source register, so copy to a temp first
+            // so the result survives the clobber.
             ushort tmp = self.alloc_reg();
             self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
             self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
