@@ -18,9 +18,21 @@ fn ushort? CompilerContext.expression(&self) {
     ushort result = self.assignment_expr()!;
 
     // Handle comma operator: evaluate each, keep last
+    // Comma discards References — clear call_prop_obj_reg after each operand,
+    // including the rightmost one (comma always returns a value, not a Reference).
     while (self.match(TokenType.COMMA)) {
         self.free_reg(result);
+        // Discard left operand's reference
+        if (self.call_prop_obj_reg != MAX_REGISTERS) {
+            self.free_reg(self.call_prop_obj_reg);
+            self.call_prop_obj_reg = MAX_REGISTERS;
+        }
         result = self.assignment_expr()!;
+        // Discard rightmost operand's reference too
+        if (self.call_prop_obj_reg != MAX_REGISTERS) {
+            self.free_reg(self.call_prop_obj_reg);
+            self.call_prop_obj_reg = MAX_REGISTERS;
+        }
     }
 
     return result;
@@ -897,8 +909,10 @@ fn ushort? CompilerContext.call_expr(&self) {
     ushort callee = self.member_expr()!;
 
     // If member_expr saved a property object but next token is not a call,
-    // free the object register now.
+    // free the object register now. Inside parenthesized expressions, defer
+    // this decision to the paren handler (which sees what follows the parens).
     if (self.call_prop_obj_reg != MAX_REGISTERS
+        && !self.inside_parens
         && !self.check(TokenType.LPAREN)
         && !self.check(TokenType.OPT_CHAIN)
         && !self.is_next_template()) {
@@ -959,7 +973,7 @@ fn ushort? CompilerContext.call_expr(&self) {
             self.free_reg(prop_reg);
 
             // If next token is a call, keep the object alive for 'this'
-            if (self.check(TokenType.LPAREN) || self.is_next_template()) {
+            if (self.check(TokenType.LPAREN) || self.check(TokenType.OPT_CHAIN) || self.is_next_template()) {
                 self.call_prop_obj_reg = callee;
             } else {
                 self.free_reg(callee);
@@ -975,7 +989,7 @@ fn ushort? CompilerContext.call_expr(&self) {
             self.free_reg(idx_reg);
 
             // If next token is a call, keep the object alive for 'this'
-            if (self.check(TokenType.LPAREN)) {
+            if (self.check(TokenType.LPAREN) || self.check(TokenType.OPT_CHAIN)) {
                 self.call_prop_obj_reg = callee;
             } else {
                 self.free_reg(callee);
@@ -1623,26 +1637,45 @@ fn ushort? CompilerContext.member_expr(&self) {
 
             if (self.del_mode || self.lhs_mode) {
                 // LHS / delete mode: keep obj/prop alive for possible PUTPROP/DELPROP
-                // Also set up for potential method call 'this'
+                // Also set up for potential method call 'this'. Always save obj
+                // for this-binding — it will be freed by assignment_expr cleanup
+                // if no call follows, or consumed by emit_call/emit_tagged_template.
                 TokenType next_tt = self.peek_type();
+                // Free old call_prop_obj_reg before overwriting
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
                 if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
+                    self.call_prop_obj_reg = obj;
+                } else {
+                    // Save for potential this-binding through parenthesized expressions
+                    // (e.g. (a.b)?.()). assignment_expr cleanup will free last_member_obj_reg,
+                    // but call_prop_obj_reg propagates through parens.
                     self.call_prop_obj_reg = obj;
                 }
             } else {
-                // RHS mode: free obj/prop immediately, UNLESS the next token is
-                // a postfix INC/DEC — in that case postfix_expr needs obj/prop alive
-                // to emit PUTPROP after INC/DEC. postfix_expr will free them.
+                // RHS mode: free prop_reg immediately, UNLESS the next token is
+                // a postfix INC/DEC — in that case postfix_expr needs prop alive
+                // to emit PUTPROP after INC/DEC. postfix_expr will free it.
+                // Always save obj as call_prop_obj_reg for potential this-binding
+                // (e.g. parenthesized expressions followed by a call).
                 TokenType next_tt = self.peek_type();
                 bool is_postfix = (next_tt == TokenType.INC || next_tt == TokenType.DEC);
                 if (!is_postfix) {
                     self.free_reg(prop_reg);
                 }
-                // If next token is LPAREN, OPT_CHAIN, or a template, this is a method call.
-                // Track the object for 'this' setup in emit_call / emit_tagged_template.
-                if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
+                // Free old call_prop_obj_reg before overwriting
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                if (is_postfix) {
+                    // Postfix: keep obj alive for postfix_expr (via last_member_obj_reg)
+                    self.call_prop_obj_reg = MAX_REGISTERS;
+                } else {
+                    // Non-postfix: save obj for potential this-binding.
+                    // It will be freed when consumed (emit_call / emit_tagged_template)
+                    // or freed by call_expr start check / LPAREN handler cleanup.
                     self.call_prop_obj_reg = obj;
-                } else if (!is_postfix) {
-                    self.free_reg(obj);
                 }
             }
             obj = result;
@@ -1665,23 +1698,35 @@ fn ushort? CompilerContext.member_expr(&self) {
             self.last_member_prop_reg = idx_reg;
 
             if (self.del_mode || self.lhs_mode) {
+                // LHS / delete mode: keep obj/idx alive for possible PUTPROP/DELPROP
+                // Always save obj for this-binding as well.
                 TokenType next_tt2 = self.peek_type();
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
                 if (next_tt2 == TokenType.LPAREN || next_tt2 == TokenType.OPT_CHAIN || self.is_next_template()) {
+                    self.call_prop_obj_reg = obj;
+                } else {
                     self.call_prop_obj_reg = obj;
                 }
             } else {
-                // RHS mode: free obj/idx_reg immediately, UNLESS the next token is
-                // a postfix INC/DEC — in that case postfix_expr needs them alive
-                // to emit PUTPROP after INC/DEC. postfix_expr will free them.
+                // RHS mode: free idx_reg immediately, UNLESS the next token is
+                // a postfix INC/DEC — in that case postfix_expr needs idx_reg alive
+                // to emit PUTPROP after INC/DEC. postfix_expr will free it.
+                // Always save obj as call_prop_obj_reg for potential this-binding.
                 TokenType next_tt = self.peek_type();
                 bool is_postfix = (next_tt == TokenType.INC || next_tt == TokenType.DEC);
                 if (!is_postfix) {
                     self.free_reg(idx_reg);
                 }
-                if (next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN || self.is_next_template()) {
+                // Free old call_prop_obj_reg before overwriting
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                if (is_postfix) {
+                    self.call_prop_obj_reg = MAX_REGISTERS;
+                } else {
                     self.call_prop_obj_reg = obj;
-                } else if (!is_postfix) {
-                    self.free_reg(obj);
                 }
             }
             obj = result;
@@ -1843,6 +1888,8 @@ fn ushort? CompilerContext.primary_expr(&self) {
             Token saved_push  = self.lexer.pushed_back;
             bool  saved_haspb = self.lexer.has_pushed_back;
             bool  saved_slt   = self.lexer.seen_line_term;
+            bool saved_inside_parens = self.inside_parens;
+            self.inside_parens = true;
 
             // Check for empty parens: () => ...
             if (self.check(TokenType.RPAREN)) {
@@ -1860,6 +1907,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.pushed_back     = saved_push;
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
+                    self.inside_parens = saved_inside_parens;
                     return self.parse_arrow_function_reparse()!;
                 }
                 // Not an arrow: restore lexer and parse as grouping expression
@@ -1874,6 +1922,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
+                TokenType next_tt = self.peek_type();
+                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                        self.call_prop_obj_reg = MAX_REGISTERS;
+                    }
+                }
+                self.inside_parens = saved_inside_parens;
                 return inner2;
             }
             // Check for arrow with params: (id) => or (id, id, ...) => ...
@@ -1950,6 +2006,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.pushed_back     = saved_push;
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
+                    self.inside_parens = saved_inside_parens;
                     return self.parse_arrow_function_reparse()!;
                 }
 
@@ -1965,6 +2022,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
+                TokenType next_tt = self.peek_type();
+                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                        self.call_prop_obj_reg = MAX_REGISTERS;
+                    }
+                }
+                self.inside_parens = saved_inside_parens;
                 return inner2;
             }
             // Check for arrow with destructured params: ({a, b}) => or ([a, b]) =>
@@ -1983,6 +2048,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.pushed_back     = saved_push;
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
+                    self.inside_parens = saved_inside_parens;
                     return self.parse_arrow_function_reparse()!;
                 }
 
@@ -1998,11 +2064,27 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
+                TokenType next_tt = self.peek_type();
+                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                        self.call_prop_obj_reg = MAX_REGISTERS;
+                    }
+                }
+                self.inside_parens = saved_inside_parens;
                 return inner2;
             } else {
                 // Not arrow: parse as grouping expression
                 ushort inner2 = self.expression()!;
                 self.expect(TokenType.RPAREN)!;
+                TokenType next_tt = self.peek_type();
+                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                        self.call_prop_obj_reg = MAX_REGISTERS;
+                    }
+                }
+                self.inside_parens = saved_inside_parens;
                 return inner2;
             }
         }

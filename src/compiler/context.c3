@@ -251,6 +251,11 @@ struct CompilerContext {
     /// Results of optional chains are never valid assignment targets.
     bool last_was_optional_chain;
 
+    /// Set when parsing a parenthesized grouping expression.
+    /// Prevents call_expr from prematurely freeing call_prop_obj_reg
+    /// when the next token is not a call (e.g. RPAREN closing the parens).
+    bool inside_parens;
+
     /// Property call: the object register to use as 'this' in emit_call.
     /// Set to MAX_REGISTERS when not in a property call.
     ushort call_prop_obj_reg;
