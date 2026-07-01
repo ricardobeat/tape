@@ -744,21 +744,7 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         obj = (HObject*)this_val.get_heapptr();
     } else if (this_val.is_null() || this_val.is_undefined()) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap,
-                "Array.prototype.toString called on null or undefined");
-            if (msg_str != null) {
-                TVal msg_val; msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            TVal err_tv; err_tv.set_object(err);
-            ctx.throw_value = err_tv;
-        }
-        ctx.should_throw = true;
-        ctx.result.set_undefined();
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Array.prototype.toString called on null or undefined");
         return;
     } else {
         // Box primitive via ToObject

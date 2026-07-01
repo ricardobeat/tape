@@ -385,21 +385,7 @@ fn HString* ensure_asynciterator_symbol(Heap* heap) {
 fn void builtin_symbol(BuiltinContext* ctx) {
     // Symbol is not constructable with new
     if (ctx.is_constructor) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol is not a constructor");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol is not a constructor");
         return;
     }
 
@@ -469,21 +455,7 @@ fn void builtin_symbol_keyfor(BuiltinContext* ctx) {
 
     TVal sym_val = ctx.regs[ctx.base_reg];
     if (!is_symbol_val(sym_val)) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.keyFor requires a symbol argument");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.keyFor requires a symbol argument");
         return;
     }
 
@@ -521,21 +493,7 @@ fn void builtin_symbol_proto_description_get(BuiltinContext* ctx) {
     }
 
     if (sym == null) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.description requires that 'this' be a Symbol");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.prototype.description requires that 'this' be a Symbol");
         return;
     }
 
@@ -589,21 +547,7 @@ fn void builtin_symbol_proto_toString(BuiltinContext* ctx) {
     }
 
     if (sym == null) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.toString called on non-Symbol");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.prototype.toString called on non-Symbol");
         return;
     }
 
@@ -657,21 +601,7 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
         }
     }
 
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype.valueOf called on non-Symbol");
-        if (msg_str != null) {
-            TVal msg_val;
-            msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        }
-        ctx.throw_value.set_object(err);
-    } else {
-        ctx.throw_value.set_undefined();
-    }
-    ctx.should_throw = true;
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.prototype.valueOf called on non-Symbol");
 }
 
 // ============================================================================
@@ -704,21 +634,7 @@ fn void builtin_symbol_proto_toprimitive(BuiltinContext* ctx) {
         }
     }
 
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "Symbol.prototype[Symbol.toPrimitive] called on non-Symbol");
-        if (msg_str != null) {
-            TVal msg_val;
-            msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        }
-        ctx.throw_value.set_object(err);
-    } else {
-        ctx.throw_value.set_undefined();
-    }
-    ctx.should_throw = true;
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.prototype[Symbol.toPrimitive] called on non-Symbol");
 }
 
 // ============================================================================

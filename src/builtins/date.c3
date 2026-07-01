@@ -1139,22 +1139,7 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     }
 
     // Invoke(O, "toISOString") — property missing or not callable → TypeError
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (catch err = err_raw) {
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* err_obj = err_raw;
-    err_obj.prototype = ctx.heap.type_err_proto;
-    HString* msg_str = builtin_intern_string(ctx.heap, "toISOString is not a function");
-    if (msg_str != null) {
-        TVal msg_val;
-        msg_val.set_string(msg_str);
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        err_obj.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-    }
-    ctx.should_throw = true;
-    ctx.throw_value.set_object(err_obj);
+    builtin_throw(ctx, ctx.heap.type_err_proto, "toISOString is not a function");
 }
 
 /// Date.prototype.data.valueOf() — ES5 §15.9.5.8
@@ -2119,22 +2104,7 @@ fn void builtin_date_proto_toISOString(BuiltinContext* ctx) {
     if (ctx.should_throw) return;
     if (math::is_nan(tv)) {
         // Throw RangeError per ES5 §15.9.5.43
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err = err_raw) {
-            ctx.result.set_undefined();
-            return;
-        }
-        HObject* err_obj = err_raw;
-        err_obj.prototype = ctx.heap.range_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, "Invalid Date");
-        if (msg_str != null) {
-            TVal msg_val;
-            msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err_obj.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        }
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err_obj);
+        builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid Date");
         return;
     }
     long year, month, day, wday, hour, min, sec;

@@ -112,40 +112,12 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
             d = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         } else {
             // Not a Number wrapper — throw TypeError
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.type_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "Number.prototype.toString called on incompatible value");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                }
-                TVal err_tv;
-                err_tv.set_object(err);
-                ctx.throw_value = err_tv;
-            }
-            ctx.should_throw = true;
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.toString called on incompatible value");
             return;
         }
     } else {
         // Not a number or Number wrapper — throw TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Number.prototype.toString called on incompatible value");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            TVal err_tv;
-            err_tv.set_object(err);
-            ctx.throw_value = err_tv;
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.toString called on incompatible value");
         return;
     }
 
@@ -162,21 +134,7 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
         }
         if (radix < 2 || radix > 36) {
             // RangeError per ES5 §15.7.4.2
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.range_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "radix must be an integer between 2 and 36");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                }
-                TVal err_tv;
-                err_tv.set_object(err);
-                ctx.throw_value = err_tv;
-            }
-            ctx.should_throw = true;
+            builtin_throw(ctx, ctx.heap.range_err_proto, "radix must be an integer between 2 and 36");
             return;
         }
     }
@@ -308,22 +266,7 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
         double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
         if (f_d < 0 || f_d > 20) {
             // ES5 §15.7.4.5: throw RangeError
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.range_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "fractionDigits out of range");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                }
-                ctx.should_throw = true;
-                ctx.throw_value.set_object(err);
-            } else {
-                ctx.should_throw = true;
-            }
-            ctx.result.set_undefined();
+            builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
             return;
         }
         f = (int)(long)f_d;
@@ -362,22 +305,7 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
         double f_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
         if (f_d < 0 || f_d > 20) {
             // ES5 §15.7.4.6: throw RangeError
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.range_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "fractionDigits out of range");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                }
-                ctx.should_throw = true;
-                ctx.throw_value.set_object(err);
-            } else {
-                ctx.should_throw = true;
-            }
-            ctx.result.set_undefined();
+            builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
             return;
         }
         f = (int)(long)f_d;
@@ -481,22 +409,7 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     double p_d = builtin_to_integer(&ctx.regs[ctx.base_reg]);
     if (p_d < 1 || p_d > 21) {
         // ES5 §15.7.4.7: throw RangeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.range_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "precision out of range");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.should_throw = true;
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.should_throw = true;
-        }
-        ctx.result.set_undefined();
+        builtin_throw(ctx, ctx.heap.range_err_proto, "precision out of range");
         return;
     }
     int p = (int)(long)p_d;

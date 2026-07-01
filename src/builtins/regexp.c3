@@ -206,19 +206,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || (*obj.extra_ptr()).regexp.regexp_data == null) {
         // ES5 §15.10.6.3 step 2: throw TypeError if this is not a RegExp
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.test called on incompatible receiver");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "RegExp.prototype.test called on incompatible receiver");
         return;
     }
 
@@ -297,19 +285,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     HObject* obj = regexp_get_this(ctx);
     if (obj == null || (*obj.extra_ptr()).regexp.regexp_data == null) {
         // ES5 §15.10.6.2 step 2: throw TypeError if this is not a RegExp
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "RegExp.prototype.exec called on incompatible receiver");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "RegExp.prototype.exec called on incompatible receiver");
         return;
     }
 
@@ -1192,36 +1168,12 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
 fn HObject* regexp_get_this_or_throw(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (!this_val.is_object() || this_val.get_heapptr() == null) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Method get RegExp.prototype.flags called on incompatible receiver");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Method get RegExp.prototype.flags called on incompatible receiver");
         return null;
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
     if (obj.get_class() != hobject::ObjClass.REGEXP) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Method get RegExp.prototype.flags called on incompatible receiver");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Method get RegExp.prototype.flags called on incompatible receiver");
         return null;
     }
     return obj;

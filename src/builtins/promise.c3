@@ -102,21 +102,7 @@ fn HObject* check_promise(BuiltinContext* ctx) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return obj;
     }
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap,
-            "Promise.prototype method called on incompatible value");
-        if (msg_str != null) {
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WEC);
-        }
-        ctx.throw_value.set_object(err);
-    } else {
-        ctx.throw_value.set_undefined();
-    }
-    ctx.should_throw = true;
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Promise.prototype method called on incompatible value");
     return null;
 }
 
@@ -613,18 +599,7 @@ fn TVal promise_hole_get_reject(Heap* heap, HObject* hole) {
 /// Promise.allSettled) when NewPromiseCapability fails — per ES6 §25.4.4.x
 /// the algorithm returns IfAbrupt (TypeError) when the capability is invalid.
 fn void promise_capability_incomplete_throw(BuiltinContext* ctx) {
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap,
-            "Promise capability not initialized by constructor");
-        if (msg_str != null) {
-            TVal msg_tv; msg_tv.set_string(msg_str);
-            err.put_prop(builtin_intern_string(ctx.heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
-        }
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
-    }
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Promise capability not initialized by constructor");
 }
 
 /// Re-throw an abrupt error stashed on a PromiseCapability hole from

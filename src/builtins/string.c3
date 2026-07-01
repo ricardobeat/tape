@@ -163,16 +163,7 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         // Check: must be integral Number in [0, 0x10FFFF]
         if (math::is_nan(d) || math::is_inf(d) || d != math::trunc(d) || d < 0 || d > 0x10FFFF) {
             // Throw RangeError
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.range_err_proto;
-                HString* msg = builtin_intern_string(ctx.heap, "Invalid code point value");
-                TVal msg_tv; msg_tv.set_string(msg);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                ctx.should_throw = true;
-                ctx.throw_value.set_object(err);
-            }
+            builtin_throw_no_result_change(ctx, ctx.heap.range_err_proto, "Invalid code point value");
             return;
         }
         uint ucp = (uint)(long)d;
@@ -252,19 +243,7 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
     // ES5 §15.5.4: CheckObjectCoercible (throws for undefined/null),
     // then ToString (works for any other value).
     if (this_val.is_undefined() || this_val.is_null()) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype method called on incompatible value");
-            TVal msg_val;
-            msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            TVal err_tv;
-            err_tv.set_object(err);
-            ctx.throw_value = err_tv;
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "String.prototype method called on incompatible value");
         return null;
     }
     // ES5 §9.8 ToString for objects: use ToPrimitive with hint "string" (toString first,
@@ -2534,20 +2513,7 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
             }
             if (!valid) {
                 // Throw RangeError for invalid form
-                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = ctx.heap.range_err_proto;
-                    HString* msg_str = builtin_intern_string(ctx.heap, "The normalization form should be one of NFC, NFD, NFKC, NFKD.");
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                    TVal err_tv;
-                    err_tv.set_object(err);
-                    ctx.throw_value = err_tv;
-                }
-                ctx.should_throw = true;
-                ctx.result.set_undefined();
+                builtin_throw(ctx, ctx.heap.range_err_proto, "The normalization form should be one of NFC, NFD, NFKC, NFKD.");
                 return;
             }
         }

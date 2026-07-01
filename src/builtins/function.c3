@@ -115,21 +115,7 @@ fn void builtin_function(BuiltinContext* ctx) {
         func = f;
     } else {
         // Compilation failed: throw SyntaxError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.syntax_err_proto;
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in Function constructor");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            TVal err_tv;
-            err_tv.set_object(err);
-            ctx.throw_value.set_object(err_tv.get_heapptr());
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
+        builtin_throw_no_result_change(ctx, ctx.heap.syntax_err_proto, "SyntaxError in Function constructor");
         return;
     }
 

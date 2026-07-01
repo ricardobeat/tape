@@ -261,19 +261,7 @@ fn void builtin_error_captureStackTrace(BuiltinContext* ctx) {
     // Error.captureStackTrace(targetObject [, constructorOpt])
     if (ctx.argc < 1 || !ctx.regs[ctx.base_reg].is_object()) {
         // Throw TypeError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Error.captureStackTrace requires an object argument");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.should_throw = true;
-            ctx.throw_value.set_object(err);
-        }
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Error.captureStackTrace requires an object argument");
         return;
     }
     HObject* target = (HObject*)ctx.regs[ctx.base_reg].get_heapptr();

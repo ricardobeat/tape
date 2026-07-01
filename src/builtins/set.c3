@@ -265,22 +265,7 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
 
     // ES6 §23.2.3.6 step 4: If IsCallable(callbackfn) is false, throw TypeError
     if (!(callback.is_object() && callback.get_heapptr() != null && ((HObject*)callback.get_heapptr()).is_callable())) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "object is not a function");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            TVal err_val;
-            err_val.set_object(err);
-            ctx.should_throw = true;
-            ctx.throw_value = err_val;
-        }
-        ctx.result.set_undefined();
+        builtin_throw(ctx, ctx.heap.type_err_proto, "object is not a function");
         return;
     }
 

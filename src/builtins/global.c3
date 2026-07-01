@@ -466,16 +466,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                         else { seq_len = 4; }
                         if (i + 3 * seq_len > len) {
                             // Incomplete - throw URIError
-                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = ctx.heap.uri_err_proto;
-                                HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                                TVal msg_tv; msg_tv.set_string(msg);
-                                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                                ctx.should_throw = true;
-                                ctx.throw_value.set_object(err);
-                            }
+                            builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                             return;
                         }
                         char[4] bytes;
@@ -491,16 +482,7 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                             bytes[j] = (char)b;
                         }
                         if (!valid) {
-                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = ctx.heap.uri_err_proto;
-                                HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                                TVal msg_tv; msg_tv.set_string(msg);
-                                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                                ctx.should_throw = true;
-                                ctx.throw_value.set_object(err);
-                            }
+                            builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                             return;
                         }
                         for (uint j = 0; j < seq_len; j++) {
@@ -509,44 +491,17 @@ fn void builtin_decode_uri(BuiltinContext* ctx) {
                         i += 3 * seq_len;
                     } else {
                         // Invalid leading byte for multi-byte sequence
-                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = ctx.heap.uri_err_proto;
-                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.set_string(msg);
-                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                            ctx.should_throw = true;
-                            ctx.throw_value.set_object(err);
-                        }
+                        builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                         return;
                     }
                 } else {
                     // Invalid hex digits
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = ctx.heap.uri_err_proto;
-                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.set_string(msg);
-                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                        ctx.should_throw = true;
-                        ctx.throw_value.set_object(err);
-                    }
+                    builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                     return;
                 }
             } else {
                 // '%' not followed by two hex digits
-                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = ctx.heap.uri_err_proto;
-                    HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                    TVal msg_tv; msg_tv.set_string(msg);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                }
+                builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                 return;
             }
         } else {
@@ -580,16 +535,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                 int d1 = hex_digit_val(data[i + 1]);
                 int d2 = hex_digit_val(data[i + 2]);
                 if (d1 < 0 || d2 < 0) {
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = ctx.heap.uri_err_proto;
-                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.set_string(msg);
-                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                        ctx.should_throw = true;
-                        ctx.throw_value.set_object(err);
-                    }
+                    builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                     return;
                 }
                 char first = (char)((d1 << 4) | d2);
@@ -602,16 +548,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                     else if (first < 0xF0) { seq_len = 3; }
                     else { seq_len = 4; }
                     if (i + 3 * seq_len > len) {
-                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = ctx.heap.uri_err_proto;
-                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.set_string(msg);
-                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                            ctx.should_throw = true;
-                            ctx.throw_value.set_object(err);
-                        }
+                        builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                         return;
                     }
                     char[4] bytes;
@@ -627,16 +564,7 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                         bytes[j] = (char)b;
                     }
                     if (!valid) {
-                        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = ctx.heap.uri_err_proto;
-                            HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                            TVal msg_tv; msg_tv.set_string(msg);
-                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                            ctx.should_throw = true;
-                            ctx.throw_value.set_object(err);
-                        }
+                        builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                         return;
                     }
                     for (uint j = 0; j < seq_len; j++) {
@@ -644,29 +572,11 @@ fn void builtin_decode_uri_component(BuiltinContext* ctx) {
                     }
                     i += 3 * seq_len;
                 } else {
-                    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = ctx.heap.uri_err_proto;
-                        HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                        TVal msg_tv; msg_tv.set_string(msg);
-                        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                        ctx.should_throw = true;
-                        ctx.throw_value.set_object(err);
-                    }
+                    builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                     return;
                 }
             } else {
-                HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = ctx.heap.uri_err_proto;
-                    HString* msg = builtin_intern_string(ctx.heap, "URI malformed");
-                    TVal msg_tv; msg_tv.set_string(msg);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                }
+                builtin_throw_no_result_change(ctx, ctx.heap.uri_err_proto, "URI malformed");
                 return;
             }
         } else {
