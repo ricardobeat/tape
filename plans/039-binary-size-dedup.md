@@ -71,8 +71,18 @@ verification pass (local tests + targeted bench-fast, not full test262).
      `PROP_NOT_FOUND` fault as valid TVal data in unsafe/O3 builds, causing a prior successful
      construction's stale stack bytes to be misread as a callable `@@iterator` on a later
      non-iterable argument. Fixed with explicit `try`/`set_undefined` handling. — commit `02de73b`
-   - [ ] `.set/.add/.get/.has/.delete` method bodies — not yet started
-   - [ ] `register_X_constructor()` functions — not yet started
+   - [x] `.set/.add/.delete` method bodies unified into `coll_set_entry()`/`coll_add_value()`/
+     `coll_delete()` in `core.c3`, parameterized by object-key/value validation
+     (WeakMap/WeakSet require it, Map/Set don't) and delete strategy (Map/Set tombstone to
+     preserve iteration semantics; WeakMap/WeakSet compact since they're not iterable).
+     `.get`/`.has` were left as-is (already one-liners around `X_find_key/value`, not worth
+     a further indirection). Net -46 lines. — commit `b80474d`
+   - [ ] `register_X_constructor()` functions — **DEFERRED**. Each type registers a different
+     method list (Map: set/get/has/delete/clear/keys/values/entries/forEach/size/@@iterator;
+     WeakMap: set/get/has/delete only; no behavioral divergence, just boilerplate volume).
+     A generic driver is possible but would need a per-type (name, builtin_index) table plus
+     special-casing for the accessor (size) and @@iterator/@@toStringTag setup — mechanical,
+     low-risk, but lower value than remaining Phase 2 items (#2-#11). Skip for now.
 
 2. **Error-throw boilerplate**, 60-70+ call sites (~700+ lines) across nearly every builtin file
    and `vm_calls.c3`/`vm_property.c3`. Same `alloc_object(ERROR) → set prototype → intern
