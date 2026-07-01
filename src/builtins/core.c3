@@ -874,10 +874,14 @@ fn int find_in_array_part(HObject* obj, TVal val, uint stride) {
 // ============================================================================
 
 /// Throws a TypeError built from `msg` and marks ctx to throw / return undefined.
-fn void coll_throw(BuiltinContext* ctx, char[] msg) {
+/// Allocs an Error object with the given prototype and message, then marks
+/// ctx to throw it. Does not touch ctx.result — callers that need
+/// ctx.result.set_undefined() (the common case for builtin call handlers)
+/// should call builtin_throw() instead.
+fn void builtin_throw_no_result_change(BuiltinContext* ctx, HObject* proto, char[] msg) {
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
+        err.prototype = proto;
         HString* msg_str = builtin_intern_string(ctx.heap, msg);
         if (msg_str != null) {
             TVal msg_val; msg_val.set_string(msg_str);
@@ -886,7 +890,18 @@ fn void coll_throw(BuiltinContext* ctx, char[] msg) {
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
     }
+}
+
+/// Allocs an Error object with the given prototype and message, marks ctx to
+/// throw it, and sets ctx.result to undefined (the standard pattern for
+/// builtin call handlers that bail out immediately after throwing).
+fn void builtin_throw(BuiltinContext* ctx, HObject* proto, char[] msg) {
+    builtin_throw_no_result_change(ctx, proto, msg);
     ctx.result.set_undefined();
+}
+
+fn void coll_throw(BuiltinContext* ctx, char[] msg) {
+    builtin_throw(ctx, ctx.heap.type_err_proto, msg);
 }
 
 /// Shared constructor body for Map/Set/WeakMap/WeakSet (ES6 §23.1.1, §23.2.1,
@@ -1107,7 +1122,7 @@ fn void coll_set_entry(BuiltinContext* ctx, HObject* coll, uint stride, bool req
     if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
     TVal key = ctx.regs[ctx.base_reg];
     if (require_object_key && (!key.is_object() || key.get_heapptr() == null)) {
-        coll_throw_no_result_change(ctx, invalid_key_msg);
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, invalid_key_msg);
         ctx.result.set_undefined();
         return;
     }
@@ -1138,7 +1153,7 @@ fn void coll_add_value(BuiltinContext* ctx, HObject* coll, bool require_object_v
     if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
     TVal value = ctx.regs[ctx.base_reg];
     if (require_object_value && (!value.is_object() || value.get_heapptr() == null)) {
-        coll_throw_no_result_change(ctx, invalid_value_msg);
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, invalid_value_msg);
         ctx.result.set_undefined();
         return;
     }
@@ -1151,24 +1166,6 @@ fn void coll_add_value(BuiltinContext* ctx, HObject* coll, bool require_object_v
         }
     }
     ctx.result.set_object(coll);
-}
-
-/// Builds and stores a TypeError on ctx without touching ctx.result (caller sets it).
-/// Used by coll_set_entry/coll_add_value, whose original code left ctx.result
-/// untouched by the alloc_object(ERROR) call itself (only should_throw/throw_value set).
-fn void coll_throw_no_result_change(BuiltinContext* ctx, char[] msg) {
-    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err = err_raw) {
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_str = builtin_intern_string(ctx.heap, msg);
-        if (msg_str != null) {
-            TVal msg_val; msg_val.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-        }
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
-    }
 }
 
 /// Shared body for Map/Set.prototype.delete (tombstone: mark deleted, keep slot —
