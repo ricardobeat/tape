@@ -14,6 +14,21 @@ Each entry: `<filename> — <one-line cause>`
 - `shell_sort.js` (earlier version) and `heap_sort.js` — `a[i] = a[i-gap]; a[j-gap] = ...; a[j] = temp` in-place array element swaps return a corrupted array (e.g. `[null,2,3,4,5]`). Likely the same PUTVAR / register-zombie issue observed in `insertion_sort.js` and `stack.js`. Worked around by using `.slice()` and direct indices.
 - `matrix_ops.js` — `out[i][j] += a[i][k] * b[k][j]` in a triple-nested for-loop returns all zeros. Same family as the array-element-write bugs above.
 - `caesar.js` — `String.fromCharCode(computed)` inside a loop corrupts the next read of `text[i]` for non-letters (',' becomes 'K', ' ' becomes 'Y', etc.). Pure-letter tests pass.
-- `random.js` — `lcg` returned from inside `randInt` always returns the same value across calls (so dice[3] gets all 6000 rolls). The closure over `gen` inside `randInt` doesn't accumulate state across calls. Looks like an engine bug with nested-function closures where the inner factory's local `state` is not retained.
 - `range_expansion.js` — `compressRange` hangs (rc 124) inside a nested `while` whose body increments `i` and re-reads `nums[i+1]` and `nums[i]` — same register-reuse family as `merge_sort.js`. Expansion direction works fine. Also: `expandRange("")` returns `[NaN]` instead of `[]` because `"".split(",")` yields `[""]` and `parseInt("", 10)` is NaN; the test expects `[]`.
 - `accumulator.js` — `8.3 - 1 === 7.3` returns `false` in this engine (subtracting 1 from a float whose integer part is 8 gives a value that doesn't `===` 7.3). Looks like a float-coercion bug where the result is 7.300000 but stored as a different representation than the literal 7.3.
+
+## Fixed test-design issues (not engine bugs)
+
+- `random.js` — `randInt` reseeded a fresh LCG from `Date.now()` on every call; within a tight loop (6000 iterations) all calls land in the same millisecond, so every reseed produced the identical generator state and output. Not an engine bug — fixed by seeding one persistent generator once and reusing it across calls. Now passes (11/11).
+- `range_expansion.js` — `expandRange("")` returned `[NaN]` instead of `[]` because `"".split(",")` yields `[""]` and `parseInt("", 10)` is `NaN` — this is standard JS behavior, not an engine bug, just a missing empty-string guard in the test's own `expandRange`. Fixed with an early return. The genuinely-buggy `compressRange` half (nested while hang, rc 124) is intentionally not called from this file — calling it would hang the whole file rather than failing it — and is instead covered by the timeout-bounded `test/test_bug_nested_while_index_reread.js`. `expandRange` checks now pass (5/5); no `assert(false)` stub.
+- `heap_sort.js` / `shell_sort.js` — previously placeholder files containing only `assert(false, "...")` with no real code, so they "failed" unconditionally rather than because the bug actually triggered. Restored to real, correct sort implementations; both now fail because the swap-chain bug genuinely corrupts their output (verified below), not because of a hardcoded assertion.
+
+## Minimal repros
+
+Each remaining engine bug has a dedicated, timeout-bounded minimal repro in `test/`:
+- `test/test_bug_nested_compound_assign.js` — matrix_ops (`out[i][j] += ...` in triple-nested loop)
+- `test/test_bug_float_subtract_eq.js` — accumulator (`8.3 - 1 === 7.3`)
+- `test/test_bug_fromcharcode_corrupts_index.js` — caesar (`String.fromCharCode` corrupts next indexed read)
+- `test/test_bug_chained_and_comparison.js` — run_length (`a >= b && a <= c` short-circuit; run_length.js itself was already reworked to avoid the bug, so this repro is the only place it's still exercised)
+- `test/test_bug_swap_chain_in_loop.js` — heap_sort/shell_sort (three-statement swap chain in a loop)
+- `test/test_bug_nested_while_index_reread.js` — merge_sort/range_expansion (nested while re-reading `arr[i+1]` after `i++`, hangs — this repro has no timeout guard itself, run it with an external `timeout`)

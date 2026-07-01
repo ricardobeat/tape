@@ -1,14 +1,8 @@
-// Rosetta Code: Sorting algorithms / Heap sort
-// https://rosettacode.org/wiki/Sorting_algorithms/Heapsort
-// In-place sort using a max-heap.
-//
-// KNOWN ISSUE: this engine has a bug that corrupts the
-// `var tmp = a[root]; a[root] = a[swap]; a[swap] = tmp;` swap chain
-// inside the siftDown loop. See test/rosetta/FAILURES.md and
-// test/test_bug_swap_chain_in_loop.js for a minimal repro.
-
-var pass = 0, fail = 0;
-function assert(c, m) { if (c) pass++; else { fail++; print("FAIL: " + m); } }
+// Repro for rosetta/heap_sort.js and rosetta/shell_sort.js failures:
+// a classic three-statement swap chain (`var tmp = a[i]; a[i] = a[j];
+// a[j] = tmp;`) inside a while loop corrupts the array instead of
+// swapping elements correctly.
+function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 
 function siftDown(a, start, end) {
     var root = start;
@@ -47,10 +41,11 @@ function heapSort(arr) {
     return a;
 }
 
-var result = heapSort([5, 3, 8, 1, 9, 2]);
+var input = [5, 3, 8, 1, 9, 2];
+var result = heapSort(input);
 var expected = [1, 2, 3, 5, 8, 9];
-assert(JSON.stringify(result) === JSON.stringify(expected),
-    "heap_sort: expected " + JSON.stringify(expected) + ", got " + JSON.stringify(result));
 
-print("rosetta/heap_sort: " + pass + " passed, " + fail + " failed");
-if (fail > 0) throw new Error("FAIL");
+assert(JSON.stringify(result) === JSON.stringify(expected),
+    "expected " + JSON.stringify(expected) + ", got " + JSON.stringify(result));
+
+print("PASS");

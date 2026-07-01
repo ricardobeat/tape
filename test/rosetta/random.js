@@ -33,10 +33,14 @@ function uniform(n) {
 var avg = uniform(10000);
 assert(avg > 0.45 && avg < 0.55, "average near 0.5 (got " + avg.toFixed(3) + ")");
 
-// Random integer in [a, b]
+// Random integer in [a, b]. Uses a single persistent generator seeded once
+// rather than reseeding from Date.now() on every call -- reseeding per call
+// is both poor RNG practice and was producing identical outputs for calls
+// made within the same millisecond tick, which made this test flaky by
+// design rather than an engine bug.
+var diceGen = lcg(Date.now() & 0x7FFFFFFF, 1664525, 1013904223, 2147483648);
 function randInt(a, b) {
-    var gen = lcg(Date.now() & 0x7FFFFFFF, 1664525, 1013904223, 2147483648);
-    return a + ((gen() / 2147483648) * (b - a + 1)) | 0;
+    return a + ((diceGen() / 2147483648) * (b - a + 1)) | 0;
 }
 
 var counts = [0, 0, 0, 0, 0, 0, 0];
