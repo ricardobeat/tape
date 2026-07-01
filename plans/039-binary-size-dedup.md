@@ -89,6 +89,21 @@ verification pass (local tests + targeted bench-fast, not full test262).
    message → put_prop → throw` pattern everywhere.
    Target: `builtin_throw(ctx, proto, msg)` for builtins, `throw_type_error_fmt(vm, ds, msg)`
    for VM opcode handlers. Mechanical, low risk, highest call-site count.
+   - [x] `builtin_throw()`/`builtin_throw_no_result_change()` added to `core.c3` — commit `fa1e5e4`
+   - [x] Builtins side done: ~200 call sites converted across array.c3, date.c3, error.c3,
+     function.c3, global.c3, number.c3, object.c3 (39 sites, largest), promise.c3, regexp.c3,
+     set.c3, string.c3, symbol.c3. Only static string-literal messages converted — sites building
+     messages dynamically (string::tformat, snprintf into a runtime buffer) were left untouched.
+     Net -890 lines. Dispatched as 8 parallel haiku agents (one file or small file-group each),
+     independently re-verified (full diff review, rebuild, full local test suite, bench-fast,
+     targeted functional tests per file) before a single combined commit. — commit `8d5d034`
+   - [ ] VM side (`src/vm/{vm_calls,vm_property,vm_execute,vm_generators,vm_objects,vm_arith,
+     vm_core,vm_coerce,vm_control}.c3`, ~70 sites) — **DEFERRED**, different scope. VM opcode
+     handlers use a structurally different pattern (`vm.heap` not `ctx.heap`, `vm_throw_value()`
+     not `ctx.should_throw`/`ctx.throw_value`, `heap::BuiltinStr.MESSAGE` constant lookup instead
+     of interning "message" each call, `PROP_FLAGS_WEC` not `_WC`). Needs its own
+     `vm_throw_type_error(vm, ds, msg)`-style helper designed against that shape, not a reuse of
+     the builtins-side helper. Separate follow-up item.
 
 3. **Compiler parameter-parsing triplicated** — `src/compiler/functions.c3`.
    `parse_function_body` (~858-1255), `compile_inner_function` (~1324-1745),
