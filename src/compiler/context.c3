@@ -673,6 +673,23 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                     bridge_sbx = self.code[bridge_slot].get_sbc();
                 }
             }
+            // Short-circuit fix (B27): if the if_false at i+1 is the `&&`/`||` skip jump
+            // (i.e. a later LDREG writes to rA as the final result of the operator),
+            // do NOT fuse — the fused JMP_Nxx doesn't materialize the boolean, so the
+            // later LDREG would overwrite the result with the right-side value while
+            // the skip path needs to keep the left-side boolean. A simple heuristic:
+            // if the if_false's destination is a position that is immediately preceded
+            // by an LDREG whose A (destination) is rA, then the skip_jump is the
+            // "&& skip" pattern.
+            uint skip_tgt = (uint)((int)i + 2 + sbx + bridge_sbx + (bridge_sbx != 0 ? 1 : 0));
+            bool is_short_circuit_skip = false;
+            if (skip_tgt >= 1 && skip_tgt < self.code_count) {
+                Instruction tgt_ins = self.code[skip_tgt - 1];
+                if (tgt_ins.op == Opcode.LDREG && (uint)tgt_ins.a == rA) {
+                    is_short_circuit_skip = true;
+                }
+            }
+            if (is_short_circuit_skip) { continue; }
             int fused_off = sbx + 1 + bridge_sbx + (bridge_sbx != 0 ? 1 : 0);
 
             // (a) fall-through scan from i+2: check rA is dead on the sequential path.
