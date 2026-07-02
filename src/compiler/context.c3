@@ -665,12 +665,26 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             // (the JMP_Nxx skips the `LE` that would have refreshed rA).
             // The bridge is at slot i+2+sbx; if it's an IF_FALSE/IF_TRUE, take its
             // sbx into the fused offset.
+            //
+            // B28 fix: only treat as a bridge if the if_false/if_true at bridge_slot
+            // is a FORWARD continuation (positive offset). A negative offset means
+            // it's a loop back edge (e.g. the IF_TRUE that closes a `while (a && b)`
+            // loop — the IF_FALSE short-circuit for cond1 jumps past the LDREG and
+            // lands on that IF_TRUE). Extending fused_off by a negative back-edge
+            // offset flips the fused JMP_Nxx into a backward jump and the loop spins
+            // forever once the loop counter underflows.
             int bridge_sbx = 0;
             uint bridge_slot = (uint)((int)i + 2 + sbx);
             if (bridge_slot < self.code_count) {
                 Opcode bop = self.code[bridge_slot].op;
                 if (bop == Opcode.IF_FALSE || bop == Opcode.IF_TRUE) {
-                    bridge_sbx = self.code[bridge_slot].get_sbc();
+                    int candidate_bridge_sbx = self.code[bridge_slot].get_sbc();
+                    if (candidate_bridge_sbx > 0) {
+                        bridge_sbx = candidate_bridge_sbx;
+                    }
+                    // candidate_bridge_sbx <= 0: not a bridge (it's a loop back edge
+                    // or a self-targeting branch). Leave bridge_sbx = 0 so the fused
+                    // JMP_Nxx lands on the bridge slot unchanged.
                 }
             }
             // Short-circuit fix (B27): if the if_false at i+1 is the `&&`/`||` skip jump

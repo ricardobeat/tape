@@ -1,0 +1,36 @@
+/*
+ * dtoa bindings — C3 interop with QuickJS dtoa.c via dtoa_wrapper.
+ *
+ * QuickJS' `js_atod` is a David-Gay-style decimal parser that matches
+ * V8/SpiderMonkey, so literals like `0.1 + 0.2` and `8.3 - 1` round-trip
+ * the way other engines do.  We use it everywhere libc::strtod was called.
+ *
+ * `js_atod` requires a scratch buffer (JSATODTempMem, 216 bytes); the C
+ * wrapper hides that and accepts a `void*` of DUKTAPE_DTOA_TMP_SIZE bytes,
+ * which C3 passes as a fixed-size char array.
+ */
+module duktape::dtoa_bindings;
+
+/* js_atod accepts these flags (see quickjs/dtoa.h for full set). */
+const int JS_ATOD_INT_ONLY             = (1 << 0);
+const int JS_ATOD_ACCEPT_BIN_OCT       = (1 << 1);
+const int JS_ATOD_ACCEPT_LEGACY_OCTAL  = (1 << 2);
+const int JS_ATOD_ACCEPT_UNDERSCORES   = (1 << 3);
+
+/* Size in bytes of the scratch buffer expected by duktape_js_atod. */
+const usz DTOA_TMP_SIZE = 216;
+
+/*
+ * Parse a number from `str` (need not be null-terminated).
+ *
+ *   str   — C string to parse.
+ *   pnext — out parameter; on success points to the first unconsumed char,
+ *           on failure is set to `str`.
+ *   radix — base; 0 means auto-detect prefix (0x/0o/0b) for ints.
+ *   flags — JS_ATOD_* bits above.
+ *   tmp   — pointer to DTOA_TMP_SIZE bytes of scratch memory.
+ *
+ * Returns the parsed value (NaN on parse failure).
+ */
+extern fn double duktape_js_atod(char* str, char** pnext, int radix, int flags,
+                                 char[DTOA_TMP_SIZE]* tmp);

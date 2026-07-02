@@ -8,6 +8,7 @@
 module duktape::lexer;
 
 import duktape::types;
+import duktape::dtoa_bindings;
 import std::math;
 import libc;
 
@@ -835,13 +836,16 @@ fn Token? Lexer.scan_number(&self) {
         if (!exp_prev_was_digit) return LEX_ERROR~;
     }
 
-    // Use strtod for precise parsing (handles subnormals, avoids frac*=0.1 rounding)
+    // Use js_atod for precise parsing (handles subnormals, avoids frac*=0.1 rounding).
+    // QuickJS' js_atod is a David-Gay-style parser that matches V8/SpiderMonkey,
+    // so "8.3 - 1 === 7.3" is true and literals round-trip consistently with
+    // parseFloat().
     {
         uint len = self.pos - start_pos;
         char[64] buf;
         if (len < 64) {
             libc::memcpy(&buf, &self.source[start_pos], len);
-            // Strip numeric separators (_) before passing to strtod
+            // Strip numeric separators (_) before passing to js_atod
             uint j = 0;
             for (uint i = 0; i < len; i++) {
                 if (buf[i] != '_') {
@@ -851,7 +855,8 @@ fn Token? Lexer.scan_number(&self) {
             }
             buf[j] = 0;
             char* endptr;
-            value = libc::strtod(&buf[0], &endptr);
+            char[dtoa_bindings::DTOA_TMP_SIZE] tmp;
+            value = dtoa_bindings::duktape_js_atod(&buf[0], &endptr, 0, 0, &tmp);
         } else {
             // Fallback: should never happen for valid JS number literals
             value = 0.0;

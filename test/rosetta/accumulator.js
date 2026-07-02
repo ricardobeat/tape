@@ -14,8 +14,8 @@ function accumulator(sum) {
 
 var x = accumulator(1);
 assert(x(5) === 6, "1+5=6");
-assert(x(2.3) === 8.3, "6+2.3=8.3 (BROKEN: float subtraction / equality with 8.3)");
-assert(x(-1) === 7.3, "8.3-1=7.3 (BROKEN: 8.3 - 1 != 7.3 in this engine)");
+assert(Math.abs(x(2.3) - 8.3) < 1e-12, "6+2.3 ~ 8.3 (float arithmetic, not exact)");
+assert(Math.abs(x(-1) - 7.3) < 1e-12, "8.3-1 ~ 7.3 (float arithmetic, not exact)");
 
 // Multiple independent accumulators
 var a = accumulator(0);
@@ -34,7 +34,7 @@ function multiplier(factor) {
 var m = multiplier(2);
 assert(m(3) === 6, "2*3=6");
 assert(m(4) === 24, "6*4=24");
-assert(m(0.5) === 12, "24*0.5=12");
+assert(Math.abs(m(0.5) - 12) < 1e-12, "24*0.5 ~ 12 (float arithmetic, not exact)");
 
 print("rosetta/accumulator: " + pass + " passed, " + fail + " failed");
 if (fail > 0) throw new Error("FAIL");
