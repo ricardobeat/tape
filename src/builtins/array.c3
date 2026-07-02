@@ -1013,6 +1013,17 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
 
     uint idx = len - 1;
     TVal elem = array_get_elem(obj, idx, ctx.heap);
+
+    // B30 fix: incref the popped element BEFORE the array slot is cleared.
+    // `array_delete_elem` decrefs whatever is in the slot, which would
+    // free the HString if the popped value's last reference was this slot
+    // — and the popped elem TVal would then point to freed memory. The
+    // refcount bump here is balanced by `*ctx.result = elem` transferring
+    // ownership to the caller, which decrefs when the result is consumed.
+    if (elem.is_heap_allocated() && elem.get_heapptr() != null) {
+        ((types::HeapHeader*)elem.get_heapptr()).incref();
+    }
+
     array_delete_elem(obj, idx, ctx.heap);
     array_set_length(obj, idx, ctx.heap);
 
