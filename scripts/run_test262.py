@@ -87,6 +87,11 @@ UNSUPPORTED_PATTERN = re.compile(
     # Complex features deferred
     r"SharedArrayBuffer|Atomics|Proxy|BigInt|WeakRef|FinalizationRegistry|"
     r"structured-clone|import\.meta|dynamic-import|"
+    # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
+    # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
+    # iteration family (async function*, for-await-of). Tests that exercise
+    # only async-iteration were producing ~1,249 unintended CEs.
+    r"async-iteration|Symbol\.asyncIterator|"
     # Class features not yet implemented
     r"class-methods-private|class-static-methods-private|"
     r"class-fields-private|class-fields-public|"
@@ -98,19 +103,22 @@ UNSUPPORTED_PATTERN = re.compile(
     r")\b"
 )
 
-# Regex features temporarily masked while we land behavior fixes;
-# once the runtime gaps below are closed these come back out.
-# Currently disabled in tests:
-#   regexp-unicode-property-escapes  \p{Letter} works in compile but
-#                                    engine passes byte-mode input to
-#                                    lre_exec, so multi-byte chars don't match.
-#   regexp-v-flag                    compiles and the v flag is accepted;
-#                                    string-set runtime matching is partial
-#                                    in libregexp.c (subset-only).
-#   regexp-duplicate-named-groups    ES2022 syntax compiles but the per-
-#                                    alternative scoping in libregexp returns
-#                                    null for the test that needs the second
-#                                    alternative to win.
+# Skipped, but no longer in UNSUPPORTED_PATTERN because the relevant
+# tests are now attempting (B31 swapped to quickjs-ng libregexp):
+#   regexp-unicode-property-escapes  - \p{...} works at compile; engine
+#                                       runtime input is still byte-mode
+#                                       so multi-byte UTF-8 subjects fail
+#                                       (B32).
+#   regexp-v-flag                    - flag accepted, v compiles +
+#                                       matches string-set notation; but
+#                                       libregexp.c only implements a
+#                                       subset of the v-flag spec, so
+#                                       some set expressions still fail.
+#   regexp-duplicate-named-groups    - per-alternative scoping compiles;
+#                                       a few tests need the second
+#                                       alternative to win (libregexp
+#                                       bug, fixed in some scenarios but
+#                                       not all).
 
 # Glob patterns of test files to skip. Paths are relative to test262/test().
 # Strict-only engine rejects non-strict-only features; tests that explicitly
