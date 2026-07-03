@@ -36,9 +36,21 @@ ReCompiled* re_compile(const char* pattern, size_t pattern_len,
                        int flags, char* error_msg, int error_msg_size)
 {
     int lre_flags = 0;
-    if (flags & RE_FLAG_IGNORECASE) lre_flags |= LRE_FLAG_IGNORECASE;
-    if (flags & RE_FLAG_MULTILINE)  lre_flags |= LRE_FLAG_MULTILINE;
-    if (flags & RE_FLAG_DOTALL)     lre_flags |= LRE_FLAG_DOTALL;
+    if (flags & RE_FLAG_IGNORECASE)   lre_flags |= LRE_FLAG_IGNORECASE;
+    if (flags & RE_FLAG_MULTILINE)    lre_flags |= LRE_FLAG_MULTILINE;
+    if (flags & RE_FLAG_DOTALL)       lre_flags |= LRE_FLAG_DOTALL;
+    if (flags & RE_FLAG_UNICODE)      lre_flags |= LRE_FLAG_UNICODE;
+    if (flags & RE_FLAG_STICKY)       lre_flags |= LRE_FLAG_STICKY;
+    if (flags & RE_FLAG_INDICES)      lre_flags |= LRE_FLAG_INDICES;
+    if (flags & RE_FLAG_UNICODE_SETS) lre_flags |= LRE_FLAG_UNICODE_SETS;
+    /* per ES2024: u and v are mutually exclusive */
+    if ((lre_flags & LRE_FLAG_UNICODE) && (lre_flags & LRE_FLAG_UNICODE_SETS)) {
+        if (error_msg && error_msg_size > 0) {
+            strncpy(error_msg, "invalid regular expression flags", error_msg_size - 1);
+            error_msg[error_msg_size - 1] = '\0';
+        }
+        return NULL;
+    }
 
     char internal_error[128];
     int bc_len;

@@ -21,6 +21,10 @@ typedef struct ReCompiled ReCompiled;
 #define RE_FLAG_IGNORECASE (1 << 1)
 #define RE_FLAG_MULTILINE  (1 << 2)
 #define RE_FLAG_DOTALL     (1 << 3)
+#define RE_FLAG_UNICODE    (1 << 4) /* u flag */
+#define RE_FLAG_STICKY     (1 << 5) /* y flag */
+#define RE_FLAG_INDICES    (1 << 6) /* d flag */
+#define RE_FLAG_UNICODE_SETS (1 << 7) /* v flag */
 
 /* Return values */
 #define RE_ERROR    (-1)

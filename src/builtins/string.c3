@@ -2333,11 +2333,15 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
 /// Used by matchAll for the non-RegExp arg path.
 /// Returns null on failure (allocation or compile error).
 fn HObject* create_regexp_from_string(Heap* heap, char[] pattern, int js_flags) {
-    // Compute engine flags from js_flags (only i, m, s affect compilation)
+    // Compute engine flags from js_flags (only i, m, s, u, y, d, v affect compilation)
     int engine_flags = 0;
-    if (js_flags & 2)  engine_flags |= re_bindings::RE_FLAG_IGNORECASE;
-    if (js_flags & 4)  engine_flags |= re_bindings::RE_FLAG_MULTILINE;
-    if (js_flags & 8)  engine_flags |= re_bindings::RE_FLAG_DOTALL;
+    if (js_flags & 2)   engine_flags |= re_bindings::RE_FLAG_IGNORECASE;
+    if (js_flags & 4)   engine_flags |= re_bindings::RE_FLAG_MULTILINE;
+    if (js_flags & 8)   engine_flags |= re_bindings::RE_FLAG_DOTALL;
+    if (js_flags & 16)  engine_flags |= re_bindings::RE_FLAG_UNICODE;
+    if (js_flags & 32)  engine_flags |= re_bindings::RE_FLAG_STICKY;
+    if (js_flags & 64)  engine_flags |= re_bindings::RE_FLAG_INDICES;
+    if (js_flags & 128) engine_flags |= re_bindings::RE_FLAG_UNICODE_SETS;
 
     // Compile the regexp
     char[128] error_buf;

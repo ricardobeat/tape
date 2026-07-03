@@ -21,6 +21,10 @@ extern fn int re_get_capture_count(void* re);
 const int RE_FLAG_IGNORECASE = 2;
 const int RE_FLAG_MULTILINE  = 4;
 const int RE_FLAG_DOTALL     = 8;
+const int RE_FLAG_UNICODE    = 16;
+const int RE_FLAG_STICKY     = 32;
+const int RE_FLAG_INDICES    = 64;
+const int RE_FLAG_UNICODE_SETS = 128;
 
 const int RE_MATCH    = 1;
 const int RE_NO_MATCH = 0;

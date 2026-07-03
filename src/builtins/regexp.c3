@@ -126,9 +126,17 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             flags |= re_bindings::RE_FLAG_DOTALL;
             js_flags |= 8;
         } else if (f == 'u') {
+            flags |= re_bindings::RE_FLAG_UNICODE;
             js_flags |= 16;
         } else if (f == 'y') {
+            flags |= re_bindings::RE_FLAG_STICKY;
             js_flags |= 32;
+        } else if (f == 'd') {
+            flags |= re_bindings::RE_FLAG_INDICES;
+            js_flags |= 64;
+        } else if (f == 'v') {
+            flags |= re_bindings::RE_FLAG_UNICODE_SETS;
+            js_flags |= 128;
         } else {
             // Invalid flag per ES5 §15.10.4.1 — throw SyntaxError
             HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);

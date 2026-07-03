@@ -72,7 +72,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
                         // Convert JS flags to libregexp flag bits
                         int flags = 0;
-                        int js_flags = 0;  // 1=g, 2=i, 4=m, 8=s, 16=u, 32=y
+                        int js_flags = 0;  // 1=g, 2=i, 4=m, 8=s, 16=u, 32=y, 64=d, 128=v
                         for (usz i = 0; i < flag_data.len; i++) {
                             char f = flag_data[i];
                             if (f == 'g') {
@@ -87,9 +87,17 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                                 flags |= re_bindings::RE_FLAG_DOTALL;
                                 js_flags |= 8;
                             } else if (f == 'u') {
+                                flags |= re_bindings::RE_FLAG_UNICODE;
                                 js_flags |= 16;
                             } else if (f == 'y') {
+                                flags |= re_bindings::RE_FLAG_STICKY;
                                 js_flags |= 32;
+                            } else if (f == 'd') {
+                                flags |= re_bindings::RE_FLAG_INDICES;
+                                js_flags |= 64;
+                            } else if (f == 'v') {
+                                flags |= re_bindings::RE_FLAG_UNICODE_SETS;
+                                js_flags |= 128;
                             }
                         }
 

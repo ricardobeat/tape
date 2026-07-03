@@ -93,10 +93,24 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-fields-private|class-static-fields-public|"
     r"class-static-block|"
     # Other unimplemented ES features
-    r"object-rest|logical-assignment|regexp-unicode-property-escapes|regexp-v-flag|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
+    r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
     r"|Reflect\.construct"
     r")\b"
 )
+
+# Regex features temporarily masked while we land behavior fixes;
+# once the runtime gaps below are closed these come back out.
+# Currently disabled in tests:
+#   regexp-unicode-property-escapes  \p{Letter} works in compile but
+#                                    engine passes byte-mode input to
+#                                    lre_exec, so multi-byte chars don't match.
+#   regexp-v-flag                    compiles and the v flag is accepted;
+#                                    string-set runtime matching is partial
+#                                    in libregexp.c (subset-only).
+#   regexp-duplicate-named-groups    ES2022 syntax compiles but the per-
+#                                    alternative scoping in libregexp returns
+#                                    null for the test that needs the second
+#                                    alternative to win.
 
 # Glob patterns of test files to skip. Paths are relative to test262/test().
 # Strict-only engine rejects non-strict-only features; tests that explicitly
