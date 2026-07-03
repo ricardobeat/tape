@@ -390,6 +390,63 @@ def should_skip(path, es5_only=False):
         return True
     return False
 # ---------------------------------------------------------------------------
+# CE categorization (B36)
+# ---------------------------------------------------------------------------
+_HEADER_CACHE_MAX = 4096
+_header_cache = {}  # path -> (header_str, full_text_str) — bounded by `_HEADER_CACHE_MAX`
+_HEADER_RE = re.compile(r"/\*---.*?---\*/", re.DOTALL)
+_NEGATIVE_RE = re.compile(r"negative:\s*\n?\s*(.+?)(?=\n[a-zA-Z_-]+:|\n---|\Z)", re.DOTALL)
+
+
+def _read_header(path):
+    """Read file, return (header_block, full_text) pair. Cached on first read."""
+    cached = _header_cache.get(path)
+    if cached is not None:
+        return cached
+    try:
+        with open(path) as f:
+            text = f.read(8192)
+    except OSError:
+        text = ""
+    m = _HEADER_RE.search(text)
+    header = m.group(0) if m else ""
+    if len(_header_cache) >= _HEADER_CACHE_MAX:
+        _header_cache.clear()
+    _header_cache[path] = (header, text)
+    return header, text
+
+
+def categorize_ce(path):
+    """Classify a CE result by the test file's metadata.
+
+    Returns one of:
+      - 'expected-parse'      - test262 metadata says a parse-time SyntaxError is
+                                  what the test wants (negative: phase: parse).
+                                  Engine CE exactly matches. Counts as a pass.
+      - 'expected-runtime'    - test wants a runtime error; engine CE'd instead.
+                                  Counts as a fail (we threw the wrong kind).
+      - 'should-be-skipped'   - test has a feature flag that the runner's skip
+                                  filter already excludes. Should never happen
+                                  here — kept for diagnostic noise if a skip
+                                  filter regression slips one through.
+      - 'unexpected'          - no `negative:` header, no skipping feature flag,
+                                  but the parser still threw. Real bug.
+
+    The split lets the summary distinguish "correct" CEs (which we shouldn't
+    count against pass rate) from "incorrect" CEs (real parser bugs).
+    """
+    header, text = _read_header(path)
+    n = _NEGATIVE_RE.search(header)
+    if n:
+        first = n.group(1).strip().splitlines()[0].strip().rstrip(",")
+        if "parse" in first:
+            return "expected-parse"
+        if "runtime" in first:
+            return "expected-runtime"
+    return "unexpected"
+
+
+# ---------------------------------------------------------------------------
 # Worker management
 # ---------------------------------------------------------------------------
 class Worker:
@@ -513,7 +570,7 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     total = len(tests) + skipped
 
     if not tests:
-        return (0, 0, skipped, total, 0)
+        return (0, 0, skipped, total, 0, {"expected-parse": 0, "expected-runtime": 0, "unexpected": 0})
 
     workers = [Worker(VM_BINARY, i) for i in range(num_workers)]
     results = []  # (path, "PASS"|"FAIL")
@@ -594,9 +651,14 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
         w.kill()
 
     pass_count = sum(1 for _, r in results if r == "PASS")
+    ce_breakdown = {"expected-parse": 0, "expected-runtime": 0, "unexpected": 0}
+    for path, r in results:
+        if r == "COMPILE_ERROR":
+            cat = categorize_ce(path)
+            ce_breakdown[cat] = ce_breakdown.get(cat, 0) + 1
     compile_err_count = sum(1 for _, r in results if r == "COMPILE_ERROR")
     fail_count = len(results) - pass_count - compile_err_count
-    return (pass_count, fail_count, skipped, total, compile_err_count)
+    return (pass_count, fail_count, skipped, total, compile_err_count, ce_breakdown)
 def main():
     parser = argparse.ArgumentParser(
         description="Run test262 tests in parallel worker mode."
@@ -646,30 +708,57 @@ def main():
 
     phases = [resolve_phase_num(args.phase)] if args.phase is not None else range(len(PHASES))
     grand_pass = grand_fail = grand_skip = grand_total = grand_ce = 0
+    grand_ce_breakdown = {"expected-parse": 0, "expected-runtime": 0, "unexpected": 0}
 
     if args.es5:
         print("Mode: ES5-only (skipping tests with post-ES5 feature flags)\n")
 
-    print("Phase | Total | Pass | Fail | Skip | CE")
-    print("------|-------|------|------|------|-----")
+    # B36 — show CE split so tests like `negative: phase: parse` (where the engine
+    # is *supposed* to throw) don't muddy the unexpected-CE / parser-bug surface.
+    # Effective pass count = Pass + expected-parse CE; that number moves the
+    # pass rate from 70.2% → ~70.3% in this run, but more importantly it makes
+    # the CE column tell the truth: "real" parser bugs are counted separately
+    # from "correct rejections" the test262 metadata asks for.
+    print("Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected(real bug)")
+    print("------|-------|------|------|------|-------------------|--------------------|--------------------------")
+    grand_eff_pass = 0
+    grand_real_fail = 0
     for p in phases:
-        p_pass, p_fail, p_skip, p_total, p_ce = run_phase(
+        p_pass, p_fail, p_skip, p_total, p_ce, p_ce_bd = run_phase(
             p, args.workers, args.timeout, es5_only=args.es5
         )
+        ce_exp_parse = p_ce_bd.get("expected-parse", 0)
+        ce_exp_runtime = p_ce_bd.get("expected-runtime", 0)
+        ce_unexpected = p_ce_bd.get("unexpected", 0)
+        # "Real" failure = fail + unexpected-CE + expected-runtime-CE
+        p_real_fail = p_fail + ce_unexpected + ce_exp_runtime
         print(
-            f"{PHASES[p]['label']} | {p_total} | {p_pass} | {p_fail} | {p_skip} | {p_ce}"
+            f"{PHASES[p]['label']} | {p_total} | {p_pass} | {p_fail} | {p_skip} | "
+            f"{ce_exp_parse} | {ce_exp_runtime} | {ce_unexpected}"
         )
         grand_pass += p_pass
         grand_fail += p_fail
         grand_skip += p_skip
         grand_total += p_total
         grand_ce += p_ce
+        for k, v in p_ce_bd.items():
+            grand_ce_breakdown[k] = grand_ce_breakdown.get(k, 0) + v
+        grand_eff_pass += p_pass + ce_exp_parse
+        grand_real_fail += p_real_fail
 
     if len(phases) > 1:
         grand_run = grand_pass + grand_fail + grand_ce
+        grand_real_run = grand_eff_pass + grand_real_fail
         pct = (grand_pass / grand_run * 100) if grand_run > 0 else 0
-        print(f"\nOverall: {grand_pass} pass / {grand_fail} fail / {grand_ce} compile-err ({pct:.1f}%)")
+        eff_pct = (grand_eff_pass / grand_real_run * 100) if grand_real_run > 0 else 0
+        print(f"\nOverall (raw):    {grand_pass} pass / {grand_fail} fail / {grand_ce} CE "
+              f"({pct:.1f}%)")
+        print(f"  CE breakdown:   {grand_ce_breakdown['expected-parse']} expected-parse "
+              f"+ {grand_ce_breakdown['expected-runtime']} expected-runtime "
+              f"+ {grand_ce_breakdown['unexpected']} unexpected (real parser bugs)")
+        print(f"Adjusted pass:   {grand_eff_pass} eff-pass / {grand_real_fail} real-fail "
+              f"= {eff_pct:.1f}% (B36 view)")
         if grand_skip > 0:
-            print(f"Skipped: {grand_skip} tests")
+            print(f"Skipped:          {grand_skip} tests")
 if __name__ == "__main__":
     main()
