@@ -1,37 +1,39 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 242 (optional chaining this-binding + parenthesized expression + comma reference fixes)
+**Last Updated:** Session 248 (B25 dtoa + B28 peephole + B30 Array.prototype.pop use-after-free + test262 full rerun)
 **Target:** 80% test262 pass rate on ES5/ES6 core
 
 ## Summary (full run, 2026-07-01)
 
 | Metric | Value |
 |---|---|
-| Total tests measured | 41,808 |
-| Pass + Fail + CE (executable) | 21,499 |
-| Total passing | 17,896 |
-| **Overall pass rate (pass/pass+fail+CE)** | **83.2%** |
-| Skipped + CE (not run) | 20,309 |
+| Total tests measured | 41,846 |
+| Pass + Fail + CE (executable) | 30,143 |
+| Total passing | 20,665 |
+| **Overall pass rate (pass/pass+fail+CE)** | **68.6%** |
+| Total failing | 5,471 |
+| Total CE | 4,007 |
+| Skipped | 11,703 |
 
-## Per-Phase Status (session 240)
+## Per-Phase Status (session 248)
 
 | Phase | Total | Pass | Fail | Skip | CE |
 |---|---|---|---|---|---|
-| 0: Core VM | 2185 | 682 | 195 | 1297 | 11 |
-| 1: Calling Convention | 426 | 80 | 4 | 339 | 3 |
-| 2: Basic Operators | 1969 | 1057 | 80 | 825 | 7 |
-| 3: Object System | 7766 | 4913 | 857 | 1971 | 25 |
-| 4: Error Handling | 402 | 137 | 57 | 201 | 7 |
-| 5: Built-in Constructors | 8615 | 5862 | 1209 | 1538 | 6 |
-| 6: Prototype Methods | 4713 | 3134 | 630 | 945 | 4 |
-| 7: ES5 Features | 1035 | 236 | 21 | 770 | 8 |
-| 8: ES5 Built-in Objects | 2747 | 1066 | 186 | 1494 | 1 |
-| 11: Arrow/Templates | 465 | 142 | 69 | 158 | 96 |
-| 12-13: Destructuring | 19 | 0 | 0 | 19 | 0 |
-| 14: for-of | 751 | 13 | 15 | 719 | 4 |
-| 15: Classes | 8520 | 65 | 156 | 8265 | 34 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 577 | 45 | 982 | 10 |
-| 21: Generators | 619 | 0 | 0 | 619 | 0 |
+| 0-1: Core VM | 2185 | 785 | 252 | 1056 | 92 |
+| 1: Calling Convention & Closures | 426 | 161 | 84 | 90 | 91 |
+| 2: Basic Operators | 1969 | 1195 | 113 | 563 | 98 |
+| 3: Object System | 7766 | 5310 | 1023 | 836 | 597 |
+| 4: Error Handling & References | 402 | 140 | 65 | 103 | 94 |
+| 5: Built-in Constructors | 8615 | 6327 | 1453 | 806 | 29 |
+| 6: Built-in Prototype Methods | 4713 | 3353 | 925 | 420 | 15 |
+| 7: Remaining ES5 Features | 1035 | 344 | 124 | 458 | 109 |
+| 8: ES5 Built-in Objects | 2747 | 1197 | 453 | 1096 | 1 |
+| 11: Arrow Functions & Templates | 465 | 147 | 67 | 158 | 93 |
+| 12-13: Destructuring & Spread | 19 | 15 | 0 | 2 | 2 |
+| 14: for-of | 751 | 135 | 127 | 169 | 320 |
+| 15: Classes | 8520 | 481 | 471 | 5346 | 2222 |
+| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 954 | 153 | 462 | 45 |
+| 21: Generators | 619 | 121 | 161 | 138 | 199 |
 
 ## Test Infrastructure
 
@@ -44,6 +46,8 @@
 ## Session Log (condensed, newest first, last 10 sessions)
 
 | Session | Summary | test262 impact |
+|---|---|---|
+| 248 | **B30 Array.prototype.pop use-after-free + B28/B25 rosetta fixes + full test262 rerun** (src/builtins/array.c3, src/compiler/context.c3, src/lexer.c3, quickjs/dtoa.c, src/dtoa_wrapper.{h,c}, src/dtoa_bindings.c3, BACKLOG.md, test/rosetta/FAILURES.md, progress.md). Three rosetta bugs closed. **(B30)** `Array.prototype.pop` returned a TVal pointing at the popped HString, then `array_delete_elem` decref'd the slot — if the popped value's only remaining reference was the slot being removed (common with interned strings shared by other array slots, e.g. `push("a"); push("a")`), refcount hit 0, the HString was removed from the string table and freed, and the next allocation (the `out += popped` concat) reused that memory. The reused bytes read back as `""` and the add threw `Cannot convert a Symbol value to a string` on the next iteration. Fix: `incref` the popped element before clearing the slot, transferring ownership to the caller's result register. **(B28)** Peephole fused-compare bridge fix was firing indiscriminately for any `if_false/if_true` at the destination, including the `if_true` *back edge* of a `while (cond1 && cond2)` loop. The structural difference: forward continuations vs loop back edges. Fix: only treat the destination as a bridge when its offset is positive (forward) — preserve the back-edge semantics. Closes heap_sort, shell_sort, range_expansion.compressRange, and merge_sort. **(B25)** `8.3 - 1 === 7.3` is `false` because IEEE 754 represents the two values as different bit patterns (`0x401d333333333334` vs `0x401d333333333333`). This is true in V8, Node, SpiderMonkey, JSC, QuickJS, and our engine — not engine-specific. Updated rosetta test to use approximate equality. Also integrated QuickJS `js_atod` (David-Gay-style parser) via `quickjs/dtoa.c` for future-proofing the decimal-literal path. Full test262 rerun: 20,665 pass (+2,769 vs. session 240's 17,896). Rosetta 100/100. The pass-rate denominator also grew (executable 21,499 → 30,143) because session-240 baseline excluded some phases that the current run includes — absolute pass count is the more honest measure of progress. | +2,769 pass; rosetta 100/100 |
 |---|---|---|
 | 242 | **Optional chaining this-binding fixes + parenthesized expression propagation** (compiler/expressions.c3, compiler/context.c3, progress.md). **(1)** Added `OPT_CHAIN` to DOT/LBRACKET handlers in `call_expr` — fixes this-binding for `a.b?.()` and `foo().b?.()` patterns where the DOT is processed in `call_expr` (not `member_expr`). **(2)** Modified `member_expr` DOT/LBRACKET handlers (both RHS and lhs/del modes) to always save `call_prop_obj_reg` for potential this-binding, even when the next token is not a call — enables propagation through parenthesized expressions. **(3)** Added `inside_parens` flag to `CompilerContext` — prevents `call_expr` start check from prematurely freeing `call_prop_obj_reg` when the `member_expr` result is wrapped in grouping parens. **(4)** Modified the `primary_expr` LPAREN handler to propagate `call_prop_obj_reg` through `(expr)`: after consuming `)`, if the next token is LPAREN or OPT_CHAIN, the member reference is kept alive for the outer call; otherwise it is freed. Fixes `(a.b)()` and `(a.b)?.()` this-binding. **(5)** Fixed comma operator to clear `call_prop_obj_reg` after each operand (including the rightmost) — comma expressions always return a value, never a Reference. Fixes `(a.b, c)()` correctly getting `this = undefined`. 15/17 optional-chaining tests pass (2 async failures pre-existing). Phase 11: 141→142 pass, 70→69 fail (+1 from `optional-call-preserves-this.js`). Rosetta 44/44. | Phase 11 +1 pass, −1 fail |
 | 241 | **Optional chaining implementation + test262 skip-list regex bug fix** (compiler/expressions.c3, compiler/context.c3, scripts/run_test262.py, scripts/capture_fails.py). **(1)** Implemented ES2020 optional chaining (`?.`) in the compiler with null/undefined short-circuit semantics using deferred jump patching. Supports three access forms: `?.()`, `?.[]`, `?.prop`. Results are non-referenceable — `a?.b = 33`, `a?.b++`, `--a?.b` correctly rejected as SyntaxErrors via `last_was_optional_chain` flag. `this` preservation fixed across optional chains by keeping `call_prop_obj_reg` alive through `?.prop` steps and in `member_expr`. `callee_is_eval = false` for `?.()` ensures indirect eval semantics. 15 of 38 optional-chaining tests pass; remaining 23 fall into CE (negative parse tests), unsupported features (class/async/super), or pre-existing VM bugs (indirect eval). **(2)** Fixed a long-standing regex bug in test262 skip lists where trailing `|` created an empty alternative matching any `features:` header, silently skipping ~200 tests. Removed `optional-chaining` from UNSUPPORTED_PATTERN; added `language/expressions/optional-chaining` to Phase 11. Phase 11: 74→141 pass (+67), 23→70 fail, 325→158 skip (-167), 5→96 CE. Phase 0-1: 682→786 pass (+104). Rosetta 44/44. | Phase 11 +67 pass; Phase 0-1 +104 |
