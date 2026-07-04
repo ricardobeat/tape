@@ -130,6 +130,17 @@ struct ParamDefault {
     uint    default_func_idx; // index into inner_funcs for the default expression
 }
 
+/// Tracks a destructured parameter's outer `= default`: `f([x] = [])`.
+/// Unlike ParamDefault, there is no single identifier/var-env binding — the
+/// arg slot is a plain register. Recorded during param parsing and emitted
+/// in a later pass (see emit_destruct_param_defaults) once every parameter's
+/// arg slot is finalised, so scratch registers can never land on a
+/// not-yet-consumed argument register.
+struct DestructParamDefault {
+    ushort arg_slot;          // register holding the (possibly-undefined) argument
+    uint    default_func_idx; // index into inner_funcs for the default expression
+}
+
 /// Tracks a binding in an array destructuring pattern.
 struct ArrayBind {
     ushort reg;
@@ -275,6 +286,10 @@ struct CompilerContext {
     // Default parameter tracking
     ParamDefault[MAX_PARAMS] defaults;
     ushort default_count;
+
+    // Destructured-parameter outer-default tracking (deferred emission)
+    DestructParamDefault[MAX_PARAMS] destruct_defaults;
+    ushort destruct_default_count;
 
     // Rest parameter tracking
     bool has_rest;
@@ -459,23 +474,16 @@ fn uint CompilerContext.add_inner_func(&self, CompiledFunction* func) {
     return idx;
 }
 
-/// B37 — handle the optional `= default` initializer on a destructured
-/// function parameter: `function f([x] = [])` or `function f({x} = {})`.
-/// On entry, `arg_slot` is the parameter index whose argument already lives
-/// at `new_regs[arg_slot]` at runtime (set up by the caller). The default
-/// result lands back in that same slot so the destructuring emit (which
-/// reads from `src_reg = arg_slot`) picks it up.
+/// Parse (but do not yet emit) the optional `= default` initializer on a
+/// destructured function parameter: `function f([x] = [])` or
+/// `function f({x} = {})`. Compiles the default expression as a thunk and
+/// records it in `destruct_defaults` for later emission by
+/// `emit_destruct_param_defaults`, once every parameter's arg slot is
+/// finalised — emitting immediately here would let scratch registers land
+/// on the arg slot of a not-yet-parsed parameter later in the list.
 ///
-/// Returns `true` if a default was consumed (the B37 case), in which case
-/// the helper emits:
-///   1. LDUNDEF/SNEQ/IF_TRUE-skip-past-default
-///   2. The default's compiled inner function called as a thunk
-///   3. The default's result stored back into the arg slot
-///   4. Patched skip target so both paths converge at REQUIRE_OBJ below
-///
-/// If no `=` is present, returns `false` and emits nothing — the caller
-/// is expected to emit its own REQUIRE_OBJ / collect_*_param_binds.
-fn bool? CompilerContext.emit_param_default_handler(&self, ushort arg_slot) {
+/// Returns `true` if a default was consumed, `false` and no-op otherwise.
+fn bool? CompilerContext.parse_destruct_param_default(&self, ushort arg_slot) {
     if (!self.check(TokenType.ASSIGN)) return false;
     self.advance()!; // consume '='
 
@@ -483,45 +491,55 @@ fn bool? CompilerContext.emit_param_default_handler(&self, ushort arg_slot) {
     CompiledFunction* default_func = self.compile_default_expr()!;
     uint func_idx = self.add_inner_func(default_func);
 
-    // B37 critical: destructured bind registers are NOT yet allocated at
-    // this point (they're declared later in compile_inner_function), so
-    // next_reg may still equal arg_slot (which holds the live argument).
-    // Bumping next_reg past arg_slot before any alloc_reg() call ensures
-    // the scratch registers we allocate below don't clobber the live arg.
-    if (self.next_reg <= (uint)arg_slot) {
-        self.next_reg = (ushort)(arg_slot + 1);
+    if (self.destruct_default_count < MAX_PARAMS) {
+        self.destruct_defaults[self.destruct_default_count].arg_slot = arg_slot;
+        self.destruct_defaults[self.destruct_default_count].default_func_idx = func_idx;
+        self.destruct_default_count++;
     }
 
-    // Compare the arg slot vs undefined. If equal, take the default.
-    ushort undef_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-    ushort cmp_reg = self.alloc_reg();
-    self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)arg_slot, (uint)undef_reg);
-    self.free_reg(undef_reg);
-
-    // IF_TRUE: skip past the default-eval block (will patch target after).
-    uint skip_addr = self.code_count;
-    self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-    self.free_reg(cmp_reg);
-
-    // Call the default thunk. Result replaces the arg slot in-place so
-    // the subsequent destructuring emit reads from the updated value.
-    ushort closure_reg = self.alloc_reg();
-    self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
-
-    ushort call_base = self.alloc_reg();
-    if (self.next_reg <= call_base + 1) self.next_reg = call_base + 2;
-    self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-    self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-    self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-    self.emit_abc(Opcode.LDREG, (uint)arg_slot, (uint)call_base, 0);
-    self.free_regs_to(call_base);
-
-    // Patch skip target to land at REQUIRE_OBJ (emitted by caller).
-    int skip_off = (int)self.code_count - (int)skip_addr - 1;
-    self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-
     return true;
+}
+
+/// Emit the deferred outer-default checks recorded by
+/// `parse_destruct_param_default`. Must run after all parameters (and thus
+/// all arg-slot registers) have been parsed, so scratch register allocation
+/// here can never clobber a later parameter's live argument.
+fn void CompilerContext.emit_destruct_param_defaults(&self) {
+    for (ushort di = 0; di < self.destruct_default_count; di++) {
+        ushort arg_slot = self.destruct_defaults[di].arg_slot;
+        uint func_idx = self.destruct_defaults[di].default_func_idx;
+
+        // Compare the arg slot vs undefined. If equal, take the default.
+        ushort undef_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+        ushort cmp_reg = self.alloc_reg();
+        self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)arg_slot, (uint)undef_reg);
+        self.free_reg(undef_reg);
+
+        // IF_TRUE: skip past the default-eval block (will patch target after).
+        uint skip_addr = self.code_count;
+        self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+        self.free_reg(cmp_reg);
+
+        // Call the default thunk. Result replaces the arg slot in-place so
+        // the subsequent destructuring emit reads from the updated value.
+        ushort closure_reg = self.alloc_reg();
+        self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
+
+        ushort call_base = self.alloc_reg();
+        if (self.next_reg <= call_base + 1) self.next_reg = call_base + 2;
+        self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+        self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+        self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+        self.emit_abc(Opcode.LDREG, (uint)arg_slot, (uint)call_base, 0);
+        self.free_regs_to(call_base);
+
+        // Patch skip target to land at REQUIRE_OBJ (emitted right after).
+        int skip_off = (int)self.code_count - (int)skip_addr - 1;
+        self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+
+        self.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_slot, 0, 0);
+    }
 }
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.

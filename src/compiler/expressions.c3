@@ -1969,11 +1969,24 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         break;
                     }
 
-                    Token t = self.advance()!;
-                    if (t.type != TokenType.IDENTIFIER) {
-                        break;  // not a param name, can't be arrow
+                    // A parameter may also be a destructuring pattern, e.g.
+                    // (x, [b]) => ... or (x, {c} = {}) => ... — skip over it
+                    // (handling nesting) rather than bailing, so mixed
+                    // identifier/destructured param lists are still detected
+                    // as arrow functions. The skipped pattern's bindings
+                    // don't need to be tracked here: once `is_arrow` is
+                    // confirmed, parse_arrow_function_reparse() re-parses
+                    // the whole param list from source.
+                    if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                        self.advance()!;
+                        self.skip_destructure_pattern();
+                    } else {
+                        Token t = self.advance()!;
+                        if (t.type != TokenType.IDENTIFIER) {
+                            break;  // not a param name, can't be arrow
+                        }
+                        param_names[pc++] = t.str_value;
                     }
-                    param_names[pc++] = t.str_value;
 
                     // Skip default value if present: = <expression>
                     if (self.check(TokenType.ASSIGN)) {

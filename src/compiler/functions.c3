@@ -319,6 +319,26 @@ fn void CompilerContext.skip_function_body(&self) {
     }
 }
 
+/// Skip past a single destructuring pattern (`{...}` or `[...]`), handling
+/// arbitrarily nested `{}`/`[]` of either kind. The opening token has
+/// already been consumed by the caller; this advances the lexer to just
+/// past the matching closing token.
+fn void CompilerContext.skip_destructure_pattern(&self) {
+    int depth = 1;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) return;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) return;
+        if (tt == TokenType.LBRACE || tt == TokenType.LBRACKET) {
+            depth++;
+        } else if (tt == TokenType.RBRACE || tt == TokenType.RBRACKET) {
+            depth--;
+            if (depth == 0) return;
+        }
+    }
+}
+
 /// Scan forward through a destructured parameter pattern from the current
 /// lexer position to find the matching closing ')' and check if '=>' follows.
 /// Returns true if this is an arrow function with destructured params.
@@ -1028,7 +1048,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             continue;
         }
         uint ni = destruct_binds[i].name_idx;
-        char[] name = destruct_binds[i].name_buf[0..destruct_binds[i].name_len];
+        char[] name = destruct_binds[i].name_buf[:destruct_binds[i].name_len];
         ushort dreg = self.declare_var(name, VAR);
         destruct_binding_regs[i] = dreg;
         self.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
@@ -1417,13 +1437,18 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
             // Check for destructuring pattern as parameter: {a, b} or [a, b]
             if (inner_ctx.check(TokenType.LBRACE)) {
                 inner_ctx.advance()!;
-                // B37 fix: the destructuring pattern itself must be consumed
-                // FIRST (the closing `}` happens before the `= default`),
-                // then we check for the outer default. The default's result
-                // is stored back into the arg slot directly so the
-                // subsequent destructuring emit picks it up.
+                // Reserve the formal parameter register slot so the incoming
+                // argument stays live through all destructuring extractions
+                // and isn't reused by a later parameter's register allocation.
+                inner_ctx.alloc_reg();
+                // The destructuring pattern itself must be consumed FIRST
+                // (the closing `}` happens before the `= default`), then we
+                // check for the outer default. The default check itself is
+                // deferred (see emit_destruct_param_defaults) until every
+                // parameter's arg slot is known, so its scratch registers
+                // can't clobber a later parameter's live argument.
                 inner_ctx.collect_obj_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
-                bool has_default = inner_ctx.emit_param_default_handler((ushort)arg_count)!;
+                bool has_default = inner_ctx.parse_destruct_param_default((ushort)arg_count)!;
                 if (!has_default) {
                     inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
                 }
@@ -1437,9 +1462,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
                 continue;
             } else if (inner_ctx.check(TokenType.LBRACKET)) {
                 inner_ctx.advance()!;
-                // B37 fix: same shape as the LBRACE branch.
+                // Reserve the formal parameter register slot (see LBRACE above).
+                inner_ctx.alloc_reg();
+                // Same shape as the LBRACE branch above.
                 inner_ctx.collect_arr_param_binds(inner_destruct_binds[..], &inner_destruct_count, (ushort)arg_count, 0xFFFF)!;
-                bool has_default = inner_ctx.emit_param_default_handler((ushort)arg_count)!;
+                bool has_default = inner_ctx.parse_destruct_param_default((ushort)arg_count)!;
                 if (!has_default) {
                     inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
                 }
@@ -1525,7 +1552,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
             continue;
         }
         uint ni = inner_destruct_binds[i].name_idx;
-        char[] bind_name = inner_destruct_binds[i].name_buf[0..inner_destruct_binds[i].name_len];
+        char[] bind_name = inner_destruct_binds[i].name_buf[:inner_destruct_binds[i].name_len];
         ushort dreg = inner_ctx.declare_var(bind_name, VAR);
         inner_destruct_binding_regs[i] = dreg;
         inner_ctx.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
@@ -1626,6 +1653,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
             ai++;
         }
     }
+
+    // Emit deferred outer-default checks for destructured parameters, now
+    // that every parameter's arg slot is finalised (see
+    // parse_destruct_param_default / emit_destruct_param_defaults).
+    inner_ctx.emit_destruct_param_defaults();
 
     // Emit destructuring code — single pass walking synthetics then leaves.
     if (inner_destruct_count > 0) {
@@ -1955,9 +1987,14 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             if (arrow_ctx.check(TokenType.LBRACE)) {
                 arrow_ctx.advance()!;
                 arrow_ctx.alloc_reg();
-                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
-                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
                 arrow_ctx.collect_obj_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                bool has_default = arrow_ctx.parse_destruct_param_default((ushort)arg_count)!;
+                if (!has_default) {
+                    arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                }
+                if (has_default && first_default_idx == 0xFFFF) {
+                    first_default_idx = arg_count;
+                }
                 arg_count++;
                 if (first_default_idx == 0xFFFF) { formal_count++; }
                 if (!arrow_ctx.match(TokenType.COMMA)) break;
@@ -1966,9 +2003,14 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             } else if (arrow_ctx.check(TokenType.LBRACKET)) {
                 arrow_ctx.advance()!;
                 arrow_ctx.alloc_reg();
-                // Emit REQUIRE_OBJ to throw TypeError if null/undefined.
-                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
                 arrow_ctx.collect_arr_param_binds(arrow_destruct_binds[..], &arrow_destruct_count, (ushort)arg_count, 0xFFFF)!;
+                bool has_default = arrow_ctx.parse_destruct_param_default((ushort)arg_count)!;
+                if (!has_default) {
+                    arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)arg_count, 0, 0);
+                }
+                if (has_default && first_default_idx == 0xFFFF) {
+                    first_default_idx = arg_count;
+                }
                 arg_count++;
                 if (first_default_idx == 0xFFFF) { formal_count++; }
                 if (!arrow_ctx.match(TokenType.COMMA)) break;
@@ -2034,7 +2076,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             continue;
         }
         uint ni = arrow_destruct_binds[i].name_idx;
-        char[] bind_name = arrow_destruct_binds[i].name_buf[0..arrow_destruct_binds[i].name_len];
+        char[] bind_name = arrow_destruct_binds[i].name_buf[:arrow_destruct_binds[i].name_len];
         ushort dreg = arrow_ctx.declare_var(bind_name, VAR);
         arrow_destruct_binding_regs[i] = dreg;
         arrow_ctx.emit_a_bc(Opcode.DECLVAR, (uint)dreg, ni);
@@ -2135,6 +2177,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             ai++;
         }
     }
+
+    // Emit deferred outer-default checks for destructured parameters, now
+    // that every parameter's arg slot is finalised (see
+    // parse_destruct_param_default / emit_destruct_param_defaults).
+    arrow_ctx.emit_destruct_param_defaults();
 
     // Emit destructuring code — single pass walking synthetics then leaves.
     if (arrow_destruct_count > 0) {
