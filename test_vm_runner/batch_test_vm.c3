@@ -1,6 +1,24 @@
 /// Batch test262 runner — reuses a single heap+VM across tests, resetting
 /// state between runs to avoid per-test malloc/free churn that causes RSS bloat.
 ///
+/// Reset protocol (between tests):
+///   1. heap.reset()  — frees all HObject allocations, string table, env pools,
+///      shapes, compiled functions, module cache, and all pool-backed memory.
+///      ⚠️  heap.reset() MUST also clear the megamorphic property cache
+///      (mega_cache) — pool allocators reset to the same starting addresses
+///      so new objects can get false cache hits against stale entries.
+///   2. vm_destroy() + vm_create() — destroys the old VM (frees valstack, VM struct)
+///      and creates a fresh one.  vm_create() calls register_builtins() which
+///      re-populates all builtin prototypes, constructors, and methods.
+///      vm_reset() exists as a lighter alternative but is not used here.
+///
+/// Known heap-reset correctness requirements:
+///   - mega_cache must be cleared (heap.c3 Heap.reset does this).
+///   - Builtin string cache (Heap.strs) is cleared and re-interned.
+///   - Shape system is reset (trans_table freed, shapes freed, root created).
+///   - GC state (gc_root_count, gray_count, gc_trigger_counter) is reset.
+///   - Object pool allocators are freed + re-initialized.
+///
 /// Usage: ./out/batch_test_vm <manifest_file>
 ///        ./out/batch_test_vm --worker   (stdin-driven worker mode)
 module batch_test_vm;
