@@ -2765,7 +2765,12 @@ fn bool arr_check_callback(TVal val, BuiltinContext* ctx) {
 fn TVal arr_call_callback(BuiltinContext* ctx, TVal callback, TVal thisArg, TVal v, ulong k, HObject* o) {
     TVal[3] args;
     args[0] = v;
-    TVal k_tv; k_tv.set_fastint((long)k);
+    TVal k_tv;
+    if (k <= (ulong)types::FASTINT_MAX) {
+        k_tv.set_fastint((long)k);
+    } else {
+        k_tv.set_number((double)k);
+    }
     args[1] = k_tv;
     args[2].set_object((void*)o);
     TVal res = ctx.heap.call_fn(ctx.vm, callback, &args[0], 3, thisArg);
@@ -2906,6 +2911,9 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
 /// Array.prototype.find(callbackfn[, thisArg]) — ES6 §22.1.3.8
 /// Returns the first element for which callbackfn returns truthy,
 /// or undefined if none.
+/// Per spec, every index in [0, len) is visited in order — the
+/// callback is called even for missing indices (treated as undefined),
+/// so there is no hole-skipping HasProperty precheck.
 fn void builtin_array_proto_find(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* o = arr_to_object(this_val, ctx.heap);
@@ -2923,16 +2931,16 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (arr_has_prop(o, k, ctx.heap)) {
-            TVal v;
-            if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
-                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
-                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                if (builtin_to_boolean(&test)) {
-                    (*ctx.result) = v;
-                    return;
-                }
-            }
+        TVal v;
+        TVal undef; undef.set_undefined();
+        bool have = arr_get_elem_vm(o, k, ctx.heap, ctx, &v);
+        if (!have) v = undef;
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            (*ctx.result) = v;
+            return;
         }
     }
     ctx.result.set_undefined();
@@ -2941,6 +2949,9 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
 /// Array.prototype.findLast(callbackfn[, thisArg]) — ES2023 §22.1.3.9
 /// Returns the last element for which callbackfn returns truthy,
 /// or undefined if none.
+/// Per spec, every index in [0, len) is visited in reverse — the
+/// callback is called even for missing indices (treated as undefined),
+/// so there is no hole-skipping HasProperty precheck.
 fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* o = arr_to_object(this_val, ctx.heap);
@@ -2958,16 +2969,16 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (arr_has_prop(o, (ulong)k, ctx.heap)) {
-            TVal v;
-            if (arr_get_elem_vm(o, (ulong)k, ctx.heap, ctx, &v)) {
-                TVal test = arr_call_callback(ctx, callback, thisArg, v, (ulong)k, o);
-                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                if (builtin_to_boolean(&test)) {
-                    (*ctx.result) = v;
-                    return;
-                }
-            }
+        TVal v;
+        TVal undef; undef.set_undefined();
+        bool have = arr_get_elem_vm(o, (ulong)k, ctx.heap, ctx, &v);
+        if (!have) v = undef;
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal test = arr_call_callback(ctx, callback, thisArg, v, (ulong)k, o);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            (*ctx.result) = v;
+            return;
         }
     }
     ctx.result.set_undefined();
@@ -2976,6 +2987,9 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
 /// Array.prototype.findLastIndex(callbackfn[, thisArg]) — ES2023 §22.1.3.10
 /// Returns the last index for which callbackfn returns truthy,
 /// or -1 if none.
+/// Per spec, every index in [0, len) is visited in reverse — the
+/// callback is called even for missing indices (treated as undefined),
+/// so there is no hole-skipping HasProperty precheck.
 fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* o = arr_to_object(this_val, ctx.heap);
@@ -2993,17 +3007,22 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (arr_has_prop(o, (ulong)k, ctx.heap)) {
-            TVal v;
-            if (arr_get_elem_vm(o, (ulong)k, ctx.heap, ctx, &v)) {
-                TVal test = arr_call_callback(ctx, callback, thisArg, v, (ulong)k, o);
-                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                if (builtin_to_boolean(&test)) {
-                    TVal k_tv; k_tv.set_fastint(k);
-                    (*ctx.result) = k_tv;
-                    return;
-                }
+        TVal v;
+        TVal undef; undef.set_undefined();
+        bool have = arr_get_elem_vm(o, (ulong)k, ctx.heap, ctx, &v);
+        if (!have) v = undef;
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal test = arr_call_callback(ctx, callback, thisArg, v, (ulong)k, o);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            TVal k_tv;
+            if ((ulong)k <= (ulong)types::FASTINT_MAX) {
+                k_tv.set_fastint(k);
+            } else {
+                k_tv.set_number((double)(ulong)k);
             }
+            (*ctx.result) = k_tv;
+            return;
         }
     }
     TVal neg; neg.set_fastint(-1);
@@ -3013,6 +3032,9 @@ fn void builtin_array_proto_findLastIndex(BuiltinContext* ctx) {
 /// Array.prototype.findIndex(callbackfn[, thisArg]) — ES6 §22.1.3.9
 /// Returns the index of the first element for which callbackfn returns truthy,
 /// or -1 if none.
+/// Per spec, every index in [0, len) is visited in order — the
+/// callback is called even for missing indices (treated as undefined),
+/// so there is no hole-skipping HasProperty precheck.
 fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     HObject* o = arr_to_object(this_val, ctx.heap);
@@ -3030,17 +3052,22 @@ fn void builtin_array_proto_findIndex(BuiltinContext* ctx) {
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (arr_has_prop(o, k, ctx.heap)) {
-            TVal v;
-            if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
-                TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
-                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                if (builtin_to_boolean(&test)) {
-                    TVal k_tv; k_tv.set_fastint((long)k);
-                    (*ctx.result) = k_tv;
-                    return;
-                }
+        TVal v;
+        TVal undef; undef.set_undefined();
+        bool have = arr_get_elem_vm(o, k, ctx.heap, ctx, &v);
+        if (!have) v = undef;
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal test = arr_call_callback(ctx, callback, thisArg, v, k, o);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            TVal k_tv;
+            if (k <= (ulong)types::FASTINT_MAX) {
+                k_tv.set_fastint((long)k);
+            } else {
+                k_tv.set_number((double)k);
             }
+            (*ctx.result) = k_tv;
+            return;
         }
     }
     TVal neg; neg.set_fastint(-1);
