@@ -754,7 +754,11 @@ fn void array_set_length_ulong(HObject* obj, ulong len_val, Heap* heap) {
     HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     if (len_key == null) return;
     TVal tv;
-    tv.set_fastint((long)len_val);
+    if (len_val <= (ulong)types::FASTINT_MAX) {
+        tv.set_fastint((long)len_val);
+    } else {
+        tv.set_number((double)len_val);
+    }
     obj.put_prop(len_key, tv, hobject::PROP_FLAGS_WEC);
 }
 
@@ -1477,14 +1481,23 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
 
     // Get actualDeleteCount
     ulong actual_delete_count;
-    if (ctx.argc <= 1) {
-        actual_delete_count = len - actual_start;
+    if (ctx.argc == 0) {
+        // ES2022 §23.1.3.28 step 8: when no arguments at all, insertCount = 0
+        // and actualDeleteCount = 0 — splice is a no-op that just returns an
+        // empty result array and writes the (possibly ToLength-clamped)
+        // length back to O.
+        actual_delete_count = 0;
     } else {
-        double delete_count = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
-
-        if (delete_count < 0) delete_count = 0;
-        ulong dc = (ulong)(long)delete_count;
-        actual_delete_count = dc > (len - actual_start) ? (len - actual_start) : dc;
+        // ES2022 §23.1.3.28 step 9-10: 1 arg (only start) → actualDeleteCount
+        // = len - actualStart; ≥2 args → min(max(dc, 0), len - actualStart).
+        if (ctx.argc == 1) {
+            actual_delete_count = len - actual_start;
+        } else {
+            double delete_count = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+            if (delete_count < 0) delete_count = 0;
+            ulong dc = (ulong)(long)delete_count;
+            actual_delete_count = dc > (len - actual_start) ? (len - actual_start) : dc;
+        }
     }
 
     // Get items to insert
@@ -1497,6 +1510,26 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     // length would exceed 2^53-1.
     if (len - actual_delete_count + (ulong)item_count > (ulong)types::DUK_MAX_SAFE_INT) {
         arr_throw_type_error(ctx, "Splicing would exceed the maximum array length (2^53-1)");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // ES2022 §23.1.3.28 step 9: ArraySpeciesCreate / ArrayCreate rejects
+    // actualDeleteCount > 2^32-1 with a RangeError. Throw before mutating
+    // anything so the host can detect the failure.
+    if (actual_delete_count > 0xFFFFFFFFUL) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.range_err_proto;
+            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
+            if (msg_str != null) {
+                TVal msg_val; msg_val.set_string(msg_str);
+                HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+            ctx.should_throw = true;
+            ctx.throw_value.set_object(err);
+        }
         ctx.result.set_undefined();
         return;
     }
@@ -1561,6 +1594,13 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
             }
         }
         array_set_length_ulong(obj, len - actual_delete_count + item_count, ctx.heap);
+    } else if (ctx.argc == 0) {
+        // ES2022 §23.1.3.28 step 19: when nothing was inserted and nothing
+        // was deleted, Set(O, "length", len, true) is still required so that
+        // out-of-range lengths get clamped. Read `len` again to capture the
+        // ToLength-clamped value, since the original `length` property may
+        // have been out of range.
+        array_set_length_ulong(obj, len, ctx.heap);
     }
 
     // Insert new items
