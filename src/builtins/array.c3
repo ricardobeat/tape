@@ -2069,6 +2069,7 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
     ulong this_len;
     if (!array_to_length(obj, ctx.heap, ctx, &this_len)) { ctx.result.set_undefined(); return; }
     for (ulong i = 0; i < this_len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(obj, i, ctx.heap)) {
             TVal elem;
             if (arr_get_elem_vm(obj, i, ctx.heap, ctx, &elem)) {
@@ -2119,6 +2120,7 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
                     return;
                 }
                 for (ulong i = 0; i < arg_len; i++) {
+                    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                     if (arr_has_prop(arg_obj, i, ctx.heap)) {
                         TVal elem;
                         if (arr_get_elem_vm(arg_obj, i, ctx.heap, ctx, &elem)) {
