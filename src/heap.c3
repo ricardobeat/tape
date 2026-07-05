@@ -1039,6 +1039,14 @@ fn void Heap.reset(&self) {
     self.bwd_gc_budget    = BWD_GC_INTERVAL;
     self.gray_count       = 0;
 
+    // Clear the megamorphic property cache — it holds stale HObject*/HString*
+    // pointers from the previous run.  Since pool allocators are reset to the
+    // same initial addresses, new objects can get false cache hits with the
+    // old (now freed) entries and return wrong property values.
+    if (self.mega_cache != null) {
+        libc::memset(self.mega_cache, 0, MEGA_CACHE_SIZE * hobject::MegamorphicEntry::size);
+    }
+
     // Clear builtin prototype pointers
     self.err_proto        = null;
     self.type_err_proto   = null;
