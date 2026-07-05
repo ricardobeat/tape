@@ -1231,20 +1231,23 @@ fn bool HObject.delete_prop(&self, void* key) {
         // Create a flat shape (own_count = all surviving props, offset = 0).
         Shape* ns = shape_create(new_count, 0, 0xFFFF_FFFF, null);
         if (ns != null) {
-            // Collect surviving property names by walking the old shape chain
+            // Collect surviving property names by walking the old shape chain.
+            // The walk visits the newest shape first, so place each key at its
+            // absolute index (minus one past the deleted slot) — appending in
+            // walk order would reverse the key order relative to the values,
+            // which were compacted in index order above.
             if (self.get_shape() != null) {
                 ShapeProperty* new_sp = ns.props();
-                uint ni = 0;
-                // Walk the old shape chain to get all properties
                 Shape* walk = self.get_shape();
                 while (walk != null) {
                     ShapeProperty* old_sp = walk.props();
                     for (uint j = 0; j < walk.own_count; j++) {
                         uint old_idx = walk.offset + j;
-                        if (old_idx != ui) {
-                            new_sp[ni].key   = old_sp[j].key;
-                            new_sp[ni].flags = old_sp[j].flags;
-                            ni++;
+                        if (old_idx == ui) continue;
+                        uint new_idx = old_idx < ui ? old_idx : old_idx - 1;
+                        if (new_idx < new_count) {
+                            new_sp[new_idx].key   = old_sp[j].key;
+                            new_sp[new_idx].flags = old_sp[j].flags;
                         }
                     }
                     walk = walk.parent_shape;
