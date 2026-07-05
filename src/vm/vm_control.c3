@@ -45,18 +45,32 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
             }
 
             Activation* ret_act = &vm.activations[vm.activation_count - 1];
-            TVal* ret_byteoff = ret_act.retval;
-            TVal* ret_slot = ret_byteoff;
-            vm.heap.tval_copy_ref(&ret_slot[0], &wrapped_val);
+            // retval is null when this activation was entered via the
+            // re-entrant call_fn path (e.g. YIELD_STAR calling a delegated
+            // generator's .next() directly) rather than the CALL opcode —
+            // the result is read back via vm.return_val in that case instead.
+            if (ret_act.retval != null) {
+                vm.heap.tval_copy_ref(ret_act.retval, &wrapped_val);
+            } else {
+                vm.heap.tval_copy_ref(&vm.return_val, &wrapped_val);
+            }
 
             vm.activation_count--;
-            if (vm.activation_count > 0) {
-                Activation* caller_act = &vm.activations[vm.activation_count - 1];
-                vm.valstack_bottom = caller_act.bottom;
-                if (caller_act.func != null) {
-                    CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                    vm.valstack_top = caller_act.bottom + caller_func.num_regs;
-                }
+            // activation_count can hit 0 here when this generator body was
+            // entered via the re-entrant call_fn path (e.g. YIELD_STAR calling
+            // a delegated generator's .next() directly) rather than the CALL
+            // opcode, so there is no caller activation in *this* Vm.run
+            // invocation to fall back to — halt like the plain RET path does.
+            if (vm.activation_count == 0) {
+                ds.halt = true;
+                ds.halt_value = vm.return_val;
+                return (TVal){};
+            }
+            Activation* caller_act = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller_act.bottom;
+            if (caller_act.func != null) {
+                CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+                vm.valstack_top = caller_act.bottom + caller_func.num_regs;
             }
             ds.needs_restart = true;
             return (TVal){};
@@ -90,18 +104,32 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
             }
 
             Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
-            TVal* ret_byteoff2 = ret_act2.retval;
-            TVal* ret_slot2 = ret_byteoff2;
-            vm.heap.tval_copy_ref(&ret_slot2[0], &wrapped_val2);
+            // retval is null when this activation was entered via the
+            // re-entrant call_fn path (e.g. YIELD_STAR calling a delegated
+            // generator's .next() directly) rather than the CALL opcode —
+            // the result is read back via vm.return_val in that case instead.
+            if (ret_act2.retval != null) {
+                vm.heap.tval_copy_ref(ret_act2.retval, &wrapped_val2);
+            } else {
+                vm.heap.tval_copy_ref(&vm.return_val, &wrapped_val2);
+            }
 
             vm.activation_count--;
-            if (vm.activation_count > 0) {
-                Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-                vm.valstack_bottom = caller_act2.bottom;
-                if (caller_act2.func != null) {
-                    CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                    vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
-                }
+            // activation_count can hit 0 here when this generator body was
+            // entered via the re-entrant call_fn path (e.g. YIELD_STAR calling
+            // a delegated generator's .next() directly) rather than the CALL
+            // opcode, so there is no caller activation in *this* Vm.run
+            // invocation to fall back to — halt like the plain RET path does.
+            if (vm.activation_count == 0) {
+                ds.halt = true;
+                ds.halt_value = vm.return_val;
+                return (TVal){};
+            }
+            Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller_act2.bottom;
+            if (caller_act2.func != null) {
+                CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
+                vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
             }
             ds.needs_restart = true;
             return (TVal){};

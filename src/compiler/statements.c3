@@ -2594,8 +2594,11 @@ fn void? CompilerContext.function_declaration(&self) {
     self.is_constructable = true;
 
     // Check for generator star: function* name() {}
+    // Generator functions are never constructable (ES2015 §14.4) — `new` on
+    // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
+        self.is_constructable = false;
     }
 
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;

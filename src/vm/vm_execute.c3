@@ -35,6 +35,15 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     TVal undef;
     undef.set_undefined();
 
+    // Save resume_gen before ANY dispatch below runs. Case 2 (builtin, e.g.
+    // Generator.prototype.next) may itself set vm.heap.resume_gen for the
+    // *callee's* generator before falling through to Case 3's re-dispatch —
+    // capturing this after Case 2 runs would save the callee's resume_gen
+    // instead of the caller's, corrupting the caller generator's resume
+    // state once restored below (e.g. yield* losing track of the delegating
+    // generator's own suspend/resume bookkeeping).
+    void* saved_resume_gen_outer = vm.heap.resume_gen;
+
     // Case 1: lightfunc — dispatch directly via BuiltinContext
     if (func.is_lightfunc()) {
         uint fn_idx = (uint)(usz)func.get_heapptr();
@@ -149,7 +158,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             TVal* saved_valstack_top = vm.valstack_top;
             TVal* saved_valstack = vm.valstack;
             CompiledFunction* saved_current_func = vm.current_func;
-            void* saved_resume_gen = vm.heap.resume_gen;  // preserve across nested generator calls
+            void* saved_resume_gen = saved_resume_gen_outer;  // captured before Case 1/2 could overwrite it
 
             Activation[MAX_CALLS] saved_acts;
             libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
@@ -335,6 +344,12 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     if (vm == null) return undef;
     Heap* heap = vm.heap;
 
+    // Save resume_gen before any dispatch below runs — a builtin constructor
+    // dispatched further down can itself set vm.heap.resume_gen for its own
+    // callee before this function's own save point, corrupting the caller's
+    // resume state once restored. See vm_call_fn_impl for the same fix.
+    void* saved_resume_gen_outer2 = vm.heap.resume_gen;
+
     // Lightfuncs can't be constructors.
     if (func.is_lightfunc()) return undef;
     if (!func.is_object() || func.get_heapptr() == null) return undef;
@@ -414,7 +429,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     TVal* saved_valstack_top = vm.valstack_top;
     TVal* saved_valstack = vm.valstack;
     CompiledFunction* saved_current_func = vm.current_func;
-    void* saved_resume_gen = vm.heap.resume_gen;
+    void* saved_resume_gen = saved_resume_gen_outer2;  // captured before the builtin-constructor dispatch above could overwrite it
 
     Activation[MAX_CALLS] saved_acts;
     libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);

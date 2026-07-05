@@ -576,9 +576,10 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 
             // Regular function declarations are constructable per ES2015 §14.1.2 —
             // save/restore the flag around the inner compile so nested functions
-            // inherit it.
+            // inherit it. Generator functions are never constructable (§14.4) —
+            // `new` on one must throw TypeError.
             bool saved_is_constructable = self.is_constructable;
-            self.is_constructable = true;
+            self.is_constructable = !self.is_generator;
 
             self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
@@ -825,9 +826,10 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
 
             // Regular function declarations are constructable per ES2015 §14.1.2 —
             // save/restore the flag around the inner compile so nested functions
-            // inherit it.
+            // inherit it. Generator functions are never constructable (§14.4) —
+            // `new` on one must throw TypeError.
             bool saved_is_constructable = self.is_constructable;
-            self.is_constructable = true;
+            self.is_constructable = !self.is_generator;
 
             self.is_async = hoist_is_async;
             CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
@@ -1807,8 +1809,11 @@ fn ushort? CompilerContext.function_expr(&self) {
     self.is_constructable = true;
 
     // Check for generator star: function* name?() {}
+    // Generator functions are never constructable (ES2015 §14.4) — `new` on
+    // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
+        self.is_constructable = false;
     }
 
     // Optional function name. If the user didn't write one and we have an
