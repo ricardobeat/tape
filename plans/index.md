@@ -38,5 +38,6 @@
 | [038-numeric-separators-bigint.md](038-numeric-separators-bigint.md) | 🔶 PARTIAL | Numeric separators lex (covered by `test/test_dtoa_edges.js`); BigInt deferred (skip-listed) |
 | [039-binary-size-dedup.md](039-binary-size-dedup.md) | 🔄 IN PROGRESS | Binary 1.23MB→1.12MB via build flags (082f193); Phase 1: dead code removal + disassembler gate; Phase 2: Map/Set/WeakMap/WeakSet dedup, error-throw helper done (8d5d034), compiler/VM dedup remaining |
 | [040-test262-100-percent.md](040-test262-100-percent.md) | 🔄 ACTIVE | **Roadmap to 100% on the targeted subset** — session-250 baseline (71.8%), failure clusters, wave plan, architecture blockers (UTF-16 string model, fn source retention, spec-op helpers, peephole guardrail) |
+| [041-array-set-elem-retirement.md](041-array-set-elem-retirement.md) | 📋 PLANNED | Retire hidden-dense-write hazard (set_array_idx on plain objects); migrate shift/sort/at/includes/join + toReversed family to the B40 ulong helpers. Oracle: test/test_041_array_like_gaps.js (7 failing today, done at 12/12) |
 | [register-locals.md](register-locals.md) | ✅ DONE | Register-resident locals optimization; validated by the ENV_STRICT oracle (`duktape_c3_envstrict` target + corpus) |
 | [026-rosetta-remaining-failures.md](026-rosetta-remaining-failures.md) | ✅ DONE | Rosetta suite at 100/100 since session 248 (B24–B30 closed) |
