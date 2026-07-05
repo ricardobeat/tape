@@ -4,7 +4,7 @@
 
 ## Project Spec
 
-A C3-native, strict-only JavaScript engine. **Goal**: pass ≥80% of the ECMAScript test262 suite, beat Duktape on performance, keep memory low, and run on low-powered devices across platforms.
+A C3-native, strict-only JavaScript engine. **Goal**: pass 100% of the targeted test262 subset (the ~29,500 executable tests left after the skip list; roadmap in `plans/040-test262-100-percent.md`), beat Duktape on performance, keep memory low, and run on low-powered devices across platforms.
 
 - Uses Duktape v2.7.0 and QuickJS as architectural references; leverage C3's native features for memory safety and its stdlib. When a path is unclear, compare Duktape source against QuickJS. Check the stdlib reference for what is available when planning a new feature.
 - Focus on ES5/ES6 core; ignore *staging* features in the spec.
@@ -36,6 +36,8 @@ All common tasks are `just` recipes (`just list` to see them all). The fast debu
 | Full test262 | `just test262` |
 
 **Validate changes with `just rosetta`, `just run` on a local repro, or a single `just test262-phase <n>` — not a full `just test262` run, which is slow and noisy.** Test fixtures live in `test/`; test262 lives under `test262/`.
+
+For test262 work: `python3 scripts/run_test262.py --phase <n> --log <file>` writes per-test `RESULT<TAB>path` lines for failure clustering, and `bash test262_runner/run_single_test.sh <path-under-test262/test>` reproduces one test with harness includes and real error output (`--keep` emits the combined file for `just lldb`). The runner kills workers exceeding 2 GB RSS (`MEMKILL`) — see `plans/040-test262-100-percent.md` §A5.
 
 Typical debug loop: minimize a failure to a single-line `.js` repro → `just run` it → if it fails to compile the bug is in the compiler; if it runs but gives a wrong value / `VM_ERROR` it's in the VM → trace with the flags below.
 

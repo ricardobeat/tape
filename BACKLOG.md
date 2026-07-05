@@ -1,24 +1,9 @@
 # Duktape C3 — Backlog
 
-Baseline as of Session 227 (2026-06-27):
-
-| Phase | Total | Pass | Fail | Skip | CE  |
-|-------|-------|------|------|------|-----|
-| 0-1: Core VM | 2185 | 684 | 192 | 1297 | 12 |
-| 1: Calling Convention & Closures | 426 | 80 | 4 | 339 | 3 |
-| 2: Basic Operators | 1969 | 1056 | 81 | 825 | 7 |
-| 3: Object System | 7766 | 4951 | 817 | 1971 | 27 |
-| 4: Error Handling & References | 402 | 134 | 48 | 201 | 19 |
-| 5: Built-in Constructors | 8615 | 5892 | 1177 | 1538 | 8 |
-| 6: Built-in Prototype Methods | 4713 | 3086 | 675 | 945 | 7 |
-| 7: Remaining ES5 Features | 1035 | 207 | 68 | 749 | 11 |
-| 8: ES5 Built-in Objects | 2747 | 1066 | 186 | 1494 | 1 |
-| 11: Arrow Functions & Templates | 427 | 68 | 29 | 325 | 5 |
-| 12-13: Destructuring & Spread | 19 | 0 | 0 | 19 | 0 |
-| 14: for-of | 751 | 13 | 15 | 719 | 4 |
-| 15: Classes | 8520 | 64 | 157 | 8265 | 34 |
-| 17-20: Map/Set/Symbol/Promise | 1614 | 365 | 261 | 978 | 10 |
-| 21: Generators | 619 | 0 | 0 | 619 | 0 |
+Baseline as of Session 250 (2026-07-05) — **71.8%** (21,121 pass / 29,459 executable).
+The full roadmap to 100%, failure-cluster analysis, and architecture issues live in
+`plans/040-test262-100-percent.md`; per-phase numbers in `progress.md`. Regenerate the
+per-test log with `python3 scripts/run_test262.py --workers 4 --log out/test262_results.tsv`.
 
 ---
 
@@ -128,6 +113,36 @@ Baseline as of Session 227 (2026-06-27):
 
 - [ ] **B37** — `destructuring-binding` feature flag fires on 2,233 tests that produce unexpected CEs. Largest single contributor to "parser too strict" CE bucket. Sampled cases show the parser rejects ES2015 destructuring patterns that the spec allows in positions our parser doesn't yet cover — confirmed by `duktape_c3` error on `built-ins/.../target-assign-throws-iterator-return-get-throws.js` and on `statements/try/scope-catch-param-lex-open.js` (`compile error at line 16:10: expected '<identifier>', got '['` — likely catch-clause destructuring pattern not supported). Notable distinct surfaces to investigate: (a) `catch ([x, _]) {}` — catch-clause destructuring, (b) `for ([x, y] of arr) {}` — for-of destructuring head, (c) `[a = function() { return b; }, b = 1]` — default-value-side-effect-ordering interaction, (d) `({ [computed()]: a } = obj)` — destructuring with computed property name, (e) `({ __proto__: x, ...y } = obj)` — destructuring rest with computed proto. Each surface may be a separate fix in the parser/desugar path. Repro for the catch case: `test/test_b37_destructuring_catch.js` (draft). Requires ~200-phrase investigation per surface to identify exact parser hole.
 
-- [ ] **B38** — `generators` feature flag fires on 1,396 tests producing unexpected CEs (second-largest "parser too strict" contributor). We claim `generators` is supported per AGENTS.md and most generator code paths work, but a quarter of generator tests can't get past the parser. Likely distinct surfaces: (a) `yield` in non-generator functions (illegal but commonly tested for parse-time rejection with a different mode — verify our message matches), (b) `yield * expr` in specific contexts (delegating yield in arrow, computed-property-name, generator-method shorthand of an object literal where the surrounding parser state is wrong), (c) generator methods inside class bodies / static generators / async generators edge cases, (d) `({ *g() { yield 1; } })` generator-method shorthand in object literal inside parentheses vs in expression-statement — peephole/parse-state interaction. Same investigation-then-repro workflow as B37. Per-surface fix expected to be small once identified; cumulative effort likely larger than B37 because the generator tests span more distinct syntactic positions.
+- [ ] **B38** — *(session 250: root cause identified — see B43; the bulk of these CEs are the missing generator-method shorthand in class bodies and object literals, not `yield` positions.)* `generators` feature flag fires on 1,396 tests producing unexpected CEs (second-largest "parser too strict" contributor). We claim `generators` is supported per AGENTS.md and most generator code paths work, but a quarter of generator tests can't get past the parser. Likely distinct surfaces: (a) `yield` in non-generator functions (illegal but commonly tested for parse-time rejection with a different mode — verify our message matches), (b) `yield * expr` in specific contexts (delegating yield in arrow, computed-property-name, generator-method shorthand of an object literal where the surrounding parser state is wrong), (c) generator methods inside class bodies / static generators / async generators edge cases, (d) `({ *g() { yield 1; } })` generator-method shorthand in object literal inside parentheses vs in expression-statement — peephole/parse-state interaction. Same investigation-then-repro workflow as B37. Per-surface fix expected to be small once identified; cumulative effort likely larger than B37 because the generator tests span more distinct syntactic positions.
 
-- [ ] **B39** — `default-parameters` feature flag fires on 1,250 tests producing unexpected CEs. We claim `default-parameters` is supported. Cases likely split between (a) destructured default values (`function f({ a = 1 }) {}` we may be misparsing as parameter with default), (b) default values in arrow-function shorthand (`(a = 1) => a`), (c) default values with TDZ references (`function f(a = b, b = 1) {}`), (d) computed `[[]]= expr` patterns, (e) default-parameter side-effect ordering tests. Likely shares root cause with B37 (destructuring + default value combined). Same investigation pattern. Cheaper than B37/B38 because the surface area is narrower.
+- [ ] **B39** — `default-parameters` feature flag fires on 1,250 tests producing unexpected CEs. We claim `default-parameters` is supported. Cases likely split between (a) destructured default values (`function f({ a = 1 }) {}` we may be misparsing as parameter with default), (b) default values in arrow-function shorthand (`(a = 1) => a`), (c) default values with TDZ references (`function f(a = b, b = 1) {}`), (d) computed `[[]]= expr` patterns, (e) default-parameter side-effect ordering tests. Likely shares root cause with B37 (destructuring + default value combined). Same investigation pattern. Cheaper than B37/B38 because the surface area is narrower. *(Partial progress in `3559c1f` + `143c534`: outer-defaults on destructured params and multi-param destructured defaults now parse.)*
+
+---
+
+## Session 250 review findings (2026-07-05) — see plans/040-test262-100-percent.md for full detail
+
+- [ ] **B40** — Huge-length array-like handling: `Array.prototype` methods on `{length: 2^53-ish}` either loop for the full timeout (46 TIMEOUTs) or balloon memory until killed (MEMKILL). Verified repro: `Array.prototype.findLast.call({length: Number.MAX_VALUE}, () => true)` grows RSS at ~250–300 MB/s (interned numeric-index key strings accumulate in the string table each iteration) instead of calling the predicate once at index 2^53-2 and returning. Fixes needed: correct `ToLength` clamp to 2^53-1 everywhere `length` is read; iterate `findLast`/`lastIndexOf` from the end; `splice`/`concat`/`unshift`/`push` must throw TypeError *before* iterating when result length would exceed 2^53-1. Affected clusters: `splice/clamps-length-to-integer-limit`, `*/maximum-index`, `*-integer-limit*`. This is also the root cause of the 30GB+ machine-freeze during full runs (runner-side guard added in session 250: workers are RSS-sampled 2×/s and SIGKILLed above 2 GB, logged as MEMKILL).
+
+- [ ] **B41** — `continue` in `finally` that overrides a `break` from the `try` block loops forever. Repro (hangs): `do { try { c1+=1; break; } catch(e){} finally { fin=1; continue; } } while (c1<2);` — spec says the finally's continue replaces the break completion and the loop proceeds normally (terminates with c1=2). Suspect the `CATCHER_FLAG_PENDING_BREAK`/`PENDING_CONTINUE` interaction in the catcher-chain walk (`src/vm.c3`, break/continue-across-finally machinery): the pending break appears to survive or the continue re-targets the wrong PC. 12 timeouts in `language/statements/try` (S12.14_A9_*, A11_*, cptn-*-break) at 10s each — also the biggest single wall-clock cost in a full run.
+
+- [ ] **B42** — Parser rejects reserved words as property names. `var o = { default: 1, extends: 2 }`, `o.default`, `{ get default() {} }`, `class C { default() {} }` all CE. ES5 §7.6: property-name and member-access-after-dot positions accept any IdentifierName (keywords included); only binding positions require Identifier. Fix in the property-name paths of object literals / member access / class method names / getter-setter names: accept keyword tokens, use lexeme as key. Clusters: `ident-name-*` families. Est. 400–600 tests.
+
+- [ ] **B43** — Generator method shorthand missing: `class C { *m() { yield 1; } }` and `({ *g() { yield 1; } })` both CE (plain `function*` works). Single biggest CE source: dominates phase 15's 930 CEs and `language/expressions/object`'s 256, blocks phase 21 runtime tests behind parse. Fix: `*`-prefix handling at the method-name position in `src/compiler/class.c3` and object-literal shorthand in `src/compiler/expressions.c3`, setting the existing is_generator path. Est. 900–1,200 tests. (This is the concrete root cause behind most of B38.)
+
+- [ ] **B44** — Async arrow functions missing: `async () => 42` parses `async` as an identifier → runtime "async is not defined". Needs `async` [no LineTerminator] arrow-head lookahead in the parser. Also gates the `cpn-*-from-async-arrow-*` computed-property-name test families. Est. 100–200 tests.
+
+- [ ] **B45** — for-of/for-in heads reject member-expression LHS: `for (obj.prop of arr)` CEs with `expected ';', got '<identifier>'`. Accept any AssignmentTargetType-valid LHS (member expressions; destructuring patterns overlap with B37). Part of phase 14's 320 CEs.
+
+- [ ] **B46** — Array.prototype conformance sweep (1,323 fails spread over *every* method — shared root causes, not per-method bugs): (a) spec step ordering — `Get(length)` must precede the callable check (verified: `map/15.4.4.19-4-15.js` "lengthAccessed !== true"); (b) sparse/hole semantics via HasProperty (verified: `[].concat([,1])` wrong result, `S15.4.4.4_A1_T4.js`); (c) ArraySpeciesCreate + Symbol.isConcatSpreadable families; (d) huge-length = B40. Introduce shared spec-op helpers (LengthOfArrayLike, ArraySpeciesCreate, hole-aware iteration) instead of per-method one-offs — see plan 040 §A4.
+
+- [ ] **B47** — Function.prototype cluster (247 fails): `toString` (82) needs retained function source text — architecture item, see plan 040 §A2 (`CompiledFunction` must keep a source range + heap-owned source buffer); `bind` (48) length/name/descriptor details; `call`/`apply` (80) argument-coercion order; `Symbol.hasInstance` (18).
+
+- [ ] **B48** — Number.prototype formatting: `toPrecision` (18), `toExponential` (15), `toFixed` (14), plus valueOf/toString radix edge cases (~67 total). QuickJS's dtoa.c is already vendored (B25) — port its js_dtoa-based formatter paths rather than fixing snprintf-based formatting incrementally.
+
+- [ ] **B49** — Property-descriptor validation matrix (~490 fails: defineProperties 263, defineProperty 190, getOwnPropertyDescriptor 41). Sampled mode: "Expected a TypeError to be thrown but no exception was thrown" — ES5 §8.12.9 ValidateAndApplyPropertyDescriptor rejection matrix incomplete (non-configurable transitions, writable:false value changes, accessor↔data flips). Finish `plans/022-property-descriptor-correctness.md` as one table-driven validator instead of continuing piecemeal patches.
+
+- [ ] **B50** — Runner flakiness: two back-to-back identical full runs differ by ±33 results (21,154 vs 21,121). Any run-to-run flip is a real bug (GC/refcount timing, timeout adjacency under load, or worker-death misattribution). Add `--retry-fails` to `run_test262.py` (serial rerun of FAIL/TIMEOUT set before reporting) and diff two `--log` files to enumerate the flaky set. Must be resolved before pass-rate claims above ~95% are meaningful.
+
+- [ ] **B51** — String model is UTF-8/codepoint-indexed; spec requires UTF-16 code-unit semantics: `"\u{1F600}".length` returns 1 (must be 2), `charCodeAt` can't return surrogate halves, lone surrogates don't round-trip. **Blocking for B32** (UTF-16 regex exec buffer) and a silent mis-scorer of hundreds of String/RegExp tests. Recommended: Duktape's CESU-8/WTF-8 approach — encode astral codepoints as paired 3-byte surrogate encodings so codepoint count == UTF-16 length. Touch points: `src/hstring.c3` (encode/decode/compute_charlen), lexer `\u{...}` emitter, `String.fromCharCode/fromCodePoint`, JSON, libregexp wrapper. Full detail: plan 040 §A1.
+
+- [ ] **B52** — Unicode identifier tables incomplete: `language/identifiers/start-unicode-*` / `part-unicode-*-escaped` fail (34 tests). Bind libregexp's vendored `libunicode.c` ID_Start/ID_Continue classification (as QuickJS does with `lre_js_is_ident_first/next`) instead of hand-rolled lexer ranges.

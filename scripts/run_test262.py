@@ -3,20 +3,29 @@
 Worker-mode test262 runner.
 
 Spawns N parallel batch_test_vm --worker processes, feeds tests via stdin,
-collects PASS/FAIL results, enforces per-test timeouts via SIGKILL+restart.
+collects PASS/FAIL results, enforces per-test timeouts via SIGKILL+restart,
+and kills any worker whose RSS exceeds MEM_LIMIT_KB (2 GB) — runaway-
+allocation tests otherwise drive the machine to tens of GB of memory
+pressure (each worker can balloon at ~300 MB/s until the 10s timeout).
 
 Default: 3 workers (max 4) to avoid OOM from multiple VM heaps.
 
 IMPORTANT: Always prefer running a single --phase relevant to your change
-instead of the full suite. The full suite takes 20+ minutes; a single phase
-is usually under a minute. Only run all phases for final validation before
-merging.
+instead of the full suite. The full suite takes ~6-8 minutes with 4 workers;
+a single phase is usually under a minute.
+
+This is the single canonical test262 runner. For per-test results (needed
+for failure clustering), pass --log FILE — each line is RESULT<TAB>relpath
+where RESULT is PASS / FAIL / TIMEOUT / MEMKILL / CE:expected-parse /
+CE:expected-runtime / CE:unexpected. Cluster with e.g.:
+    awk -F'\\t' '$1=="FAIL"{print $2}' results.tsv | xargs -n1 dirname | sort | uniq -c | sort -rn
 
 Usage:
     python3 scripts/run_test262.py --phase 2    # single phase (preferred)
     python3 scripts/run_test262.py              # all phases (full validation only)
     python3 scripts/run_test262.py --workers 4  # override worker count
     python3 scripts/run_test262.py --es5        # ES5-only (skip tests with feature flags)
+    python3 scripts/run_test262.py --log out/test262_results.tsv   # per-test log
 """
 
 import argparse
@@ -35,6 +44,36 @@ VM_BINARY = os.path.join(PROJECT_DIR, "out", "batch_test_vm")
 
 # Default timeout per test (seconds)
 TEST_TIMEOUT = 10
+
+# Optional per-test result log (set from --log in main); list so run_phase can
+# see assignment from main without a global statement.
+LOG_FH = [None]
+
+# Per-worker RSS cap in KB. Tests that loop allocating (e.g. huge-length
+# array-like iteration bugs) can balloon a worker to multiple GB within the
+# 10s timeout window; with 4 workers hitting such tests concurrently the
+# machine hits tens of GB of memory pressure. Workers over the cap are
+# killed and the test is recorded as MEMKILL (counted as a failure).
+MEM_LIMIT_KB = 2 * 1024 * 1024  # 2 GB
+
+def sample_worker_rss(workers):
+    """Return {pid: rss_kb} for all live busy workers via one ps call."""
+    pids = [w._proc.pid for w in workers if w.alive and not w.is_idle]
+    if not pids:
+        return {}
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "pid=,rss=", "-p", ",".join(str(p) for p in pids)],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:
+        return {}
+    rss = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            rss[int(parts[0])] = int(parts[1])
+    return rss
 
 # ---------------------------------------------------------------------------
 # Skip list — see test262_relevance_report.md for rationale
@@ -573,14 +612,16 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
         return (0, 0, skipped, total, 0, {"expected-parse": 0, "expected-runtime": 0, "unexpected": 0})
 
     workers = [Worker(VM_BINARY, i) for i in range(num_workers)]
-    results = []  # (path, "PASS"|"FAIL")
+    results = []  # (path, "PASS"|"FAIL"|"COMPILE_ERROR"|"TIMEOUT"|"MEMKILL")
     pending_count = [0]  # mutable counter for tracking timed-out tests
+    last_mem_check = [time.monotonic()]
 
-    def finish_worker(w, timed_out=False):
+    def finish_worker(w, timed_out=False, result=None):
         """Record pending test as completed. Returns (path, result)."""
         if w._pending is not None:
             path, _ = w._pending
-            result = "FAIL" if timed_out else "FAIL"
+            if result is None:
+                result = "TIMEOUT" if timed_out else "FAIL"
             results.append((path, result))
             w._pending = None
             pending_count[0] -= 1
@@ -622,8 +663,25 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
                             pending_count[0] -= 1
                         break
 
-        # Check for timeouts
+        # Check worker memory (~2x/second): kill workers over the RSS cap.
+        # See MEM_LIMIT_KB — runaway-allocation tests otherwise balloon each
+        # worker to several GB before the 10s timeout fires.
         now = time.monotonic()
+        if now - last_mem_check[0] >= 0.5:
+            last_mem_check[0] = now
+            rss_map = sample_worker_rss(workers)
+            for w in workers:
+                if w.alive and not w.is_idle and rss_map.get(w._proc.pid, 0) > MEM_LIMIT_KB:
+                    print(
+                        f"  [memkill {rss_map[w._proc.pid] // 1024} MB] "
+                        f"{w._pending[0]} (worker {w.worker_id})",
+                        file=sys.stderr,
+                    )
+                    w.kill()
+                    finish_worker(w, result="MEMKILL")
+                    w.restart(VM_BINARY)
+
+        # Check for timeouts
         for w in workers:
             if w.alive and not w.is_idle and w.elapsed() > test_timeout:
                 print(
@@ -649,6 +707,15 @@ def run_phase(phase_idx, num_workers, test_timeout, es5_only=False):
     # Cleanup
     for w in workers:
         w.kill()
+
+    if LOG_FH[0] is not None:
+        for path, r in results:
+            rel = os.path.relpath(path, TEST262_DIR)
+            tag = r
+            if r == "COMPILE_ERROR":
+                tag = f"CE:{categorize_ce(path)}"
+            LOG_FH[0].write(f"{tag}\t{rel}\n")
+        LOG_FH[0].flush()
 
     pass_count = sum(1 for _, r in results if r == "PASS")
     ce_breakdown = {"expected-parse": 0, "expected-runtime": 0, "unexpected": 0}
@@ -686,7 +753,15 @@ def main():
         action="store_true",
         help="ES5-only mode: skip all tests with feature flags (post-ES5 features)",
     )
+    parser.add_argument(
+        "--log",
+        metavar="FILE",
+        help="Write per-test results (RESULT<TAB>relative-path) to FILE for cluster analysis",
+    )
     args = parser.parse_args()
+
+    if args.log:
+        LOG_FH[0] = open(args.log, "w")
 
     # Cap workers to avoid OOM — each worker is a full VM process with its own heap
     if args.workers > 4:

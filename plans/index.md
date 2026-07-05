@@ -31,6 +31,12 @@
 | [031-string-intern-bloat.md](031-string-intern-bloat.md) | ✅ DONE | Skip-interning for ADD concat + lazy intern in get_prop_key; memory 15,776→6,688 KB. Fix 2 (GC in alloc_no_gc) retracted post-completion — caused double-frees and the ~1s shape bench regression |
 | [032-gc-safepoints.md](032-gc-safepoints.md) | ✅ DONE | `gc_pending`, `safepoint_gc()`, and `temproot` protection implemented in heap.c3/vm.c3 |
 | [033-memory-next-steps.md](033-memory-next-steps.md) | 🔄 IN PROGRESS | GC on backward jumps (item 2) done; boxed accessor pairs (item 1) done. Remaining: default-prototype elision |
-| [034-async-await.md](034-async-await.md) | 🔄 PLANNED | Async/await compiler desugaring, Promise state refactor, microtask queue |
-| [035-enforce-strict-mode.md](035-enforce-strict-mode.md) | 🔄 PLANNED | Collapse engine to always-strict: remove `is_strict`/`ACT_FLAG_STRICT`/`is_with`/`WITH` opcode, 4 phases (compile errors → runtime checks → cleanup → runner/docs) |
-| [039-binary-size-dedup.md](039-binary-size-dedup.md) | 🔄 IN PROGRESS | Binary 1.23MB→1.12MB via build flags (082f193); Phase 1: dead code removal + disassembler gate; Phase 2: Map/Set/WeakMap/WeakSet dedup, error-throw helper, compiler/VM dedup (~4-5.5K duplicated lines found in 5-way audit) |
+| [034-async-await.md](034-async-await.md) | ✅ DONE | Async/await implemented via resumable execution on the generator save/restore path (see AGENTS.md invariants). Async generators (`async function*`) remain out of scope (B35 skip) |
+| [035-enforce-strict-mode.md](035-enforce-strict-mode.md) | ✅ DONE | Engine is strict-only, single mode; no `is_strict` flag remains (see AGENTS.md "Strict-Only Mode") |
+| [036-vm-split.md](036-vm-split.md) | ✅ DONE | vm.c3 split into `src/vm/` (vm_execute, vm_calls, vm_objects, vm_property, vm_arith, …) |
+| [037-esm-modules.md](037-esm-modules.md) | ✅ DONE | `duktape_c3 -m/--module` runs ESM via `esm::resolve_module`; `test/mod_*.js` exercise it |
+| [038-numeric-separators-bigint.md](038-numeric-separators-bigint.md) | 🔶 PARTIAL | Numeric separators lex (covered by `test/test_dtoa_edges.js`); BigInt deferred (skip-listed) |
+| [039-binary-size-dedup.md](039-binary-size-dedup.md) | 🔄 IN PROGRESS | Binary 1.23MB→1.12MB via build flags (082f193); Phase 1: dead code removal + disassembler gate; Phase 2: Map/Set/WeakMap/WeakSet dedup, error-throw helper done (8d5d034), compiler/VM dedup remaining |
+| [040-test262-100-percent.md](040-test262-100-percent.md) | 🔄 ACTIVE | **Roadmap to 100% on the targeted subset** — session-250 baseline (71.8%), failure clusters, wave plan, architecture blockers (UTF-16 string model, fn source retention, spec-op helpers, peephole guardrail) |
+| [register-locals.md](register-locals.md) | ✅ DONE | Register-resident locals optimization; validated by the ENV_STRICT oracle (`duktape_c3_envstrict` target + corpus) |
+| [026-rosetta-remaining-failures.md](026-rosetta-remaining-failures.md) | ✅ DONE | Rosetta suite at 100/100 since session 248 (B24–B30 closed) |

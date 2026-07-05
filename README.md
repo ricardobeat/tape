@@ -6,8 +6,8 @@ A port of the [Duktape JavaScript engine](https://duktape.org/) from C to [C3](h
 
 **Work in Progress** — A functional JavaScript engine running real workloads.
 
-- **~58% test262 pass rate** on ES5/ES6 core (12,170 of 20,635 phases 0–8 tests)
-- **43/43 Rosetta Code tests** pass
+- **71.8% test262 pass rate** on the targeted subset (21,121 of 29,459 executable tests, session 250); roadmap to 100% in `plans/040-test262-100-percent.md`
+- **100/100 Rosetta Code tests** pass
 - **Benchmarks competitive** with original Duktape v2.7.0 and QuickJS on most workloads
 - **Memory usage on par** with Duktape/QuickJS for light workloads; remaining gap on heavy object/array workloads is tracked in `plans/033-memory-next-steps.md`
 
