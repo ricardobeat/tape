@@ -245,7 +245,8 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
         if (!arg.is_undefined()) {
-            depth_num = builtin_to_integer(arg);
+            depth_num = builtin_to_integer_vm(ctx, arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         }
     }
     if (depth_num < 0) depth_num = 0;
@@ -1257,7 +1258,8 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // Determine start
     double relative_start = 0.0;
     if (ctx.argc > 0) {
-        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg]);
+        relative_start = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     ulong k;
@@ -1271,7 +1273,8 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // Determine end
     double relative_end = (double)len;
     if (ctx.argc > 1) {
-        relative_end = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+        relative_end = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     ulong final_val;
@@ -1468,7 +1471,8 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     // Get relativeStart (argument 0)
     double relative_start = 0.0;
     if (ctx.argc > 0) {
-        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg]);
+        relative_start = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     ulong actual_start;
@@ -1493,7 +1497,8 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         if (ctx.argc == 1) {
             actual_delete_count = len - actual_start;
         } else {
-            double delete_count = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+            double delete_count = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             if (delete_count < 0) delete_count = 0;
             ulong dc = (ulong)(long)delete_count;
             actual_delete_count = dc > (len - actual_start) ? (len - actual_start) : dc;
@@ -1873,7 +1878,8 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
     double index_d = 0.0;
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
-        index_d = builtin_to_integer(arg);
+        index_d = builtin_to_integer_vm(ctx, arg);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     ulong actual_index;
@@ -2003,7 +2009,8 @@ fn void builtin_array_proto_indexOf(BuiltinContext* ctx) {
     // builtin_to_integer handles Infinity / -Infinity / NaN / hex strings.
     double relative_start = 0.0;
     if (ctx.argc > 1) {
-        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+        relative_start = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     // Per ES5 §15.4.4.14 step 4: compute k from n (ToInteger of fromIndex).
@@ -2056,7 +2063,8 @@ fn void builtin_array_proto_lastIndexOf(BuiltinContext* ctx) {
     // Get fromIndex (default len - 1) — per ES5 §15.4.4.15 step 3.
     double relative_start = (double)(len - 1);
     if (ctx.argc > 1) {
-        relative_start = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+        relative_start = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     // Per ES5 §15.4.4.15 step 4: compute k from n (ToInteger of fromIndex).

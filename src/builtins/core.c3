@@ -1372,6 +1372,29 @@ fn double builtin_to_integer(TVal* val) {
     }
 }
 
+/// VM-aware ToInteger (ES2022 §7.1.5): properly handles objects by calling
+/// ToPrimitive via the VM (invoking valueOf/toString).  When ToPrimitive
+/// returns a non-primitive, throws TypeError instead of silently returning 0.
+fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
+    if (val.is_object() && ctx.vm != null) {
+        Vm* vm_ptr = (Vm*)ctx.vm;
+        TVal prim = vm::to_primitive_value(vm_ptr, val, false);
+        if (vm_ptr.throw_pending) {
+            vm_ptr.throw_pending = false;
+            ctx.should_throw = true;
+            ctx.throw_value = vm_ptr.throw_value;
+            return 0.0 / 0.0;
+        }
+        if (!prim.is_object()) {
+            return builtin_to_integer(&prim);
+        }
+        // Both valueOf and toString returned non-primitives — ES2022 §7.1.5 step 4b
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert object to primitive value");
+        return 0.0 / 0.0;
+    }
+    return builtin_to_integer(val);
+}
+
 /// Helper: clamp to int and coerce to range [0, len].
 fn uint clamp_index(double d, uint len) {
     if (math::is_nan(d)) return 0;
