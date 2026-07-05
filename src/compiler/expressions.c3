@@ -2466,7 +2466,7 @@ fn ushort? CompilerContext.object_literal(&self) {
     // Track data property keys for duplicate detection in strict mode.
     // ES5 §11.1.5: duplicate PropertyName in PropertySetData is a
     // SyntaxError when contained in strict code.
-    char[16][64] seen_key_buf;
+    char[64][16] seen_key_buf;
     usz[16] seen_key_len;
     usz seen_count = 0;
 
