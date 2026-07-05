@@ -279,7 +279,7 @@ fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
-    double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double pos = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (pos < 0 || pos >= (double)len) {
         // Return empty string
         ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
@@ -302,7 +302,7 @@ fn void builtin_string_proto_charCodeAt(BuiltinContext* ctx) {
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
-    double pos = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double pos = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (pos < 0 || pos >= (double)len) {
         ctx.result.set_number(double::nan);
         return;
@@ -334,7 +334,7 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
     }
 
     // Get position
-    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
         pos = 0;
@@ -380,7 +380,7 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
 
-    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     // Per ES5 §15.5.4.13 step 6: if end is undefined, let end be len.
     double end_d;
     if (ctx.argc > 1) {
@@ -388,7 +388,7 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
         if (end_arg.is_undefined()) {
             end_d = (double)len;
         } else {
-            end_d = builtin_to_integer(end_arg);
+            end_d = builtin_to_integer_vm(ctx, end_arg);
         }
     } else {
         end_d = (double)len;
@@ -442,7 +442,7 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
     }
     uint len = s_hstr.blen;
 
-    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     // Per ES5 §15.5.4.15 step 6: if end is undefined, let end be len.
     double end_d;
     if (ctx.argc > 1) {
@@ -450,7 +450,7 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
         if (end_arg.is_undefined()) {
             end_d = (double)len;
         } else {
-            end_d = builtin_to_integer(end_arg);
+            end_d = builtin_to_integer_vm(ctx, end_arg);
         }
     } else {
         end_d = (double)len;
@@ -487,7 +487,7 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
     }
     uint len = s_hstr.blen;
 
-    double start_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
 
     int start_i;
     if (math::is_nan(start_d)) {
@@ -502,7 +502,7 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
 
     double length_d;
     if (ctx.argc > 1) {
-        length_d = builtin_to_integer(&ctx.regs[ctx.base_reg + 1]);
+        length_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
     } else {
         length_d = (double)(len - (uint)start_i);
     }
@@ -1669,7 +1669,7 @@ fn void builtin_string_proto_includes(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
-    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
         pos = 0;
@@ -1710,7 +1710,7 @@ fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
-    double pos_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : 0.0;
+    double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
         pos = 0;
@@ -1747,7 +1747,7 @@ fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
-    double end_d = (ctx.argc > 1) ? builtin_to_integer(&ctx.regs[ctx.base_reg + 1]) : (double)len;
+    double end_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)len;
     uint end_pos;
     if (math::is_nan(end_d) || end_d < 0) {
         end_pos = 0;
@@ -1872,7 +1872,7 @@ fn void builtin_string_proto_codePointAt(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
 
-    double pos_d = (ctx.argc > 0) ? builtin_to_integer(&ctx.regs[ctx.base_reg]) : 0.0;
+    double pos_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
         ctx.result.set_undefined(); return;
