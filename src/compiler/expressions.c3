@@ -2477,13 +2477,14 @@ fn ushort? CompilerContext.object_literal(&self) {
             }
 
             // ES2015 §14.3: generator-method shorthand — `*m() { yield ... }`.
-            // Save the generator + async flags so compile_inner_function sees
-            // the generator flag, and restore immediately after so siblings
-            // and nested functions do not inherit it.
+            // Save the generator + async flags; they are only overridden right
+            // before compiling the method body below. Property keys, computed
+            // keys, spread expressions, and `key: value` expressions are all
+            // evaluated in the *enclosing* function's context (e.g. `...yield`
+            // inside a generator body must still see is_generator = true), so
+            // we must not clear the flags here.
             bool saved_is_generator = self.is_generator;
             bool saved_is_async = self.is_async;
-            self.is_generator = false;
-            self.is_async = false;
             bool is_generator_method = self.match(TokenType.STAR);
 
             // Parse property key

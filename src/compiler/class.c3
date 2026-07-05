@@ -278,13 +278,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         }
 
         // ES2015 §14.4: generator-method shorthand — `*m() { yield ... }`.
-        // Save/restore the generator + async flags around the inner-function
-        // compile so the method body sees the generator flag without leaking
-        // it into sibling/nested methods.
+        // Save the generator + async flags; they are only overridden right
+        // before compiling the method body below. Anything parsed before that
+        // (identifier method names, `[expr]` computed keys) runs in the
+        // *enclosing* function's context, so we must not clear the flags here.
         bool saved_is_generator = self.is_generator;
         bool saved_is_async = self.is_async;
-        self.is_generator = false;
-        self.is_async = false;
         bool is_generator_method = self.match(TokenType.STAR);
 
         // Get the method name
