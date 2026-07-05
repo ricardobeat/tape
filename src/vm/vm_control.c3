@@ -15,6 +15,67 @@ import std::math;
 // vm_control — return / variable access / closure / iterator / exceptions / misc
 // ============================================================================
 
+/// Complete a generator's return: mark GEN_COMPLETED, wrap `val` in an
+/// IteratorResult {value, done:true}, write it to the caller, and pop the
+/// activation. Shared by RET_GEN/RETUNDEF_GEN and by ENDFINALLY's
+/// generator-aware pending-return completion (a return that was deferred
+/// through a try/finally in a generator body).
+fn void vm_complete_generator_return(Dispatch* ds, TVal* val) {
+    Vm* vm = ds.vm;
+    GeneratorState* gs = vm.heap.resume_gen;
+    if (gs != null) {
+        gs.state = GEN_COMPLETED;
+        vm.heap.tval_copy_ref(&vm.heap.yield_value, val);
+        vm.heap.did_yield = false;
+        vm.heap.resume_gen = null;
+    }
+
+    HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+    TVal wrapped_val;
+    if (try robj = robj_raw) {
+        robj.prototype = vm.heap.object_proto;
+        HString* val_key = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+        if (val_key != null) robj.put_prop(val_key, *val, hobject::PROP_FLAGS_WEC);
+        HString* done_key = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+        TVal done_val;
+        done_val.set_boolean(true);
+        if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
+        wrapped_val.set_object(robj);
+    } else {
+        wrapped_val = *val;
+    }
+
+    Activation* ret_act = &vm.activations[vm.activation_count - 1];
+    // retval is null when this activation was entered via the re-entrant
+    // call_fn path (e.g. YIELD_STAR calling a delegated generator's .next()
+    // directly) rather than the CALL opcode — the result is read back via
+    // vm.return_val in that case instead.
+    if (ret_act.retval != null) {
+        vm.heap.tval_copy_ref(ret_act.retval, &wrapped_val);
+    } else {
+        vm.heap.tval_copy_ref(&vm.return_val, &wrapped_val);
+    }
+
+    vm.activation_count--;
+    // activation_count can hit 0 here when this generator body was entered
+    // via the re-entrant call_fn path (e.g. YIELD_STAR calling a delegated
+    // generator's .next() directly) rather than the CALL opcode, so there is
+    // no caller activation in *this* Vm.run invocation to fall back to —
+    // halt like the plain RET path does.
+    if (vm.activation_count == 0) {
+        ds.halt = true;
+        ds.halt_value = vm.return_val;
+        return;
+    }
+    Activation* caller_act = &vm.activations[vm.activation_count - 1];
+    vm.valstack_bottom = caller_act.bottom;
+    if (caller_act.func != null) {
+        CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
+        vm.valstack_top = caller_act.bottom + caller_func.num_regs;
+    }
+    ds.needs_restart = true;
+}
+
 /// Sub-dispatch for the generator return opcodes RET_GEN/RETUNDEF_GEN.
 /// The hot non-generator RET/RETUNDEF paths are inlined directly in Vm.run
 /// (src/vm/vm_execute.c3) since they dominate recursion-heavy workloads.
@@ -22,116 +83,38 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
     Vm* vm = ds.vm;
     switch (op) {
         case Opcode.RET_GEN: {
-            // Generator return: mark completed, wrap in IteratorResult
-            GeneratorState* gs = vm.heap.resume_gen;
-            gs.state = GEN_COMPLETED;
-            vm.heap.tval_copy_ref(&vm.heap.yield_value, &ra[0]);
-            vm.heap.did_yield = false;
-            vm.heap.resume_gen = null;
-
-            HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-            TVal wrapped_val;
-            if (try robj = robj_raw) {
-                robj.prototype = vm.heap.object_proto;
-                HString* val_key = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
-                if (val_key != null) robj.put_prop(val_key, ra[0], hobject::PROP_FLAGS_WEC);
-                HString* done_key = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
-                TVal done_val;
-                done_val.set_boolean(true);
-                if (done_key != null) robj.put_prop(done_key, done_val, hobject::PROP_FLAGS_WEC);
-                wrapped_val.set_object(robj);
-            } else {
-                wrapped_val = ra[0];
-            }
-
-            Activation* ret_act = &vm.activations[vm.activation_count - 1];
-            // retval is null when this activation was entered via the
-            // re-entrant call_fn path (e.g. YIELD_STAR calling a delegated
-            // generator's .next() directly) rather than the CALL opcode —
-            // the result is read back via vm.return_val in that case instead.
-            if (ret_act.retval != null) {
-                vm.heap.tval_copy_ref(ret_act.retval, &wrapped_val);
-            } else {
-                vm.heap.tval_copy_ref(&vm.return_val, &wrapped_val);
-            }
-
-            vm.activation_count--;
-            // activation_count can hit 0 here when this generator body was
-            // entered via the re-entrant call_fn path (e.g. YIELD_STAR calling
-            // a delegated generator's .next() directly) rather than the CALL
-            // opcode, so there is no caller activation in *this* Vm.run
-            // invocation to fall back to — halt like the plain RET path does.
-            if (vm.activation_count == 0) {
-                ds.halt = true;
-                ds.halt_value = vm.return_val;
+            // Check for active finally catchers: if we're returning through
+            // a try-finally inside the generator body, save the return value,
+            // mark it as a generator-return, and jump to the finally handler
+            // instead of completing immediately (mirrors plain RET).
+            Catcher* ret_cat = (Catcher*)ds.act.cat;
+            if (ret_cat != null && ret_cat.finally_pc != null) {
+                ret_cat.return_val = ra[0];
+                if (!(ret_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+                    ds.curr_pc = ret_cat.finally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
+                }
                 return (TVal){};
             }
-            Activation* caller_act = &vm.activations[vm.activation_count - 1];
-            vm.valstack_bottom = caller_act.bottom;
-            if (caller_act.func != null) {
-                CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                vm.valstack_top = caller_act.bottom + caller_func.num_regs;
-            }
-            ds.needs_restart = true;
+            vm_complete_generator_return(ds, &ra[0]);
             return (TVal){};
         }
 
         case Opcode.RETUNDEF_GEN: {
-            // Generator return undefined: mark completed
-            GeneratorState* gs2 = vm.heap.resume_gen;
-            gs2.state = GEN_COMPLETED;
-            vm.heap.did_yield = false;
-            vm.heap.resume_gen = null;
-
-            // Wrap in IteratorResult {value: undefined, done: true}
-            HObject*? robj_raw2 = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-            TVal wrapped_val2;
-            if (try robj2 = robj_raw2) {
-                robj2.prototype = vm.heap.object_proto;
-                HString* val_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
-                TVal undef_val2;
-                undef_val2.set_undefined();
-                if (val_key2 != null) robj2.put_prop(val_key2, undef_val2, hobject::PROP_FLAGS_WEC);
-                HString* done_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
-                TVal done_val2;
-                done_val2.set_boolean(true);
-                if (done_key2 != null) robj2.put_prop(done_key2, done_val2, hobject::PROP_FLAGS_WEC);
-                wrapped_val2.set_object(robj2);
-            } else {
-                TVal undef_val2;
-                undef_val2.set_undefined();
-                wrapped_val2 = undef_val2;
-            }
-
-            Activation* ret_act2 = &vm.activations[vm.activation_count - 1];
-            // retval is null when this activation was entered via the
-            // re-entrant call_fn path (e.g. YIELD_STAR calling a delegated
-            // generator's .next() directly) rather than the CALL opcode —
-            // the result is read back via vm.return_val in that case instead.
-            if (ret_act2.retval != null) {
-                vm.heap.tval_copy_ref(ret_act2.retval, &wrapped_val2);
-            } else {
-                vm.heap.tval_copy_ref(&vm.return_val, &wrapped_val2);
-            }
-
-            vm.activation_count--;
-            // activation_count can hit 0 here when this generator body was
-            // entered via the re-entrant call_fn path (e.g. YIELD_STAR calling
-            // a delegated generator's .next() directly) rather than the CALL
-            // opcode, so there is no caller activation in *this* Vm.run
-            // invocation to fall back to — halt like the plain RET path does.
-            if (vm.activation_count == 0) {
-                ds.halt = true;
-                ds.halt_value = vm.return_val;
+            TVal undef_val;
+            undef_val.set_undefined();
+            Catcher* ret_cat2 = (Catcher*)ds.act.cat;
+            if (ret_cat2 != null && ret_cat2.finally_pc != null) {
+                ret_cat2.return_val = undef_val;
+                if (!(ret_cat2.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                    ret_cat2.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+                    ds.curr_pc = ret_cat2.finally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
+                }
                 return (TVal){};
             }
-            Activation* caller_act2 = &vm.activations[vm.activation_count - 1];
-            vm.valstack_bottom = caller_act2.bottom;
-            if (caller_act2.func != null) {
-                CompiledFunction* caller_func2 = (CompiledFunction*)caller_act2.func;
-                vm.valstack_top = caller_act2.bottom + caller_func2.num_regs;
-            }
-            ds.needs_restart = true;
+            vm_complete_generator_return(ds, &undef_val);
             return (TVal){};
         }
         default:
@@ -374,8 +357,27 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             // Check if any active catcher has a finally handler that
             // would be bypassed by this jump.  If so, save the target
             // and redirect to the finally handler.
+            // If the current catcher's own finally is what we're executing
+            // right now (CATCHER_FLAG_IN_FINALLY), redirecting to it again
+            // would loop forever — this break/continue overrides whatever
+            // pending completion it was carrying, so pop and discard it; it
+            // will never reach ENDFINALLY. The next catcher up the chain may
+            // itself be IN_FINALLY too (nested try/finally within the first
+            // one's finally block) — in that case the jump target already
+            // lies inside its still-active finally, so we don't redirect at
+            // all and just let the jump proceed there directly.
             Catcher* bc_cat = (Catcher*)ds.act.cat;
-            if (bc_cat != null && bc_cat.finally_pc != null
+            bool bc_target_in_active_finally = false;
+            if (bc_cat != null && (bc_cat.flags & CATCHER_FLAG_IN_FINALLY) != 0) {
+                Catcher* bc_parent = (Catcher*)bc_cat.parent;
+                ds.act.cat = (void*)bc_parent;
+                vm.heap.free_func(vm.heap.heap_udata, bc_cat);
+                bc_cat = bc_parent;
+                if (bc_cat != null && (bc_cat.flags & CATCHER_FLAG_IN_FINALLY) != 0) {
+                    bc_target_in_active_finally = true;
+                }
+            }
+            if (!bc_target_in_active_finally && bc_cat != null && bc_cat.finally_pc != null
                 && (bc_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
                 // Save the pending jump target and flag on the catcher
                 bc_cat.pending_pc = target_pc;

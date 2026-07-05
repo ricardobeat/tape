@@ -99,56 +99,28 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 }
 
                 if (rk == RETURN) {
-                    // Inject return: mark generator complete, return to caller
+                    // Inject return at the suspended yield point: this acts like
+                    // a `return` statement executing there, so a try/finally
+                    // enclosing the yield must run before the generator
+                    // actually completes (mirrors plain RET/RET_GEN).
                     TVal ret_val_raw = gs_lr.return_value;
-                    gs_lr.state = GEN_COMPLETED;
                     gs_lr.resume_kind = NEXT;
+
+                    Catcher* ret_cat3 = (Catcher*)ds.act.cat;
+                    if (ret_cat3 != null && ret_cat3.finally_pc != null) {
+                        ret_cat3.return_val = ret_val_raw;
+                        if (!(ret_cat3.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                            ret_cat3.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+                            ds.curr_pc = ret_cat3.finally_pc;
+                            ds.act.curr_pc = ds.curr_pc;
+                        }
+                        ds.needs_restart = true;
+                        return (TVal){};
+                    }
+
+                    gs_lr.state = GEN_COMPLETED;
                     vm.heap.resume_gen = null;
-
-                    // Wrap in IteratorResult {value: ret_val, done: true}
-                    HObject*? robj_raw2 = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-                    TVal ret_val;
-                    if (try robj2 = robj_raw2) {
-                        robj2.prototype = vm.heap.object_proto;
-                        HString* val_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
-                        if (val_key2 != null) robj2.put_prop(val_key2, ret_val_raw, hobject::PROP_FLAGS_WEC);
-                        HString* done_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
-                        TVal done_val2;
-                        done_val2.set_boolean(true);
-                        if (done_key2 != null) robj2.put_prop(done_key2, done_val2, hobject::PROP_FLAGS_WEC);
-                        ret_val.set_object(robj2);
-                    } else {
-                        ret_val = ret_val_raw;
-                    }
-
-                    // Pop the generator activation
-                    if (vm.activation_count > 0) {
-                        Activation* gen_act = &vm.activations[vm.activation_count - 1];
-                        // retval is null when this activation was entered via
-                        // the re-entrant call_fn path (e.g. YIELD_STAR calling
-                        // a delegated generator's .next() directly) — the
-                        // result is read back via vm.return_val in that case.
-                        if (gen_act.retval != null) {
-                            vm.heap.tval_copy_ref(gen_act.retval, &ret_val);
-                        } else {
-                            vm.heap.tval_copy_ref(&vm.return_val, &ret_val);
-                        }
-                        vm.activation_count--;
-                        // activation_count can hit 0 here for the same
-                        // re-entrant-call reason — halt like the plain RET path.
-                        if (vm.activation_count == 0) {
-                            ds.halt = true;
-                            ds.halt_value = vm.return_val;
-                            return (TVal){};
-                        }
-                        Activation* caller_act = &vm.activations[vm.activation_count - 1];
-                        vm.valstack_bottom = caller_act.bottom;
-                        if (caller_act.func != null) {
-                            CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
-                            vm.valstack_top = caller_act.bottom + caller_func.num_regs;
-                        }
-                    }
-                    ds.needs_restart = true;
+                    vm_complete_generator_return(ds, &ret_val_raw);
                     return (TVal){};
                 }
 
@@ -676,7 +648,27 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     if (try d2 = do2) rd = builtins::builtin_to_boolean(&d2);
                     if (try v2 = rro2.get_prop_proto(vk2)) rv = v2;
                     gs.resume_kind = NEXT; gs.resume_value.set_undefined();
-                    if (rd) { gs.delegated_iter = null; vm.heap.tval_copy_ref(&ra[0], &rv); break; }
+                    if (rd) {
+                        // ES6 §25.3.2.4 step 3.c.ii.6: delegate's .return()
+                        // completed (done:true) — the outer generator itself
+                        // must now return rv, as if `return rv` executed at
+                        // the yield* expression. Route through any enclosing
+                        // finally in the *outer* generator's body instead of
+                        // just resuming past the yield* with rv as its value.
+                        gs.delegated_iter = null;
+                        Catcher* ys_ret_cat = (Catcher*)ds.act.cat;
+                        if (ys_ret_cat != null && ys_ret_cat.finally_pc != null) {
+                            ys_ret_cat.return_val = rv;
+                            if (!(ys_ret_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                                ys_ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+                                ds.curr_pc = ys_ret_cat.finally_pc;
+                                ds.act.curr_pc = ds.curr_pc;
+                            }
+                            ds.needs_restart = true; break;
+                        }
+                        vm_complete_generator_return(ds, &rv);
+                        break;
+                    }
                     received_val = rv; ys_state = YS_YIELD;
                 }
                 else {

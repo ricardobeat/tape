@@ -127,6 +127,7 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 bool has_pending_exc = (!cat.thrown_val.is_undefined());
                 TVal pending_exc_val = cat.thrown_val;
                 bool has_pending_ret = (cat.flags & CATCHER_FLAG_PENDING_RETURN) != 0;
+                bool has_pending_ret_gen = (cat.flags & CATCHER_FLAG_PENDING_RETURN_GEN) != 0;
                 TVal saved_ret_val = cat.return_val;
                 bool has_pending_break = (cat.flags & CATCHER_FLAG_PENDING_BREAK) != 0;
                 bool has_pending_continue = (cat.flags & CATCHER_FLAG_PENDING_CONTINUE) != 0;
@@ -144,9 +145,27 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                         && (parent_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
                         parent_cat.return_val = saved_ret_val;
                         parent_cat.flags |= CATCHER_FLAG_PENDING_RETURN;
-                        ds.curr_pc = parent_cat.finally_pc;
-                        ds.act.curr_pc = ds.curr_pc;
+                        if (has_pending_ret_gen) parent_cat.flags |= CATCHER_FLAG_PENDING_RETURN_GEN;
+                        // If the parent's finally is already executing (this
+                        // ENDFINALLY is completing a try/finally nested inside
+                        // it), redirecting to parent.finally_pc again would
+                        // loop forever. Just record the pending return on the
+                        // parent (its own eventual ENDFINALLY will complete
+                        // it) and fall through to keep executing here.
+                        if ((parent_cat.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
+                            ds.curr_pc = parent_cat.finally_pc;
+                            ds.act.curr_pc = ds.curr_pc;
+                        }
                         break;
+                    }
+                    if (has_pending_ret_gen) {
+                        // Return was deferred from a generator body (RET_GEN/
+                        // RETUNDEF_GEN, or a .return()/.throw() completion
+                        // injected via LOAD_RESUME) — complete via the
+                        // generator-aware path instead of a plain RET.
+                        TVal gval = saved_ret_val;
+                        vm_complete_generator_return(ds, &gval);
+                        return (TVal){};
                     }
                     // Complete the return that was intercepted by the finally block.
                     TVal val = saved_ret_val;
@@ -205,8 +224,14 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 if (has_pending_break || has_pending_continue) {
                     // Check if the parent catcher also has a finally — if so,
                     // propagate the pending break/continue through it first.
+                    // But if the parent's finally is already executing (this
+                    // ENDFINALLY is completing a try/finally nested inside
+                    // it), redirecting to parent.finally_pc again would loop
+                    // forever — the jump target already lies inside that
+                    // still-active finally, so just go there directly.
                     if (parent_cat != null && parent_cat.finally_pc != null
-                        && (parent_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0) {
+                        && (parent_cat.flags & CATCHER_FLAG_FINALLY_ENABLED) != 0
+                        && (parent_cat.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
                         parent_cat.pending_pc = saved_pending_pc;
                         if (has_pending_break) {
                             parent_cat.flags |= CATCHER_FLAG_PENDING_BREAK;

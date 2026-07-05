@@ -107,6 +107,11 @@ const uint CATCHER_FLAG_PENDING_RETURN   = 1u << 2;
 const uint CATCHER_FLAG_PENDING_BREAK    = 1u << 3;
 const uint CATCHER_FLAG_PENDING_CONTINUE = 1u << 4;
 const uint CATCHER_FLAG_IN_FINALLY       = 1u << 5;
+/// Set alongside PENDING_RETURN when the return originates from a generator
+/// return (RET_GEN/RETUNDEF_GEN, or a .return()/.throw() completion injected
+/// via LOAD_RESUME) — tells ENDFINALLY to complete via the generator-aware
+/// path (wrap in IteratorResult, mark GEN_COMPLETED) instead of a plain RET.
+const uint CATCHER_FLAG_PENDING_RETURN_GEN = 1u << 6;
 
 /// A catcher entry pushed by TRY for exception handling.
 /// Singly-linked list rooted in Activation.cat.
