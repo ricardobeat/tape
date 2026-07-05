@@ -2861,7 +2861,12 @@ fn void? CompilerContext.export_declaration(&self) {
 
             bool saved_is_async = self.is_async;
             self.is_async = false;
+            // Regular functions are constructable (ES2015 §14.1.2); generators
+            // never are (§14.4) — mirrors function_declaration's handling.
+            bool saved_is_constructable = self.is_constructable;
+            self.is_constructable = !self.is_generator;
             CompiledFunction* inner = self.compile_inner_function(fn_name)!;
+            self.is_constructable = saved_is_constructable;
             self.is_async = saved_is_async;
             self.is_generator = false;
 
@@ -2981,7 +2986,12 @@ fn void? CompilerContext.export_declaration(&self) {
         Token name_tok = self.expect(TokenType.IDENTIFIER)!;
         ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
+        // Regular functions are constructable (ES2015 §14.1.2); generators
+        // never are (§14.4) — mirrors function_declaration's handling.
+        bool saved_is_constructable = self.is_constructable;
+        self.is_constructable = !self.is_generator;
         CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+        self.is_constructable = saved_is_constructable;
         self.is_async = saved_is_async;
         self.is_generator = false;
 
