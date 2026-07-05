@@ -210,9 +210,19 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     ctx.result.set_object(iter);
 }
 
-/// %IteratorPrototype%[@@iterator] (ES6 §25.1.2.1) — returns `this`.
+/// %IteratorPrototype%[@@iterator] (ES6 section 25.1.2.1) — returns `this`.
+/// The spec says iterators are their own iterator (calling `@@iterator` on an
+/// iterator returns the iterator itself). `set_object` is required here — a
+/// raw `*ctx.result = ctx.this_val` would copy the NaN-boxed bits and skip
+/// the `incref`, which crashes as soon as GC reclaims the iterator (the
+/// canonical trigger is `for (var v of generator)`, since the loop holds
+/// the iterator through the result of this builtin).
 fn void builtin_iterator_proto_symbol_iter(BuiltinContext* ctx) {
-    *ctx.result = ctx.this_val;
+    if (ctx.this_val.is_object()) {
+        ctx.result.set_object(ctx.this_val.get_heapptr());
+    } else {
+        ctx.result.set_undefined();
+    }
 }
 
 /// Array iterator .next() — returns {value, done}.

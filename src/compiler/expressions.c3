@@ -1588,9 +1588,18 @@ fn ushort? CompilerContext.new_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
             self.free_reg(idx_reg);
-            self.free_reg(ctor_reg);
-            ctor_reg = result;
-            self.next_reg = ctor_reg + 1;
+            // Check if this is a method call: new X()[idx](args)
+            if (self.check(TokenType.LPAREN)) {
+                // Keep ctor_reg alive as 'this' for the method call
+                self.call_prop_obj_reg = ctor_reg;
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+                ctor_reg = self.emit_call(ctor_reg)!;
+            } else {
+                self.free_reg(ctor_reg);
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+            }
         } else {
             break;
         }
@@ -2467,6 +2476,17 @@ fn ushort? CompilerContext.object_literal(&self) {
                 break;
             }
 
+            // ES2015 §14.3: generator-method shorthand — `*m() { yield ... }`.
+            // Save the generator + async flags; they are only overridden right
+            // before compiling the method body below. Property keys, computed
+            // keys, spread expressions, and `key: value` expressions are all
+            // evaluated in the *enclosing* function's context (e.g. `...yield`
+            // inside a generator body must still see is_generator = true), so
+            // we must not clear the flags here.
+            bool saved_is_generator = self.is_generator;
+            bool saved_is_async = self.is_async;
+            bool is_generator_method = self.match(TokenType.STAR);
+
             // Parse property key
             ushort key_reg;
 
@@ -2476,9 +2496,12 @@ fn ushort? CompilerContext.object_literal(&self) {
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
                 // If key is "get" or "set" AND next token is a property key (not `:` or `(`)
+                // Generator-method shorthand forbids the getter/setter shape — `*get` / `*set`
+                // would otherwise be misparsed as a method shorthand that named `get`/`set`,
+                // so we disable the detection entirely when a star was consumed.
                 bool is_obj_getter = false;
                 bool is_obj_setter = false;
-                if (key_tt == TokenType.IDENTIFIER && !self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
+                if (!is_generator_method && key_tt == TokenType.IDENTIFIER && !self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
                     if (key_tok.str_value.len == 3
                         && key_tok.str_value[0] == 'g'
                         && key_tok.str_value[1] == 'e'
@@ -2548,6 +2571,8 @@ fn ushort? CompilerContext.object_literal(&self) {
                     }
                     self.free_reg(accessor_reg);
                     self.free_reg(key_reg);
+                    self.is_generator = saved_is_generator;
+                    self.is_async = saved_is_async;
 
                     if (!self.match(TokenType.COMMA)) {
                         break;
@@ -2616,32 +2641,51 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.expect(TokenType.RBRACKET)!;
             } else if (self.match(TokenType.ELLIPSIS)) {
                 // Object spread: ...expr
+                // `*...expr` is not legal — restore flags and reject.
+                if (is_generator_method) return COMPILE_ERROR~;
                 ushort spread_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.OBJSPRD, (uint)obj_reg, 0, (uint)spread_reg);
                 self.free_reg(spread_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
 
                 if (!self.match(TokenType.COMMA)) {
                     break;
                 }
                 continue;
             } else {
+                // Restore flags on every iteration-end path so a stray STAR
+                // (e.g. `*}`) does not leak the saved state forward.
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
                 return COMPILE_ERROR~;
             }
 
             // Check for method shorthand or data property
             if (self.check(TokenType.LPAREN)) {
                 // Method shorthand: key() { ... } — name inferred from key (set above)
+                // Propagate the generator flag when this is a `*method()` shorthand
+                // and restore saved flags immediately after so the next iteration
+                // starts clean.
+                if (is_generator_method) self.is_generator = true;
                 ushort method_reg = self.function_expr_body()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
             } else {
                 // key: value — name inferred from key (set above)
+                // `*a: 1` is not legal per ES2015 §14.3 — generator shorthand
+                // must be a method (`*a() {}`).
+                if (is_generator_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 self.free_reg(val_reg);
                 self.free_reg(key_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
             }
 
             if (!self.match(TokenType.COMMA)) {
@@ -2813,17 +2857,21 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     // Step 4: Set up callee + this pair for .next() calls
     //   callee = next_reg        (.next method)
     //   callee_this = method_reg (iterator, as this for .next())
+    //
+    // These registers are loaded fresh each iteration because some iterator
+    // protocols (generators) overwrite the callee slot during the CALL via
+    // re-dispatch.  Reloading here keeps for-of correct across iterations.
     ushort callee_reg = self.alloc_reg();
     ushort callee_this_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
     // Loop start
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
 
-    // Step 5: Call .next() each iteration
+    // Step 5: Load callee + this, then call .next() each iteration
     //   result = CALL callee, 0    (result = next.call(iterator))
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
