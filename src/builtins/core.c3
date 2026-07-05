@@ -1380,6 +1380,7 @@ fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, val, false);
         if (vm_ptr.throw_pending) {
+            vm_ptr.throw_pending = false;
             ctx.should_throw = true;
             ctx.throw_value = vm_ptr.throw_value;
             return 0.0 / 0.0;

@@ -264,6 +264,7 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
     int f = 0;
     if (ctx.argc > 0) {
         double f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (f_d < 0 || f_d > 20) {
             // ES5 §15.7.4.5: throw RangeError
             builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
@@ -303,6 +304,7 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
     int f = 0;
     if (ctx.argc > 0) {
         double f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (f_d < 0 || f_d > 20) {
             // ES5 §15.7.4.6: throw RangeError
             builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
@@ -407,6 +409,7 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     }
 
     double p_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     if (p_d < 1 || p_d > 21) {
         // ES5 §15.7.4.7: throw RangeError
         builtin_throw(ctx, ctx.heap.range_err_proto, "precision out of range");
