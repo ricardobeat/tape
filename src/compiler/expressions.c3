@@ -1588,9 +1588,18 @@ fn ushort? CompilerContext.new_expr(&self) {
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
             self.free_reg(idx_reg);
-            self.free_reg(ctor_reg);
-            ctor_reg = result;
-            self.next_reg = ctor_reg + 1;
+            // Check if this is a method call: new X()[idx](args)
+            if (self.check(TokenType.LPAREN)) {
+                // Keep ctor_reg alive as 'this' for the method call
+                self.call_prop_obj_reg = ctor_reg;
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+                ctor_reg = self.emit_call(ctor_reg)!;
+            } else {
+                self.free_reg(ctor_reg);
+                ctor_reg = result;
+                self.next_reg = ctor_reg + 1;
+            }
         } else {
             break;
         }
