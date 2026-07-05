@@ -181,7 +181,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
 
     // Try fastint preservation
     long fi = (long)d;
-    if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
+    if ((double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
         TVal r; r.set_fastint(fi); return r;
     }
     TVal r; r.set_number(d); return r;

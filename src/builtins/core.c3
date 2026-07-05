@@ -506,7 +506,7 @@ fn void print_tval(TVal* val) {
                 if (v > 0) { io::printf("Infinity"); } else { io::printf("-Infinity"); }
             } else {
                 long iv = (long)v;
-                if ((double)iv == v && iv >= -9007199254740991 && iv <= 9007199254740991) {
+                if ((double)iv == v && iv >= types::DUK_MIN_SAFE_INT && iv <= types::DUK_MAX_SAFE_INT) {
                     io::printf("%d", iv);
                 } else {
                     io::printf("%f", v);
@@ -718,7 +718,7 @@ fn void builtin_to_number(TVal* val, TVal* result) {
             double d = builtin_string_to_number((HString*)val.get_heapptr());
             // Try fastint preservation
             long fi = (long)d;
-            if ((double)fi == d && fi >= -9007199254740991 && fi <= 9007199254740991) {
+            if ((double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
                 result.set_fastint(fi);
                 return;
             }

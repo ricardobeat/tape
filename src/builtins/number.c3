@@ -616,7 +616,7 @@ fn void builtin_number_isSafeInteger(BuiltinContext* ctx) {
     double abs_d = d < 0 ? -d : d;
     double fl = math::floor(abs_d);
     // Must be integer AND within safe range (2^53 - 1 = 9007199254740991)
-    ctx.result.set_boolean((fl == abs_d) && (abs_d <= 9007199254740991.0));
+    ctx.result.set_boolean((fl == abs_d) && (abs_d <= (double)types::DUK_MAX_SAFE_INT));
 }
 fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Number prototype
@@ -696,9 +696,9 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Add Number.EPSILON (ES6 §20.1.2.1) — 2^-52
     if (!set_num_static_prop(num, heap, "EPSILON", 2.220446049250313e-16)) return false;
     // Add Number.MAX_SAFE_INTEGER (ES6 §20.1.2.6) — 2^53 - 1
-    if (!set_num_static_prop(num, heap, "MAX_SAFE_INTEGER", 9007199254740991.0)) return false;
+    if (!set_num_static_prop(num, heap, "MAX_SAFE_INTEGER", (double)types::DUK_MAX_SAFE_INT)) return false;
     // Add Number.MIN_SAFE_INTEGER (ES6 §20.1.2.8) — -(2^53 - 1)
-    if (!set_num_static_prop(num, heap, "MIN_SAFE_INTEGER", -9007199254740991.0)) return false;
+    if (!set_num_static_prop(num, heap, "MIN_SAFE_INTEGER", (double)types::DUK_MIN_SAFE_INT)) return false;
     // Add Number.parseInt (ES6 §20.1.2.12) — same as global parseInt
     if (!register_string_proto_method(num, heap, "parseInt", BUILTIN_PARSE_INT)) return false;
     // Add Number.parseFloat (ES6 §20.1.2.13) — same as global parseFloat
