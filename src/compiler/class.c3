@@ -277,6 +277,16 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             is_static = true;
         }
 
+        // ES2015 §14.4: generator-method shorthand — `*m() { yield ... }`.
+        // Save/restore the generator + async flags around the inner-function
+        // compile so the method body sees the generator flag without leaking
+        // it into sibling/nested methods.
+        bool saved_is_generator = self.is_generator;
+        bool saved_is_async = self.is_async;
+        self.is_generator = false;
+        self.is_async = false;
+        bool is_generator_method = self.match(TokenType.STAR);
+
         // Get the method name
         Token method_name;
         bool is_constructor = false;
@@ -317,11 +327,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             // IDENTIFIER or any keyword (extends, class, if, return, etc.) as method name
             method_name = self.advance()!;
             // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
-            if ((method_name.str_value.len == 3
+            // Skip when this is a generator-method shorthand — `*get` / `*set` is a SyntaxError.
+            if (!is_generator_method && (method_name.str_value.len == 3
                  && method_name.str_value[0] == 'g'
                  && method_name.str_value[1] == 'e'
                  && method_name.str_value[2] == 't')
-                || (method_name.str_value.len == 3
+                || (!is_generator_method && method_name.str_value.len == 3
                     && method_name.str_value[0] == 's'
                     && method_name.str_value[1] == 'e'
                     && method_name.str_value[2] == 't')) {
@@ -420,6 +431,22 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             self.is_constructable = false;
         }
 
+        // ES2015 §14.5.13: starred methods cannot be constructors, getters, or
+        // setters. Catch those before compile_inner_function so we get a clean
+        // compile error instead of a miscompiled function.
+        if (is_generator_method && (is_constructor || is_getter || is_setter)) {
+            return COMPILE_ERROR~;
+        }
+
+        // Propagate the generator flag into compile_inner_function, then
+        // immediately restore the saved flag so the next sibling element
+        // does not inherit it. Async methods are not yet supported inside
+        // class bodies (B44); the saved_is_async round-trip still happens
+        // for symmetry with function_expr.
+        if (is_generator_method) {
+            self.is_generator = true;
+        }
+
         // ES2015 §14.5.13: getter/setter methods in class bodies have a name
         // prefixed with "get " or "set " (matching object literal semantics).
         // For a computed key ([expr]) the name is the empty string per spec.
@@ -457,6 +484,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len])!;
 
         self.is_constructable = saved_constructable;
+        self.is_generator = saved_is_generator;
+        self.is_async = saved_is_async;
 
         // Add to inner functions table
         uint inner_idx = self.add_inner_func(inner);

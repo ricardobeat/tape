@@ -2467,6 +2467,16 @@ fn ushort? CompilerContext.object_literal(&self) {
                 break;
             }
 
+            // ES2015 §14.3: generator-method shorthand — `*m() { yield ... }`.
+            // Save the generator + async flags so compile_inner_function sees
+            // the generator flag, and restore immediately after so siblings
+            // and nested functions do not inherit it.
+            bool saved_is_generator = self.is_generator;
+            bool saved_is_async = self.is_async;
+            self.is_generator = false;
+            self.is_async = false;
+            bool is_generator_method = self.match(TokenType.STAR);
+
             // Parse property key
             ushort key_reg;
 
@@ -2476,9 +2486,12 @@ fn ushort? CompilerContext.object_literal(&self) {
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
                 // If key is "get" or "set" AND next token is a property key (not `:` or `(`)
+                // Generator-method shorthand forbids the getter/setter shape — `*get` / `*set`
+                // would otherwise be misparsed as a method shorthand that named `get`/`set`,
+                // so we disable the detection entirely when a star was consumed.
                 bool is_obj_getter = false;
                 bool is_obj_setter = false;
-                if (key_tt == TokenType.IDENTIFIER && !self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
+                if (!is_generator_method && key_tt == TokenType.IDENTIFIER && !self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
                     if (key_tok.str_value.len == 3
                         && key_tok.str_value[0] == 'g'
                         && key_tok.str_value[1] == 'e'
@@ -2548,6 +2561,8 @@ fn ushort? CompilerContext.object_literal(&self) {
                     }
                     self.free_reg(accessor_reg);
                     self.free_reg(key_reg);
+                    self.is_generator = saved_is_generator;
+                    self.is_async = saved_is_async;
 
                     if (!self.match(TokenType.COMMA)) {
                         break;
@@ -2616,32 +2631,51 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.expect(TokenType.RBRACKET)!;
             } else if (self.match(TokenType.ELLIPSIS)) {
                 // Object spread: ...expr
+                // `*...expr` is not legal — restore flags and reject.
+                if (is_generator_method) return COMPILE_ERROR~;
                 ushort spread_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.OBJSPRD, (uint)obj_reg, 0, (uint)spread_reg);
                 self.free_reg(spread_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
 
                 if (!self.match(TokenType.COMMA)) {
                     break;
                 }
                 continue;
             } else {
+                // Restore flags on every iteration-end path so a stray STAR
+                // (e.g. `*}`) does not leak the saved state forward.
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
                 return COMPILE_ERROR~;
             }
 
             // Check for method shorthand or data property
             if (self.check(TokenType.LPAREN)) {
                 // Method shorthand: key() { ... } — name inferred from key (set above)
+                // Propagate the generator flag when this is a `*method()` shorthand
+                // and restore saved flags immediately after so the next iteration
+                // starts clean.
+                if (is_generator_method) self.is_generator = true;
                 ushort method_reg = self.function_expr_body()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
             } else {
                 // key: value — name inferred from key (set above)
+                // `*a: 1` is not legal per ES2015 §14.3 — generator shorthand
+                // must be a method (`*a() {}`).
+                if (is_generator_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 self.free_reg(val_reg);
                 self.free_reg(key_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
             }
 
             if (!self.match(TokenType.COMMA)) {
