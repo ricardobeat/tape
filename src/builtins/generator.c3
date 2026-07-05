@@ -105,9 +105,11 @@ fn void builtin_generator_proto_next(BuiltinContext* ctx) {
     TVal func_tv;
     func_tv.set_object(func_obj);
 
-    // Replace callee slot (base_reg - 2) and this slot (base_reg - 1)
+    // Replace callee slot (base_reg - 2) with the generator body wrapper.
+    // Do NOT touch base_reg - 1: the caller may store the generator object
+    // there as the 'this' value for the next .next() call (e.g. for-of loops).
+    // The resume path reads this_binding from gs.this_binding directly.
     ctx.regs[ctx.base_reg - 2] = func_tv;
-    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
 
     // Signal re-dispatch with 0 args
     ctx.needs_re_dispatch = true;
@@ -192,9 +194,10 @@ fn void builtin_generator_proto_throw(BuiltinContext* ctx) {
     TVal func_tv;
     func_tv.set_object(func_obj);
 
-    // Replace callee slot and this slot
+    // Replace callee slot with the generator body wrapper.
+    // Do NOT touch base_reg - 1: the caller may store the generator object
+    // there as the 'this' value for the next .next() call.
     ctx.regs[ctx.base_reg - 2] = func_tv;
-    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
 
     // Signal re-dispatch with 0 args
     ctx.needs_re_dispatch = true;
@@ -316,9 +319,10 @@ fn void builtin_generator_proto_return(BuiltinContext* ctx) {
     TVal func_tv;
     func_tv.set_object(func_obj);
 
-    // Replace callee slot and this slot
+    // Replace callee slot with the generator body wrapper.
+    // Do NOT touch base_reg - 1: the caller may store the generator object
+    // there as the 'this' value for the next .next() call.
     ctx.regs[ctx.base_reg - 2] = func_tv;
-    ctx.regs[ctx.base_reg - 1] = gs.this_binding;
 
     // Signal re-dispatch with 0 args
     ctx.needs_re_dispatch = true;

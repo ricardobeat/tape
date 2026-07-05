@@ -2856,17 +2856,21 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     // Step 4: Set up callee + this pair for .next() calls
     //   callee = next_reg        (.next method)
     //   callee_this = method_reg (iterator, as this for .next())
+    //
+    // These registers are loaded fresh each iteration because some iterator
+    // protocols (generators) overwrite the callee slot during the CALL via
+    // re-dispatch.  Reloading here keeps for-of correct across iterations.
     ushort callee_reg = self.alloc_reg();
     ushort callee_this_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
     // Loop start
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
 
-    // Step 5: Call .next() each iteration
+    // Step 5: Load callee + this, then call .next() each iteration
     //   result = CALL callee, 0    (result = next.call(iterator))
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
