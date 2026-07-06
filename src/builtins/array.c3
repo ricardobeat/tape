@@ -105,14 +105,16 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    double downstream_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    double downstream_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     long downstream_i = (long)downstream_d;
     if (downstream_i < 0) { downstream_i = (long)len + downstream_i; if (downstream_i < 0) downstream_i = 0; }
     if ((ulong)downstream_i > len) downstream_i = (long)len;
 
     long start_i = 0;
     if (ctx.argc > 1) {
-        double sd = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]);
+        double sd = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         start_i = (long)sd;
         if (start_i < 0) { start_i = (long)len + start_i; if (start_i < 0) start_i = 0; }
         if ((ulong)start_i > len) start_i = (long)len;
@@ -120,7 +122,8 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
 
     long end_i = (long)len;
     if (ctx.argc > 2) {
-        double ed = builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 2]);
+        double ed = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 2]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         end_i = (long)ed;
         if (end_i < 0) { end_i = (long)len + end_i; if (end_i < 0) end_i = 0; }
         if ((ulong)end_i > len) end_i = (long)len;
@@ -1295,6 +1298,8 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     }
 
     // Create result array
+    // TODO: ArraySpeciesCreate (ES2022 §23.1.3.24 step 8) — requires
+    // accessor-property-aware property lookup (get_prop invokes getters).
     HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = new_arr) {
         ctx.result.set_undefined();
@@ -2122,9 +2127,9 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
             TVal elem;
             if (arr_get_elem_vm(obj, i, ctx.heap, ctx, &elem)) {
                 array_set_elem_ulong(result, n, elem, ctx.heap);
-                n++;
             }
         }
+        n++;
     }
 
     // Get the @@isConcatSpreadable symbol key (cached on heap)
@@ -2173,9 +2178,9 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
                         TVal elem;
                         if (arr_get_elem_vm(arg_obj, i, ctx.heap, ctx, &elem)) {
                             array_set_elem_ulong(result, n, elem, ctx.heap);
-                            n++;
                         }
                     }
+                    n++;
                 }
             } else {
                 // Add as single element (§23.1.3.1 step 5.d.ii)
@@ -2887,24 +2892,21 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     ulong aj = 0;
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        // ES5 §15.4.4.19 step 8.c: invoke the callback for every index k in
-        // [0, len) — for holes in sparse inputs, pass undefined as the value.
-        TVal v;
-        bool has = arr_has_prop(o, k, ctx.heap);
-        if (has) {
+        if (arr_has_prop(o, k, ctx.heap)) {
+            TVal v;
             if (!arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
                 v.set_undefined();
             }
+            TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            HString* akey = ctx.heap.int_to_hstring((long)aj);
+            if (akey != null) {
+                arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
+            }
+            aj++;
         } else {
-            v.set_undefined();
+            aj++;
         }
-        TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        HString* akey = ctx.heap.int_to_hstring((long)aj);
-        if (akey != null) {
-            arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
-        }
-        aj++;
     }
     HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv; len_tv.set_fastint((long)aj);
