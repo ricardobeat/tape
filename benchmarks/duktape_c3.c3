@@ -6,6 +6,7 @@
 ///   -t, --trace-vm           Trace every instruction with register values
 ///   --dump-constants         Include constant pool in bytecode dump
 ///   -d, --debug              Print stage timing
+///   --no-optimize            Disable compiler peephole passes (debug aid)
 ///   --format json            Structured bytecode output (implies -c)
 ///   --help                   Show usage
 module duktape_c3;
@@ -31,6 +32,7 @@ fn void print_usage(String argv0) {
     io::eprintfn("  --dump-constants       Show constant pool in bytecode dump");
     io::eprintfn("  -d, --debug            Print stage timing");
     io::eprintfn("  -m, --module           Run as ESM module (import/export)");
+    io::eprintfn("  --no-optimize          Disable compiler peephole passes (debug aid)");
     io::eprintfn("  --format json          Structured bytecode output (implies -c)");
     io::eprintfn("  --help                 Show this message");
 }
@@ -64,6 +66,8 @@ fn int main(String[] args) {
             dump_consts = true;
         } else if (a == "-m" || a == "--module") {
             module_mode = true;
+        } else if (a == "--no-optimize") {
+            compiler::set_disable_optimize(true);
         } else if (a == "--format" && i + 1 < (uint)args.len && args[i + 1] == "json") {
             json_format = true;
             compile_only = true;
@@ -86,6 +90,15 @@ fn int main(String[] args) {
         io::eprintfn("No JS file specified\n");
         print_usage(args[0]);
         return 1;
+    }
+
+    // Reset optimizer toggle in case a prior run in the same process set it
+    // (defensive: this CLI is a one-shot process, but other runners in this
+    // binary share state via the module-level g_disable_optimize).
+    if (!compiler::get_disable_optimize()) {
+        // already false — nothing to do
+    } else if (!(false)) {
+        compiler::set_disable_optimize(false);
     }
 
     // ── Load source ──────────────────────────────────────────────────────────

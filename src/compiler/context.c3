@@ -181,6 +181,17 @@ char[512] g_last_err_msg;
 uint      g_last_err_line;
 uint      g_last_err_col;
 
+/// Compiler debug toggle: when true, finish() skips every peephole pass
+/// (GETVAR+INC+PUTVAR → INC_VAR, LDCONST+GETPROP → GETPROPC, comparison
+/// fusion, copy-propagation, dead DECLVAR elision, NOP compaction).
+/// Set via the CLI `--no-optimize` flag; default off.  Useful when a
+/// miscompiled pattern reproduces only on optimized builds — narrows
+/// the bug to either code generation or one of the peephole passes.
+bool g_disable_optimize = false;
+
+fn void set_disable_optimize(bool v) { g_disable_optimize = v; }
+fn bool get_disable_optimize()       { return g_disable_optimize; }
+
 /// Retrieve the last compile error message (pointer to the module-level buffer).
 fn char* last_error_msg()   { return &g_last_err_msg[0]; }
 fn uint  last_error_line()  { return g_last_err_line; }
@@ -358,6 +369,16 @@ struct CompilerContext {
     char[128] inferred_name_buf;
     ushort inferred_name_len;
     bool has_inferred_name;
+
+    // Optimization toggle — when true, finish() skips the peephole passes
+    // (GETVAR+INC+PUTVAR → INC_VAR, LDCONST+GETPROP → GETPROPC, comparison
+    // fusion, copy-propagation, dead DECLVAR elision, NOP compaction).
+    // Useful for debugging the compiler: when a miscompiled pattern works
+    // with optimizations off but fails on, the bug is in a peephole pass
+    // rather than in code generation.  Mirrors the module-level
+    // `g_disable_optimize` so finish() can just read either source; the
+    // per-context field is set in init() from the global.
+    bool disable_optimize;
 }
 
 // ============================================================================
@@ -368,6 +389,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     libc::memset(self, 0, CompilerContext::size);
     self.lexer = lex;
     self.heap = heap;
+    self.disable_optimize = g_disable_optimize;
     self.next_reg = 0;
     self.max_reg = 0;
     self.const_count = 0;
@@ -559,7 +581,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Pattern: GETVAR r, name  /  INC r  /  PUTVAR r, name
     //   → NOP  /  INC_VAR name  /  NOP
     // Saves 2 dispatches per loop iteration on the hot counter path.
-    if (self.code_count >= 3) {
+    if (!self.disable_optimize && self.code_count >= 3) {
         for (uint i = 0; i + 2 < self.code_count; i++) {
             Opcode op0 = self.code[i].op;
             Opcode op1 = self.code[i + 1].op;
@@ -590,7 +612,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Condition: idx must fit in 8 bits (≤ 255) because GETPROPC.c is 8 bits.
     // Register safety: rK is the freshly-allocated key temp used only as GETPROP.c;
     // the two instructions are adjacent so no other use of rK can appear between them.
-    if (self.code_count >= 2) {
+    if (!self.disable_optimize && self.code_count >= 2) {
         for (uint i = 0; i + 1 < self.code_count; i++) {
             if (self.code[i].op == Opcode.LDCONST && self.code[i + 1].op == Opcode.GETPROP) {
                 uint rK = (uint)self.code[i].a;
@@ -656,7 +678,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     //      = sbx+1.
     //   Mapping: IF_FALSE → JMP_NLT/NLE/NGT/NGE (branch on false); IF_TRUE → JMP_LT/LE/GT/GE
     //   (branch on true).  Both variants are fully supported.
-    if (self.code_count >= 2) {
+    if (!self.disable_optimize && self.code_count >= 2) {
         // Build a jump-target bit-set: mark every slot that is the destination of a branch.
         // We must NOT fuse when slot i+1 is a target.
         // Sources of static targets:
@@ -947,7 +969,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     //     rS is the source register (the actual variable), so it still holds the
     //     expected value — correct.
     //   Therefore no jump-target guard is needed for either slot.
-    if (self.code_count >= 2) {
+    if (!self.disable_optimize && self.code_count >= 2) {
         for (uint i = 0; i + 1 < self.code_count; i++) {
             if (self.code[i].op != Opcode.LDREG) { continue; }
 
@@ -1018,7 +1040,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // before being overwritten (written as a), it is dead and the LDREG is safe to NOP.
     // Jump-target safety: it is fine to NOP a LDREG that is itself a jump target — the
     // NOP simply falls through to the INC, which is the behaviour we want.
-    if (self.code_count >= 2) {
+    if (!self.disable_optimize && self.code_count >= 2) {
         for (uint i = 0; i + 1 < self.code_count; i++) {
             if (self.code[i].op != Opcode.LDREG) { continue; }
             Opcode next_op = self.code[i + 1].op;
@@ -1083,7 +1105,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                      && !self.is_arrow
                      && !self.is_generator
                      && !self.is_async;
-        if (elide_ok) {
+        if (!self.disable_optimize && elide_ok) {
             for (uint i = 0; i < self.code_count; i++) {
                 Opcode dop = self.code[i].op;
                 // Declarations always target the function's own immediate scope.
@@ -1116,7 +1138,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // finally_offset.  The VM unconditionally reads and advances past this word,
     // so it must be preserved even after compaction.  We mark those slots in
     // `keep[]` before building the pc_map.
-    if (self.code_count > 0) {
+    if (!self.disable_optimize && self.code_count > 0) {
         // Step 1: mark TRY jump slots as non-removable.
         bool* nop_keep = (bool*)h.alloc_func(h.heap_udata, (usz)self.code_cap);
         if (nop_keep == null) { self.cleanup(); return COMPILE_ERROR~; }
@@ -1202,25 +1224,44 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             }
         }
 
-        // Step 4: copy compacted instruction stream (skip non-kept NOPs).
-        usz code_bytes = (usz)new_count * Instruction::size;
-        void* code_raw = h.alloc_func(h.heap_udata, code_bytes);
-        if (code_raw == null) {
-            h.free_func(h.heap_udata, raw);
-            return COMPILE_ERROR~;
+        // Step 4: copy the (possibly compacted) instruction stream into the
+    // CompiledFunction.  When disable_optimize is true we still copy — we
+    // just keep every instruction (including the peephole-produced NOPs).
+    uint final_count = self.disable_optimize ? self.code_count : new_count;
+    usz code_bytes = (usz)final_count * Instruction::size;
+    void* code_raw = h.alloc_func(h.heap_udata, code_bytes);
+    if (code_raw == null) {
+        if (!self.disable_optimize) {
+            h.free_func(h.heap_udata, pc_map);
+            h.free_func(h.heap_udata, nop_keep);
         }
-        Instruction* dst_code = (Instruction*)code_raw;
-        uint dst_idx = 0;
+        h.free_func(h.heap_udata, raw);
+        return COMPILE_ERROR~;
+    }
+    Instruction* dst_code = (Instruction*)code_raw;
+    uint dst_idx = 0;
+    if (self.disable_optimize) {
+        // Copy everything verbatim — preserves all NOPs introduced by the
+        // peephole passes, but the VM treats NOP as no-op so execution is
+        // correct.  Useful for debugging: every instruction the peephole
+        // produced is visible in the dump.
+        for (uint i = 0; i < self.code_count; i++) {
+            dst_code[dst_idx++] = self.code[i];
+        }
+    } else {
         for (uint i = 0; i < self.code_count; i++) {
             if (self.code[i].op != Opcode.NOP || nop_keep[i]) {
                 dst_code[dst_idx++] = self.code[i];
             }
         }
-        func.code = dst_code;
-        func.code_count = new_count;
+    }
+    func.code = dst_code;
+    func.code_count = final_count;
+    if (!self.disable_optimize) {
         h.free_func(h.heap_udata, pc_map);
         h.free_func(h.heap_udata, nop_keep);
     }
+}
 
     // Copy constant pool
     if (self.const_count > 0) {
