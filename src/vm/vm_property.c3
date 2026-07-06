@@ -1845,16 +1845,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                     // Only update if the value is a valid number (skip if fell through)
                     if (rc.is_fastint() || rc.is_number()) {
-                        *hobj.array_len_ptr() = new_len;
-                        // Also update the prop table for spec correctness
-                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                        int len_slot = hobj.find_prop_idx(len_str);
-                        if (len_slot >= 0) {
-                            TVal new_len_tv;
-                            new_len_tv.set_fastint((long)new_len);
-                            TVal* props = hobj.prop_values();
-                            vm.heap.tval_copy_ref(&props[len_slot], &new_len_tv);
-                        }
+                        // Use the array helper so shrinking length deletes stale
+                        // dense slots and named properties.
+                        builtins::array_set_length(hobj, new_len, vm.heap);
                     }
                     return (TVal){};
                 }

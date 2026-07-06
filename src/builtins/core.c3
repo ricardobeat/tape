@@ -1665,7 +1665,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 184: return { "findIndex", 1 };
         case 185: return { "includes", 1 };
         case 186: return { "at", 1 };
-        case 187: return { "copyWithin", 1 };
+        case 187: return { "copyWithin", 2 };
         case 188: return { "entries", 1 };
         case 189: return { "values", 1 };
         case 190: return { "assign", 2 };
