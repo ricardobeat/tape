@@ -778,17 +778,9 @@ def main():
         args.workers = 4
 
     # Always rebuild — a missing-only check silently runs a stale binary
-    # against edited source, which reports misleading pass/CE counts.
-    # The build only takes a couple seconds, so just always do it.
-    print("Building batch_test_vm...", file=sys.stderr)
-    rc = subprocess.call(
-        ["c3c", "build", "batch_test_vm"],
-        cwd=PROJECT_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if rc != 0:
-        print("Build failed.", file=sys.stderr)
+    # Ensure the binary exists
+    if not os.path.isfile(VM_BINARY):
+        print(f"ERROR: {VM_BINARY} not found. Build it first with: c3c build batch_test_vm", file=sys.stderr)
         sys.exit(1)
 
     phases = [resolve_phase_num(args.phase)] if args.phase is not None else range(len(PHASES))

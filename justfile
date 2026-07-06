@@ -101,13 +101,12 @@ rosetta engine="duktape_c3":
 # ── Test262 ──────────────────────────────────────────────────────────────────
 
 # Run full test262 suite
-test262:
-    c3c build batch_test_vm
+# Run the full test262 suite (builds batch_test_vm first)
+test262: build-batch
     python3 scripts/run_test262.py
 
 # Run a specific test262 phase (`just test262-phase 2`)
-test262-phase phase="0":
-    c3c build batch_test_vm
+test262-phase phase="0": build-batch
     python3 scripts/run_test262.py --phase {{phase}}
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
