@@ -813,6 +813,8 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
             }
 
             if (!self.match(TokenType.COMMA)) break;
+            // Trailing comma: `, }` is allowed by ES2015
+            if (self.check(TokenType.RBRACE)) break;
         }
     }
 

@@ -2435,29 +2435,56 @@ fn void? CompilerContext.try_statement(&self) {
         ushort catch_saved_reg = self.next_reg;
 
         if (self.match(TokenType.LPAREN)) {
-            Token catch_param = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(catch_param.str_value)) {
-                return COMPILE_ERROR~;
-            }
-            self.expect(TokenType.RPAREN)!;
+            // Catch parameter — either a plain identifier (ES5) or a
+            // destructuring pattern (ES2019 §13.15.1).
+            TokenType ct = self.peek_type();
+            if (ct == TokenType.LBRACKET || ct == TokenType.LBRACE) {
+                // Catch destructuring: catch ([a, b]) or catch ({x, y})
+                // Bindings have block scope (LET).  Allocate a temp for
+                // the thrown value via CATCH, then extract per-binding.
+                self.advance()!; // consume '[' or '{'
+                ushort catch_val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CATCH, (uint)catch_val_reg, 0, 0);
 
-            ushort catch_var = self.declare_var(catch_param.str_value, VAR);
-            // Force the catch variable through the environment (GETVAR/PUTVAR)
-            // instead of direct register access.  PUTVAR clears the source
-            // register after storing to the env (for refcount correctness),
-            // so a later register read would get undefined.
-            if (!self.is_global && self.scope_depth > 0) {
-                self.scope_stack[self.scope_depth - 1].is_captured = true;
-                self.has_captured_local = true;
-            }
-            self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
-            // PUTVAR the exception into the env so that subsequent
-            // GETVAR/TYPEOFIDENT for the catch variable finds it.
-            // Required in ALL scopes (not just global) because the VM
-            // resolves catch variables via environment lookup, not register.
-            {
-                uint name_idx = self.add_string_constant(catch_param.str_value);
-                self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
+                // Per spec: the thrown value must be object-coercible
+                // (null/undefined throws TypeError) for object patterns
+                // — even empty `{}` patterns, per ES2019 §13.15.1.5.
+                // Array patterns also throw if the value isn't iterable,
+                // but iterator-protocol .next() already produces a TypeError
+                // for null/undefined via GetMethod's ToObject step.
+                if (ct == TokenType.LBRACE) {
+                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)catch_val_reg, 0, 0);
+                    self.compile_catch_object_pattern(catch_val_reg)!;
+                } else {
+                    self.compile_catch_array_pattern(catch_val_reg)!;
+                }
+                self.expect(TokenType.RPAREN)!;
+                self.free_reg(catch_val_reg);
+            } else {
+                Token catch_param = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(catch_param.str_value)) {
+                    return COMPILE_ERROR~;
+                }
+                self.expect(TokenType.RPAREN)!;
+
+                ushort catch_var = self.declare_var(catch_param.str_value, VAR);
+                // Force the catch variable through the environment (GETVAR/PUTVAR)
+                // instead of direct register access.  PUTVAR clears the source
+                // register after storing to the env (for refcount correctness),
+                // so a later register read would get undefined.
+                if (!self.is_global && self.scope_depth > 0) {
+                    self.scope_stack[self.scope_depth - 1].is_captured = true;
+                    self.has_captured_local = true;
+                }
+                self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
+                // PUTVAR the exception into the env so that subsequent
+                // GETVAR/TYPEOFIDENT for the catch variable finds it.
+                // Required in ALL scopes (not just global) because the VM
+                // resolves catch variables via environment lookup, not register.
+                {
+                    uint name_idx = self.add_string_constant(catch_param.str_value);
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
+                }
             }
         } else {
             // catch without binding (ES2019)
@@ -3380,4 +3407,269 @@ fn void? CompilerContext.export_declaration(&self) {
 
     io::eprintfn("unsupported export form");
     return COMPILE_ERROR~;
+}
+
+// ============================================================================
+// Catch-clause destructuring (ES2019 §13.15.1)
+//
+// `catch ([a, b])` and `catch ({x, y})` are syntactically a parameter list
+// in the catch clause.  Each binding is block-scoped to the catch block.
+// The thrown value is captured by the CATCH opcode into a temp register
+// passed in; this function parses the rest of the pattern (the opening
+// '[' or '{' has already been consumed) and emits per-binding GETPROP
+// extractions from that register, with default-value support.
+// ============================================================================
+
+/// Array catch pattern. The '[' has already been consumed.
+/// Uses the iterator protocol on catch_val_reg to extract elements.
+fn void? CompilerContext.compile_catch_array_pattern(&self, ushort catch_val_reg) {
+    ArrayBind[32] binds;
+    uint bind_count = 0;
+
+    for (;;) {
+        if (self.check(TokenType.RBRACKET)) break;
+
+        if (self.check(TokenType.COMMA)) {
+            self.advance()!;
+            if (bind_count < 32) {
+                binds[bind_count].is_hole = true;
+                binds[bind_count].has_default = false;
+                binds[bind_count].is_rest = false;
+                bind_count++;
+            }
+            continue;
+        }
+
+        if (self.match(TokenType.ELLIPSIS)) {
+            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+            if (bind_count < 32) {
+                ushort reg = self.declare_var(rest_tok.str_value, LET);
+                binds[bind_count].reg = reg;
+                binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                binds[bind_count].is_rest = true;
+                binds[bind_count].is_hole = false;
+                binds[bind_count].has_default = false;
+                bind_count++;
+            }
+            while (self.match(TokenType.COMMA)) {}
+            break;
+        }
+
+        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+        if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+        if (bind_count < 32) {
+            ushort reg = self.declare_var(name_tok.str_value, LET);
+            binds[bind_count].reg = reg;
+            binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
+            binds[bind_count].is_rest = false;
+            binds[bind_count].is_hole = false;
+            binds[bind_count].has_default = false;
+            if (self.match(TokenType.ASSIGN)) {
+                binds[bind_count].has_default = true;
+                binds[bind_count].default_val_reg = self.assignment_expr()!;
+            }
+            bind_count++;
+        }
+        if (!self.match(TokenType.COMMA)) break;
+    }
+    self.expect(TokenType.RBRACKET)!;
+
+    // === Iterator-protocol extraction on catch_val_reg ===
+    ushort sym_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+
+    ushort iter_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+
+    ushort symbol_val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+    self.free_reg(iter_key_reg);
+    self.free_reg(sym_reg);
+
+    ushort method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)catch_val_reg, (uint)symbol_val_reg);
+    self.free_reg(symbol_val_reg);
+
+    ushort this_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)this_reg, (uint)catch_val_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+    self.free_reg(this_reg);
+
+    ushort next_reg = self.alloc_reg();
+    ushort next_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+    self.free_reg(next_key_reg);
+
+    ushort callee_reg = self.alloc_reg();
+    ushort callee_this_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+
+    for (uint i = 0; i < bind_count; i++) {
+        if (binds[i].is_hole) {
+            ushort hole_result = self.alloc_reg();
+            self.emit_abc(Opcode.CALL, (uint)hole_result, (uint)callee_reg, 0);
+            self.free_reg(hole_result);
+            continue;
+        }
+
+        if (binds[i].is_rest) {
+            // Collect all remaining values into a fresh array via arr.push(value)
+            ushort arr_reg = self.alloc_reg();
+            self.emit_abc(Opcode.NEWARR, (uint)arr_reg, 0, 0);
+
+            uint collect_start = self.code_count;
+            ushort inner_result = self.alloc_reg();
+            self.emit_abc(Opcode.CALL, (uint)inner_result, (uint)callee_reg, 0);
+
+            ushort done_key_reg = self.alloc_reg();
+            ushort done_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+            self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)inner_result, (uint)done_key_reg);
+            uint done_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+            ushort val_key_reg = self.alloc_reg();
+            ushort val_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
+            self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)inner_result, (uint)val_key_reg);
+            self.free_reg(val_key_reg);
+            self.free_reg(inner_result);
+
+            ushort push_key_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);
+            ushort push_method_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)push_method_reg, (uint)arr_reg, (uint)push_key_reg);
+            self.free_reg(push_key_reg);
+
+            ushort push_callee_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)push_callee_reg, (uint)push_method_reg, 0);
+            self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 1), (uint)arr_reg, 0);
+            if (self.next_reg < push_callee_reg + 3) {
+                self.next_reg = push_callee_reg + 3;
+            }
+            self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 2), (uint)val_reg, 0);
+            self.free_reg(val_reg);
+            self.free_reg(push_method_reg);
+            self.emit_abc(Opcode.CALL, (uint)push_callee_reg, (uint)push_callee_reg, 1);
+            self.free_reg(push_callee_reg);
+
+            int back_offset = (int)collect_start - (int)self.code_count - 1;
+            self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+            self.patch_jump(done_jump);
+
+            self.free_reg(done_key_reg);
+            self.free_reg(done_reg);
+
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)arr_reg, 0);
+            self.free_reg(arr_reg);
+        } else {
+            // Regular binding: call .next() and extract .value
+            ushort inner_result = self.alloc_reg();
+            self.emit_abc(Opcode.CALL, (uint)inner_result, (uint)callee_reg, 0);
+
+            ushort val_key_reg = self.alloc_reg();
+            ushort val_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
+            self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)inner_result, (uint)val_key_reg);
+            self.free_reg(val_key_reg);
+            self.free_reg(inner_result);
+
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)val_reg, 0);
+            self.free_reg(val_reg);
+
+            if (binds[i].has_default) {
+                ushort undef_check_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
+                ushort is_undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
+                self.free_reg(undef_check_reg);
+                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                self.free_reg(is_undef_reg);
+                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
+                self.patch_jump(skip_default);
+                self.free_reg(binds[i].default_val_reg);
+            }
+        }
+
+        self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
+    }
+
+    self.free_reg(callee_this_reg);
+    self.free_reg(callee_reg);
+    self.free_reg(next_reg);
+    self.free_reg(method_reg);
+}
+
+/// Object catch pattern. The '{' has already been consumed.
+/// Uses direct GETPROP on catch_val_reg to extract properties.
+fn void? CompilerContext.compile_catch_object_pattern(&self, ushort catch_val_reg) {
+    ObjBind[32] binds;
+    uint bind_count = 0;
+
+    if (!self.check(TokenType.RBRACE)) {
+        for (;;) {
+            Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+            if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+
+            if (self.match(TokenType.COLON)) {
+                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(bind_tok.str_value, LET);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].has_default = false;
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+                    bind_count++;
+                }
+            } else {
+                // Shorthand: {name} → key=name, binding=name
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(prop_tok.str_value, LET);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].has_default = false;
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+                    bind_count++;
+                }
+            }
+
+            if (!self.match(TokenType.COMMA)) break;
+            // Trailing comma: `, }` is allowed by ES2015
+            if (self.check(TokenType.RBRACE)) break;
+        }
+    }
+    self.expect(TokenType.RBRACE)!;
+
+    for (uint i = 0; i < bind_count; i++) {
+        ushort key_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+        self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)catch_val_reg, (uint)key_reg);
+        self.free_reg(key_reg);
+
+        if (binds[i].has_default) {
+            ushort undef_check_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
+            ushort is_undef_reg = self.alloc_reg();
+            self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
+            self.free_reg(undef_check_reg);
+            uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+            self.free_reg(is_undef_reg);
+            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
+            self.patch_jump(skip_default);
+            self.free_reg(binds[i].default_val_reg);
+        }
+
+        self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
+    }
 }
