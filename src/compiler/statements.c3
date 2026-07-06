@@ -5318,22 +5318,180 @@ fn void? CompilerContext.compile_catch_array_pattern(&self, ushort catch_val_reg
             break;
         }
 
-        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-        if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-        if (bind_count < 32) {
-            ushort reg = self.declare_var(name_tok.str_value, LET);
-            binds[bind_count].reg = reg;
-            binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-            binds[bind_count].is_rest = false;
-            binds[bind_count].is_hole = false;
-            binds[bind_count].has_default = false;
-            if (self.match(TokenType.ASSIGN)) {
-                binds[bind_count].has_default = true;
-                binds[bind_count].default_val_reg = self.assignment_expr()!;
+            // Check for nested [ or { pattern
+            if (self.check(TokenType.LBRACKET)) {
+                // ── Nested array pattern ──
+                uint outer_pos = bind_count;
+                self.advance()!; // consume '['
+                uint sub_idx = 0;
+                for (;;) {
+                    if (self.check(TokenType.RBRACKET)) break;
+                    if (self.check(TokenType.COMMA)) {
+                        self.advance()!;
+                        if (bind_count < 32) {
+                            binds[bind_count].is_hole = true;
+                            binds[bind_count].is_nested = true;
+                            binds[bind_count].outer_idx = outer_pos;
+                            binds[bind_count].inner_idx = sub_idx;
+                            binds[bind_count].has_default = false;
+                            bind_count++;
+                        }
+                        sub_idx++;
+                        continue;
+                    }
+                    if (self.match(TokenType.ELLIPSIS)) {
+                        Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+                        if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                        if (bind_count < 32) {
+                            ushort reg = self.declare_var(rest_tok.str_value, LET);
+                            binds[bind_count].reg = reg;
+                            binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                            binds[bind_count].is_rest = true;
+                            binds[bind_count].is_hole = false;
+                            binds[bind_count].is_nested = true;
+                            binds[bind_count].outer_idx = outer_pos;
+                            binds[bind_count].inner_idx = sub_idx;
+                            binds[bind_count].has_default = false;
+                            bind_count++;
+                        }
+                        while (self.match(TokenType.COMMA)) {}
+                        break;
+                    }
+                    Token sub_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(sub_tok.str_value)) return COMPILE_ERROR~;
+                    if (bind_count < 32) {
+                        ushort reg = self.declare_var(sub_tok.str_value, LET);
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(sub_tok.str_value);
+                        binds[bind_count].is_rest = false;
+                        binds[bind_count].is_hole = false;
+                        binds[bind_count].is_nested = true;
+                        binds[bind_count].outer_idx = outer_pos;
+                        binds[bind_count].inner_idx = sub_idx;
+                        binds[bind_count].is_obj_nested = false;
+                        binds[bind_count].has_default = false;
+
+                        if (self.match(TokenType.ASSIGN)) {
+                            binds[bind_count].has_default = true;
+                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                        }
+
+                        bind_count++;
+                    }
+                    sub_idx++;
+                    if (!self.match(TokenType.COMMA)) break;
+                }
+                self.expect(TokenType.RBRACKET)!;
+
+                // Whole-pattern default
+                if (self.match(TokenType.ASSIGN)) {
+                    ushort def_reg = self.assignment_expr()!;
+                    for (uint i = outer_pos; i < bind_count; i++) {
+                        if (!binds[i].is_hole) {
+                            binds[i].has_obj_default = true;
+                            binds[i].obj_default_val_reg = def_reg;
+                            break;
+                        }
+                    }
+                }
+
+                if (!self.match(TokenType.COMMA)) break;
+                continue;
+            } else if (self.check(TokenType.LBRACE)) {
+                // ── Nested object pattern ──
+                uint outer_pos = bind_count;
+                self.advance()!; // consume '{'
+                if (!self.check(TokenType.RBRACE)) {
+                    for (;;) {
+                        Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+                        if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+
+                        if (self.match(TokenType.COLON)) {
+                            Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                            if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                            if (bind_count < 32) {
+                                ushort reg = self.declare_var(bind_tok.str_value, LET);
+                                binds[bind_count].reg = reg;
+                                binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                                binds[bind_count].is_rest = false;
+                                binds[bind_count].is_hole = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].outer_idx = outer_pos;
+                                binds[bind_count].is_obj_nested = true;
+                                binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].has_default = false;
+
+                                if (self.match(TokenType.ASSIGN)) {
+                                    binds[bind_count].has_default = true;
+                                    binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                }
+
+                                bind_count++;
+                            }
+                        } else {
+                            // Shorthand: {name}
+                            if (bind_count < 32) {
+                                ushort reg = self.declare_var(prop_tok.str_value, LET);
+                                binds[bind_count].reg = reg;
+                                binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].is_rest = false;
+                                binds[bind_count].is_hole = false;
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].outer_idx = outer_pos;
+                                binds[bind_count].is_obj_nested = true;
+                                binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].has_default = false;
+
+                                if (self.match(TokenType.ASSIGN)) {
+                                    binds[bind_count].has_default = true;
+                                    binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                }
+
+                                bind_count++;
+                            }
+                        }
+
+                        if (!self.match(TokenType.COMMA)) break;
+                    }
+                }
+                self.expect(TokenType.RBRACE)!;
+
+                // Whole-pattern default
+                if (self.match(TokenType.ASSIGN)) {
+                    ushort def_reg = self.assignment_expr()!;
+                    for (uint i = outer_pos; i < bind_count; i++) {
+                        if (!binds[i].is_hole) {
+                            binds[i].has_obj_default = true;
+                            binds[i].obj_default_val_reg = def_reg;
+                            break;
+                        }
+                    }
+                }
+
+                if (!self.match(TokenType.COMMA)) break;
+                continue;
+            } else {
+                // ── Simple identifier binding ──
+                Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(name_tok.str_value, LET);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
+                    binds[bind_count].is_rest = false;
+                    binds[bind_count].is_hole = false;
+                    binds[bind_count].has_default = false;
+
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+
+                    bind_count++;
+                }
+
+                if (!self.match(TokenType.COMMA)) break;
             }
-            bind_count++;
-        }
-        if (!self.match(TokenType.COMMA)) break;
     }
     self.expect(TokenType.RBRACKET)!;
 
@@ -5369,15 +5527,17 @@ fn void? CompilerContext.compile_catch_array_pattern(&self, ushort catch_val_reg
     self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
     self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
-    for (uint i = 0; i < bind_count; i++) {
-        if (binds[i].is_hole) {
+    uint i = 0;
+    while (i < bind_count) {
+        if (binds[i].is_hole && !binds[i].is_nested) {
             ushort hole_result = self.alloc_reg();
             self.emit_abc(Opcode.CALL, (uint)hole_result, (uint)callee_reg, 0);
             self.free_reg(hole_result);
+            i++;
             continue;
         }
 
-        if (binds[i].is_rest) {
+        if (binds[i].is_rest && !binds[i].is_nested) {
             // Collect all remaining values into a fresh array via arr.push(value)
             ushort arr_reg = self.alloc_reg();
             self.emit_abc(Opcode.NEWARR, (uint)arr_reg, 0, 0);
@@ -5426,8 +5586,197 @@ fn void? CompilerContext.compile_catch_array_pattern(&self, ushort catch_val_reg
 
             self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)arr_reg, 0);
             self.free_reg(arr_reg);
+            self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
+            i++;
+            break;
+        }
+
+        if (binds[i].is_nested) {
+            uint cur_outer = binds[i].outer_idx;
+            uint group_start = i;
+
+            // Count sub-binds in group
+            uint group_count = 0;
+            while (i < bind_count && binds[i].outer_idx == cur_outer && binds[i].is_nested) {
+                group_count++;
+                i++;
+            }
+
+            // Extract the element at this outer position once
+            ushort nest_result = self.alloc_reg();
+            self.emit_abc(Opcode.CALL, (uint)nest_result, (uint)callee_reg, 0);
+            ushort nest_val_key = self.alloc_reg();
+            ushort nest_val = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)nest_val_key, self.add_string_constant("value"), 0);
+            self.emit_abc(Opcode.GETPROP, (uint)nest_val, (uint)nest_result, (uint)nest_val_key);
+            self.free_reg(nest_val_key);
+            self.free_reg(nest_result);
+
+            // Whole-pattern default
+            if (binds[group_start].has_obj_default) {
+                ushort undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                ushort is_undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)nest_val, (uint)undef_reg);
+                self.free_reg(undef_reg);
+                uint skip_def = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                self.free_reg(is_undef_reg);
+                self.emit_abc(Opcode.LDREG, (uint)nest_val, (uint)binds[group_start].obj_default_val_reg, 0);
+                self.patch_jump(skip_def);
+                self.free_reg(binds[group_start].obj_default_val_reg);
+            }
+
+            // Check if any sub-bind is array-nested (needs inner iterator)
+            bool has_array_nested = false;
+            for (uint gi = group_start; gi < group_start + group_count; gi++) {
+                if (binds[gi].is_hole) continue;
+                if (binds[gi].is_rest) continue;
+                if (!binds[gi].is_obj_nested) {
+                    has_array_nested = true;
+                    break;
+                }
+            }
+
+            if (has_array_nested) {
+                // Set up inner iterator for nested array
+                ushort nsym = self.alloc_reg();
+                self.emit_a_bc(Opcode.GETVAR, (uint)nsym, self.add_string_constant("Symbol"));
+                ushort niter_key = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)niter_key, self.add_string_constant("iterator"), 0);
+                ushort nsymval = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)nsymval, (uint)nsym, (uint)niter_key);
+                self.free_reg(niter_key);
+                self.free_reg(nsym);
+                ushort nmethod = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)nmethod, (uint)nest_val, (uint)nsymval);
+                self.free_reg(nsymval);
+                ushort nthis = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)nthis, (uint)nest_val, 0);
+                self.emit_abc(Opcode.CALL, (uint)nmethod, (uint)nmethod, 0);
+                self.free_reg(nthis);
+                ushort nnext = self.alloc_reg();
+                ushort nnext_key = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)nnext_key, self.add_string_constant("next"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)nnext, (uint)nmethod, (uint)nnext_key);
+                self.free_reg(nnext_key);
+                ushort ncallee = self.alloc_reg();
+                ushort ncallee_this = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)ncallee, (uint)nnext, 0);
+                self.emit_abc(Opcode.LDREG, (uint)ncallee_this, (uint)nmethod, 0);
+
+                // Process each sub-bind via nested iterator
+                for (uint gi = group_start; gi < group_start + group_count; gi++) {
+                    if (binds[gi].is_hole) {
+                        ushort skip_r = self.alloc_reg();
+                        self.emit_abc(Opcode.CALL, (uint)skip_r, (uint)ncallee, 0);
+                        self.free_reg(skip_r);
+                        continue;
+                    }
+                    if (binds[gi].is_rest) {
+                        ushort arr_r = self.alloc_reg();
+                        self.emit_abc(Opcode.NEWARR, (uint)arr_r, 0, 0);
+                        uint collect = self.code_count;
+                        ushort nr = self.alloc_reg();
+                        self.emit_abc(Opcode.CALL, (uint)nr, (uint)ncallee, 0);
+                        ushort ndk = self.alloc_reg();
+                        ushort nd = self.alloc_reg();
+                        self.emit_abc(Opcode.LDCONST, (uint)ndk, self.add_string_constant("done"), 0);
+                        self.emit_abc(Opcode.GETPROP, (uint)nd, (uint)nr, (uint)ndk);
+                        uint ndj = self.emit_cond_jump(Opcode.IF_TRUE, (uint)nd);
+                        ushort nvk = self.alloc_reg();
+                        ushort nv = self.alloc_reg();
+                        self.emit_abc(Opcode.LDCONST, (uint)nvk, self.add_string_constant("value"), 0);
+                        self.emit_abc(Opcode.GETPROP, (uint)nv, (uint)nr, (uint)nvk);
+                        self.free_reg(nvk);
+                        self.free_reg(nr);
+                        ushort pk = self.alloc_reg();
+                        self.emit_abc(Opcode.LDCONST, (uint)pk, self.add_string_constant("push"), 0);
+                        ushort pm = self.alloc_reg();
+                        self.emit_abc(Opcode.GETPROP, (uint)pm, (uint)arr_r, (uint)pk);
+                        self.free_reg(pk);
+                        ushort pc = self.alloc_reg();
+                        self.emit_abc(Opcode.LDREG, (uint)pc, (uint)pm, 0);
+                        self.emit_abc(Opcode.LDREG, (uint)(pc + 1), (uint)arr_r, 0);
+                        if (self.next_reg < pc + 3) self.next_reg = pc + 3;
+                        self.emit_abc(Opcode.LDREG, (uint)(pc + 2), (uint)nv, 0);
+                        self.free_reg(nv);
+                        self.free_reg(pm);
+                        self.emit_abc(Opcode.CALL, (uint)pc, (uint)pc, 1);
+                        int bo = (int)collect - (int)self.code_count - 1;
+                        self.emit(bytecode::make_sabc(Opcode.JUMP, bo));
+                        self.patch_jump(ndj);
+                        self.free_reg(ndk);
+                        self.free_reg(nd);
+                        self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)arr_r, 0);
+                        self.free_reg(arr_r);
+                        self.emit_var_store(binds[gi].reg, binds[gi].name_idx, true, false);
+                        while (gi + 1 < group_start + group_count) { gi++; }
+                        continue;
+                    }
+
+                    // Regular nested array element
+                    ushort nr2 = self.alloc_reg();
+                    self.emit_abc(Opcode.CALL, (uint)nr2, (uint)ncallee, 0);
+                    ushort nvk2 = self.alloc_reg();
+                    ushort nv2 = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)nvk2, self.add_string_constant("value"), 0);
+                    self.emit_abc(Opcode.GETPROP, (uint)nv2, (uint)nr2, (uint)nvk2);
+                    self.free_reg(nvk2);
+                    self.free_reg(nr2);
+                    self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)nv2, 0);
+                    self.free_reg(nv2);
+
+                    if (binds[gi].has_default) {
+                        ushort undef_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                        ushort is_undef_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[gi].reg, (uint)undef_reg);
+                        self.free_reg(undef_reg);
+                        uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                        self.free_reg(is_undef_reg);
+                        self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)binds[gi].default_val_reg, 0);
+                        self.patch_jump(skip_default);
+                        self.free_reg(binds[gi].default_val_reg);
+                    }
+
+                    self.emit_var_store(binds[gi].reg, binds[gi].name_idx, true, false);
+                }
+
+                self.free_reg(ncallee_this);
+                self.free_reg(ncallee);
+                self.free_reg(nnext);
+                self.free_reg(nmethod);
+            } else {
+                // All sub-binds are object-nested — just GETPROP
+                for (uint gi = group_start; gi < group_start + group_count; gi++) {
+                    if (binds[gi].is_hole) continue;
+                    if (binds[gi].is_rest) continue;
+
+                    ushort key_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[gi].obj_key_idx));
+                    self.emit_abc(Opcode.GETPROP, (uint)binds[gi].reg, (uint)nest_val, (uint)key_reg);
+                    self.free_reg(key_reg);
+
+                    if (binds[gi].has_default) {
+                        ushort undef_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                        ushort is_undef_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[gi].reg, (uint)undef_reg);
+                        self.free_reg(undef_reg);
+                        uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                        self.free_reg(is_undef_reg);
+                        self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)binds[gi].default_val_reg, 0);
+                        self.patch_jump(skip_default);
+                        self.free_reg(binds[gi].default_val_reg);
+                    }
+
+                    self.emit_var_store(binds[gi].reg, binds[gi].name_idx, true, false);
+                }
+            }
+
+            self.free_reg(nest_val);
         } else {
-            // Regular binding: call .next() and extract .value
+            // Simple (non-nested, non-hole, non-rest) binding
             ushort inner_result = self.alloc_reg();
             self.emit_abc(Opcode.CALL, (uint)inner_result, (uint)callee_reg, 0);
 
@@ -5453,9 +5802,10 @@ fn void? CompilerContext.compile_catch_array_pattern(&self, ushort catch_val_reg
                 self.patch_jump(skip_default);
                 self.free_reg(binds[i].default_val_reg);
             }
-        }
 
-        self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
+            self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
+            i++;
+        }
     }
 
     self.free_reg(callee_this_reg);
@@ -5472,23 +5822,159 @@ fn void? CompilerContext.compile_catch_object_pattern(&self, ushort catch_val_re
 
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
+            if (self.check(TokenType.RBRACE)) break;
             Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
             if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
 
             if (self.match(TokenType.COLON)) {
-                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                if (bind_count < 32) {
-                    ushort reg = self.declare_var(bind_tok.str_value, LET);
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
-                    binds[bind_count].has_default = false;
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                if (self.check(TokenType.LBRACKET)) {
+                    // {prop: [x, y]} — nested array
+                    self.advance()!; // consume '['
+                    uint sub_idx = 0;
+                    for (;;) {
+                        if (self.check(TokenType.RBRACKET)) break;
+                        if (self.check(TokenType.COMMA)) {
+                            self.advance()!;
+                            sub_idx++;
+                            continue;
+                        }
+                        if (self.match(TokenType.ELLIPSIS)) {
+                            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
+                            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                            if (bind_count < 32) {
+                                ushort reg = self.declare_var(rest_tok.str_value, LET);
+                                binds[bind_count].reg = reg;
+                                binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].is_nested = true;
+                                binds[bind_count].is_array_nested = true;
+                                binds[bind_count].arr_nested_idx = sub_idx;
+                                binds[bind_count].has_default = false;
+                                binds[bind_count].is_rest = true;
+                                bind_count++;
+                            }
+                            while (self.match(TokenType.COMMA)) {}
+                            break;
+                        }
+                        Token elem_tok = self.expect(TokenType.IDENTIFIER)!;
+                        if (is_restricted_name(elem_tok.str_value)) return COMPILE_ERROR~;
+                        if (bind_count < 32) {
+                            ushort reg = self.declare_var(elem_tok.str_value, LET);
+                            binds[bind_count].reg = reg;
+                            binds[bind_count].name_idx = self.add_string_constant(elem_tok.str_value);
+                            binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                            binds[bind_count].is_nested = true;
+                            binds[bind_count].is_array_nested = true;
+                            binds[bind_count].arr_nested_idx = sub_idx;
+                            binds[bind_count].has_default = false;
+                            binds[bind_count].is_rest = false;
+
+                            if (self.match(TokenType.ASSIGN)) {
+                                binds[bind_count].has_default = true;
+                                binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            }
+
+                            bind_count++;
+                        }
+                        sub_idx++;
+                        if (!self.match(TokenType.COMMA)) break;
                     }
-                    bind_count++;
+                    self.expect(TokenType.RBRACKET)!;
+
+                    // Whole-pattern default: {prop: [x] = default}
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort def_reg = self.assignment_expr()!;
+                        for (uint i = bind_count; i > 0; i--) {
+                            uint idx = i - 1;
+                            if (binds[idx].is_nested && binds[idx].is_array_nested && !binds[idx].is_rest) {
+                                binds[idx].has_default = true;
+                                binds[idx].default_val_reg = def_reg;
+                                break;
+                            }
+                        }
+                    }
+                } else if (self.check(TokenType.LBRACE)) {
+                    // {prop: {x}} or {prop: {x, y}} — nested object
+                    self.advance()!; // consume '{'
+                    if (!self.check(TokenType.RBRACE)) {
+                        for (;;) {
+                            if (self.check(TokenType.RBRACE)) break;
+                            Token inner_prop_tok = self.expect(TokenType.IDENTIFIER)!;
+                            if (is_restricted_name(inner_prop_tok.str_value)) return COMPILE_ERROR~;
+
+                            if (self.match(TokenType.COLON)) {
+                                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                                if (bind_count < 32) {
+                                    ushort reg = self.declare_var(bind_tok.str_value, LET);
+                                    binds[bind_count].reg = reg;
+                                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(inner_prop_tok.str_value);
+
+                                    if (self.match(TokenType.ASSIGN)) {
+                                        binds[bind_count].has_default = true;
+                                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    }
+
+                                    bind_count++;
+                                }
+                            } else {
+                                // Shorthand: {prop: {x}}
+                                if (bind_count < 32) {
+                                    ushort reg = self.declare_var(inner_prop_tok.str_value, LET);
+                                    binds[bind_count].reg = reg;
+                                    binds[bind_count].name_idx = self.add_string_constant(inner_prop_tok.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].has_default = false;
+                                    binds[bind_count].is_nested = true;
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(inner_prop_tok.str_value);
+
+                                    if (self.match(TokenType.ASSIGN)) {
+                                        binds[bind_count].has_default = true;
+                                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    }
+
+                                    bind_count++;
+                                }
+                            }
+
+                            if (!self.match(TokenType.COMMA)) break;
+                        }
+                    }
+                    self.expect(TokenType.RBRACE)!;
+
+                    // Whole-pattern default: {prop: {x} = default}
+                    if (self.match(TokenType.ASSIGN)) {
+                        ushort def_reg = self.assignment_expr()!;
+                        for (uint i = bind_count; i > 0; i--) {
+                            uint idx = i - 1;
+                            if (binds[idx].is_nested && !binds[idx].is_array_nested) {
+                                binds[idx].has_default = true;
+                                binds[idx].default_val_reg = def_reg;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                    if (bind_count < 32) {
+                        ushort reg = self.declare_var(bind_tok.str_value, LET);
+                        binds[bind_count].reg = reg;
+                        binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                        binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                        binds[bind_count].has_default = false;
+
+                        if (self.match(TokenType.ASSIGN)) {
+                            binds[bind_count].has_default = true;
+                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                        }
+
+                        bind_count++;
+                    }
                 }
             } else {
                 // Shorthand: {name} → key=name, binding=name
@@ -5498,40 +5984,217 @@ fn void? CompilerContext.compile_catch_object_pattern(&self, ushort catch_val_re
                     binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
                     binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
                     binds[bind_count].has_default = false;
+
                     if (self.match(TokenType.ASSIGN)) {
                         binds[bind_count].has_default = true;
                         binds[bind_count].default_val_reg = self.assignment_expr()!;
                     }
+
                     bind_count++;
                 }
             }
 
             if (!self.match(TokenType.COMMA)) break;
-            // Trailing comma: `, }` is allowed by ES2015
             if (self.check(TokenType.RBRACE)) break;
         }
     }
     self.expect(TokenType.RBRACE)!;
 
-    for (uint i = 0; i < bind_count; i++) {
-        ushort key_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
-        self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)catch_val_reg, (uint)key_reg);
-        self.free_reg(key_reg);
+    uint obi = 0;
+    while (obi < bind_count) {
+        if (binds[obi].is_nested && binds[obi].is_array_nested) {
+            // ── Array-in-object: {prop: [x, y]} ──
+            uint cur_key = binds[obi].key_idx;
+            uint group_start = obi;
+            uint group_count = 0;
+            while (obi < bind_count && binds[obi].is_nested && binds[obi].is_array_nested && binds[obi].key_idx == cur_key) {
+                group_count++;
+                obi++;
+            }
 
-        if (binds[i].has_default) {
-            ushort undef_check_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-            ushort is_undef_reg = self.alloc_reg();
-            self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-            self.free_reg(undef_check_reg);
-            uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-            self.free_reg(is_undef_reg);
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-            self.patch_jump(skip_default);
-            self.free_reg(binds[i].default_val_reg);
+            // GETPROP from catch_val_reg to extract the array
+            ushort parent_key = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key, cur_key));
+            ushort parent_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)catch_val_reg, (uint)parent_key);
+            self.free_reg(parent_key);
+
+            // Whole-property default
+            ushort def_applied = 0;
+            ushort def_val_reg = 0;
+            for (uint gi = group_start; gi < group_start + group_count; gi++) {
+                if (binds[gi].has_default && def_applied == 0) {
+                    def_val_reg = binds[gi].default_val_reg;
+                    def_applied = 1;
+                    break;
+                }
+            }
+            if (def_applied != 0) {
+                ushort undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                ushort is_undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)parent_reg, (uint)undef_reg);
+                self.free_reg(undef_reg);
+                uint skip_def = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                self.free_reg(is_undef_reg);
+                self.emit_abc(Opcode.LDREG, (uint)parent_reg, (uint)def_val_reg, 0);
+                self.patch_jump(skip_def);
+                self.free_reg(def_val_reg);
+            }
+
+            // Create inner iterator on the array
+            ushort nsym = self.alloc_reg();
+            self.emit_a_bc(Opcode.GETVAR, (uint)nsym, self.add_string_constant("Symbol"));
+            ushort niter_key = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)niter_key, self.add_string_constant("iterator"), 0);
+            ushort nsymval = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)nsymval, (uint)nsym, (uint)niter_key);
+            self.free_reg(niter_key);
+            self.free_reg(nsym);
+            ushort nmethod = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)nmethod, (uint)parent_reg, (uint)nsymval);
+            self.free_reg(nsymval);
+            ushort nthis = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)nthis, (uint)parent_reg, 0);
+            self.emit_abc(Opcode.CALL, (uint)nmethod, (uint)nmethod, 0);
+            self.free_reg(nthis);
+            ushort nnext = self.alloc_reg();
+            ushort nnext_key = self.alloc_reg();
+            self.emit_abc(Opcode.LDCONST, (uint)nnext_key, self.add_string_constant("next"), 0);
+            self.emit_abc(Opcode.GETPROP, (uint)nnext, (uint)nmethod, (uint)nnext_key);
+            self.free_reg(nnext_key);
+            ushort ncallee = self.alloc_reg();
+            ushort ncallee_this = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)ncallee, (uint)nnext, 0);
+            self.emit_abc(Opcode.LDREG, (uint)ncallee_this, (uint)nmethod, 0);
+
+            for (uint gi = group_start; gi < group_start + group_count; gi++) {
+                if (binds[gi].is_rest) {
+                    ushort arr_r = self.alloc_reg();
+                    self.emit_abc(Opcode.NEWARR, (uint)arr_r, 0, 0);
+                    uint collect = self.code_count;
+                    ushort nr2 = self.alloc_reg();
+                    self.emit_abc(Opcode.CALL, (uint)nr2, (uint)ncallee, 0);
+                    ushort ndk = self.alloc_reg();
+                    ushort nd = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)ndk, self.add_string_constant("done"), 0);
+                    self.emit_abc(Opcode.GETPROP, (uint)nd, (uint)nr2, (uint)ndk);
+                    uint ndj = self.emit_cond_jump(Opcode.IF_TRUE, (uint)nd);
+                    ushort nvk = self.alloc_reg();
+                    ushort nv = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)nvk, self.add_string_constant("value"), 0);
+                    self.emit_abc(Opcode.GETPROP, (uint)nv, (uint)nr2, (uint)nvk);
+                    self.free_reg(nvk);
+                    self.free_reg(nr2);
+                    ushort pk = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)pk, self.add_string_constant("push"), 0);
+                    ushort pm = self.alloc_reg();
+                    self.emit_abc(Opcode.GETPROP, (uint)pm, (uint)arr_r, (uint)pk);
+                    self.free_reg(pk);
+                    ushort pc = self.alloc_reg();
+                    self.emit_abc(Opcode.LDREG, (uint)pc, (uint)pm, 0);
+                    self.emit_abc(Opcode.LDREG, (uint)(pc + 1), (uint)arr_r, 0);
+                    if (self.next_reg < pc + 3) self.next_reg = pc + 3;
+                    self.emit_abc(Opcode.LDREG, (uint)(pc + 2), (uint)nv, 0);
+                    self.free_reg(nv);
+                    self.free_reg(pm);
+                    self.emit_abc(Opcode.CALL, (uint)pc, (uint)pc, 1);
+                    int bo = (int)collect - (int)self.code_count - 1;
+                    self.emit(bytecode::make_sabc(Opcode.JUMP, bo));
+                    self.patch_jump(ndj);
+                    self.free_reg(ndk);
+                    self.free_reg(nd);
+                    self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)arr_r, 0);
+                    self.free_reg(arr_r);
+                    self.emit_var_store(binds[gi].reg, binds[gi].name_idx, true, false);
+                    while (gi + 1 < group_start + group_count) { gi++; }
+                    continue;
+                }
+
+                // Regular nested array element: CALL next, GETPROP value
+                ushort nr = self.alloc_reg();
+                self.emit_abc(Opcode.CALL, (uint)nr, (uint)ncallee, 0);
+                ushort nvk = self.alloc_reg();
+                ushort nv = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)nvk, self.add_string_constant("value"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)nv, (uint)nr, (uint)nvk);
+                self.free_reg(nvk);
+                self.free_reg(nr);
+                self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)nv, 0);
+                self.free_reg(nv);
+
+                if (binds[gi].has_default) {
+                    ushort undef_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                    ushort is_undef_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[gi].reg, (uint)undef_reg);
+                    self.free_reg(undef_reg);
+                    uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                    self.free_reg(is_undef_reg);
+                    self.emit_abc(Opcode.LDREG, (uint)binds[gi].reg, (uint)binds[gi].default_val_reg, 0);
+                    self.patch_jump(skip_default);
+                    self.free_reg(binds[gi].default_val_reg);
+                }
+
+                self.emit_var_store(binds[gi].reg, binds[gi].name_idx, true, false);
+            }
+
+            self.free_reg(ncallee_this);
+            self.free_reg(ncallee);
+            self.free_reg(nnext);
+            self.free_reg(nmethod);
+            self.free_reg(parent_reg);
+        } else if (binds[obi].is_nested) {
+            // ── Object-in-object: {prop: {x}} (two GETPROPs) ──
+            ushort parent_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key_reg, binds[obi].key_idx));
+            ushort parent_reg = self.alloc_reg();
+            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)catch_val_reg, (uint)parent_key_reg);
+            self.free_reg(parent_key_reg);
+
+            ushort inner_key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)inner_key_reg, binds[obi].nested_key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[obi].reg, (uint)parent_reg, (uint)inner_key_reg);
+            self.free_reg(inner_key_reg);
+            self.free_reg(parent_reg);
+
+            if (binds[obi].has_default) {
+                ushort undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                ushort is_undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[obi].reg, (uint)undef_reg);
+                self.free_reg(undef_reg);
+                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                self.free_reg(is_undef_reg);
+                self.emit_abc(Opcode.LDREG, (uint)binds[obi].reg, (uint)binds[obi].default_val_reg, 0);
+                self.patch_jump(skip_default);
+                self.free_reg(binds[obi].default_val_reg);
+            }
+
+            self.emit_var_store(binds[obi].reg, binds[obi].name_idx, true, false);
+            obi++;
+        } else {
+            // Simple GETPROP
+            ushort key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[obi].key_idx));
+            self.emit_abc(Opcode.GETPROP, (uint)binds[obi].reg, (uint)catch_val_reg, (uint)key_reg);
+            self.free_reg(key_reg);
+
+            if (binds[obi].has_default) {
+                ushort undef_check_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
+                ushort is_undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[obi].reg, (uint)undef_check_reg);
+                self.free_reg(undef_check_reg);
+                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                self.free_reg(is_undef_reg);
+                self.emit_abc(Opcode.LDREG, (uint)binds[obi].reg, (uint)binds[obi].default_val_reg, 0);
+                self.patch_jump(skip_default);
+                self.free_reg(binds[obi].default_val_reg);
+            }
+
+            self.emit_var_store(binds[obi].reg, binds[obi].name_idx, true, false);
+            obi++;
         }
-
-        self.emit_var_store(binds[i].reg, binds[i].name_idx, true, false);
     }
 }
