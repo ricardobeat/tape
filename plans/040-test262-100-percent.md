@@ -81,21 +81,21 @@ getter/setter names, accept any keyword token and treat its lexeme as a string k
 Clusters: `ident-name-*` tests across `language/expressions/object`,
 `language/statements/class`, member-expression dirs. **Est. 400–600 tests.**
 
-### 1b. Generator method shorthand — B43 (the concrete face of B38)
-`class C { *m() {} }` and `({ *g() {} })` both CE. This is the single biggest CE source:
-phase 15's 930 CEs (scope-gen-meth-*, cpn-* with generators), most of
-`language/expressions/object`'s 256, and blocks phase 21 runtime tests. Fix in
-`src/compiler/class.c3` (method-name position: accept `*` prefix, set is_generator) and
-the object-literal method-shorthand path in `src/compiler/expressions.c3`. Plain
-`function*` declarations/expressions already work (verified), so this is parse-position
-plumbing, not new codegen. **Est. 900–1,200 tests.**
+### 1b. Generator method shorthand — B43 (the concrete face of B38) — DONE (session 252)
+`class C { *m() {} }` and `({ *g() {} })` were already fixed by the generators branch
+merge before this item was actioned. Phase 15 CE count 930 → 203 in a fresh run (pass
+680 → 933). Remaining phase-15 CEs are B44-adjacent (async arrows, computed-property-names
+from `yield`/`await`) and unrelated gaps, not generator-method shorthand.
 
-### 1c. Async arrow functions — B44
-`async () => 42` parses `async` as a plain identifier → "async is not defined". Async
-function declarations/expressions work; only the arrow form is missing. Requires the
-usual lookahead (identifier `async` [no LineTerminator] followed by arrow-head). Also
-gates the large `cpn-*-from-async-arrow-*` computed-property-name families in class/object
-dirs. **Est. 100–200 tests.**
+### 1c. Async arrow functions — B44 — DONE (session 252)
+`async () => 42` was parsing `async` as a plain identifier. Fixed with a lookahead in
+`src/compiler/tokens.c3` (`is_async_arrow_lookahead`) plus `is_async` propagation into
+`compile_arrow_inner`/`compile_arrow_inner_reparse` in `src/compiler/functions.c3` (the
+arrow body compiled into a fresh `arrow_ctx` that never inherited the flag — parsing
+alone wasn't sufficient, bodies ran sync without Promise wrapping). Verified: no-arg,
+single-identifier, multi-param, rest-param, destructured-param, and `await`-in-body forms
+all work; `async` as a plain identifier/function name unaffected. Phase 11 CE count
+unchanged at 13 (all pre-existing, unrelated to async arrows).
 
 ### 1d. for-of/for-in member-expression LHS — B45
 `for (obj.prop of arr)` CEs (`expected ';', got '<identifier>'`). The for-of head only

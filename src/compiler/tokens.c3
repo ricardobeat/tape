@@ -222,6 +222,46 @@ fn bool CompilerContext.match_async_function(&self) {
     return true;
 }
 
+/// Detect the `async` prefix for arrow functions: `async x => ...` or
+/// `async (params) => ...`. Pure lookahead — never consumes any tokens,
+/// so the caller decides when to advance past `async` on a true result.
+/// Returns true if the current token is the identifier "async" and is
+/// followed by either `IDENTIFIER ARROW` or an `LPAREN` (the latter is
+/// only a shape check; whether it truly resolves to an arrow is left to
+/// the existing LPAREN speculative-arrow scan in primary_expr).
+fn bool CompilerContext.is_async_arrow_lookahead(&self) {
+    if (self.peek_type() != TokenType.IDENTIFIER) return false;
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    if (cur.str_value.len != 5 ||
+        cur.str_value[0] != 'a' || cur.str_value[1] != 's' ||
+        cur.str_value[2] != 'y' || cur.str_value[3] != 'n' ||
+        cur.str_value[4] != 'c') {
+        self.pushback(cur);
+        return false;
+    }
+    TokenType next = self.peek_type();
+    if (next == TokenType.LPAREN) {
+        self.pushback(cur);
+        return true;
+    }
+    if (next == TokenType.IDENTIFIER) {
+        Token? next_opt = self.advance();
+        if (catch _e = next_opt) {
+            self.pushback(cur);
+            return false;
+        }
+        Token next_tok = next_opt;
+        bool is_arrow = self.peek_type() == TokenType.ARROW;
+        self.pushback(next_tok);
+        self.pushback(cur);
+        return is_arrow;
+    }
+    self.pushback(cur);
+    return false;
+}
+
 /// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
 /// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
 /// Used by loop rotation to skip over the for-loop increment without emitting code.

@@ -1935,6 +1935,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     // Arrow functions use the parent scope — no fresh env needed.
     arrow_ctx.is_arrow = true;
 
+    // Propagate async: `async (params) => ...` bodies must run resumably
+    // like async functions (AWAIT is only valid in an is_async context).
+    arrow_ctx.is_async = self.is_async;
+    if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
+
     // Propagate class context (for super expressions)
     arrow_ctx.in_class_body = self.in_class_body;
     arrow_ctx.has_super_binding = self.has_super_binding;
@@ -2362,6 +2367,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
 
     // Arrow functions use the parent scope — no fresh env needed.
     arrow_ctx.is_arrow = true;
+
+    // Propagate async: `async (params) => ...` bodies must run resumably
+    // like async functions (AWAIT is only valid in an is_async context).
+    arrow_ctx.is_async = self.is_async;
+    if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
 
     // Propagate class context (for super expressions)
     arrow_ctx.in_class_body = self.in_class_body;

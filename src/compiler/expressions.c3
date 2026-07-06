@@ -1820,6 +1820,19 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.is_async = false;
                     return r;
                 }
+
+                // Detect async arrow functions: `async x => ...` or
+                // `async (params) => ...`. Reuses the existing arrow-detection
+                // logic in primary_expr by consuming `async` and re-entering
+                // this function with is_async set, so it falls straight into
+                // the IDENTIFIER-ARROW or LPAREN-speculative-arrow cases below.
+                if (self.check(TokenType.IDENTIFIER) && self.is_async_arrow_lookahead()) {
+                    self.advance()!;  // consume 'async'
+                    self.is_async = true;
+                    ushort r = self.primary_expr()!;
+                    self.is_async = false;
+                    return r;
+                }
                 Token id_tok = self.advance()!;
 
                 // Check for literal keywords tokenized as identifiers
