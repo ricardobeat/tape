@@ -173,6 +173,7 @@ struct ObjBind {
     bool   is_array_nested;  // true if nested pattern is an array
     uint   arr_nested_idx;   // index within the nested array (used when is_array_nested)
     bool   is_computed_key;  // true when the key is `[expr]` (runtime computed)
+    bool   is_rest;          // true for the trailing `...rest` binding
 }
 
 // ============================================================================
