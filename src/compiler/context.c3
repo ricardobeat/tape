@@ -163,7 +163,8 @@ struct ArrayBind {
 struct ObjBind {
     ushort reg;
     uint   name_idx;
-    uint   key_idx;
+    uint   key_idx;             // constant-pool key for static keys
+    ushort key_reg;             // register holding runtime key for computed keys
     bool   has_default;
     ushort default_val_reg;  // register holding compiled default expression result
     bool   is_resolved;      // for assignment mode: was var resolved locally?
@@ -171,6 +172,7 @@ struct ObjBind {
     uint   nested_key_idx;
     bool   is_array_nested;  // true if nested pattern is an array
     uint   arr_nested_idx;   // index within the nested array (used when is_array_nested)
+    bool   is_computed_key;  // true when the key is `[expr]` (runtime computed)
 }
 
 // ============================================================================

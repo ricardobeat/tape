@@ -511,6 +511,33 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
+            // Computed property key: {[expr]: binding}.
+            // Per ES2015 §13.3.3, the key is an AssignmentExpression.
+            if (self.check(TokenType.LBRACKET)) {
+                self.advance()!; // consume '['
+                ushort key_reg = self.assignment_expr()!;
+                self.expect(TokenType.RBRACKET)!;
+                self.expect(TokenType.COLON)!;
+                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg = self.declare_var(bind_tok.str_value, kind);
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                    binds[bind_count].is_computed_key = true;
+                    binds[bind_count].key_reg = key_reg;
+                    binds[bind_count].has_default = false;
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+                    bind_count++;
+                }
+                // Trailing comma: `, }` is allowed by ES2015
+                if (!self.match(TokenType.COMMA)) break;
+                if (self.check(TokenType.RBRACE)) break;
+                continue;
+            }
             // Check for nested patterns first
             if (self.check(TokenType.LBRACE)) {
                 // Nested object pattern: {a: {x, y}} = rhs
@@ -863,10 +890,17 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
             self.free_reg(inner_key_reg);
             self.free_reg(parent_reg);
         } else {
-            ushort key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            // Computed key: key already compiled into a register; plain key:
+            // LDCONST the constant-pool index into a fresh register.
+            ushort key_reg;
+            if (binds[i].is_computed_key) {
+                key_reg = binds[i].key_reg;  // already in a register
+            } else {
+                key_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            }
             self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
-            self.free_reg(key_reg);
+            if (!binds[i].is_computed_key) self.free_reg(key_reg);
         }
 
         // Apply default if present: if value is undefined, use default
@@ -1410,6 +1444,40 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
+            // Computed property key: {[expr]: binding}.
+            // Per ES2015 §13.3.3, the key is an AssignmentExpression.
+            if (self.check(TokenType.LBRACKET)) {
+                self.advance()!; // consume '['
+                ushort key_reg = self.assignment_expr()!;
+                self.expect(TokenType.RBRACKET)!;
+                self.expect(TokenType.COLON)!;
+                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                if (bind_count < 32) {
+                    ushort reg;
+                    if (try existing = self.resolve_var(bind_tok.str_value)) {
+                        reg = existing;
+                        binds[bind_count].is_resolved = false;
+                    } else {
+                        reg = self.alloc_reg();
+                        binds[bind_count].is_resolved = false;
+                    }
+                    binds[bind_count].reg = reg;
+                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                    binds[bind_count].is_computed_key = true;
+                    binds[bind_count].key_reg = key_reg;
+                    binds[bind_count].has_default = false;
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+                    bind_count++;
+                }
+                // Trailing comma: `, }` is allowed by ES2015
+                if (!self.match(TokenType.COMMA)) break;
+                if (self.check(TokenType.RBRACE)) break;
+                continue;
+            }
             // Check for nested patterns first
             if (self.check(TokenType.LBRACE)) {
                 self.advance()!; // consume '{'
@@ -1838,10 +1906,17 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             self.free_reg(inner_key_reg);
             self.free_reg(parent_reg);
         } else {
-            ushort key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            // Computed key: key already compiled into a register; plain key:
+            // LDCONST the constant-pool index into a fresh register.
+            ushort key_reg;
+            if (binds[i].is_computed_key) {
+                key_reg = binds[i].key_reg;  // already in a register
+            } else {
+                key_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
+            }
             self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
-            self.free_reg(key_reg);
+            if (!binds[i].is_computed_key) self.free_reg(key_reg);
         }
 
         // Apply default if present: if value is undefined, use default
