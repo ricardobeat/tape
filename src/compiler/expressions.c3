@@ -2504,7 +2504,8 @@ fn ushort? CompilerContext.object_literal(&self) {
             ushort key_reg;
 
             TokenType key_tt = self.peek_type();
-            if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING) {
+            if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING
+                || lexer::keyword_to_string(key_tt).len > 0) {
                 Token key_tok = self.advance()!;
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
@@ -2538,7 +2539,8 @@ fn ushort? CompilerContext.object_literal(&self) {
                         self.expect(TokenType.RBRACKET)!;
                     } else {
                         Token prop_tok;
-                        if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING) {
+                        if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING
+                            || lexer::keyword_to_string(prop_tt).len > 0) {
                             prop_tok = self.advance()!;
                         } else if (prop_tt == TokenType.NUMBER) {
                             prop_tok = self.advance()!;

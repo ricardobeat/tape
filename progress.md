@@ -1,43 +1,44 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 250 (full project review; roadmap to 100% in `plans/040-test262-100-percent.md`)
+**Last Updated:** Session 252 (B41, B43, B44, B42, B45 closed; see Session Log)
 **Target:** 100% test262 pass rate on the targeted subset (29,459 executable tests; see plan 040 for the subset definition). Original 80% milestone: ~8 points away.
 
-## Summary (two full runs, 2026-07-05)
+## Summary (full run, session 252, 2026-07-06)
 
 | Metric | Value |
 |---|---|
-| Total tests measured | 41,846 |
-| Pass + Fail + CE (executable) | 29,459 |
-| Total passing | 21,121–21,154 (±33 run-to-run flakiness — B50) |
-| **Overall pass rate** | **71.8%** |
-| Total failing (incl. 46 timeouts) | 6,297 |
-| CE unexpected (parser bugs) | 2,035 |
+| Pass + Fail + CE (executable) | 29,456 |
+| Total passing | 22,241 |
+| **Overall pass rate** | **75.5%** |
+| Total failing | 6,374 |
+| CE unexpected (parser bugs) | 838 |
 | CE expected (`negative: phase: parse`) | 3 |
 | Skipped | 12,390 |
 
-Gap to 100% = ~8,300 tests. Cluster breakdown, wave plan, and architecture blockers:
-`plans/040-test262-100-percent.md`.
+Up from the session-250 baseline (71.8%, 21,121–21,154 pass, 2,035 unexpected CE) after
+closing B41, B43 (verified pre-existing fixes), B42, B44, B45 this session — see Session
+Log below. Gap to 100% = ~7,200 tests. Cluster breakdown, wave plan, and architecture
+blockers: `plans/040-test262-100-percent.md`.
 
-## Per-Phase Status (session 250)
+## Per-Phase Status (session 252, full run)
 
 | Phase | Total | Pass | Fail | Skip | CE:unexpected |
 |---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 784 | 238 | 1096 | 64 |
-| 1: Calling Convention & Closures | 426 | 211 | 114 | 90 | 11 |
-| 2: Basic Operators | 1969 | 1196 | 112 | 563 | 98 |
-| 3: Object System | 7766 | 5363 | 1050 | 1078 | 275 |
-| 4: Error Handling & References | 402 | 141 | 64 | 103 | 94 |
-| 5: Built-in Constructors | 8615 | 6314 | 1468 | 809 | 24 |
-| 6: Built-in Prototype Methods | 4713 | 3370 | 910 | 423 | 10 |
-| 7: Remaining ES5 Features | 1035 | 344 | 124 | 458 | 109 |
-| 8: ES5 Built-in Objects | 2747 | 1243 | 981 | 522 | 1 |
-| 11: Arrow Functions & Templates | 465 | 191 | 103 | 158 | 13 |
-| 12-13: Destructuring & Spread | 19 | 15 | 0 | 2 | 2 |
-| 14: for-of | 751 | 137 | 125 | 169 | 320 |
-| 15: Classes | 8520 | 680 | 592 | 6318 | 930 |
-| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 961 | 145 | 463 | 45 |
-| 21: Generators | 619 | 171 | 271 | 138 | 39 |
+| 0-1: Core VM | 2185 | 790 | 263 | 1096 | 33 |
+| 1: Calling Convention & Closures | 426 | 217 | 112 | 90 | 7 |
+| 2: Basic Operators | 1969 | 1199 | 139 | 563 | 68 |
+| 3: Object System | 7766 | 5688 | 957 | 1078 | 43 |
+| 4: Error Handling & References | 402 | 158 | 53 | 103 | 88 |
+| 5: Built-in Constructors | 8615 | 6572 | 1226 | 809 | 8 |
+| 6: Built-in Prototype Methods | 4713 | 3529 | 755 | 423 | 6 |
+| 7: Remaining ES5 Features | 1035 | 348 | 126 | 458 | 103 |
+| 8: ES5 Built-in Objects | 2747 | 1257 | 967 | 522 | 1 |
+| 11: Arrow Functions & Templates | 465 | 192 | 106 | 158 | 9 |
+| 12-13: Destructuring & Spread | 19 | 17 | 0 | 2 | 0 |
+| 14: for-of | 751 | 154 | 129 | 169 | 299 |
+| 15: Classes | 8520 | 951 | 1088 | 6318 | 163 |
+| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 980 | 169 | 463 | 2 |
+| 21: Generators | 619 | 189 | 284 | 138 | 8 |
 
 ## Test Infrastructure
 
@@ -53,6 +54,7 @@ Gap to 100% = ~8,300 tests. Cluster breakdown, wave plan, and architecture block
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| 252 | **Closed 5 backlog items from the plan-040 parser-holes wave: B41, B43, B44, B42, B45** (compiler/{expressions,functions,tokens,statements}.c3, BACKLOG.md, plans/040-test262-100-percent.md, scripts/run_test262.py, progress.md). **B41** (verified only — already fixed by the prior session's `40c0ece` generator/finally commit): `continue` in `finally` overriding a `break` no longer hangs. **B43** (verified only — already fixed by the generators branch merge): generator method shorthand (`class C { *m(){} }`, `({ *g(){} })`) already parses and runs; phase 15 CE 930→203 in the first re-measurement. **B44** (implemented): async arrow functions (`async () => 42`, `async x => x`, rest/destructured params, `await` in body). Two-part fix: `is_async_arrow_lookahead()` lookahead in tokens.c3 detects the async-arrow head and recurses into `primary_expr()`; separately, `compile_arrow_inner`/`compile_arrow_inner_reparse` in functions.c3 never propagated `is_async` into the arrow's fresh sub-context, so even correctly-parsed async arrows ran synchronously with no Promise wrapping until fixed. **B42** (implemented): reserved words as object-literal property names/getter-setter names (`{ default: 1, get if(){} }`) — class method names already handled this via `lexer::keyword_to_string`, only the object-literal key parser was strict; widened two call sites in expressions.c3 to match the existing class.c3 pattern. **B45** (implemented, smaller than estimated): for-of/for-in heads with a member-expression LHS (`for (obj.prop of arr)`) plus a related pre-existing gap, bare (no `var`/`let`/`const`) identifier for-in (`for (x in obj)`). New `ForLhsSnapshot` (full lexer+pushback state, not a byte offset — `self.lexer.pos` can already be past a pending lookahead token) lets the member LHS be re-parsed and recompiled fresh every loop iteration via new `emit_forof_loop_member`/`emit_forin_loop_member`/`emit_member_lhs_store` helpers, giving correct per-iteration re-evaluation. Real footprint ~4 tests, not the 150–300 originally estimated — phase 14's 320 CEs are almost entirely B37 destructuring patterns (confirmed by grepping the CE log), untouched by this fix. **Infra**: `run_test262.py` was silently running a stale `batch_test_vm` binary all session (only rebuilt when the binary was *missing*, never on staleness) — understated the first round of B42/B44 gains until caught; now always rebuilds before running. Full fresh-binary run: 71.8%→**75.5%** (22,241 pass, up from 21,121–21,154; unexpected CE 2,035→838). No local test regressions. | 71.8%→75.5%; unexpected CE 2,035→838 |
 | 250 | **Full project review — roadmap to 100%, runner consolidation, memory-bomb root cause** (plans/040-test262-100-percent.md, BACKLOG.md, progress.md, plans/index.md, README.md, scripts/run_test262.py, test262_runner/run_single_test.sh; deleted scripts/{phase_runner,capture_fails,analyze_phase3_failures}.py). Two full runs re-baselined the suite at **71.8%** (21,121–21,154 / 29,459 executable; ±33 flakiness → B50). Runner gained `--log FILE` (per-test RESULT⇥path lines for cluster analysis) and a 2 GB per-worker RSS guard. **Memory-bomb root cause found**: huge-length array-like tests (e.g. `findLast/maximum-index.js`, `{length: Number.MAX_VALUE}`) loop near-infinitely due to missing ToLength/2^53 handling, interning a numeric-index key string per iteration — ~300 MB/s per worker × 4 workers until the 10s timeout = the 30GB+ machine freezes (B40). Verified parser holes by repro: reserved words as property names (B42), generator method shorthand in classes/object literals (B43 — the real face of B38, ~1,100 tests), async arrows (B44), for-of member-expression LHS (B45), catch-param destructuring (B37). Verified runtime clusters: Array spec-op ordering/holes/species (B46, 1,323 fails), descriptor validation matrix (B49, ~490), Function.prototype.toString source retention (B47), Number formatting (B48), `continue`-in-`finally`-overrides-`break` infinite loop (B41, 12 timeouts). Flagged architecture blockers: UTF-8-codepoint string model vs UTF-16 spec semantics (B51 — prerequisite for B32), function source-text retention, peephole A/B guardrail, shared spec-op helpers, skip-list duplication. Full wave plan with estimates in plan 040. | re-baseline: 71.8%, roadmap to 100% |
 | 249 | **B31 swapped libregexp.c for quickjs-ng** (libregexp/{cutils,libregexp,libregexp-opcode,libunicode,libunicode-table,h-comments-replaced-by-quickjs-ng-vendor}, libregexp/re_wrapper.{c,h}, src/builtins/regexp.c3, src/builtins/string.c3, src/vm/vm_objects.c3, src/re_bindings.c3, scripts/run_test262.py, scripts/test262_skip.cfg, BACKLOG.md, progress.md). Replaced the original-vendor QuickJS libregexp.c (unmaintained) with quickjs-ng's active fork. Brings ES2018-ES2024 features the vendored copy lacked: `\u{1F600}` brace-codepoint escapes, `\p{Letter}` Unicode property escapes, duplicate-named groups across alternatives, full `v`-flag string-set notation, and the per-capture `d`-flag `match.indices` runtime. Wrapper (`re_wrapper.{c,h}`) now maps `RE_FLAG_UNICODE`/`STICKY`/`INDICES`/`UNICODE_SETS` through to `lre_compile` and enforces the u+v mutual exclusion ES2024 added. VM-side flag parsing in RegExp ctor, regex-literal opcode, and create_regexp_from_string helper all surface u/y/d/v through. Test262 skip-list: removed `regexp-unicode-property-escapes`, `regexp-v-flag`, `regexp-duplicate-named-groups` (780 newly-attempted tests now visible in phase 8 alone). Rosetta 100/100. Full test262 rerun: 20,694 pass (+29 vs. session 248's 20,665) on an executable denominator of 30,727 (584 more tests attempted since the skip list is now larger surface). Phase 8: 1197 → 1206 pass (+9). The swap is mostly churn — visibly failing tests are tracked as B32 (multibyte UTF-8 input needs `cbuf_type=2`), B33 (d-flag indices runtime + `hasIndices`/`unicodeSets` accessors not wired), B34 (`String.match` drops `.groups` on non-global named captures). | +29 pass; 584 more attempted |
 |---|---|---|

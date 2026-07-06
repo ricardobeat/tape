@@ -37,6 +37,26 @@ struct CompReqModuleEntry {
     void*  resolved;
 }
 
+/// Full lexer + compiler-pushback snapshot, used to re-parse a source
+/// span (e.g. a for-of/for-in member-expression LHS) fresh on every
+/// loop iteration. A bare byte offset isn't enough to resume from: by
+/// the time the offset is captured, self.lexer.pos may already sit
+/// past a cached lookahead token, so the whole lexer/pushback state
+/// must be captured and restored together.
+struct ForLhsSnapshot {
+    uint pos;
+    uint line;
+    uint col;
+    Token cur;
+    Token look;
+    bool haslk;
+    Token push;
+    bool haspb;
+    bool slt;
+    uint pbc;
+    Token[4] pbs;
+}
+
 const uint COMP_MAX_IMPORTS      = 64;
 const uint COMP_MAX_EXPORTS      = 64;
 const uint COMP_MAX_STAR_EXPORTS = 16;
@@ -818,7 +838,7 @@ fn void? CompilerContext.for_statement(&self) {
     // Check for for-in / for-of
     TokenType next_tt = self.peek_type();
 
-    // Check for bare for-of: for (x of expr)
+    // Check for bare for-of/for-in with a plain identifier LHS: for (x of expr) / for (x in expr)
     if (next_tt == TokenType.IDENTIFIER) {
         Token id_tok = self.advance()!;
         if (try tok2 = self.lexer.peek()) {
@@ -826,12 +846,84 @@ fn void? CompilerContext.for_statement(&self) {
                 self.advance()!;  // consume "of"
                 ushort iter_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
-                uint name_idx = self.add_string_constant(id_tok.str_value);
                 self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
+                return;
+            }
+            if (tok2.type == TokenType.IN) {
+                self.advance()!;  // consume "in"
+                ushort obj_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+                self.emit_bare_forin_loop(id_tok.str_value, obj_reg, saved_scope, saved_reg)!;
                 return;
             }
         }
         self.pushback(id_tok);
+    }
+
+    // Check for bare for-of/for-in with a member-expression LHS:
+    // for (obj.prop of expr) / for (obj[key] in expr). Per ES2015
+    // §13.7.5.1 the head's AssignmentExpression may be any valid
+    // assignment target, not just an identifier — member expressions
+    // are the common non-identifier case (destructuring patterns are
+    // handled separately and are out of scope here, tracked as B37).
+    //
+    // Detection is speculative: save the lexer, try to compile the LHS
+    // as a member expression, then check for a following `of`/`in`. If
+    // that shape doesn't hold, restore and fall through to the general
+    // expression-init path below (unchanged behavior for non-member,
+    // non-for-of/in expressions like `for (i = 0; ...)`).
+    if (next_tt != TokenType.SEMICOLON && next_tt != TokenType.VAR
+        && next_tt != TokenType.LET && next_tt != TokenType.CONST) {
+        ForLhsSnapshot lhs_snap = self.save_lhs_snapshot();
+        ushort saved_next_reg = self.next_reg;
+
+        bool is_member_head = false;
+        bool head_is_of = false;
+
+        if (try mreg = self.member_expr()) {
+            if (self.last_was_member) {
+                self.free_reg(self.last_member_prop_reg);
+                self.free_reg(self.last_member_obj_reg);
+                self.free_reg(mreg);
+                if (try tok3 = self.lexer.peek()) {
+                    if (tok3.type == TokenType.IDENTIFIER && str_eq(tok3.str_value, "of")) {
+                        is_member_head = true;
+                        head_is_of = true;
+                    } else if (tok3.type == TokenType.IN) {
+                        is_member_head = true;
+                        head_is_of = false;
+                    }
+                }
+            }
+        }
+
+        // Restore lexer + register state; the LHS is re-parsed from
+        // source once per iteration (see emit_forof_loop_member/
+        // emit_forin_loop_member), so nothing from this speculative
+        // parse should be kept.
+        self.restore_lhs_snapshot(lhs_snap);
+        self.next_reg = saved_next_reg;
+
+        if (is_member_head) {
+            // Re-consume the LHS for real (the speculative parse above was
+            // fully unwound). member_expr() naturally stops right before
+            // `of`/`in` since neither token continues a member expression.
+            self.member_expr()!;
+            self.free_reg(self.last_member_prop_reg);
+            self.free_reg(self.last_member_obj_reg);
+            self.advance()!;  // consume "of" or "in"
+
+            if (head_is_of) {
+                ushort iter_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+                self.emit_forof_loop_member(lhs_snap, iter_reg, saved_scope, saved_reg)!;
+            } else {
+                ushort obj_reg = self.assignment_expr()!;
+                self.expect(TokenType.RPAREN)!;
+                self.emit_forin_loop_member(lhs_snap, obj_reg, saved_scope, saved_reg)!;
+            }
+            return;
+        }
     }
 
     // Parse init (may be var/let/const or expression or empty)
@@ -2015,6 +2107,216 @@ fn void? CompilerContext.for_statement(&self) {
 
     self.pop_scope_to(saved_scope);
     self.free_regs_to(saved_reg);
+}
+
+/// Capture the full lexer + compiler-pushback state for later replay
+/// via restore_lhs_snapshot. See ForLhsSnapshot for why this must be
+/// the whole state, not just a byte offset.
+fn ForLhsSnapshot CompilerContext.save_lhs_snapshot(&self) {
+    ForLhsSnapshot s;
+    s.pos    = self.lexer.pos;
+    s.line   = self.lexer.line;
+    s.col    = self.lexer.col;
+    s.cur    = self.lexer.current;
+    s.look   = self.lexer.lookahead;
+    s.haslk  = self.lexer.has_lookahead;
+    s.push   = self.lexer.pushed_back;
+    s.haspb  = self.lexer.has_pushed_back;
+    s.slt    = self.lexer.seen_line_term;
+    s.pbc    = self.pushback_count;
+    s.pbs    = self.pushback_stack;
+    return s;
+}
+
+/// Restore a snapshot captured by save_lhs_snapshot.
+fn void CompilerContext.restore_lhs_snapshot(&self, ForLhsSnapshot s) {
+    self.lexer.pos             = s.pos;
+    self.lexer.line            = s.line;
+    self.lexer.col             = s.col;
+    self.lexer.current         = s.cur;
+    self.lexer.lookahead       = s.look;
+    self.lexer.has_lookahead   = s.haslk;
+    self.lexer.pushed_back     = s.push;
+    self.lexer.has_pushed_back = s.haspb;
+    self.lexer.seen_line_term  = s.slt;
+    self.pushback_count        = s.pbc;
+    self.pushback_stack        = s.pbs;
+}
+
+/// Emit a bare for-in loop whose LHS is a plain identifier with no
+/// declaration keyword: `for (x in obj) { ... }`. Mirrors the
+/// `var`/`let`/`const` for-in path but stores each key via PUTVAR
+/// against an existing binding instead of declaring a new one.
+fn void? CompilerContext.emit_bare_forin_loop(&self, char[] var_name, ushort obj_reg, uint saved_scope, ushort saved_reg) {
+    uint name_idx = self.add_string_constant(var_name);
+    ushort iter_var = self.alloc_reg();
+
+    ushort iter_state = self.alloc_reg();
+    self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+
+    ushort has_next = self.alloc_reg();
+    self.emit_abc(Opcode.NEXTFOR, (uint)iter_var, (uint)has_next, (uint)iter_state);
+    self.emit_a_bc(Opcode.PUTVAR, (uint)iter_var, name_idx);
+
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
+    self.free_reg(has_next);
+
+    self.statement()!;
+
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    self.patch_jump(exit_jump);
+    self.pop_loop();
+
+    self.free_reg(iter_state);
+    self.free_reg(obj_reg);
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+/// Emit a for-of loop whose head LHS is a member expression, e.g.
+/// `for (obj.prop of arr) { ... }` (ES2015 §13.7.5.1: the head's
+/// AssignmentExpression may be any valid assignment target, not just
+/// an identifier). The LHS is re-parsed from source and re-compiled
+/// fresh at the top of every iteration (right before the body), which
+/// gives correct per-iteration re-evaluation of the member base per
+/// spec, reusing the same PUTPROP path normal assignment uses.
+fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, ushort iter_reg, uint saved_scope, ushort saved_reg) {
+    ushort sym_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+    ushort iter_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+    ushort symbol_val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+    self.free_reg(iter_key_reg);
+    self.free_reg(sym_reg);
+
+    ushort method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
+    self.free_reg(symbol_val_reg);
+
+    ushort this_slot = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+    self.free_reg(this_slot);
+
+    ushort next_reg = self.alloc_reg();
+    ushort next_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+    self.free_reg(next_key_reg);
+
+    ushort callee_reg = self.alloc_reg();
+    ushort callee_this_reg = self.alloc_reg();
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
+
+    ushort done_key_reg = self.alloc_reg();
+    ushort done_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+    ushort value_key_reg = self.alloc_reg();
+    ushort val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
+
+    self.free_reg(val_reg);
+    self.free_reg(value_key_reg);
+    self.free_reg(done_reg);
+    self.free_reg(done_key_reg);
+    self.free_reg(result_reg);
+
+    // Re-parse and re-compile the member LHS from source, then store the
+    // per-iteration value into it via PUTPROP. This must happen after the
+    // iterator-result registers above are freed (their reg slots are
+    // reused by the LHS compile) and before the body statement.
+    self.emit_member_lhs_store(lhs_snap, val_reg)!;
+
+    self.statement()!;
+
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    self.patch_jump(exit_jump);
+    self.pop_loop();
+
+    self.free_reg(callee_this_reg);
+    self.free_reg(callee_reg);
+    self.free_reg(next_reg);
+    self.free_reg(method_reg);
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+/// Emit a for-in loop whose head LHS is a member expression, e.g.
+/// `for (obj.prop in x) { ... }`. Same re-parse-per-iteration strategy
+/// as emit_forof_loop_member.
+fn void? CompilerContext.emit_forin_loop_member(&self, ForLhsSnapshot lhs_snap, ushort obj_reg, uint saved_scope, ushort saved_reg) {
+    ushort key_reg = self.alloc_reg();
+
+    ushort iter_state = self.alloc_reg();
+    self.emit_abc(Opcode.INITFOR, (uint)obj_reg, (uint)iter_state, 0);
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+
+    ushort has_next = self.alloc_reg();
+    self.emit_abc(Opcode.NEXTFOR, (uint)key_reg, (uint)has_next, (uint)iter_state);
+
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)has_next);
+    self.free_reg(has_next);
+
+    self.emit_member_lhs_store(lhs_snap, key_reg)!;
+
+    self.statement()!;
+
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    self.patch_jump(exit_jump);
+    self.pop_loop();
+
+    self.free_reg(iter_state);
+    self.free_reg(key_reg);
+    self.free_reg(obj_reg);
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+/// Re-parse a member-expression LHS from a saved lexer snapshot and
+/// emit `<lhs> = val_reg` via PUTPROP. Used by the for-of/for-in
+/// member-LHS loops to re-evaluate the assignment target fresh each
+/// iteration (ES2015 §13.7.5.13 ForIn/OfBodyEvaluation: the reference
+/// is (re-)resolved every iteration for non-declaration LHS forms).
+fn void? CompilerContext.emit_member_lhs_store(&self, ForLhsSnapshot lhs_snap, ushort val_reg) {
+    ForLhsSnapshot resume_snap = self.save_lhs_snapshot();
+
+    self.restore_lhs_snapshot(lhs_snap);
+
+    ushort mreg = self.member_expr()!;
+    if (self.last_was_member) {
+        self.free_reg(mreg);
+        self.emit_abc(Opcode.PUTPROP, (uint)self.last_member_obj_reg, (uint)self.last_member_prop_reg, (uint)val_reg);
+        self.free_reg(self.last_member_prop_reg);
+        self.free_reg(self.last_member_obj_reg);
+    }
+
+    self.restore_lhs_snapshot(resume_snap);
 }
 
 /// Parse do-while statement.

@@ -97,11 +97,15 @@ single-identifier, multi-param, rest-param, destructured-param, and `await`-in-b
 all work; `async` as a plain identifier/function name unaffected. Phase 11 CE count
 unchanged at 13 (all pre-existing, unrelated to async arrows).
 
-### 1d. for-of/for-in member-expression LHS — B45
-`for (obj.prop of arr)` CEs (`expected ';', got '<identifier>'`). The for-of head only
-accepts declarations and plain identifiers. Accept any valid AssignmentTargetType LHS
-(member expressions, destructuring patterns — the latter shared with B37). Part of
-phase 14's 320 CEs. **Est. 150–300 tests (with 1e).**
+### 1d. for-of/for-in member-expression LHS — B45 — DONE (session 252)
+`for (obj.prop of arr)` CEs (`expected ';', got '<identifier>'`) fixed, plus a
+pre-existing bare (no `var`/`let`/`const`) `for (x in obj)` gap found along the way.
+Real footprint was ~4 tests, not 150–300 — phase 14's 320 CEs turned out to be almost
+entirely B37 destructuring patterns (verified by grepping the CE log), which this item
+does not touch. Fix re-parses the member LHS fresh each loop iteration from a saved
+full-lexer-state snapshot (`ForLhsSnapshot` in `src/compiler/statements.c3`) rather than
+a byte offset, since `self.lexer.pos` may already be past a pending lookahead token by
+the time the head shape is detected.
 
 ### 1e. Destructuring completion — B37/B39 (existing items, still open)
 Catch-clause patterns (`catch ([a, b])` CEs — verified), destructuring in for-of heads,
