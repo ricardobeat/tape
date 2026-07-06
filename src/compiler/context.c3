@@ -157,6 +157,8 @@ struct ArrayBind {
     uint   depth2_idx;       // for nest_depth==2: index into 2nd-level array
     bool   is_obj_nested;    // true if nested pattern is an object
     uint   obj_key_idx;      // constant index of object property key (used when is_obj_nested)
+    bool   has_obj_default;  // true if the whole nested object has a default ([{x} = def])
+    ushort obj_default_val_reg; // register holding the whole nested object's default value
 }
 
 /// Tracks a binding in an object destructuring pattern.

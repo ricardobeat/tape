@@ -180,6 +180,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             // Nested object pattern: [a, {x, y}] = rhs or [a, {x: y}] = rhs
             self.advance()!; // consume '{'
             uint obj_array_idx = array_idx;
+            ushort obj_default_val_reg = 0;
+            bool obj_has_default = false;
 
             // Parse all properties of the nested object
             for (;;) {
@@ -205,14 +207,45 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                     binds[bind_count].is_obj_nested = true;
                     binds[bind_count].outer_idx = obj_array_idx;
                     binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].has_obj_default = false;
+                    binds[bind_count].obj_default_val_reg = 0;
+
+                    // Check for per-property default: {x = expr}
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+
                     bind_count++;
                 }
 
                 if (!self.match(TokenType.COMMA)) break;
             }
 
-            array_idx++;
             self.expect(TokenType.RBRACE)!;
+
+            // Default value applies to the WHOLE nested object: [a, {x,y} = def]
+            // Per ES2015 §13.3.3.5 step 4: if the value of the
+            // destructured slot is undefined, the default is used.
+            if (self.match(TokenType.ASSIGN)) {
+                obj_has_default = true;
+                obj_default_val_reg = self.assignment_expr()!;
+            }
+
+            // Attach the whole-object default to the FIRST binding of the
+            // nested object so the codegen can apply it before extracting
+            // individual properties.
+            if (obj_has_default && bind_count > 0) {
+                for (uint bi = 0; bi < bind_count; bi++) {
+                    if (binds[bi].is_obj_nested && binds[bi].outer_idx == obj_array_idx) {
+                        binds[bi].has_obj_default = true;
+                        binds[bi].obj_default_val_reg = obj_default_val_reg;
+                        break;
+                    }
+                }
+            }
+
+            array_idx++;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
             if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
@@ -410,7 +443,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 self.free_reg(binds[i].default_val_reg);
             }
         } else if (binds[i].is_obj_nested) {
-            // Object nested in array: [a, {x, y}]
+            // Object nested in array: [a, {x, y}] or [a, {x, y} = def]
             // Get rhs[outer_idx] first, cache it, then get object property from it
             if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
                 // Free old temp if switching to a different outer index
@@ -423,6 +456,26 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
                 self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
                 self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
                 self.free_reg(idx_reg);
+
+                // The default (if any) applies to the whole nested object,
+                // not to the first property. The default is recorded on the
+                // first binding of this nested object.
+                if (binds[i].has_obj_default) {
+                    ushort undef_check_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
+                    ushort is_undef_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)nested_temp_reg, (uint)undef_check_reg);
+                    self.free_reg(undef_check_reg);
+
+                    uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                    self.free_reg(is_undef_reg);
+
+                    self.emit_abc(Opcode.LDREG, (uint)nested_temp_reg, (uint)binds[i].obj_default_val_reg, 0);
+                    self.patch_jump(skip_default);
+
+                    self.free_reg(binds[i].obj_default_val_reg);
+                }
+
                 has_nested_temp = true;
                 nested_temp_outer_idx = binds[i].outer_idx;
             }
@@ -433,26 +486,20 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)key_reg);
             self.free_reg(key_reg);
 
-            // Apply default if present: if value is undefined, use default
+            // Apply per-property default if present: {x = expr}
             if (binds[i].has_default) {
-                // Check if value is undefined
                 ushort undef_check_reg = self.alloc_reg();
                 self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
                 ushort is_undef_reg = self.alloc_reg();
                 self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
                 self.free_reg(undef_check_reg);
 
-                // If not undefined, jump over default
                 uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                 self.free_reg(is_undef_reg);
 
-                // Load default value
                 self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-
-                // Patch jump
                 self.patch_jump(skip_default);
 
-                // Free the default value register
                 self.free_reg(binds[i].default_val_reg);
             }
         } else {
@@ -1228,9 +1275,11 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
 
             self.expect(TokenType.RBRACKET)!;
         } else if (self.check(TokenType.LBRACE)) {
-            // Nested object pattern: [a, {x, y}] = rhs
+            // Nested object pattern: [a, {x, y}] = rhs or [a, {x,y} = def] = rhs
             self.advance()!; // consume '{'
             uint obj_array_idx = array_idx;
+            ushort obj_default_val_reg = 0;
+            bool obj_has_default = false;
 
             // Parse all properties of the nested object
             for (;;) {
@@ -1265,14 +1314,43 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                     binds[bind_count].is_obj_nested = true;
                     binds[bind_count].outer_idx = obj_array_idx;
                     binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
+                    binds[bind_count].has_obj_default = false;
+                    binds[bind_count].obj_default_val_reg = 0;
+
+                    // Check for per-property default: {x = expr}
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[bind_count].has_default = true;
+                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    }
+
                     bind_count++;
                 }
 
                 if (!self.match(TokenType.COMMA)) break;
             }
 
-            array_idx++;
             self.expect(TokenType.RBRACE)!;
+
+            // Default value applies to the WHOLE nested object: [a, {x,y} = def] = rhs
+            if (self.match(TokenType.ASSIGN)) {
+                obj_has_default = true;
+                obj_default_val_reg = self.assignment_expr()!;
+            }
+
+            // Attach the whole-object default to the FIRST binding of the
+            // nested object so the codegen can apply it before extracting
+            // individual properties.
+            if (obj_has_default && bind_count > 0) {
+                for (uint bi = 0; bi < bind_count; bi++) {
+                    if (binds[bi].is_obj_nested && binds[bi].outer_idx == obj_array_idx) {
+                        binds[bi].has_obj_default = true;
+                        binds[bi].obj_default_val_reg = obj_default_val_reg;
+                        break;
+                    }
+                }
+            }
+
+            array_idx++;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
             if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
@@ -1447,7 +1525,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 self.free_reg(binds[i].default_val_reg);
             }
         } else if (binds[i].is_obj_nested) {
-            // Object nested in array: [a, {x, y}]
+            // Object nested in array: [a, {x, y}] or [a, {x, y} = def]
             if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
                 // Free old temp if switching to a different outer index
                 if (has_nested_temp) {
@@ -1459,6 +1537,26 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
                 self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
                 self.free_reg(idx_reg);
+
+                // The default (if any) applies to the whole nested object,
+                // not to the first property. The default is recorded on the
+                // first binding of this nested object.
+                if (binds[i].has_obj_default) {
+                    ushort undef_check_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
+                    ushort is_undef_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)nested_temp_reg, (uint)undef_check_reg);
+                    self.free_reg(undef_check_reg);
+
+                    uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
+                    self.free_reg(is_undef_reg);
+
+                    self.emit_abc(Opcode.LDREG, (uint)nested_temp_reg, (uint)binds[i].obj_default_val_reg, 0);
+                    self.patch_jump(skip_default);
+
+                    self.free_reg(binds[i].obj_default_val_reg);
+                }
+
                 has_nested_temp = true;
                 nested_temp_outer_idx = binds[i].outer_idx;
             }
@@ -1469,7 +1567,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
             self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)key_reg);
             self.free_reg(key_reg);
 
-            // Apply default if present: if value is undefined, use default
+            // Apply per-property default if present: {x = expr}
             if (binds[i].has_default) {
                 ushort undef_check_reg = self.alloc_reg();
                 self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
@@ -1482,6 +1580,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
 
                 self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
                 self.patch_jump(skip_default);
+
                 self.free_reg(binds[i].default_val_reg);
             }
         } else {
