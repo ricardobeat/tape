@@ -27,6 +27,23 @@ extern "C" {
 uint32_t* unicode_normalize_simple(const uint32_t* src, int src_len,
                                    int n_type, int* out_len);
 
+/*
+ * Identifier character classification (per Unicode ID_Start / ID_Continue).
+ *
+ * Backed by libregexp's vendored ID_Start / ID_Continue property tables
+ * (libunicode.c), which match the ECMAScript spec's IdentifierStart /
+ * IdentifierPart character classes (incl. Other_ID_Start grandfathered
+ * characters from Unicode 4.0–9.0 and ID_Continue-only grandfathered
+ * characters from Unicode 4.1–6.0). These are the same tables QuickJS
+ * uses for lre_js_is_ident_first / lre_js_is_ident_next.
+ *
+ * Returns 1 if the codepoint is a valid identifier start / continue
+ * character, 0 otherwise. ASCII path is fast (table lookup); >127 goes
+ * through the full Unicode table.
+ */
+int unicode_is_identifier_start(uint32_t cp);
+int unicode_is_identifier_continue(uint32_t cp);
+
 #ifdef __cplusplus
 }
 #endif

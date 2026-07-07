@@ -9,6 +9,7 @@ module duktape::lexer;
 
 import duktape::types;
 import duktape::dtoa_bindings;
+import duktape::unicode_bindings;
 import std::math;
 import libc;
 
@@ -317,34 +318,24 @@ fn bool is_line_terminator(char c) {
 }
 
 /// Check if a Unicode codepoint is a valid identifier start character.
-fn bool is_identifier_start(uint cp) {
-    if (cp >= 'a' && cp <= 'z') return true;
-    if (cp >= 'A' && cp <= 'Z') return true;
-    if (cp == '_' || cp == '$') return true;
-    // Simplified Unicode ID_Start ranges
-    if (cp >= 0x00C0 && cp <= 0x00D6) return true;
-    if (cp >= 0x00D8 && cp <= 0x00F6) return true;
-    if (cp >= 0x00F8 && cp <= 0x02FF) return true;
-    if (cp >= 0x0370 && cp <= 0x037D) return true;
-    if (cp >= 0x037F && cp <= 0x1FFF) return true;
-    if (cp >= 0x200C && cp <= 0x200D) return true;
-    if (cp >= 0x2070 && cp <= 0x218F) return true;
-    if (cp >= 0x2C00 && cp <= 0x2FEF) return true;
-    if (cp >= 0x3001 && cp <= 0xD7FF) return true;
-    if (cp >= 0xF900 && cp <= 0xFDCF) return true;
-    if (cp >= 0xFDF0 && cp <= 0xFFFD) return true;
-    if (cp >= 0x10000 && cp <= 0xEFFFF) return true;
-    return false;
+///
+/// Backed by libregexp's vendored ID_Start property tables (per Unicode
+/// 15.1 / ES2024 spec), so it covers the full ID_Start set including
+/// Other_ID_Start grandfathered characters (U+2118 ℘, U+212E ℮, etc.)
+/// and astral-plane ID_Start. ASCII path is fast; >= 128 goes through
+/// the full Unicode table.
+fn bool is_identifier_start(uint cp) @inline {
+    return unicode_bindings::unicode_is_identifier_start(cp) != 0;
 }
 
 /// Check if a Unicode codepoint is a valid identifier continuation character.
-fn bool is_identifier_part(uint cp) {
-    if (is_identifier_start(cp)) return true;
-    if (cp >= '0' && cp <= '9') return true;
-    // Unicode combining marks, connector punctuation
-    if (cp >= 0x0300 && cp <= 0x036F) return true;
-    if (cp == 0x200C || cp == 0x200D) return true;
-    return false;
+///
+/// Per Unicode 15.1 / ES2024: includes ID_Start + digits + Other_ID_Continue
+/// grandfathered characters (e.g. U+00B7 ·, U+0387 ·, U+1369-1371 Ethiopic
+/// digits, U+19DA ᧚) + combining marks (U+0300-036F) + ZWNJ (U+200C) +
+/// ZWJ (U+200D).  ASCII path is fast; >= 128 goes through the table.
+fn bool is_identifier_part(uint cp) @inline {
+    return unicode_bindings::unicode_is_identifier_continue(cp) != 0;
 }
 
 /// Check if a character is ASCII whitespace (space, tab, VT, FF, NBSP).
@@ -401,7 +392,7 @@ struct Lexer {
     bool seen_line_term;
     void* heap;
 
-    char[256] ident_buf;
+    char[4096] ident_buf;
 }
 
 // ============================================================================
@@ -1093,7 +1084,7 @@ fn Token? Lexer.scan_identifier(&self) {
     uint buf_len = 0;
     bool first = true;
 
-    while (!self.at_end() && buf_len < 250) {
+    while (!self.at_end() && buf_len < 4090) {
         uint cp = self.peek_codepoint();
         if (cp == 0x5C) {
             self.read_codepoint();
