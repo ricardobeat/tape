@@ -14,6 +14,7 @@ import duktape::heap;
 
 /// Shared constructor: create an error object with ObjClass.ERROR,
 /// set prototype to `proto`, and set .message from args[0] if provided.
+/// Also handles the ES2022 `options.cause` install (step 4 of the spec).
 fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch err = err_raw) {
@@ -34,6 +35,24 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
                 msg_val.set_string(msg_str);
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+            }
+        }
+    }
+
+    // ES2022 §20.5.8.1 InstallErrorCause (O, options)
+    // Called as step 4 of every Error/NativeError constructor. If options is
+    // an Object and has an own "cause" property, install it as a non-enumerable
+    // data property {writable:true, configurable:true, enumerable:false} on O.
+    if (ctx.argc >= 2) {
+        TVal* opt_arg = &ctx.regs[ctx.base_reg + 1];
+        if (opt_arg.is_object() && opt_arg.get_heapptr() != null) {
+            HObject* opt_obj = (HObject*)opt_arg.get_heapptr();
+            HString* cause_key = builtin_intern_string(ctx.heap, "cause");
+            if (opt_obj.has_prop(cause_key)) {
+                TVal? cause_prop = opt_obj.get_prop(cause_key);
+                if (try cv = cause_prop) {
+                    err.put_prop(cause_key, cv, hobject::PROP_FLAGS_WC);
+                }
             }
         }
     }
@@ -189,6 +208,21 @@ fn void builtin_aggregate_error(BuiltinContext* ctx) {
             TVal arr_tv;
             arr_tv.set_object(arr);
             err.put_prop(errors_key, arr_tv, hobject::PROP_FLAGS_WC);
+        }
+    }
+
+    // ES2022 §20.5.8.1 InstallErrorCause — AggregateError's 3rd arg is options.
+    if (ctx.argc >= 3) {
+        TVal* opt_arg = &ctx.regs[ctx.base_reg + 2];
+        if (opt_arg.is_object() && opt_arg.get_heapptr() != null) {
+            HObject* opt_obj = (HObject*)opt_arg.get_heapptr();
+            HString* cause_key = builtin_intern_string(ctx.heap, "cause");
+            if (opt_obj.has_prop(cause_key)) {
+                TVal? cause_prop = opt_obj.get_prop(cause_key);
+                if (try cv = cause_prop) {
+                    err.put_prop(cause_key, cv, hobject::PROP_FLAGS_WC);
+                }
+            }
         }
     }
 

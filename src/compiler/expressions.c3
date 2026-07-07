@@ -2502,11 +2502,14 @@ fn ushort? CompilerContext.object_literal(&self) {
 
             // Parse property key
             ushort key_reg;
+            uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
+            bool is_shorthand_key = false;  // true iff the key came from an identifier/string
 
             TokenType key_tt = self.peek_type();
             if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING
                 || lexer::keyword_to_string(key_tt).len > 0) {
                 Token key_tok = self.advance()!;
+                is_shorthand_key = true;
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
                 // If key is "get" or "set" AND next token is a property key (not `:` or `(`)
@@ -2611,6 +2614,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 }
 
                 uint key_idx = self.add_string_constant(key_tok.str_value);
+                shorthand_name_idx = key_idx;  // shorthand `{ name }` = GETVAR this name
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
 
@@ -2686,6 +2690,22 @@ fn ushort? CompilerContext.object_literal(&self) {
                 ushort method_reg = self.function_expr_body()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
+                self.free_reg(key_reg);
+                self.is_generator = saved_is_generator;
+                self.is_async = saved_is_async;
+            } else if (is_shorthand_key && (self.check(TokenType.COMMA) || self.check(TokenType.RBRACE))) {
+                // ES2015 §12.2.6.8: IdentifierReference shorthand property
+                // `{ cause }` is equivalent to `{ cause: cause }` — the value
+                // comes from the binding named by the key. Only legal when
+                // the property key came from an IdentifierReference or
+                // StringLiteral, never a numeric/computed key. `*a` shorthand
+                // is not legal (must be a method).
+                if (is_generator_method) return COMPILE_ERROR~;
+                // Read the binding into a register, then PUTPROP as usual.
+                ushort val_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)val_reg, shorthand_name_idx));
+                self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                self.free_reg(val_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
                 self.is_async = saved_is_async;
