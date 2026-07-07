@@ -1001,7 +1001,44 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     // unless the key matches a numeric index and this is an Array)
     int idx = obj.find_prop_idx(key);
     if (idx < 0) {
-        // Check dense array part if key is a string representing a valid index
+        // Special case: ARRAY exotic "length" property (spec §22.1.3 / §10.4.2).
+        // The "length" property of an Array exotic is its `array_size` even when
+        // array_size > array_part capacity (e.g. Array.prototype.length === 0).
+        if (obj.get_class() == hobject::ObjClass.ARRAY) {
+            HString* key_str = (HString*)key;
+            if (key_str.equals("length")) {
+                HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err = desc_raw) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                HObject* desc = desc_raw;
+                desc.prototype = ctx.heap.object_proto;
+
+                HString* value_key = builtin_intern_string(ctx.heap, "value");
+                TVal len_tv;
+                len_tv.set_fastint((long)obj.array_size);
+                desc.put_prop(value_key, len_tv, hobject::PROP_FLAGS_WEC);
+
+                HString* writable_key = builtin_intern_string(ctx.heap, "writable");
+                TVal w_tv;
+                w_tv.set_boolean(true);
+                desc.put_prop(writable_key, w_tv, hobject::PROP_FLAGS_WEC);
+
+                HString* enumerable_key = builtin_intern_string(ctx.heap, "enumerable");
+                TVal e_tv;
+                e_tv.set_boolean(false);
+                desc.put_prop(enumerable_key, e_tv, hobject::PROP_FLAGS_WEC);
+
+                HString* configurable_key = builtin_intern_string(ctx.heap, "configurable");
+                TVal c_tv;
+                c_tv.set_boolean(false);
+                desc.put_prop(configurable_key, c_tv, hobject::PROP_FLAGS_WEC);
+
+                ctx.result.set_object(desc);
+                return;
+            }
+        }
         HString* key_str = (HString*)key;
         char[] kd = key_str.get_data();
         bool is_numeric = true;
@@ -3238,10 +3275,16 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     // the dense part are own properties (spec §10.4.2 [[GetOwnProperty]]).
     // Without this, hasOwnProperty returns false for dense-only arrays
     // produced by concat/slice/etc.
-    if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
-        && key.is_arridx()) {
-        uint ai = (uint)key.array_index();
-        if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
+    if (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
+        if (key.is_arridx()) {
+            uint ai = (uint)key.array_index();
+            if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
+                ctx.result.set_boolean(true);
+                return;
+            }
+        }
+        // ARRAY "length" is an own property of every Array exotic (§22.1.3).
+        if (obj.get_class() == hobject::ObjClass.ARRAY && key.equals("length")) {
             ctx.result.set_boolean(true);
             return;
         }
@@ -3287,11 +3330,17 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     }
     // ARRAY / ARGUMENTS exotic: numeric indices in the dense part are own
     // enumerable data properties (spec §10.4.2 [[GetOwnProperty]]).
-    if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
-        && key.is_arridx()) {
-        uint ai = (uint)key.array_index();
-        if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
-            ctx.result.set_boolean(true);
+    if (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
+        if (key.is_arridx()) {
+            uint ai = (uint)key.array_index();
+            if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
+                ctx.result.set_boolean(true);
+                return;
+            }
+        }
+        // ARRAY "length" is non-enumerable per §22.1.3.
+        if (obj.get_class() == hobject::ObjClass.ARRAY && key.equals("length")) {
+            ctx.result.set_boolean(false);
             return;
         }
     }

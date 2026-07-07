@@ -1061,6 +1061,13 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     constructor_tv.set_object(func_obj);
     proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
+    // ES5 §15.3.5.1: Function.prototype.length is 0
+    // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }
+    HString* proto_len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    TVal proto_len_tv;
+    proto_len_tv.set_fastint(0);
+    proto.put_prop(proto_len_key, proto_len_tv, hobject::PROP_FLAGS_NWC);
+
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     TVal proto_tv;

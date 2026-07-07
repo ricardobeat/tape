@@ -2072,6 +2072,14 @@ fn bool HObject.es_delete_prop(&self, void* key) {
                     self.set_array_idx(ai, undef);
                 }
             }
+        } else if (self.get_class() == hobject::ObjClass.ARRAY) {
+            // Special case: ARRAY "length" is a non-configurable own property
+            // (spec §22.1.3). [[Delete]] returns false for it. We treat it as
+            // non-configurable here so `delete Array.prototype.length` etc.
+            // correctly fails.
+            if (hkey.equals("length")) {
+                return false;
+            }
         }
     }
     return true;  // Not found (or cleared from dense) → [[Delete]] returns true.
