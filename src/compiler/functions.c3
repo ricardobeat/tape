@@ -561,6 +561,9 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 
             // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
+            // Byte offset of `function` keyword for Function.prototype.toString
+            // source-text retention.
+            uint hoist_fn1_src_start = self.lexer.token_start;
 
             // Handle generator star
             bool saved_gen = self.is_generator;
@@ -582,13 +585,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             self.is_constructable = !self.is_generator;
 
             self.is_async = hoist_is_async;
-            CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
+            // Use the byte offset of `function` captured right after expect().
+            CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value, false, hoist_fn1_src_start)!;
             self.is_async = false;
 
             self.is_generator = saved_gen;
             self.is_constructable = saved_is_constructable;
 
-            // Add to inner functions table
             uint inner_idx = self.add_inner_func(inner);
 
             // Emit CLOSURE + DECLVAR
@@ -811,6 +814,9 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
 
             // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
+            // Byte offset of `function` keyword for Function.prototype.toString
+            // source-text retention.
+            uint hoist_fn1_src_start = self.lexer.token_start;
 
             // Handle generator star
             bool saved_gen = self.is_generator;
@@ -832,13 +838,13 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             self.is_constructable = !self.is_generator;
 
             self.is_async = hoist_is_async;
-            CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value)!;
+            // Use the byte offset of `function` captured right after expect().
+            CompiledFunction* inner = self.compile_inner_function(name_tok2.str_value, false, hoist_fn1_src_start)!;
             self.is_async = false;
 
             self.is_generator = saved_gen;
             self.is_constructable = saved_is_constructable;
 
-            // Add to inner functions table
             uint inner_idx = self.add_inner_func(inner);
 
             // Emit CLOSURE + DECLVAR
@@ -1343,7 +1349,7 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
 /// is tagged with `is_namebinding`, signalling the VM to bind `name` to the
 /// function object in a fresh lexical environment at call time (per ES2015
 /// §14.1.20 NamedEvaluation).
-fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name, bool is_named_expr = false) {
+fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name, bool is_named_expr = false, uint src_start = 0xFFFFFFFF) {
     // Create a new CompilerContext for the inner function
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
@@ -1745,6 +1751,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 
     // Compile function body
     inner_ctx.block(true)!;
+    // Capture body-end position so Function.prototype.toString returns the
+    // exact source span (without trailing whitespace / line-terminators).
+    uint inner_body_end_pos = inner_ctx.lexer.pos;
 
     // Pop the function-level lexical scope
     if (inner_has_func_lex) {
@@ -1786,12 +1795,52 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
         }
     }
 
+    // Retain a heap-owned copy of the function's source text so that
+    // Function.prototype.toString can return the original source verbatim
+    // (ES2019 §19.2.3.5). The caller passes the byte offset of the function's
+    // opening token (`function` keyword, computed property `[`, arrow head,
+    // etc.); `inner_body_end_pos` captures the position right after the
+    // body's closing `}`, so the slice is exactly the function declaration.
+    //
+    // For `async function ...` the consumed `async` keyword is *before* the
+    // byte offset we captured (we captured `function`), so we prepend the
+    // literal "async " string to the retained source to match ES2019's source
+    // text representation.
+    if (src_start != 0xFFFFFFFF && src_start < (uint)inner_ctx.lexer.source.len) {
+        uint src_end = inner_body_end_pos;
+        if (src_end > (uint)inner_ctx.lexer.source.len) src_end = (uint)inner_ctx.lexer.source.len;
+        uint slen = src_end - src_start;
+        bool needs_async_prefix = inner_ctx.is_async;
+        usz alloc_len = (usz)slen + (needs_async_prefix ? (usz)6 : (usz)0);
+        if (slen > 0) {
+            char* src_heap = (char*)libc::malloc((usz)alloc_len + 1);
+            if (src_heap != null) {
+                usz off = 0;
+                if (needs_async_prefix) {
+                    src_heap[off++] = 'a';
+                    src_heap[off++] = 's';
+                    src_heap[off++] = 'y';
+                    src_heap[off++] = 'n';
+                    src_heap[off++] = 'c';
+                    src_heap[off++] = ' ';
+                }
+                for (usz i = 0; i < (usz)slen; i++) src_heap[off + i] = inner_ctx.lexer.source[src_start + i];
+                src_heap[off + (usz)slen] = 0;
+                func.src_ptr = src_heap;
+                func.src_len = (uint)alloc_len;
+            }
+        }
+    }
+
     return func;
 }
 
 /// Parse a function expression: function name?(...) { ... }
 fn ushort? CompilerContext.function_expr(&self) {
     self.expect(TokenType.FUNCTION)!;
+    // Capture the byte offset of `function` — used by Function.prototype.toString
+    // for ES2019 §19.2.3.5 source-text retention.
+    uint fexpr_src_start = self.lexer.token_start;
 
     // Save and reset generator state
     bool saved_is_generator = self.is_generator;
@@ -1848,7 +1897,8 @@ fn ushort? CompilerContext.function_expr(&self) {
     // Restore is_async so compile_inner_function propagates the flag,
     // then immediately reset to prevent nested functions from inheriting it.
     self.is_async = saved_is_async;
-    CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit)!;
+    // Use the byte offset of `function` captured right after expect() above.
+    CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit, fexpr_src_start)!;
     self.is_async = false;
 
     // Restore generator flag (async already reset above)
@@ -1867,7 +1917,7 @@ fn ushort? CompilerContext.function_expr(&self) {
 
 /// Parse a function expression body (parameters + block) without the `function` keyword.
 /// Used for method shorthand in object literals.
-fn ushort? CompilerContext.function_expr_body(&self) {
+fn ushort? CompilerContext.function_expr_body(&self, uint src_start = 0xFFFFFFFF) {
     // ES2015 §14.3: object literal method shorthand `o = { m() {} }` —
     // the function's name is inferred from the property key. Caller
     // (object_literal / class_body parser) sets has_inferred_name before
@@ -1878,7 +1928,14 @@ fn ushort? CompilerContext.function_expr_body(&self) {
         self.has_inferred_name = false;
         self.inferred_name_len = 0;
     }
-    CompiledFunction* inner = self.compile_inner_function(name)!;
+    // Capture byte offset of the opening of the method body — the caller
+    // optionally supplies `src_start` if it knows the start of the full
+    // declaration (e.g. `get f` for an object-literal getter, `[expr]` for a
+    // computed key, or the leading `*` for a generator method). When the
+    // caller doesn't supply one, fall back to the position of the `(` that
+    // opens the parameter list (which is what we have just consumed).
+    uint mexpr_src_start = src_start != 0xFFFFFFFF ? src_start : self.lexer.token_start;
+    CompiledFunction* inner = self.compile_inner_function(name, false, mexpr_src_start)!;
 
     uint inner_idx = self.add_inner_func(inner);
 
@@ -1891,7 +1948,7 @@ fn ushort? CompilerContext.function_expr_body(&self) {
 /// The lexer is positioned right after '(' when called. This function
 /// re-parses params (including defaults, rest params, etc.) and compiles the body.
 /// Called from primary_expr after the arrow detection scan confirms '=>' follows.
-fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
+fn ushort? CompilerContext.parse_arrow_function_reparse(&self, uint src_start = 0xFFFFFFFF) {
     // Apply inferred name (from enclosing `var f = ...`) per ES2015 §14.1.20.
     char[] arrow_name;
     if (self.has_inferred_name) {
@@ -1901,7 +1958,7 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
     }
 
     // Create inner CompiledFunction for the arrow
-    CompiledFunction* inner = self.compile_arrow_inner_reparse()!;
+    CompiledFunction* inner = self.compile_arrow_inner_reparse(src_start)!;
 
     if (arrow_name.len > 0) {
         char* name_heap = (char*)libc::malloc((usz)arrow_name.len + 1);
@@ -1924,7 +1981,7 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self) {
 /// Compile an inner arrow function by re-parsing params from source.
 /// The lexer is positioned right after '(' when called. This function
 /// parses '(params) => body', handling defaults, rest params, etc.
-fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
+fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint src_start = 0xFFFFFFFF) {
     // Create a new CompilerContext for the arrow function
     CompilerContext arrow_ctx;
     arrow_ctx.init(self.lexer, self.heap);
@@ -2272,7 +2329,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
         }
     }
 
-    // Determine if body is block or expression
+    // Determine if body is block or expression. Capture `body_end_pos` right
+    // after the last body token (before any trailing whitespace or comment) so
+    // Function.prototype.toString returns the exact source span.
+    uint body_end_pos;
     if (arrow_ctx.check(TokenType.LBRACE)) {
         // Block body: { ... }
         arrow_ctx.advance()!;
@@ -2280,6 +2340,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
             arrow_ctx.statement()!;
         }
         arrow_ctx.expect(TokenType.RBRACE)!;
+        body_end_pos = arrow_ctx.lexer.pos;
         // No implicit return for block body
         bool has_explicit_return = false;
         if (arrow_ctx.code_count > 0) {
@@ -2296,6 +2357,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
         // Expression body: implicitly return the expression value
         ushort expr_reg = arrow_ctx.assignment_expr()!;
         arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+        body_end_pos = arrow_ctx.lexer.pos;
     }
 
     // Pop the function-level lexical scope
@@ -2312,6 +2374,73 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
     CompiledFunction* func = arrow_ctx.finish()!;
     func.flags.is_arrow = true;
 
+    // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
+    // See compile_inner_function for rationale. We use `body_end_pos` (captured
+    // right after the last body token) as src_end so trailing whitespace and
+    // comments after the body don't leak into the slice.
+    if (src_start != 0xFFFFFFFF && src_start < (uint)arrow_ctx.lexer.source.len) {
+        uint src_end = body_end_pos;
+        // Trim trailing whitespace, line-terminators, and comments. The body
+        // parser may have peeked-ahead, landing lexer.pos inside trailing
+        // whitespace + comments. Walk back over trailing cruft.
+        while (src_end > src_start) {
+            char c = arrow_ctx.lexer.source[src_end - 1];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ';') {
+                src_end--;
+                continue;
+            }
+            // If we hit end-of-block-comment (`/` followed by `*`), scan
+            // backward to find the matching `/*` and remove the whole
+            // comment.
+            if (c == '/' && src_end >= src_start + 2
+                    && arrow_ctx.lexer.source[src_end - 2] == '*') {
+                uint i = src_end - 2;
+                bool found = false;
+                while (i > src_start) {
+                    if (arrow_ctx.lexer.source[i - 1] == '/' && i >= src_start + 1
+                            && arrow_ctx.lexer.source[i] == '*') {
+                        src_end = i - 1;
+                        found = true;
+                        break;
+                    }
+                    i--;
+                }
+                if (!found) break;
+                continue;
+            }
+            // Line comment: scan back to leading `//`.
+            if (c == '/' && src_end >= src_start + 2
+                    && arrow_ctx.lexer.source[src_end - 2] == '/') {
+                uint i = src_end - 2;
+                bool found = false;
+                while (i > src_start) {
+                    if (arrow_ctx.lexer.source[i - 1] == '/' && i >= src_start + 1
+                            && arrow_ctx.lexer.source[i] == '/') {
+                        src_end = i - 1;
+                        found = true;
+                        break;
+                    }
+                    if (arrow_ctx.lexer.source[i - 1] == '\n') break;
+                    i--;
+                }
+                if (!found) break;
+                continue;
+            }
+            break;
+        }
+        if (src_end > (uint)arrow_ctx.lexer.source.len) src_end = (uint)arrow_ctx.lexer.source.len;
+        uint slen = src_end - src_start;
+        if (slen > 0) {
+            char* src_heap = (char*)libc::malloc((usz)slen + 1);
+            if (src_heap != null) {
+                for (usz i = 0; i < (usz)slen; i++) src_heap[i] = arrow_ctx.lexer.source[src_start + i];
+                src_heap[slen] = 0;
+                func.src_ptr = src_heap;
+                func.src_len = slen;
+            }
+        }
+    }
+
     return func;
 }
 
@@ -2321,7 +2450,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self) {
 ///
 /// `params`: pre-parsed parameter name slices (pointer to first element).
 /// `param_count`: number of parameters.
-fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort param_count, bool has_rest) {
+fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort param_count, bool has_rest, uint src_start = 0xFFFFFFFF) {
     // Consume the ARROW token
     self.expect(TokenType.ARROW)!;
 
@@ -2333,7 +2462,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
         self.has_inferred_name = false;
         self.inferred_name_len = 0;
     }
-    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest)!;
+    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest, src_start)!;
 
     // Set the function's display name from the inferred source. This is a
     // non-binding name (no lexical scope entry) — only the name property.
@@ -2357,7 +2486,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
 
 /// Compile an inner arrow function given its parameter names.
 /// Arrow functions have `is_arrow = true`, lexical `this`, and no `.prototype`.
-fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count, bool has_rest) {
+fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count, bool has_rest, uint src_start = 0xFFFFFFFF) {
     // Create a new CompilerContext for the arrow function
     CompilerContext arrow_ctx;
     arrow_ctx.init(self.lexer, self.heap);
@@ -2405,7 +2534,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Push a function-level lexical scope
     arrow_ctx.emit_simple(Opcode.PUSH_LEX);
 
-    // Determine if body is block or expression
+    // Determine if body is block or expression. Capture `body_end_pos` right
+    // after the last body token (before any trailing whitespace or comment) so
+    // Function.prototype.toString returns the exact source span.
+    uint body_end_pos;
     if (arrow_ctx.check(TokenType.LBRACE)) {
         // Block body: { ... }
         arrow_ctx.advance()!;
@@ -2413,6 +2545,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
             arrow_ctx.statement()!;
         }
         arrow_ctx.expect(TokenType.RBRACE)!;
+        body_end_pos = arrow_ctx.lexer.pos;
         // No implicit return for block body
         bool has_explicit_return = false;
         if (arrow_ctx.code_count > 0) {
@@ -2429,6 +2562,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
         // Expression body: implicitly return the expression value
         ushort expr_reg = arrow_ctx.assignment_expr()!;
         arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
+        body_end_pos = arrow_ctx.lexer.pos;
     }
 
     // Pop the function-level lexical scope
@@ -2441,6 +2575,73 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
 
     CompiledFunction* func = arrow_ctx.finish()!;
     func.flags.is_arrow = true;
+
+    // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
+    // See compile_inner_function for rationale. We use `body_end_pos` (captured
+    // right after the last body token) as src_end so trailing whitespace and
+    // comments after the body don't leak into the slice.
+    if (src_start != 0xFFFFFFFF && src_start < (uint)arrow_ctx.lexer.source.len) {
+        uint src_end = body_end_pos;
+        // Trim trailing whitespace, line-terminators, and comments. The body
+        // parser may have peeked-ahead, landing lexer.pos inside trailing
+        // whitespace + comments. Walk back over trailing cruft.
+        while (src_end > src_start) {
+            char c = arrow_ctx.lexer.source[src_end - 1];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ';') {
+                src_end--;
+                continue;
+            }
+            // If we hit end-of-block-comment (`/` followed by `*`), scan
+            // backward to find the matching `/*` and remove the whole
+            // comment.
+            if (c == '/' && src_end >= src_start + 2
+                    && arrow_ctx.lexer.source[src_end - 2] == '*') {
+                uint i = src_end - 2;
+                bool found = false;
+                while (i > src_start) {
+                    if (arrow_ctx.lexer.source[i - 1] == '/' && i >= src_start + 1
+                            && arrow_ctx.lexer.source[i] == '*') {
+                        src_end = i - 1;
+                        found = true;
+                        break;
+                    }
+                    i--;
+                }
+                if (!found) break;
+                continue;
+            }
+            // Line comment: scan back to leading `//`.
+            if (c == '/' && src_end >= src_start + 2
+                    && arrow_ctx.lexer.source[src_end - 2] == '/') {
+                uint i = src_end - 2;
+                bool found = false;
+                while (i > src_start) {
+                    if (arrow_ctx.lexer.source[i - 1] == '/' && i >= src_start + 1
+                            && arrow_ctx.lexer.source[i] == '/') {
+                        src_end = i - 1;
+                        found = true;
+                        break;
+                    }
+                    if (arrow_ctx.lexer.source[i - 1] == '\n') break;
+                    i--;
+                }
+                if (!found) break;
+                continue;
+            }
+            break;
+        }
+        if (src_end > (uint)arrow_ctx.lexer.source.len) src_end = (uint)arrow_ctx.lexer.source.len;
+        uint slen = src_end - src_start;
+        if (slen > 0) {
+            char* src_heap = (char*)libc::malloc((usz)slen + 1);
+            if (src_heap != null) {
+                for (usz i = 0; i < (usz)slen; i++) src_heap[i] = arrow_ctx.lexer.source[src_start + i];
+                src_heap[slen] = 0;
+                func.src_ptr = src_heap;
+                func.src_len = slen;
+            }
+        }
+    }
 
     return func;
 }

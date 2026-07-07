@@ -913,6 +913,15 @@ struct CompiledFunction {
     /// for the GETVAR/TYPEOFIDENT at `code[pc_offset]`.
     void*           var_ic_entries;  // VarICEntry* (opaque)
     uint            var_ic_count;
+
+    // ---- Source-text retention (Function.prototype.toString) ------------
+    /// Heap-owned copy of the original source text spanned by this function
+    /// (between the function's opening `function` keyword / arrow head and
+    /// its closing `}` or expression end). NULL when source was not retained.
+    /// Used by builtin_function_proto_toString (ES2019 §19.2.3.5).
+    char*           src_ptr;
+    /// Length in bytes (no NUL terminator counted).
+    uint            src_len;
 }
 
 // ============================================================================

@@ -11,6 +11,7 @@ import duktape::types;
 import duktape::dtoa_bindings;
 import duktape::unicode_bindings;
 import std::math;
+import std::io;
 import libc;
 
 // ============================================================================
@@ -384,6 +385,16 @@ struct Lexer {
     Token current;
     Token lookahead;
     bool has_lookahead;
+    /// Byte position at the start of the most recently produced token.
+    /// Updated on each `next_token()` call so callers can capture the source
+    /// span of a just-consumed token by reading `source[token_start..pos-1]`.
+    /// Used by Function.prototype.toString source-text retention.
+    uint token_start;
+    /// Byte position at the start of the token stored in `lookahead`, when
+    /// the lookahead was created by `peek()`. Set inside peek, used inside
+    /// next_token's lookahead-consume path to keep `token_start` correct
+    /// when a peek-then-advance sequence consumes the lookahead.
+    uint lookahead_token_start;
     /// Single-token pushback buffer for limited backtracking (e.g. label detection).
     Token pushed_back;
     bool has_pushed_back;
@@ -409,6 +420,8 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.current = make_token(TokenType.EOF_TOKEN, 1, 1);
     lex.lookahead = make_token(TokenType.EOF_TOKEN, 1, 1);
     lex.has_lookahead = false;
+    lex.token_start = 0;
+    lex.lookahead_token_start = 0;
     lex.has_pushed_back = false;
     lex.strict_mode = true;
     lex.seen_line_term = false;
@@ -425,6 +438,8 @@ fn void Lexer.reset(&self, char[] source) {
     self.current = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.lookahead = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.has_lookahead = false;
+    self.token_start = 0;
+    self.lookahead_token_start = 0;
     self.has_pushed_back = false;
 }
 
@@ -1708,6 +1723,8 @@ fn Token? Lexer.next_token(&self) {
     if (self.has_pushed_back) {
         self.has_pushed_back = false;
         self.current = self.pushed_back;
+        // No token_start update — pushback is purely speculative; the prior
+        // token_start still reflects the most recently *consumed* token.
         return self.current;
     }
 
@@ -1715,10 +1732,18 @@ fn Token? Lexer.next_token(&self) {
     if (self.has_lookahead) {
         self.has_lookahead = false;
         self.current = self.lookahead;
+        // Restore the token-start saved when peek() built the lookahead so
+        // that `token_start` reflects the position of the token we're now
+        // actually consuming (matches the non-lookahead path's contract).
+        self.token_start = self.lookahead_token_start;
         return self.current;
     }
 
     self.skip_whitespace_and_comments();
+
+    // Capture the start of the upcoming token so callers can recover the source
+    // span after consumption (Function.prototype.toString retention).
+    self.token_start = self.pos;
 
     if (self.at_end()) {
         Token tok = make_token(TokenType.EOF_TOKEN, self.line, self.col);
@@ -1784,15 +1809,27 @@ fn Token? Lexer.peek(&self) {
         return self.lookahead;
     }
 
-    // Save current state
+    // Save current state — including token_start so peek doesn't shift it.
+    // Without this guard, after peeking the lookahead, `lexer.token_start`
+    // would reflect the *peeked* token rather than the most recently *consumed*
+    // one — so e.g. capturing `lexer.token_start` after `check(ARROW)` for an
+    // `IDENT ARROW` arrow head would yield the arrow's position, not `IDENT`'s.
     Token saved_current = self.current;
+    uint saved_token_start = self.token_start;
 
+    // The lookahead token's source start is whatever `next_token` set
+    // `token_start` to (position after skip_whitespace). Capture it AFTER
+    // `next_token` returns so we get the actual start of the scanned token,
+    // not whatever stale value `token_start` held before. The lookahead
+    // consume path in next_token() restores this via lookahead_token_start.
     Token tok = self.next_token()!;
     self.lookahead = tok;
     self.has_lookahead = true;
+    self.lookahead_token_start = self.token_start;
 
-    // Restore current (next_token overwrote it)
+    // Restore current and token_start (next_token overwrote them)
     self.current = saved_current;
+    self.token_start = saved_token_start;
 
     return tok;
 }
@@ -1806,6 +1843,35 @@ fn Token? Lexer.expect(&self, TokenType expected) {
         return LEX_ERROR~;
     }
     return tok;
+}
+
+/// Refresh `token_start` to point at the start of the next-to-be-consumed
+/// token. Call when the caller wants to remember the source position of the
+/// next token without committing the consume; subsequent calls to
+/// `next_token` will return that same token unchanged.
+///
+/// Use case: class-body loops where each iteration needs to remember the
+/// offset of its *first* token (e.g. for Function.prototype.toString), but
+/// `token_start` may be stale from the previous iteration (reflects the last
+/// consumed token's position).
+fn void Lexer.refresh_token_start(&self) {
+    if (self.has_pushed_back) return;
+    if (self.has_lookahead) {
+        // The lookahead was produced by peek(); its source start is saved in
+        // lookahead_token_start. Copy it over so token_start agrees.
+        self.token_start = self.lookahead_token_start;
+        return;
+    }
+    // No cached token — scan one forward, then pushback so the lexer state
+    // appears unchanged for the next consumer.
+    if (try tok = self.next_token()) {
+        self.pushed_back = tok;
+        self.has_pushed_back = true;
+        // next_token() set token_start to the start of `tok`'s source text —
+        // keep it.
+    }
+    // On lex failure, leave token_start stale; the next consumer will fail
+    // anyway.
 }
 
 /// Check if the next token is of the given type without consuming it.

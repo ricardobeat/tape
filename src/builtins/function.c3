@@ -756,11 +756,27 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
     } else if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.is_callable()) {
+            // Compiled JS functions retain their original source text (ES2019
+            // §19.2.3.5 / Function.prototype.toString) — if the compiler kept it,
+            // return that exact text instead of the [native code] placeholder.
+            // A callable with a non-null comp_func and a negative builtin index
+            // identifies a user-script (compiled) function.
+            CompiledFunction* cf = null;
+            if ((*obj.extra_ptr()).func.comp_func != null
+                    && (*obj.extra_ptr()).func.builtin_fn_index < 0) {
+                cf = (*obj.extra_ptr()).func.comp_func;
+            }
+            if (cf != null && cf.src_ptr != null && cf.src_len > 0) {
+                HString* result = builtin_intern_string(ctx.heap, cf.src_ptr[:cf.src_len]);
+                ctx.result.set_string(result);
+                return;
+            }
+
             // For function objects, try to get the name from the function's .name property
             HString* name_key = builtin_intern_string(ctx.heap, "name");
             char* name_ptr = "anonymous";
             usz name_len = 9;
-            
+
             TVal? name_val = obj.get_prop_proto(name_key);
             if (try nv = name_val) {
                 if (nv.is_string() && nv.get_heapptr() != null) {
@@ -769,7 +785,7 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
                     name_len = name_str.blen;
                 }
             }
-            
+
             // For compiled functions, check if we have source info
             // Currently return "function name() { [native code] }" as placeholder
             char[256] buf;
@@ -786,7 +802,7 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
                 buf[pos++] = suffix[i];
             }
             buf[pos] = 0;
-            
+
             HString* result = builtin_intern_string(ctx.heap, buf[:pos]);
             ctx.result.set_string(result);
         } else {

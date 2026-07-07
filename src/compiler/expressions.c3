@@ -1865,7 +1865,10 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (self.check(TokenType.ARROW)) {
                     char[][1] params_arr;
                     params_arr[0] = id_tok.str_value;
-                    return self.parse_arrow_function(&params_arr[0], 1, false)!;
+                    // Capture byte offset of the IDENTIFIER (just consumed) — the
+                    // source for the arrow head runs from here to its body.
+                    uint ident_arrow_src = self.lexer.token_start;
+                    return self.parse_arrow_function(&params_arr[0], 1, false, ident_arrow_src)!;
                 }
 
                 // When the identifier is 'eval', track it for direct eval detection.
@@ -1910,6 +1913,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
             // If it's not an arrow, restore the lexer and parse as grouping expression.
             Token lparen = self.advance()!;
 
+            // Capture the byte offset of the opening `(` BEFORE the speculative
+            // scan clobbers lexer.token_start with later tokens. Used downstream
+            // for Function.prototype.toString source-text retention.
+            uint lparen_pos = self.lexer.token_start;
+
             // Save lexer state before speculative scan
             uint saved_pos    = self.lexer.pos;
             uint saved_line   = self.lexer.line;
@@ -1940,7 +1948,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
                     self.inside_parens = saved_inside_parens;
-                    return self.parse_arrow_function_reparse()!;
+                    return self.parse_arrow_function_reparse(lparen_pos)!;
                 }
                 // Not an arrow: restore lexer and parse as grouping expression
                 self.lexer.pos             = saved_pos;
@@ -2052,7 +2060,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
                     self.inside_parens = saved_inside_parens;
-                    return self.parse_arrow_function_reparse()!;
+                    return self.parse_arrow_function_reparse(lparen_pos)!;
                 }
 
                 // Not an arrow: restore lexer state and parse as grouping expression
@@ -2094,7 +2102,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.lexer.has_pushed_back = saved_haspb;
                     self.lexer.seen_line_term  = saved_slt;
                     self.inside_parens = saved_inside_parens;
-                    return self.parse_arrow_function_reparse()!;
+                    return self.parse_arrow_function_reparse(lparen_pos)!;
                 }
 
                 // Not an arrow: restore lexer and parse as grouping expression
@@ -2504,10 +2512,19 @@ fn ushort? CompilerContext.object_literal(&self) {
             ushort key_reg;
             uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
             bool is_shorthand_key = false;  // true iff the key came from an identifier/string
+            // Source start for Function.prototype.toString retention. Defaults
+            // to the computed-key bracket (consumed below) — set explicitly for
+            // identifier/string/keyword keys before their `advance()` call.
+            uint key_src_start = 0xFFFFFFFF;
 
             TokenType key_tt = self.peek_type();
             if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING
                 || lexer::keyword_to_string(key_tt).len > 0) {
+                // Refresh token_start so we can capture the offset of the
+                // upcoming key token before any consumes clobber it. Used
+                // downstream by Function.prototype.toString source-retention.
+                self.lexer.refresh_token_start();
+                key_src_start = self.lexer.token_start;
                 Token key_tok = self.advance()!;
                 is_shorthand_key = true;
 
@@ -2580,8 +2597,10 @@ fn ushort? CompilerContext.object_literal(&self) {
                         }
                     }
 
-                    // Compile the getter/setter function body
-                    ushort accessor_reg = self.function_expr_body()!;
+                    // Compile the getter/setter function body — pass the
+                    // source offset of the `get`/`set` keyword so the retained
+                    // source span starts there (per ES2019 §19.2.3.5).
+                    ushort accessor_reg = self.function_expr_body(key_src_start)!;
                     if (is_obj_getter) {
                         self.emit_abc(Opcode.INITGET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
                     } else {
@@ -2655,6 +2674,9 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // name is the empty string for computed keys).
                 self.has_inferred_name = false;
                 self.inferred_name_len = 0;
+                // Capture offset of `[` for Function.prototype.toString retention.
+                self.lexer.refresh_token_start();
+                key_src_start = self.lexer.token_start;
                 self.advance()!;
                 key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;
@@ -2687,7 +2709,9 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // and restore saved flags immediately after so the next iteration
                 // starts clean.
                 if (is_generator_method) self.is_generator = true;
-                ushort method_reg = self.function_expr_body()!;
+                // Pass key_src_start so the retained source span starts at the
+                // key token (or `*`, or first computed-key bracket).
+                ushort method_reg = self.function_expr_body(key_src_start)!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);

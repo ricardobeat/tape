@@ -5462,6 +5462,10 @@ fn void? CompilerContext.expression_statement(&self) {
 /// that were NOT hoisted during the pre-scan phase.
 fn void? CompilerContext.function_declaration(&self) {
     self.expect(TokenType.FUNCTION)!;
+    // Capture the byte offset of the `function` keyword before any subsequent
+    // consume (identifier / star) clobbers lexer.token_start. Used downstream
+    // by Function.prototype.toString for ES2019 §19.2.3.5 source retention.
+    uint fn_kw_start = self.lexer.token_start;
 
     // Check if this function declaration was already hoisted during pre-scan
     // If so, skip it entirely to avoid duplicate compilation.
@@ -5536,7 +5540,7 @@ fn void? CompilerContext.function_declaration(&self) {
     // Restore is_async so compile_inner_function propagates the flag,
     // then immediately reset to prevent nested functions from inheriting it.
     self.is_async = saved_is_async;
-    CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+    CompiledFunction* inner = self.compile_inner_function(name_tok.str_value, false, fn_kw_start)!;
     self.is_async = false;
 
     // Restore generator flag (async already reset above)
@@ -5775,6 +5779,9 @@ fn void? CompilerContext.export_declaration(&self) {
         // export default function() {} or export default function name() {}
         if (next == TokenType.FUNCTION) {
             self.advance()!; // consume 'function'
+            // Byte offset of the `function` keyword before subsequent consumes
+            // clobber lexer.token_start. Used by Function.prototype.toString.
+            uint export_fn_src_start = self.lexer.token_start;
             bool is_gen = self.match(TokenType.STAR);
             if (is_gen) self.is_generator = true;
 
@@ -5793,7 +5800,8 @@ fn void? CompilerContext.export_declaration(&self) {
             // never are (§14.4) — mirrors function_declaration's handling.
             bool saved_is_constructable = self.is_constructable;
             self.is_constructable = !self.is_generator;
-            CompiledFunction* inner = self.compile_inner_function(fn_name)!;
+            // Use the byte offset captured just past `self.advance()!` above.
+            CompiledFunction* inner = self.compile_inner_function(fn_name, false, export_fn_src_start)!;
             self.is_constructable = saved_is_constructable;
             self.is_async = saved_is_async;
             self.is_generator = false;
@@ -5905,6 +5913,9 @@ fn void? CompilerContext.export_declaration(&self) {
     // export function foo() {}
     if (tt == TokenType.FUNCTION) {
         self.advance()!; // consume 'function'
+        // Byte offset of the `function` keyword — captured before subsequent
+        // consumes clobber lexer.token_start. Used by toString.
+        uint named_export_src_start = self.lexer.token_start;
         bool is_gen = self.match(TokenType.STAR);
         if (is_gen) self.is_generator = true;
 
@@ -5918,7 +5929,7 @@ fn void? CompilerContext.export_declaration(&self) {
         // never are (§14.4) — mirrors function_declaration's handling.
         bool saved_is_constructable = self.is_constructable;
         self.is_constructable = !self.is_generator;
-        CompiledFunction* inner = self.compile_inner_function(name_tok.str_value)!;
+        CompiledFunction* inner = self.compile_inner_function(name_tok.str_value, false, named_export_src_start)!;
         self.is_constructable = saved_is_constructable;
         self.is_async = saved_is_async;
         self.is_generator = false;

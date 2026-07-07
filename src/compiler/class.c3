@@ -271,6 +271,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             continue;
         }
 
+        // Refresh `lexer.token_start` so the offset captured below reflects
+        // this iteration's first token (not stale state from the previous
+        // element's closing `}`).
+        self.lexer.refresh_token_start();
+
+        // Capture source start for Function.prototype.toString (ES2019 §19.2.3.5).
+        uint class_elem_src_start = self.lexer.token_start;
+
         // Check for static modifier
         bool is_static = false;
         if (self.match(TokenType.STATIC)) {
@@ -480,7 +488,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             }
         }
 
-        CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len])!;
+        CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len], false, class_elem_src_start)!;
 
         self.is_constructable = saved_constructable;
         self.is_generator = saved_is_generator;
