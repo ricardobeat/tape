@@ -389,12 +389,24 @@ fn void builtin_string_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    // Determine the byte length of the UTF-8 sequence starting at data[idx].
-    // Cap at remaining bytes to handle truncated sequences gracefully.
+    // ES2015 §22.1.5.1 %StringIteratorPrototype%.next: iterates by Unicode
+    // codepoint, not UTF-16 code unit. Under CESU-8 storage an astral
+    // codepoint is two adjacent 3-byte surrogate-half sequences — if the
+    // first is a high surrogate and a second (low-surrogate) unit follows,
+    // yield them together as one step; otherwise yield a single code unit
+    // (matches a lone/unpaired surrogate too).
     uint seq_len = hstring::utf8_seq_len(data[idx]);
     usz remain = (usz)(data.len - (long)idx);
     if ((usz)seq_len > remain) {
         seq_len = (uint)remain;
+    }
+    uint first_cp = hstring::decode_codepoint(data, idx);
+    if (hstring::is_high_surrogate(first_cp) && (usz)(idx + seq_len) < data.len) {
+        uint next_seq_len = hstring::utf8_seq_len(data[idx + seq_len]);
+        uint second_cp = hstring::decode_codepoint(data, idx + seq_len);
+        if (hstring::is_low_surrogate(second_cp)) {
+            seq_len += next_seq_len;
+        }
     }
 
     (*iter.extra_ptr()).iter.index = idx + seq_len;

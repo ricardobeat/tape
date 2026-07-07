@@ -518,10 +518,7 @@ fn void print_tval(TVal* val) {
         case STRING:
             HString* s = (HString*)val.get_heapptr();
             if (s != null) {
-                char[] d = s.get_data();
-                for (usz i = 0; i < d.len; i++) {
-                    io::putchar(d[i]);
-                }
+                hstring::write_cesu8_as_utf8(s.get_data(), &io::putchar);
             } else {
                 io::printf("[null string]");
             }
@@ -810,19 +807,11 @@ fn bool builtin_to_boolean(TVal* val) {
 // ============================================================================
 
 fn HString* builtin_intern_string(Heap* heap, char[] data) {
-    uint hash = heap.hash_string(data);
-    HString* existing = heap.str_table_lookup(data, hash);
-    if (existing != null) {
-        return existing;
-    }
-    HString*? new_s = hstring::hstring_alloc(heap, data, hash);
-    if (try s = new_s) {
-        heap.str_table_insert(s);
-        ((types::HeapHeader*)s).incref();
-        s.flags.is_interned = true;
-        return s;
-    }
-    return null;
+    // Delegate to Heap.str_intern rather than duplicating lookup/alloc here
+    // — it normalizes raw 4-byte UTF-8 astral sequences to CESU-8 before
+    // hashing, which this hand-rolled version used to skip, causing the
+    // same logical string to intern under two different byte encodings.
+    return heap.str_intern(data);
 }
 
 // ============================================================================

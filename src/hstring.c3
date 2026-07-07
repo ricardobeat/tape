@@ -39,6 +39,15 @@ const uint MAX_UTF8_BYTES = 4;
 /// Unicode replacement character (U+FFFD).
 const uint UNICODE_REPLACEMENT = 0xFFFD;
 
+/// First/last UTF-16 high (lead) surrogate codepoint.
+const uint SURROGATE_HIGH_START = 0xD800;
+const uint SURROGATE_HIGH_END   = 0xDBFF;
+/// First/last UTF-16 low (trail) surrogate codepoint.
+const uint SURROGATE_LOW_START  = 0xDC00;
+const uint SURROGATE_LOW_END    = 0xDFFF;
+/// First astral (non-BMP) codepoint — requires a surrogate pair in UTF-16.
+const uint ASTRAL_START         = 0x1_0000;
+
 // ============================================================================
 // HStringFlags — per-string bit-packed flags
 // ============================================================================
@@ -548,6 +557,184 @@ fn uint encode_codepoint(uint cp, char[] buf) {
         return 4;
     }
     return 0;  // out of range
+}
+
+// ============================================================================
+// UTF-16 code-unit / CESU-8 utilities
+//
+// ECMAScript strings are sequences of UTF-16 code units (spec: "String
+// value" is a finite ordered sequence of 16-bit unsigned integers), not
+// Unicode codepoints. Astral codepoints (>= U+10000) are represented in
+// source/property/index semantics as a *pair* of surrogate code units.
+//
+// Internally we still store bytes as UTF-8-shaped sequences (so ASCII stays
+// a fast 1-byte-per-unit path and non-BMP text stays readable to any tool
+// that tolerates CESU-8), but every codepoint >= U+10000 is decomposed into
+// its two surrogate halves *before* encoding, and each half is encoded as
+// an independent 3-byte UTF-8 sequence (this is exactly CESU-8/WTF-8).
+// Lone surrogates (unpaired half from \uD800-\uDFFF, e.g. via \u{D800}
+// escapes) round-trip the same way — spec strings permit them.
+//
+// char_length()/char_at()/char_offset_to_byte_offset() therefore count and
+// index by UTF-16 code unit: a 3-byte sequence in the D800-DFFF range
+// counts as one unit (a surrogate half), matching `"\u{1F600}".length === 2`.
+// ============================================================================
+
+/// True when `cp` is a UTF-16 surrogate codepoint (high or low half).
+fn bool is_surrogate(uint cp) @inline {
+    return cp >= SURROGATE_HIGH_START && cp <= SURROGATE_LOW_END;
+}
+
+/// True when `cp` is a UTF-16 high (lead) surrogate.
+fn bool is_high_surrogate(uint cp) @inline {
+    return cp >= SURROGATE_HIGH_START && cp <= SURROGATE_HIGH_END;
+}
+
+/// True when `cp` is a UTF-16 low (trail) surrogate.
+fn bool is_low_surrogate(uint cp) @inline {
+    return cp >= SURROGATE_LOW_START && cp <= SURROGATE_LOW_END;
+}
+
+/// Split an astral codepoint (>= U+10000) into its UTF-16 surrogate pair.
+/// Caller must ensure `cp >= ASTRAL_START && cp <= 0x10FFFF`.
+fn void codepoint_to_surrogates(uint cp, uint* high, uint* low) @inline {
+    uint v = cp - ASTRAL_START;
+    *high = SURROGATE_HIGH_START + (v >> 10);
+    *low  = SURROGATE_LOW_START  + (v & 0x3FF);
+}
+
+/// Combine a UTF-16 surrogate pair back into its astral codepoint.
+fn uint surrogates_to_codepoint(uint high, uint low) @inline {
+    return ASTRAL_START + ((high - SURROGATE_HIGH_START) << 10) + (low - SURROGATE_LOW_START);
+}
+
+/// Encode a Unicode codepoint using CESU-8: astral codepoints are first
+/// split into a UTF-16 surrogate pair and each half is encoded as its own
+/// 3-byte UTF-8 sequence. BMP codepoints (including lone surrogates) are
+/// encoded exactly like `encode_codepoint`. Returns the number of bytes
+/// written (0, 3, or 6 for astral input; standard UTF-8 lengths otherwise),
+/// or 0 if the buffer is too small / codepoint out of range.
+fn uint encode_codepoint_cesu8(uint cp, char[] buf) {
+    if (cp < ASTRAL_START) {
+        return encode_codepoint(cp, buf);
+    }
+    if (cp > 0x10_FFFF) {
+        return 0;
+    }
+    if (buf.len < 6) { return 0; }
+    uint high; uint low;
+    codepoint_to_surrogates(cp, &high, &low);
+    uint n1 = encode_codepoint(high, buf[0..2]);
+    uint n2 = encode_codepoint(low, buf[3..5]);
+    if (n1 != 3 || n2 != 3) { return 0; }
+    return 6;
+}
+
+/// Returns the byte length of the UTF-16 code unit sequence starting at
+/// `data[offset]`, under CESU-8 storage. Because every code unit — BMP or
+/// surrogate half — is encoded as a standalone 1-4 byte UTF-8 sequence,
+/// this is identical to `utf8_seq_len`; kept as a distinct name so call
+/// sites read as "advance one code unit" rather than "advance one UTF-8
+/// sequence".
+fn uint utf16_unit_byte_len(char[] data, uint offset) @inline {
+    return utf8_seq_len(data[offset]);
+}
+
+/// True when `data` contains any raw 4-byte UTF-8 lead byte (0xF0-0xF7),
+/// i.e. an astral codepoint encoded as standard UTF-8 rather than CESU-8.
+/// Every internal string is expected to be CESU-8-canonical (see
+/// `normalize_to_cesu8`); this is the fast-path check callers use to skip
+/// normalization for the overwhelmingly common case (no 4-byte sequences).
+fn bool has_raw_utf8_astral(char[] data) {
+    foreach (b : data) {
+        if (((uint)b & 0xF8) == 0xF0) return true;
+    }
+    return false;
+}
+
+/// Re-encode `data` into CESU-8-canonical form: every raw 4-byte UTF-8
+/// astral sequence is decoded and re-emitted as a UTF-16 surrogate pair
+/// (two 3-byte sequences). All other bytes pass through unchanged.
+///
+/// This is the single normalization chokepoint for string interning —
+/// without it, the same logical string could reach the intern table in two
+/// different byte encodings (a literal astral character typed directly in
+/// source vs. the same character via a `\u{...}` escape or
+/// `String.fromCodePoint`), breaking both `===` and property-key dedup
+/// since strings are compared/hashed by raw bytes. Mirrors Duktape's own
+/// "everything is CESU-8 at intern time" invariant (duk_heap_stringtable.c).
+///
+/// Writes into `out` (caller-provided, must be large enough — worst case
+/// `data.len + data.len/4*2` since each 4-byte sequence grows to 6 bytes)
+/// and returns the number of bytes written.
+fn uint normalize_to_cesu8(char[] data, char[] out) {
+    uint len = (uint)data.len;
+    uint i = 0;
+    uint o = 0;
+    while (i < len) {
+        uint b0 = (uint)data[i];
+        if ((b0 & 0xF8) == 0xF0) {
+            // 4-byte lead — decode the astral codepoint and re-emit as a
+            // surrogate pair. Falls back to copying the raw byte on
+            // malformed/truncated input (matches decode_codepoint's
+            // tolerant behavior elsewhere).
+            uint cp = decode_codepoint(data, i);
+            if (cp >= ASTRAL_START && cp <= 0x10_FFFF) {
+                o += encode_codepoint_cesu8(cp, out[o..]);
+                i += 4;
+                continue;
+            }
+        }
+        out[o] = data[i];
+        o++;
+        i++;
+    }
+    return o;
+}
+
+/// Function pointer type for a single-byte output sink, used by
+/// `write_cesu8_as_utf8`.
+alias PutByteFn = fn void(char);
+
+/// Write CESU-8-canonical `data` to a byte sink as standard, valid UTF-8 —
+/// the inverse of `normalize_to_cesu8`. Surrogate pairs are recombined into
+/// their astral codepoint and re-encoded as a single 4-byte UTF-8 sequence;
+/// everything else passes through unchanged. Lone (unpaired) surrogates are
+/// replaced with U+FFFD, since standard UTF-8 cannot represent them.
+///
+/// Use this at every host-visible text boundary (print/console.log, file
+/// I/O, etc.) — internal storage is CESU-8, but nothing outside the engine
+/// should ever observe raw surrogate-half byte sequences.
+fn void write_cesu8_as_utf8(char[] data, PutByteFn put_byte_fn) {
+    uint len = (uint)data.len;
+    uint i = 0;
+    while (i < len) {
+        uint seq_len = utf8_seq_len(data[i]);
+        uint cp = decode_codepoint(data, i);
+        if (is_high_surrogate(cp) && i + seq_len < len) {
+            uint next_len = utf8_seq_len(data[i + seq_len]);
+            uint low = decode_codepoint(data, i + seq_len);
+            if (is_low_surrogate(low)) {
+                uint astral = surrogates_to_codepoint(cp, low);
+                char[4] obuf;
+                uint n = encode_codepoint(astral, obuf[:4]);
+                for (uint k = 0; k < n; k++) put_byte_fn(obuf[k]);
+                i += seq_len + next_len;
+                continue;
+            }
+        }
+        if (is_surrogate(cp)) {
+            char[4] obuf;
+            uint n = encode_codepoint(UNICODE_REPLACEMENT, obuf[:4]);
+            for (uint k = 0; k < n; k++) put_byte_fn(obuf[k]);
+            i += seq_len;
+            continue;
+        }
+        for (uint k = 0; k < seq_len && i + k < len; k++) {
+            put_byte_fn(data[i + k]);
+        }
+        i += seq_len;
+    }
 }
 
 // ============================================================================

@@ -366,11 +366,20 @@ fn uint encode_utf8_to_buf(char[STRING_BUF_SIZE]* buf, uint offset, uint cp) {
         (*buf)[offset + 2] = (char)(0x80 | (cp & 0x3F));
         return offset + 3;
     }
-    (*buf)[offset]     = (char)(0xF0 | (cp >> 18));
-    (*buf)[offset + 1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-    (*buf)[offset + 2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    (*buf)[offset + 3] = (char)(0x80 | (cp & 0x3F));
-    return offset + 4;
+    // Supplementary plane: ECMAScript strings are UTF-16 code unit
+    // sequences (spec §6.1.4) — encode `\u{H+}` astral escapes as a
+    // surrogate pair (CESU-8 storage: each half gets its own 3-byte UTF-8
+    // sequence) so `"\u{1F600}".length === 2`, matching a real JS engine.
+    uint v = cp - 0x1_0000;
+    uint high = 0xD800 + (v >> 10);
+    uint low  = 0xDC00 + (v & 0x3FF);
+    (*buf)[offset]     = (char)(0xE0 | (high >> 12));
+    (*buf)[offset + 1] = (char)(0x80 | ((high >> 6) & 0x3F));
+    (*buf)[offset + 2] = (char)(0x80 | (high & 0x3F));
+    (*buf)[offset + 3] = (char)(0xE0 | (low >> 12));
+    (*buf)[offset + 4] = (char)(0x80 | ((low >> 6) & 0x3F));
+    (*buf)[offset + 5] = (char)(0x80 | (low & 0x3F));
+    return offset + 6;
 }
 
 // ============================================================================

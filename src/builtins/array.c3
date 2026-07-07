@@ -2514,16 +2514,20 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         k_value.set_undefined();
 
         if (is_string_prim && str_val != null) {
-            // String primitive: direct character access by byte index
-            char* data = str_val.get_cstr();
-            uint blen = str_val.blen;
-            if (k < blen) {
-                char[2] char_buf;
-                char_buf[0] = data[k];
-                char_buf[1] = 0;
-                HString* ch_str = builtin_intern_string(heap, char_buf[:1]);
-                if (ch_str != null) k_value.set_string(ch_str);
-            }
+            // String primitive: `len` above is char_length() (UTF-16 code
+            // units), so index by code unit here too, not raw byte —
+            // otherwise this silently regresses on any multi-byte string
+            // when the iterator-protocol path (spec-preferred) isn't taken.
+            // NOTE: this array-like fallback is spec-incorrect for strings
+            // in general — Array.from(str) should always go through the
+            // @@iterator protocol (codepoint-by-codepoint) per ES6
+            // §23.1.1.1 step 3, landing here only means that path wasn't
+            // triggered; tracked separately from the CESU-8 migration.
+            uint cp = str_val.char_at((uint)k);
+            char[4] cbuf;
+            uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+            HString* ch_str = builtin_intern_string(heap, cbuf[:cblen]);
+            if (ch_str != null) k_value.set_string(ch_str);
         } else if (pk != null) {
             TVal? elem_opt = array_like.get_prop_proto(pk);
             if (try elem = elem_opt) {

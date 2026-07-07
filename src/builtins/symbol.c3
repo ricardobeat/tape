@@ -502,19 +502,10 @@ fn void builtin_symbol_proto_description_get(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    uint hash = ctx.heap.hash_string(desc);
-    HString* existing = ctx.heap.str_table_lookup(desc, hash);
-    HString* result;
-    if (existing != null) {
-        result = existing;
-    } else {
-        HString*? new_str = hstring::hstring_alloc(ctx.heap, desc, hash);
-        if (catch err = new_str) {
-            ctx.result.set_undefined();
-            return;
-        }
-        ctx.heap.str_table_insert(new_str);
-        result = new_str;
+    HString* result = ctx.heap.str_intern(desc);
+    if (result == null) {
+        ctx.result.set_undefined();
+        return;
     }
     ctx.result.set_string(result);
 }

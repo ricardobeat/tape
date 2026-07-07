@@ -90,21 +90,13 @@ fn uint CompilerContext.add_constant(&self, TVal val) {
 
 /// Add a string constant: intern the string and add a STRING TVal to the pool.
 fn uint CompilerContext.add_string_constant(&self, char[] str) {
-    // Intern the string via the heap's string table for pointer deduplication
+    // Intern via Heap.str_intern (not a hand-rolled lookup/alloc) so raw
+    // 4-byte UTF-8 astral sequences in source literals get normalized to
+    // CESU-8 the same way any other interned string does — otherwise a
+    // literal emoji typed in source and the same character via `\u{...}`
+    // would intern under two different byte encodings and fail `===`.
     Heap* hp = (Heap*)self.heap;
-    uint hash = hp.hash_string(str);
-
-    // First, check if the string is already interned in the heap
-    HString* hstr = hp.str_table_lookup(str, hash);
-    if (hstr == null) {
-        // Not found — allocate and insert
-        hstr = hstring::hstring_alloc(self.heap, str, hash) ?? null;
-        if (hstr != null) {
-            hp.str_table_insert(hstr);
-            ((types::HeapHeader*)hstr).incref();
-            hstr.flags.is_interned = true;
-        }
-    }
+    HString* hstr = hp.str_intern(str);
 
     TVal tv;
     if (hstr != null) {

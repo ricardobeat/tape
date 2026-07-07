@@ -31,8 +31,7 @@ fn void print_tval_ctx(BuiltinContext* ctx, TVal* val) {
                     if (str_result.is_string()) {
                         HString* s = (HString*)str_result.get_heapptr();
                         if (s != null) {
-                            char[] d = s.get_data();
-                            for (usz j = 0; j < d.len; j++) io::putchar(d[j]);
+                            hstring::write_cesu8_as_utf8(s.get_data(), &io::putchar);
                             return;
                         }
                     }

@@ -2503,6 +2503,32 @@ fn int lf_key_to_prop_bit(HString* key) @inline {
 }
 
 fn HString* Heap.str_intern(&self, char[] data) {
+    // Normalize any raw 4-byte UTF-8 astral sequences (e.g. a literal
+    // emoji typed directly in source) to CESU-8 surrogate pairs *before*
+    // hashing/lookup — otherwise the same logical string could intern
+    // under two different byte encodings depending on how the astral
+    // character reached this call (literal vs. \u{...} escape vs.
+    // String.fromCodePoint), breaking `===` and property-key dedup.
+    // Fast path: the overwhelming majority of strings have no 4-byte
+    // sequences at all, so skip the scratch allocation entirely.
+    if (hstring::has_raw_utf8_astral(data)) {
+        usz cap = (usz)data.len + ((usz)data.len / 4) * 2 + 1;
+        char* scratch = (char*)libc::malloc(cap);
+        if (scratch != null) {
+            uint norm_len = hstring::normalize_to_cesu8(data, scratch[:cap]);
+            HString* result = self.str_intern_normalized(scratch[:norm_len]);
+            libc::free(scratch);
+            return result;
+        }
+    }
+    return self.str_intern_normalized(data);
+}
+
+/// Intern already-CESU-8-canonical bytes. Callers that can guarantee their
+/// input has no raw 4-byte UTF-8 sequences (e.g. pure-ASCII builtin
+/// literals, or data already round-tripped through `normalize_to_cesu8`)
+/// may call this directly to skip the astral-scan fast-path check.
+fn HString* Heap.str_intern_normalized(&self, char[] data) {
     uint hash = self.hash_string(data);
     HString* existing = self.str_table_lookup(data, hash);
     if (existing != null) {

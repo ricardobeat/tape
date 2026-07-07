@@ -177,11 +177,18 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
             buf[offset++] = (char)(0x80 | ((ucp >> 6) & 0x3F));
             buf[offset++] = (char)(0x80 | (ucp & 0x3F));
         } else {
-            // 4-byte UTF-8 for supplementary plane
-            buf[offset++] = (char)(0xF0 | (ucp >> 18));
-            buf[offset++] = (char)(0x80 | ((ucp >> 12) & 0x3F));
-            buf[offset++] = (char)(0x80 | ((ucp >> 6) & 0x3F));
-            buf[offset++] = (char)(0x80 | (ucp & 0x3F));
+            // Supplementary plane: ECMAScript strings are UTF-16 code unit
+            // sequences, so encode as a surrogate pair (CESU-8 storage —
+            // each half gets its own 3-byte UTF-8 sequence) rather than a
+            // single 4-byte UTF-8 sequence, so `.length` reports 2.
+            uint high; uint low;
+            hstring::codepoint_to_surrogates(ucp, &high, &low);
+            buf[offset++] = (char)(0xE0 | (high >> 12));
+            buf[offset++] = (char)(0x80 | ((high >> 6) & 0x3F));
+            buf[offset++] = (char)(0x80 | (high & 0x3F));
+            buf[offset++] = (char)(0xE0 | (low >> 12));
+            buf[offset++] = (char)(0x80 | ((low >> 6) & 0x3F));
+            buf[offset++] = (char)(0x80 | (low & 0x3F));
         }
     }
     HString* result_str = builtin_intern_string(ctx.heap, buf[:offset]);
@@ -295,22 +302,24 @@ fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
 }
 
 /// String.prototype.charCodeAt(pos) — ES5 §15.5.4.5
+///
+/// Returns the UTF-16 code unit at `pos` (a surrogate half for astral
+/// characters, never combined) — indexed by `char_length()`, not `blen`.
 fn void builtin_string_proto_charCodeAt(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
         ctx.result.set_undefined();
         return;
     }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
+    uint clen = s_hstr.char_length();
     double pos = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    if (pos < 0 || pos >= (double)len) {
+    if (pos < 0 || pos >= (double)clen) {
         ctx.result.set_number(double::nan);
         return;
     }
     uint idx = (uint)(long)pos;
-    ctx.result.set_fastint((long)(data[idx] & 0xFF));
+    ctx.result.set_fastint((long)s_hstr.char_at(idx));
 }
 
 /// String.prototype.indexOf(searchString, position) — ES5 §15.5.4.7
@@ -937,21 +946,25 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     char* sep_data = sep_hstr.get_cstr();
     uint sep_len = sep_hstr.blen;
 
-    // Empty separator: split by character
+    // Empty separator: split by UTF-16 code unit (ES5 §15.5.4.14 step 11 —
+    // T is a String of length 1 containing element q of S, where S is
+    // indexed by UTF-16 code unit, not Unicode codepoint or byte).
     if (sep_len == 0) {
-        uint count = len < limit ? len : limit;
+        uint clen = s_hstr.char_length();
+        uint count = clen < limit ? clen : limit;
         HString* len_key = builtin_intern_string(ctx.heap, "length");
         TVal len_val;
         len_val.set_fastint((long)count);
         arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        char[] cdata = s_hstr.get_data();
+        uint byte_off = 0;
         for (uint i = 0; i < count; i++) {
-            char[2] buf;
-            buf[0] = data[i];
-            buf[1] = 0;
-            HString* ch_str = builtin_intern_string(ctx.heap, buf[:1]);
+            uint unit_len = hstring::utf16_unit_byte_len(cdata, byte_off);
+            HString* ch_str = builtin_intern_string(ctx.heap, cdata[byte_off : unit_len]);
             TVal elem;
             elem.set_string(ch_str);
             arr.put_prop(ctx.heap.int_to_hstring((long)i), elem, hobject::PROP_FLAGS_WEC);
+            byte_off += unit_len;
         }
         ctx.result.set_object(arr);
         return;
@@ -1878,40 +1891,56 @@ fn void builtin_string_proto_trimEnd(BuiltinContext* ctx) {
 }
 
 /// String.prototype.codePointAt(pos) — ES6 §21.1.3.3
+///
+/// Indexed by UTF-16 code unit (`char_length()`). If the unit at `pos` is a
+/// high surrogate and `pos+1` is a low surrogate, combine them into the
+/// astral codepoint; otherwise return the code unit as-is (matches
+/// CharCodeAt semantics for non-surrogate / lone-surrogate positions).
 fn void builtin_string_proto_codePointAt(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
+    uint clen = s_hstr.char_length();
 
     double pos_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    uint pos;
     if (math::is_nan(pos_d) || pos_d < 0) {
         ctx.result.set_undefined(); return;
     }
-    pos = (uint)(long)pos_d;
-    if (pos >= len) { ctx.result.set_undefined(); return; }
+    uint pos = (uint)(long)pos_d;
+    if (pos >= clen) { ctx.result.set_undefined(); return; }
 
-    // Simple ASCII fallback (most test262 tests use ASCII)
-    ctx.result.set_fastint((long)(data[pos] & 0xFF));
+    uint first = s_hstr.char_at(pos);
+    if (hstring::is_high_surrogate(first) && pos + 1 < clen) {
+        uint second = s_hstr.char_at(pos + 1);
+        if (hstring::is_low_surrogate(second)) {
+            ctx.result.set_fastint((long)hstring::surrogates_to_codepoint(first, second));
+            return;
+        }
+    }
+    ctx.result.set_fastint((long)first);
 }
 
 /// String.prototype.at(index) — ES2022 §21.1.3.1
+///
+/// Indexed by UTF-16 code unit; returns a one-code-unit String (a lone
+/// surrogate half for astral characters), matching `charAt`.
 fn void builtin_string_proto_at(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
+    uint clen = s_hstr.char_length();
 
     double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
-    if (idx < 0) { idx = (long)len + idx; }
-    if (idx < 0 || idx >= (long)len) { ctx.result.set_undefined(); return; }
+    if (idx < 0) { idx = (long)clen + idx; }
+    if (idx < 0 || idx >= (long)clen) { ctx.result.set_undefined(); return; }
 
-    ctx.result.set_fastint((long)data[idx] & 0xFF);
+    uint cp = s_hstr.char_at((uint)idx);
+    char[4] cbuf;
+    uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+    HString* result = builtin_intern_string(ctx.heap, cbuf[:cblen]);
+    ctx.result.set_string(result);
 }
 
 /// String.prototype.padStart(maxLength, fillString) — ES2017 §21.1.3.13
@@ -2636,13 +2665,16 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     libc::free(result_cps);
 
     // ── Step 5: Create HString from UTF-8 bytes ─────────────────────────────
-    // Use the heap's seeded hash so hash comparisons with interned strings work.
-    uint hash = ctx.heap.hash_string(out_buf[:total_bytes]);
-    HString*? result_hstr_raw = hstring::hstring_alloc(ctx.heap,
-                                    out_buf[:total_bytes], hash);
+    // KNOWN GAP: normalize() decodes/re-encodes per UTF-16 code unit, so an
+    // astral character (stored as a surrogate pair) is fed to libunicode as
+    // two separate lone-surrogate "codepoints" rather than being recombined
+    // first — Unicode normalization of astral text is not spec-correct.
+    // Interning still goes through str_intern (not a hand-rolled alloc) so
+    // identity/dedup holds for the (correct, BMP-only) common case.
+    HString* result_hstr = ctx.heap.str_intern(out_buf[:total_bytes]);
     ctx.heap.free_func(ctx.heap.heap_udata, out_buf);
 
-    if (try result_hstr = result_hstr_raw) {
+    if (result_hstr != null) {
         ctx.result.set_string(result_hstr);
     } else {
         ctx.result.set_string(s_hstr);
