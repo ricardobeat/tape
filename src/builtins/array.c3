@@ -2185,95 +2185,99 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
 
     ulong n = 0;
 
-    // First, copy 'this' elements
-    ulong this_len;
-    if (!array_to_length(obj, ctx.heap, ctx, &this_len)) { ctx.result.set_undefined(); return; }
-    for (ulong i = 0; i < this_len; i++) {
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (arr_has_prop(obj, i, ctx.heap)) {
-            TVal elem;
-            if (arr_get_elem_vm(obj, i, ctx.heap, ctx, &elem)) {
-                array_set_elem_ulong(result, n, elem, ctx.heap);
-            }
-        }
-        n++;
-    }
-
-    // Get the @@isConcatSpreadable symbol key (cached on heap)
+    // ES2022 §23.1.3.1 step 5: items = [O, ...args]. Process each item via
+    // the shared IsConcatSpreadable path so 'this' follows the same rules
+    // as arguments (non-Array 'this' becomes a single element).
     HString* concat_sym = ensure_concatspreadable_symbol(ctx.heap);
 
-    // Then process each argument (ES6 §22.1.3.1.2)
+    TVal this_tv; this_tv.set_object(obj);
+    if (!concat_process_item(ctx, this_tv, concat_sym, result, &n)) {
+        ctx.result.set_undefined();
+        return;
+    }
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
     for (ushort arg_i = 0; arg_i < ctx.argc; arg_i++) {
         TVal arg = ctx.regs[ctx.base_reg + arg_i];
-
-        // Default: spread if Array, otherwise add as element
-        bool spread = false;
-
-        if (arg.is_object() && arg.get_heapptr() != null) {
-            HObject* arg_obj = (HObject*)arg.get_heapptr();
-            bool is_array = arg_obj.get_class() == hobject::ObjClass.ARRAY;
-
-            if (concat_sym != null) {
-                // Look up @@isConcatSpreadable on the argument
-                TVal? spreadable_val = arg_obj.get_prop_proto(concat_sym);
-                if (try spreadable = spreadable_val) {
-                    // Symbol property found — use its truthiness to decide
-                    spread = builtin_to_boolean(&spreadable);
-                } else {
-                    // Symbol property absent — fall back to default
-                    spread = is_array;
-                }
-            } else {
-                // Symbol not available — fall back to default
-                spread = is_array;
-            }
-
-            if (spread) {
-                // Spread elements from the argument
-                ulong arg_len;
-                if (!array_to_length(arg_obj, ctx.heap, ctx, &arg_len)) { ctx.result.set_undefined(); return; }
-                // ES2022 §23.1.3.1 step 5.c.iii: throw before iterating if the
-                // combined length would exceed 2^53-1.
-                if (n + arg_len > (ulong)types::DUK_MAX_SAFE_INT) {
-                    arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
-                    ctx.result.set_undefined();
-                    return;
-                }
-                for (ulong i = 0; i < arg_len; i++) {
-                    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                    if (arr_has_prop(arg_obj, i, ctx.heap)) {
-                        TVal elem;
-                        if (arr_get_elem_vm(arg_obj, i, ctx.heap, ctx, &elem)) {
-                            array_set_elem_ulong(result, n, elem, ctx.heap);
-                        }
-                    }
-                    n++;
-                }
-            } else {
-                // Add as single element (§23.1.3.1 step 5.d.ii)
-                if (n >= (ulong)types::DUK_MAX_SAFE_INT) {
-                    arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
-                    ctx.result.set_undefined();
-                    return;
-                }
-                array_set_elem_ulong(result, n, arg, ctx.heap);
-                n++;
-            }
-        } else {
-            // Primitive — add as single element (§23.1.3.1 step 5.d.ii)
-            if (n >= (ulong)types::DUK_MAX_SAFE_INT) {
-                arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
-                ctx.result.set_undefined();
-                return;
-            }
-            array_set_elem_ulong(result, n, arg, ctx.heap);
-            n++;
+        if (!concat_process_item(ctx, arg, concat_sym, result, &n)) {
+            ctx.result.set_undefined();
+            return;
         }
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     array_set_length_ulong(result, n, ctx.heap);
 
     ctx.result.set_object(result);
+}
+
+/// Process one item for Array.prototype.concat (ES2022 §23.1.3.1 step 5).
+/// `item` may be a primitive or an object. Returns false when a pending throw
+/// must abort the caller (ctx.should_throw is set).
+fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
+                            HObject* result, ulong* n_ptr) {
+    ulong n = *n_ptr;
+
+    if (!item.is_object() || item.get_heapptr() == null) {
+        // Primitive — add as single element (§23.1.3.1 step 5.d.ii).
+        if (n >= (ulong)types::DUK_MAX_SAFE_INT) {
+            arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
+            return false;
+        }
+        array_set_elem_ulong(result, n, item, ctx.heap);
+        n++;
+        *n_ptr = n;
+        return true;
+    }
+
+    HObject* item_obj = (HObject*)item.get_heapptr();
+
+    // ES2022 §23.1.3.1 step 5.b: spreadable = IsConcatSpreadable(E)
+    // 5.b.ii: Get(E, @@isConcatSpreadable) — get_prop_proto does not invoke
+    //         accessors (raw prop_values); if a getter throws it does not
+    //         surface here. If a getter exists, fall through to is_array.
+    // 5.b.iii: If undefined, fall back to IsArray(E).
+    bool spread;
+    bool is_array = item_obj.get_class() == hobject::ObjClass.ARRAY;
+    if (concat_sym != null) {
+        TVal? spreadable_val = item_obj.get_prop_proto(concat_sym);
+        if (try sv = spreadable_val) {
+            spread = builtin_to_boolean(&sv);
+        } else {
+            spread = is_array;
+        }
+    } else {
+        spread = is_array;
+    }
+
+    if (spread) {
+        ulong item_len;
+        if (!array_to_length(item_obj, ctx.heap, ctx, &item_len)) return false;
+        if (n + item_len > (ulong)types::DUK_MAX_SAFE_INT) {
+            arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
+            return false;
+        }
+        for (ulong i = 0; i < item_len; i++) {
+            if (ctx.should_throw) return false;
+            if (arr_has_prop(item_obj, i, ctx.heap)) {
+                TVal elem;
+                if (arr_get_elem_vm(item_obj, i, ctx.heap, ctx, &elem)) {
+                    array_set_elem_ulong(result, n, elem, ctx.heap);
+                }
+            }
+            n++;
+        }
+    } else {
+        if (n >= (ulong)types::DUK_MAX_SAFE_INT) {
+            arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
+            return false;
+        }
+        array_set_elem_ulong(result, n, item, ctx.heap);
+        n++;
+    }
+
+    *n_ptr = n;
+    return true;
 }
 
 fn void builtin_array_from(BuiltinContext* ctx) {
@@ -2801,6 +2805,17 @@ fn bool array_species_create(BuiltinContext* ctx, HObject* original, HObject** o
 /// Returns the result array, or null on allocation/throw error (caller should
 /// check ctx.should_throw).
 fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, ulong len) {
+    // ES2022 §9.4.2.3 ArraySpeciesCreate step 3-4: if original is not an
+    // Array, return ArrayCreate(length) directly without consulting the
+    // constructor property.
+    if (original.get_class() != hobject::ObjClass.ARRAY) {
+        HObject*? fallback_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = fallback_raw) return null;
+        HObject* fallback = fallback_raw;
+        fallback.prototype = ctx.heap.array_proto;
+        return fallback;
+    }
+
     HObject* species_ctor;
     bool use_species = array_species_create(ctx, original, &species_ctor);
     if (ctx.should_throw) return null;

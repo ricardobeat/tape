@@ -2052,13 +2052,29 @@ fn bool HObject.is_prototype_of(&self, HObject* probe) {
 /// The caller is responsible for throwing in strict mode when false.
 fn bool HObject.es_delete_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
-    if (idx < 0) {
-        return true;  // Not found → [[Delete]] returns true.
+    if (idx >= 0) {
+        if (!self.get_prop_flags((uint)idx).configurable) {
+            return false;  // Non-configurable → [[Delete]] returns false.
+        }
+        return self.delete_prop(key);
     }
-    if (!self.get_prop_flags((uint)idx).configurable) {
-        return false;  // Non-configurable → [[Delete]] returns false.
+    // ARRAY / ARGUMENTS exotic: numeric indices stored in the dense part are
+    // own properties. Clear the dense slot so subsequent hasOwnProperty /
+    // length / gopd reflect the deletion per spec [[Delete]].
+    if (key != null && (self.get_class() == hobject::ObjClass.ARRAY || self.get_class() == hobject::ObjClass.ARGUMENTS)) {
+        HString* hkey = (HString*)key;
+        if (hkey.is_arridx()) {
+            uint ai = (uint)hkey.array_index();
+            if (ai < self.array_size) {
+                TVal old = self.array_part()[ai];
+                if (!old.is_undefined()) {
+                    TVal undef; undef.set_undefined();
+                    self.set_array_idx(ai, undef);
+                }
+            }
+        }
     }
-    return self.delete_prop(key);
+    return true;  // Not found (or cleared from dense) → [[Delete]] returns true.
 }
 
 // ============================================================================

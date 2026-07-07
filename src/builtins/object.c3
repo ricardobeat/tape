@@ -3234,6 +3234,18 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
         ctx.result.set_boolean(true);
         return;
     }
+    // ARRAY / ARGUMENTS exotic: numeric indices < array_size and stored in
+    // the dense part are own properties (spec §10.4.2 [[GetOwnProperty]]).
+    // Without this, hasOwnProperty returns false for dense-only arrays
+    // produced by concat/slice/etc.
+    if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
+        && key.is_arridx()) {
+        uint ai = (uint)key.array_index();
+        if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
+            ctx.result.set_boolean(true);
+            return;
+        }
+    }
     // STRING exotic: integer indices [0, clen) are own properties served lazily.
     if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
@@ -3272,6 +3284,16 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
         uint prop_idx = (uint)((char*)e - (char*)obj.prop_values()) / hobject::PropValue::size;
         ctx.result.set_boolean(obj.get_prop_flags(prop_idx).enumerable);
         return;
+    }
+    // ARRAY / ARGUMENTS exotic: numeric indices in the dense part are own
+    // enumerable data properties (spec §10.4.2 [[GetOwnProperty]]).
+    if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
+        && key.is_arridx()) {
+        uint ai = (uint)key.array_index();
+        if (ai < obj.array_size && !obj.array_part()[ai].is_undefined()) {
+            ctx.result.set_boolean(true);
+            return;
+        }
     }
     // STRING exotic: integer indices [0, clen) are enumerable own properties served lazily.
     if (obj.flags.exotic_stringobj && key.is_arridx() && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
