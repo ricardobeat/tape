@@ -2511,7 +2511,7 @@ fn ushort? CompilerContext.object_literal(&self) {
             // Parse property key
             ushort key_reg;
             uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
-            bool is_shorthand_key = false;  // true iff the key came from an identifier/string
+            bool is_shorthand_key = false;  // true iff the key came from a plain identifier
             // Source start for Function.prototype.toString retention. Defaults
             // to the computed-key bracket (consumed below) — set explicitly for
             // identifier/string/keyword keys before their `advance()` call.
@@ -2526,7 +2526,17 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.lexer.refresh_token_start();
                 key_src_start = self.lexer.token_start;
                 Token key_tok = self.advance()!;
-                is_shorthand_key = true;
+                // ES2015 §12.2.6.8: shorthand is only legal for a plain
+                // IdentifierReference — string-literal keys and reserved
+                // words used as keys must not be treated as shorthand.
+                // `true` / `false` / `null` lex as plain IDENTIFIER tokens in
+                // this lexer (resolved to literals by string comparison at
+                // the primary-expression level) but are reserved words per
+                // spec and cannot be used as an IdentifierReference.
+                is_shorthand_key = key_tt == TokenType.IDENTIFIER
+                    && !str_eq(key_tok.str_value, "true")
+                    && !str_eq(key_tok.str_value, "false")
+                    && !str_eq(key_tok.str_value, "null");
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
                 // If key is "get" or "set" AND next token is a property key (not `:` or `(`)

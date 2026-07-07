@@ -422,6 +422,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
     bool  saved_slt   = self.lexer.seen_line_term;
 
     uint brace_depth = 0;
+    // Byte offset of the `function` keyword when preceded by `async` at
+    // brace_depth 0. The async-detection branch below pushes `function`
+    // back so it's re-scanned on the *next* loop iteration — but pushback
+    // does not rewind lexer.pos, so that iteration's `pos_before` snapshot
+    // no longer points at `function`'s start. Stash the true offset here so
+    // the FUNCTION-handling branch can use it for source-text retention.
+    uint pending_async_fn_kw_pos = 0xFFFFFFFF;
 
     while (true) {
         // Save lexer state before consuming this token (so we can restore
@@ -468,6 +475,11 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             if (catch _err_peek = async_peek) continue;
             if (async_peek.type == TokenType.FUNCTION) {
                 // "async" consumed; push "function" back for the next iteration.
+                // Capture its true source offset now — pushback does not
+                // rewind lexer.pos, so the next iteration's `pos_before`
+                // would otherwise point past `function` (see
+                // pending_async_fn_kw_pos declaration above).
+                pending_async_fn_kw_pos = self.lexer.token_start;
                 {
                     Token fn_tok = async_peek;
                     self.lexer.pushback(fn_tok);
@@ -562,8 +574,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
             // Byte offset of `function` keyword for Function.prototype.toString
-            // source-text retention.
-            uint hoist_fn1_src_start = self.lexer.token_start;
+            // source-text retention. For `async function`, `pos_before` (and
+            // thus the re-consumed token's start) points past `function`'s
+            // true start because the async-detection iteration's pushback
+            // of `function` didn't rewind lexer.pos — use the offset
+            // captured at detection time instead.
+            uint hoist_fn1_src_start = hoist_is_async ? pending_async_fn_kw_pos : self.lexer.token_start;
+            pending_async_fn_kw_pos = 0xFFFFFFFF;
 
             // Handle generator star
             bool saved_gen = self.is_generator;
@@ -675,6 +692,11 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
     bool  saved_slt   = self.lexer.seen_line_term;
 
     uint brace_depth = 0;
+    // See hoist_decls' pending_async_fn_kw_pos for why this is needed: the
+    // async-detection branch pushes `function` back without rewinding
+    // lexer.pos, so the next iteration's `pos_before` no longer points at
+    // `function`'s true start.
+    uint pending_async_fn_kw_pos = 0xFFFFFFFF;
 
     // Track the previous top-level token to disambiguate
     // function declarations from function expressions in expressions like
@@ -727,6 +749,9 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             Token? async_peek = self.lexer.next_token();
             if (catch _err_peek = async_peek) continue;
             if (async_peek.type == TokenType.FUNCTION) {
+                // Capture `function`'s true source offset before pushing it
+                // back — pushback does not rewind lexer.pos.
+                pending_async_fn_kw_pos = self.lexer.token_start;
                 {
                     Token fn_tok = async_peek;
                     self.lexer.pushback(fn_tok);
@@ -815,8 +840,13 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             // Re-consume 'function' (async was already consumed before restore)
             self.expect(TokenType.FUNCTION)!;
             // Byte offset of `function` keyword for Function.prototype.toString
-            // source-text retention.
-            uint hoist_fn1_src_start = self.lexer.token_start;
+            // source-text retention. For `async function`, `pos_before` (and
+            // thus the re-consumed token's start) points past `function`'s
+            // true start because the async-detection iteration's pushback
+            // of `function` didn't rewind lexer.pos — use the offset
+            // captured at detection time instead.
+            uint hoist_fn1_src_start = hoist_is_async ? pending_async_fn_kw_pos : self.lexer.token_start;
+            pending_async_fn_kw_pos = 0xFFFFFFFF;
 
             // Handle generator star
             bool saved_gen = self.is_generator;
