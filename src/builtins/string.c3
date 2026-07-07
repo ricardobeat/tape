@@ -284,20 +284,19 @@ fn void builtin_string_proto_charAt(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
+    uint clen = s_hstr.char_length();
     double pos = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    if (pos < 0 || pos >= (double)len) {
+    if (pos < 0 || pos >= (double)clen) {
         // Return empty string
         ctx.result.set_string(builtin_intern_string(ctx.heap, ""));
         return;
     }
     uint idx = (uint)(long)pos;
-    char[2] buf;
-    buf[0] = data[idx];
-    buf[1] = 0;
-    HString* result = builtin_intern_string(ctx.heap, buf[:1]);
+    uint cp = s_hstr.char_at(idx);
+    char[4] buf;
+    uint blen = hstring::encode_codepoint(cp, buf[:4]);
+    HString* result = builtin_intern_string(ctx.heap, buf[:blen]);
     ctx.result.set_string(result);
 }
 
@@ -331,6 +330,10 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
+    // Indexed by UTF-16 code unit for the argument/result; byte search
+    // itself is safe on CESU-8-canonical data (a byte match can't straddle
+    // a code-unit boundary), so only pos/result need unit<->byte conversion.
+    uint clen = s_hstr.char_length();
 
     // Get search string
     HString* search_hstr;
@@ -347,21 +350,22 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
     // Get position
     double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    uint pos;
+    uint pos_units;
     if (math::is_nan(pos_d) || pos_d < 0) {
-        pos = 0;
-    } else if (pos_d >= (double)len) {
-        pos = len;
+        pos_units = 0;
+    } else if (pos_d >= (double)clen) {
+        pos_units = clen;
     } else {
-        pos = (uint)(long)pos_d;
+        pos_units = (uint)(long)pos_d;
     }
+    uint pos = s_hstr.char_offset_to_byte_offset(pos_units);
 
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
     // Search for occurrence
     if (search_len == 0) {
-        ctx.result.set_fastint((long)pos);
+        ctx.result.set_fastint((long)pos_units);
         return;
     }
 
@@ -379,7 +383,19 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
             break;
         }
     }
-    ctx.result.set_fastint((long)result);
+    if (result >= 0) {
+        // Convert the matched byte offset back to a code-unit index by
+        // counting units in the (already-scanned, CESU-8-canonical) prefix.
+        uint unit_idx = 0;
+        uint byte_off = 0;
+        while (byte_off < (uint)result) {
+            byte_off += hstring::utf16_unit_byte_len(s_hstr.get_data(), byte_off);
+            unit_idx++;
+        }
+        ctx.result.set_fastint((long)unit_idx);
+    } else {
+        ctx.result.set_fastint(-1);
+    }
 }
 
 /// String.prototype.slice(start, end) — ES5 §15.5.4.13
@@ -389,8 +405,8 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
+    // Indexed by UTF-16 code unit (char_length), not raw byte.
+    uint len = s_hstr.char_length();
 
     double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
@@ -437,13 +453,10 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
         return;
     }
 
-    uint substr_len = (uint)(end_i - start_i);
-    char[256] buf;
-    usz copy_len = (usz)(substr_len < 256 ? substr_len : 256);
-    for (usz i = 0; i < copy_len; i++) {
-        buf[i] = data[(uint)start_i + i];
-    }
-    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    uint byte_start = s_hstr.char_offset_to_byte_offset((uint)start_i);
+    uint byte_end = s_hstr.char_offset_to_byte_offset((uint)end_i);
+    char[] data = s_hstr.get_data();
+    HString* result = builtin_intern_string(ctx.heap, data[byte_start..byte_end-1]);
     ctx.result.set_string(result);
 }
 
@@ -454,7 +467,8 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    uint len = s_hstr.blen;
+    // Indexed by UTF-16 code unit (char_length), not raw byte.
+    uint len = s_hstr.char_length();
 
     double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
@@ -483,14 +497,10 @@ fn void builtin_string_proto_substring(BuiltinContext* ctx) {
         return;
     }
 
-    uint substr_len = to - from;
-    char* cstr = s_hstr.get_cstr();
-    char[256] buf;
-    usz copy_len = (usz)(substr_len < 256 ? substr_len : 256);
-    for (usz i = 0; i < copy_len; i++) {
-        buf[i] = cstr[from + i];
-    }
-    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    uint byte_from = s_hstr.char_offset_to_byte_offset(from);
+    uint byte_to = s_hstr.char_offset_to_byte_offset(to);
+    char[] data = s_hstr.get_data();
+    HString* result = builtin_intern_string(ctx.heap, data[byte_from..byte_to-1]);
     ctx.result.set_string(result);
 }
 
@@ -501,7 +511,8 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
-    uint len = s_hstr.blen;
+    // Indexed by UTF-16 code unit (char_length), not raw byte.
+    uint len = s_hstr.char_length();
 
     double start_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
@@ -539,13 +550,10 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
         return;
     }
 
-    char* cstr = s_hstr.get_cstr();
-    char[256] buf;
-    usz copy_len = (usz)((uint)length_i < 256 ? (uint)length_i : 256);
-    for (usz i = 0; i < copy_len; i++) {
-        buf[i] = cstr[(uint)start_i + i];
-    }
-    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
+    uint byte_start = s_hstr.char_offset_to_byte_offset((uint)start_i);
+    uint byte_end = s_hstr.char_offset_to_byte_offset((uint)(start_i + length_i));
+    char[] data = s_hstr.get_data();
+    HString* result = builtin_intern_string(ctx.heap, data[byte_start..byte_end-1]);
     ctx.result.set_string(result);
 }
 
@@ -1691,16 +1699,21 @@ fn void builtin_string_proto_includes(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
+    // position argument is in code units; convert to byte offset before
+    // searching. Byte-level substring matching itself stays correct on
+    // CESU-8-canonical data (a match can't straddle a code-unit boundary).
+    uint clen = s_hstr.char_length();
     double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    uint pos;
+    uint pos_units;
     if (math::is_nan(pos_d) || pos_d < 0) {
-        pos = 0;
-    } else if (pos_d >= (double)len) {
-        pos = len;
+        pos_units = 0;
+    } else if (pos_d >= (double)clen) {
+        pos_units = clen;
     } else {
-        pos = (uint)(long)pos_d;
+        pos_units = (uint)(long)pos_d;
     }
+    uint pos = s_hstr.char_offset_to_byte_offset(pos_units);
 
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
@@ -1733,16 +1746,19 @@ fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
+    // position argument is in code units; convert to byte offset.
+    uint clen = s_hstr.char_length();
     double pos_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    uint pos;
+    uint pos_units;
     if (math::is_nan(pos_d) || pos_d < 0) {
-        pos = 0;
-    } else if (pos_d > (double)len) {
-        pos = len;
+        pos_units = 0;
+    } else if (pos_d > (double)clen) {
+        pos_units = clen;
     } else {
-        pos = (uint)(long)pos_d;
+        pos_units = (uint)(long)pos_d;
     }
+    uint pos = s_hstr.char_offset_to_byte_offset(pos_units);
 
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
@@ -1771,16 +1787,19 @@ fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_boolean(false); return; }
 
-    double end_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)len;
+    // endPosition argument is in code units; convert to byte offset.
+    uint clen = s_hstr.char_length();
+    double end_d = (ctx.argc > 1) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)clen;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    uint end_pos;
+    uint end_units;
     if (math::is_nan(end_d) || end_d < 0) {
-        end_pos = 0;
-    } else if (end_d > (double)len) {
-        end_pos = len;
+        end_units = 0;
+    } else if (end_d > (double)clen) {
+        end_units = clen;
     } else {
-        end_pos = (uint)(long)end_d;
+        end_units = (uint)(long)end_d;
     }
+    uint end_pos = s_hstr.char_offset_to_byte_offset(end_units);
 
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
@@ -1944,6 +1963,11 @@ fn void builtin_string_proto_at(BuiltinContext* ctx) {
 }
 
 /// String.prototype.padStart(maxLength, fillString) — ES2017 §21.1.3.13
+///
+/// StringPad operates on code-unit length throughout: maxLength is a code
+/// unit count, and the fill string is truncated to land on exactly the
+/// needed number of code units (never split mid-surrogate-pair, since we
+/// truncate at unit boundaries, not byte boundaries).
 fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
@@ -1952,8 +1976,8 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
     if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
     uint max_len = (uint)(long)max_len_d;
 
-    uint str_len = s_hstr.blen;
-    if (str_len >= max_len) {
+    uint str_units = s_hstr.char_length();
+    if (str_units >= max_len) {
         ctx.result.set_string(s_hstr); return;
     }
 
@@ -1967,30 +1991,38 @@ fn void builtin_string_proto_padStart(BuiltinContext* ctx) {
         ctx.result.set_string(s_hstr); return;
     }
 
-    uint pad_len = max_len - str_len;
-    char* fill_data = fill_hstr.get_cstr();
-    uint fill_len = fill_hstr.blen;
-    char* src = s_hstr.get_cstr();
+    uint pad_units = max_len - str_units;
+    uint fill_units = fill_hstr.char_length();
+    char[] fill_data = fill_hstr.get_data();
+    char[] src = s_hstr.get_data();
 
-    usz total = (usz)pad_len + (usz)str_len;
-    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total + 1);
+    // Worst case every pad unit is a 4-byte codepoint.
+    usz cap = (usz)pad_units * 4 + (usz)src.len + 1;
+    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, cap);
     if (buf_ptr == null) { ctx.result.set_undefined(); return; }
 
-    for (uint i = 0; i < pad_len; i++) {
-        buf_ptr[i] = fill_data[i % fill_len];
+    usz off = 0;
+    uint fill_byte_off = 0;
+    for (uint i = 0; i < pad_units; i++) {
+        if (fill_byte_off >= fill_hstr.blen) { fill_byte_off = 0; }
+        uint ulen = hstring::utf16_unit_byte_len(fill_data, fill_byte_off);
+        for (uint k = 0; k < ulen; k++) { buf_ptr[off + k] = fill_data[fill_byte_off + k]; }
+        off += ulen;
+        fill_byte_off += ulen;
     }
-    libc::memcpy(&buf_ptr[pad_len], src, str_len);
-    buf_ptr[total] = 0;
+    if (src.len > 0) { libc::memcpy(&buf_ptr[off], src.ptr, src.len); }
+    off += (usz)src.len;
 
-    char[] buf_slice = buf_ptr[:total];
-    HString* result = ctx.heap.str_intern(buf_slice);
+    HString* result = ctx.heap.str_intern(buf_ptr[:off]);
+    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
     if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
-    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
 }
 
 /// String.prototype.padEnd(maxLength, fillString) — ES2017 §21.1.3.12
+///
+/// See padStart: fill is applied by whole code unit, not raw byte.
 fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
@@ -1999,8 +2031,8 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
     if (math::is_nan(max_len_d) || max_len_d < 0) { max_len_d = 0; }
     uint max_len = (uint)(long)max_len_d;
 
-    uint str_len = s_hstr.blen;
-    if (str_len >= max_len) {
+    uint str_units = s_hstr.char_length();
+    if (str_units >= max_len) {
         ctx.result.set_string(s_hstr); return;
     }
 
@@ -2014,27 +2046,32 @@ fn void builtin_string_proto_padEnd(BuiltinContext* ctx) {
         ctx.result.set_string(s_hstr); return;
     }
 
-    uint pad_len = max_len - str_len;
-    char* fill_data = fill_hstr.get_cstr();
-    uint fill_len = fill_hstr.blen;
-    char* src = s_hstr.get_cstr();
+    uint pad_units = max_len - str_units;
+    char[] fill_data = fill_hstr.get_data();
+    char[] src = s_hstr.get_data();
 
-    usz total = (usz)str_len + (usz)pad_len;
-    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total + 1);
+    usz cap = (usz)src.len + (usz)pad_units * 4 + 1;
+    char* buf_ptr = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, cap);
     if (buf_ptr == null) { ctx.result.set_undefined(); return; }
 
-    libc::memcpy(buf_ptr, src, str_len);
-    for (uint i = 0; i < pad_len; i++) {
-        buf_ptr[str_len + i] = fill_data[i % fill_len];
-    }
-    buf_ptr[total] = 0;
+    usz off = 0;
+    if (src.len > 0) { libc::memcpy(buf_ptr, src.ptr, src.len); }
+    off += (usz)src.len;
 
-    char[] buf_slice = buf_ptr[:total];
-    HString* result = ctx.heap.str_intern(buf_slice);
+    uint fill_byte_off = 0;
+    for (uint i = 0; i < pad_units; i++) {
+        if (fill_byte_off >= fill_hstr.blen) { fill_byte_off = 0; }
+        uint ulen = hstring::utf16_unit_byte_len(fill_data, fill_byte_off);
+        for (uint k = 0; k < ulen; k++) { buf_ptr[off + k] = fill_data[fill_byte_off + k]; }
+        off += ulen;
+        fill_byte_off += ulen;
+    }
+
+    HString* result = ctx.heap.str_intern(buf_ptr[:off]);
+    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
     if (result != null) {
         ctx.result.set_string(result);
     } else { ctx.result.set_undefined(); }
-    ctx.heap.free_func(ctx.heap.heap_udata, buf_ptr);
 }
 
 /// String.prototype.lastIndexOf(searchString, position) — ES5 §15.5.4.8
@@ -2043,6 +2080,8 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
+    // Indexed by UTF-16 code unit for the argument/result.
+    uint clen = s_hstr.char_length();
 
     HString* search_hstr;
     if (ctx.argc > 0) {
@@ -2052,17 +2091,18 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
 
-    double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)len;
+    double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)clen;
     if (math::is_nan(pos_d) || pos_d < 0) { pos_d = 0; }
-    if (pos_d > (double)len) { pos_d = (double)len; }
-    // For lastIndexOf, search from min(pos, len) backwards
-    int start = (int)(long)pos_d;
-    if (start > (int)len) start = (int)len;
+    if (pos_d > (double)clen) { pos_d = (double)clen; }
+    // For lastIndexOf, search from min(pos, clen) backwards, in code units.
+    int start_units = (int)(long)pos_d;
+    if (start_units > (int)clen) start_units = (int)clen;
+    int start = (int)s_hstr.char_offset_to_byte_offset((uint)start_units);
 
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
-    if (search_len == 0) { ctx.result.set_fastint((long)(start < 0 ? 0 : (long)start)); return; }
+    if (search_len == 0) { ctx.result.set_fastint((long)(start_units < 0 ? 0 : (long)start_units)); return; }
     if (search_len > len) { ctx.result.set_fastint(-1); return; }
     if (start > (int)(len - search_len)) start = (int)(len - search_len);
 
@@ -2074,7 +2114,17 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
         }
         if (found) { result = i; break; }
     }
-    ctx.result.set_fastint((long)result);
+    if (result >= 0) {
+        uint unit_idx = 0;
+        uint byte_off = 0;
+        while (byte_off < (uint)result) {
+            byte_off += hstring::utf16_unit_byte_len(s_hstr.get_data(), byte_off);
+            unit_idx++;
+        }
+        ctx.result.set_fastint((long)unit_idx);
+    } else {
+        ctx.result.set_fastint(-1);
+    }
 }
 
 /// String.prototype.match(regexp) — ES5 §15.5.4.10
