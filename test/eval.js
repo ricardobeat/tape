@@ -75,9 +75,10 @@ var r11 = eval("if (true) { 99 } else { 0 }");
 // if-statement doesn't produce a value for eval return — just check no error
 
 // --- Test 12: eval with variable in expression ---
+// Strict-only engine: eval var declarations stay in the eval's own env.
 eval("var eval_y = 100");
-if (eval_y === 100) { print("PASS: var from eval"); pass++; }
-else { print("FAIL: var from eval expected 100 got " + eval_y); fail++; }
+if (typeof eval_y === "undefined") { print("PASS: strict eval var isolated"); pass++; }
+else { print("FAIL: strict eval var leaked, eval_y = " + eval_y); fail++; }
 
 // --- Test 13: empty eval ---
 var r13 = eval("");
