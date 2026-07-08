@@ -79,6 +79,26 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             }
         }
 
+        // TypedArray: enumerate integer indices [0, length) as own enumerable
+        // keys before the named property list (mirrors the STRING exotic case
+        // above). Detached buffers contribute no indices.
+        if (cur.get_class() >= hobject::ObjClass.INT8ARRAY && cur.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+            HObject* ta_buf = (*cur.extra_ptr()).view.buffer;
+            if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
+                uint ta_shift = builtins::ta_elem_shift(cur.get_class());
+                uint ta_count = (*cur.extra_ptr()).view.byte_length >> ta_shift;
+                for (uint i = 0; i < ta_count; i++) {
+                    HString* k = vm.heap.int_to_hstring((long)i);
+                    if (k == null) continue;
+                    if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                        h.free_func(h.heap_udata, keys);
+                        h.free_func(h.heap_udata, seen);
+                        return null;
+                    }
+                }
+            }
+        }
+
         // Own dense array part indices — integer keys from dense storage (before named props).
         for (uint i = 0; i < cur.array_size; i++) {
             if (!cur.array_part()[i].is_undefined()) {

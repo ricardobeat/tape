@@ -243,7 +243,13 @@ const uint BUILTIN_ARRAYBUFFER_PROTO_DETACHED_GET     = 353;
 const uint BUILTIN_ARRAYBUFFER_SPECIES_GET            = 354;
 const uint BUILTIN_DETACH_ARRAYBUFFER                 = 355;
 
-const uint BUILTIN_COUNT                       = 356;
+const uint BUILTIN_TYPEDARRAY_PROTO_LENGTH_GET        = 356;
+const uint BUILTIN_TYPEDARRAY_PROTO_BYTELENGTH_GET     = 357;
+const uint BUILTIN_TYPEDARRAY_PROTO_BYTEOFFSET_GET     = 358;
+const uint BUILTIN_TYPEDARRAY_PROTO_BUFFER_GET         = 359;
+const uint BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET    = 360;
+
+const uint BUILTIN_COUNT                       = 361;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2410,6 +2416,12 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_ARRAYBUFFER_PROTO_DETACHED_GET] = &builtin_arraybuffer_proto_detached_get,
     [BUILTIN_ARRAYBUFFER_SPECIES_GET] = &builtin_arraybuffer_species_get,
     [BUILTIN_DETACH_ARRAYBUFFER] = &builtin_detach_arraybuffer,
+    // TypedArray.prototype accessors (plan 049 stage 2)
+    [BUILTIN_TYPEDARRAY_PROTO_LENGTH_GET] = &builtin_typedarray_proto_length_get,
+    [BUILTIN_TYPEDARRAY_PROTO_BYTELENGTH_GET] = &builtin_typedarray_proto_bytelength_get,
+    [BUILTIN_TYPEDARRAY_PROTO_BYTEOFFSET_GET] = &builtin_typedarray_proto_byteoffset_get,
+    [BUILTIN_TYPEDARRAY_PROTO_BUFFER_GET] = &builtin_typedarray_proto_buffer_get,
+    [BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET] = &builtin_typedarray_proto_tostringtag_get,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

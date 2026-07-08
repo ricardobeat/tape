@@ -998,6 +998,39 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     // unless the key matches a numeric index and this is an Array)
     int idx = obj.find_prop_idx(key);
     if (idx < 0) {
+        // TypedArray exotic [[GetOwnProperty]] — ES2015 §9.4.5.3: integer
+        // indices in range are own data properties {value, writable:true,
+        // enumerable:true, configurable:true}; out of range/detached -> undefined.
+        if (obj.get_class() >= hobject::ObjClass.INT8ARRAY && obj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+            HString* key_str = (HString*)key;
+            if (key_str.is_arridx()) {
+                uint ta_idx = key_str.array_index();
+                HObject* ta_buf = (*obj.extra_ptr()).view.buffer;
+                uint ta_shift = builtins::ta_elem_shift(obj.get_class());
+                uint ta_count = ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null
+                    ? (*obj.extra_ptr()).view.byte_length >> ta_shift : 0;
+                if (ta_idx < ta_count) {
+                    char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+                    TVal ta_val = builtins::ta_load_element(ta_base, obj.get_class(), ta_idx);
+
+                    HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                    if (catch err = desc_raw) { ctx.result.set_undefined(); return; }
+                    HObject* desc = desc_raw;
+                    desc.prototype = ctx.heap.object_proto;
+                    desc.put_prop(builtin_intern_string(ctx.heap, "value"), ta_val, hobject::PROP_FLAGS_WEC);
+                    TVal w_tv; w_tv.set_boolean(true);
+                    desc.put_prop(builtin_intern_string(ctx.heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
+                    TVal e_tv; e_tv.set_boolean(true);
+                    desc.put_prop(builtin_intern_string(ctx.heap, "enumerable"), e_tv, hobject::PROP_FLAGS_WEC);
+                    TVal c_tv; c_tv.set_boolean(true);
+                    desc.put_prop(builtin_intern_string(ctx.heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
+                    ctx.result.set_object(desc);
+                    return;
+                }
+                ctx.result.set_undefined();
+                return;
+            }
+        }
         // Special case: ARRAY exotic "length" property (spec §22.1.3 / §10.4.2).
         // The "length" property of an Array exotic is its `array_size` even when
         // array_size > array_part capacity (e.g. Array.prototype.length === 0).
@@ -3177,7 +3210,8 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         // ES6 §19.1.3.6: check @@toStringTag on the object
         HString* tag_sym = ensure_tostringtag_symbol(ctx.heap);
         if (tag_sym != null) {
-            TVal? tag_val = obj.get_prop_proto(tag_sym);
+            TVal? tag_val = builtins_generic_get(obj, tag_sym, ctx);
+            if (ctx.should_throw) return;
             if (try tv = tag_val) {
                 if (tv.is_string()) {
                     HString* tag_str = (HString*)tv.get_heapptr();

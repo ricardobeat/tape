@@ -71,7 +71,48 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     return (TVal){};
                 }
 
+                // TypedArray element access: ta[i] where i is a numeric index.
+                // OOB/detached is spec undefined (not a hole) — never falls
+                // through to the prototype chain.
+                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
+                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                    && (rc.is_fastint() || rc.is_number())) {
+                    long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
+                    bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
+                    HObject* buf = (*hobj.extra_ptr()).view.buffer;
+                    uint shift = builtins::ta_elem_shift(hobj.get_class());
+                    uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                    if (is_int_idx && idx_long >= 0 && buf != null
+                        && (*buf.extra_ptr()).ab.data != null
+                        && (ulong)idx_long < (ulong)elem_count) {
+                        char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
+                        TVal v = builtins::ta_load_element(base, hobj.get_class(), (uint)idx_long);
+                        *ra = v;
+                        return (TVal){};
+                    }
+                    ra.set_undefined();
+                    return (TVal){};
+                }
+
                 void* key = get_prop_key(vm, rc);
+
+                // CanonicalNumericIndexString (ES2022 §9.4.5.4) on a
+                // TypedArray receiver: non-arridx numeric-looking string keys
+                // ("1.5", "-0", "NaN", "Infinity") never resolve through the
+                // ordinary property path — reads always yield undefined.
+                if (key != null
+                    && hobj.get_class() >= hobject::ObjClass.INT8ARRAY
+                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+                    HString* key_hstr = (HString*)key;
+                    if (!key_hstr.is_symbol() && !key_hstr.is_arridx()) {
+                        double cni_d;
+                        if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                            ra.set_undefined();
+                            return (TVal){};
+                        }
+                    }
+                }
+
                 if (key != null) {
                     // ES5 strict mode: arguments.callee throws TypeError.
                     // Strict-only engine: always throws.
@@ -1772,6 +1813,51 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
+                // TypedArray element write: convert FIRST, bounds-check AFTER
+                // (ToNumber on rc can run user code — e.g. valueOf — that
+                // detaches the buffer; spec requires the conversion to happen
+                // regardless, then silently drop the store if now OOB).
+                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
+                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                    && (rb.is_fastint() || rb.is_number())) {
+                    long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
+                    bool is_int_idx = rb.is_fastint() || rb.get_number() == (double)idx_long;
+                    hobject::ObjClass ta_cls = hobj.get_class();
+
+                    BuiltinContext conv_ctx;
+                    conv_ctx.vm = vm;
+                    conv_ctx.heap = vm.heap;
+                    conv_ctx.should_throw = false;
+                    TVal converted = *rc;
+                    // Only run the (possibly side-effecting) conversion when
+                    // the index is a plausible integer — non-integer/negative
+                    // indices are ignored per CanonicalNumericIndexString
+                    // without needing to touch the value at all here, matching
+                    // the "assignment is a no-op" spec outcome.
+                    if (is_int_idx && idx_long >= 0) {
+                        char[8] scratch;
+                        builtins::ta_write_element((char*)&scratch, ta_cls, &converted, &conv_ctx);
+                        if (conv_ctx.should_throw) {
+                            if (!vm_throw_value(vm, conv_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &conv_ctx.throw_value);
+                            }
+                            return (TVal){};
+                        }
+
+                        HObject* buf = (*hobj.extra_ptr()).view.buffer;
+                        uint shift = builtins::ta_elem_shift(ta_cls);
+                        uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                        if (buf != null && (*buf.extra_ptr()).ab.data != null
+                            && (ulong)idx_long < (ulong)elem_count) {
+                            char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
+                            char* p = base + (idx_long << shift);
+                            builtins::ta_write_element(p, ta_cls, &converted, &conv_ctx);
+                        }
+                        // OOB/detached after conversion — spec: silently succeed.
+                    }
+                    return (TVal){};
+                }
+
                 // Fast path: dense array indexed store (a[i] = v where i is a valid array index)
                 // ES5 §15.4: array index P satisfies ToString(ToUint32(P))===P && ToUint32(P)≠2^32−1
                 // Cap at 2^24 to avoid insane allocations for sparse arrays with huge indices.
@@ -1791,6 +1877,21 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
                         // Dense write failed (index beyond capacity cap) — fall through to put_prop.
+                    }
+                }
+
+                // CanonicalNumericIndexString (ES2022 §9.4.5.5) on a
+                // TypedArray receiver: numeric-looking non-arridx string keys
+                // ("1.5", "-0", "NaN") are silently ignored on write.
+                if (rb.is_string()
+                    && hobj.get_class() >= hobject::ObjClass.INT8ARRAY
+                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+                    HString* key_hstr = (HString*)rb.get_heapptr();
+                    if (key_hstr != null && !key_hstr.is_symbol() && !key_hstr.is_arridx()) {
+                        double cni_d;
+                        if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                            return (TVal){};
+                        }
                     }
                 }
 
@@ -2147,6 +2248,26 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
+
+                // TypedArray: in-range indices are non-configurable (delete
+                // returns false without deleting); out-of-range/detached
+                // indices return true per spec (nothing to delete).
+                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
+                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                    && (rc.is_fastint() || rc.is_number())) {
+                    long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
+                    bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
+                    if (is_int_idx) {
+                        HObject* buf = (*hobj.extra_ptr()).view.buffer;
+                        uint shift = builtins::ta_elem_shift(hobj.get_class());
+                        uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                        bool in_range = idx_long >= 0 && buf != null && (*buf.extra_ptr()).ab.data != null
+                            && (ulong)idx_long < (ulong)elem_count;
+                        ra.set_boolean(!in_range);
+                        return (TVal){};
+                    }
+                }
+
                 void* key = get_prop_key(vm, rc);
                 if (key != null) {
                     if (!hobj.es_delete_prop(key)) {

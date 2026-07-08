@@ -1628,6 +1628,29 @@ fn TVal? Vm.run(Vm* vm) {
 
             HObject* obj = (HObject*)rc.get_heapptr();
 
+            // TypedArray: numeric index membership (0..length-1, not detached).
+            if (obj.get_class() >= hobject::ObjClass.INT8ARRAY && obj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+                long idx_long = -1;
+                bool is_int_idx = false;
+                if (rb.is_fastint()) { idx_long = rb.get_fastint(); is_int_idx = true; }
+                else if (rb.is_number()) {
+                    double d = rb.get_number();
+                    idx_long = (long)d;
+                    is_int_idx = (d == (double)idx_long);
+                } else if (rb.is_string()) {
+                    HString* skey = (HString*)rb.get_heapptr();
+                    if (skey != null && skey.is_arridx()) { idx_long = (long)skey.array_index(); is_int_idx = true; }
+                }
+                if (is_int_idx) {
+                    HObject* buf = (*obj.extra_ptr()).view.buffer;
+                    uint shift = builtins::ta_elem_shift(obj.get_class());
+                    uint elem_count = (*obj.extra_ptr()).view.byte_length >> shift;
+                    ra.set_boolean(idx_long >= 0 && buf != null && (*buf.extra_ptr()).ab.data != null
+                        && (ulong)idx_long < (ulong)elem_count);
+                    continue;
+                }
+            }
+
             // Fast path: dense array / arguments indexed check (numeric keys)
             if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) && obj.array_part() != null && (rb.is_fastint() || rb.is_number())) {
                 long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
