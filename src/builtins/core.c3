@@ -222,17 +222,18 @@ const uint BUILTIN_REGEXP_PROTO_SYMBOL_MATCH   = 325;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH  = 326;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE = 327;
 const uint BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT   = 328;
+const uint BUILTIN_REGEXP_PROTO_SYMBOL_MATCHALL = 329;
 
-const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 329;
-const uint BUILTIN_ASYNC_RESUME               = 330;
-const uint BUILTIN_ASYNC_REJECT               = 331;
+const uint BUILTIN_REGEXP_STRING_ITERATOR_NEXT = 330;
+const uint BUILTIN_ASYNC_RESUME               = 331;
+const uint BUILTIN_ASYNC_REJECT               = 332;
 
-const uint BUILTIN_PROMISE_SYNTHETIC_EXECUTOR  = 344;
-const uint BUILTIN_FUNCTION_PROTO_SPECIES_GETTER = 345;
-const uint BUILTIN_REGEXP_PROTO_GET_HASINDICES   = 346;
-const uint BUILTIN_REGEXP_PROTO_GET_UNICODESETS  = 347;
+const uint BUILTIN_PROMISE_SYNTHETIC_EXECUTOR  = 345;
+const uint BUILTIN_FUNCTION_PROTO_SPECIES_GETTER = 346;
+const uint BUILTIN_REGEXP_PROTO_GET_HASINDICES   = 347;
+const uint BUILTIN_REGEXP_PROTO_GET_UNICODESETS  = 348;
 
-const uint BUILTIN_COUNT                       = 348;
+const uint BUILTIN_COUNT                       = 349;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2341,6 +2342,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH] = &builtin_regexp_proto_symbol_search,
     [BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE] = &builtin_regexp_proto_symbol_replace,
     [BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT] = &builtin_regexp_proto_symbol_split,
+    [BUILTIN_REGEXP_PROTO_SYMBOL_MATCHALL] = &builtin_regexp_proto_symbol_matchAll,
     [BUILTIN_REGEXP_PROTO_TEST] = &builtin_regexp_proto_test,
     [BUILTIN_REGEXP_PROTO_TOSTRING] = &builtin_regexp_proto_toString,
     [BUILTIN_REGEXP_STRING_ITERATOR_NEXT] = &builtin_regexp_string_iterator_next,
