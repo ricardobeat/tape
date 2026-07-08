@@ -113,9 +113,25 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
             break;
         }
 
-        // Property name
-        Token prop = self.expect(TokenType.IDENTIFIER)!;
-        uint prop_key_idx = self.add_string_constant(prop.str_value);
+        // Computed property key: {[expr]: target}. Per ES2015 §13.3.3, the
+        // key is an AssignmentExpression; the runtime evaluates it at
+        // extract time. (No destructuring on the key itself.)
+        if (self.check(TokenType.LBRACKET)) {
+            self.advance()!; // consume '['
+            // Reuse the synthetic-binding path: stash the computed key in a
+            // scratch field by storing it as key_idx, then emit a binding
+            // with is_computed_key=true on the actual extraction. For
+            // simplicity here, we don't compile computed keys in param
+            // patterns — emit a clean SyntaxError per ES2015 §14.3.3.
+            // (The spec allows them but our emitter has no is_computed_key
+            // plumbing in collect_obj_param_binds; defer.)
+            return COMPILE_ERROR~;
+        }
+
+        // Property name — per ES2015 §13.3.3.7, may be an IdentifierName
+        // (incl. reserved words), a string literal, or a numeric literal.
+        char[] prop_key = self.destructuring_property_key()!;
+        uint prop_key_idx = self.add_string_constant(prop_key);
 
         if (self.match(TokenType.COLON)) {
             // {source: target} — target can be identifier or nested pattern
@@ -165,9 +181,9 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                 binds[*count].is_object = true;
                 binds[*count].arg_idx = src_reg;
                 binds[*count].parent_idx = parent_idx;
-                ushort nl = (ushort)(prop.str_value.len < 63 ? prop.str_value.len : 63);
+                ushort nl = (ushort)(prop_key.len < 63 ? prop_key.len : 63);
                 binds[*count].name_len = nl;
-                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = prop.str_value[j]; }
+                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = prop_key[j]; }
                 (*count)++;
             }
         }

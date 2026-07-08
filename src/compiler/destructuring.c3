@@ -370,7 +370,12 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     }
                 }
             } else {
-                Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+                // Property key: per ES2015 §13.3.3.7, the key may be an
+                // IdentifierName (incl. reserved words), a string literal, or a
+                // numeric literal. Use the helper that accepts all of those;
+                // `destructuring_default_expr` below takes the binding name
+                // which is the NEXT identifier after `:`.
+                char[] prop_key = self.destructuring_property_key()!;
 
                 if (self.match(TokenType.COLON)) {
                     // Keyed: {key: binding_name} or {key: pattern}
@@ -378,9 +383,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     if (self.check(TokenType.LBRACE)) {
                         // Nested object pattern: {a: {x, y}}
                         self.advance()!; // consume '{'
-                        // Parse first property of nested object
-                        Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        // Parse first property of nested object — key may be
+                        // an identifier, string, number, or reserved word.
+                        char[] nested_key = self.destructuring_property_key()!;
+                        if (is_restricted_name(nested_key)) return COMPILE_ERROR~;
 
                         if (self.match(TokenType.COLON)) {
                             // {a: {x: y}} - keyed
@@ -390,10 +396,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 ushort reg = self.declare_var(nested_bind.str_value, kind);
                                 binds[bind_count].reg = reg;
                                 binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
 
                                 // Check for default
                                 if (self.match(TokenType.ASSIGN)) {
@@ -404,15 +410,16 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 bind_count++;
                             }
                         } else {
-                            // {a: {x}} - shorthand inside nested
+                            // {a: {x}} - shorthand inside nested — `nested_key` is the binding name
+                            if (is_restricted_name(nested_key)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
-                                ushort reg = self.declare_var(nested_name.str_value, kind);
+                                ushort reg = self.declare_var(nested_key, kind);
                                 binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].name_idx = self.add_string_constant(nested_key);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
                                 bind_count++;
                             }
                         }
@@ -420,8 +427,8 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         // Parse remaining properties in nested object
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
-                            Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            char[] nested_prop = self.destructuring_property_key()!;
+                            if (is_restricted_name(nested_prop)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind2 = self.expect(TokenType.IDENTIFIER)!;
                                 if (is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
@@ -429,21 +436,21 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                     ushort reg = self.declare_var(nested_bind2.str_value, kind);
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind2.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                     binds[bind_count].has_default = false;
                                     binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
                                     bind_count++;
                                 }
                             } else {
                                 if (bind_count < 32) {
-                                    ushort reg = self.declare_var(nested_prop.str_value, kind);
+                                    ushort reg = self.declare_var(nested_prop, kind);
                                     binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                     binds[bind_count].has_default = false;
                                     binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
                                     bind_count++;
                                 }
                             }
@@ -463,13 +470,13 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 continue;
                             }
 
-                            Token arr_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
+                            char[] arr_el = self.destructuring_property_key()!;
+                            if (is_restricted_name(arr_el)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
-                                ushort reg = self.declare_var(arr_el.str_value, kind);
+                                ushort reg = self.declare_var(arr_el, kind);
                                 binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(arr_el.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].name_idx = self.add_string_constant(arr_el);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_array_nested = true;
                                 binds[bind_count].arr_nested_idx = arr_idx;
@@ -488,7 +495,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                             ushort reg = self.declare_var(bind_tok.str_value, kind);
                             binds[bind_count].reg = reg;
                             binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                            binds[bind_count].key_idx = self.add_string_constant(prop_key);
                             binds[bind_count].has_default = false;
 
                             // Check for default
@@ -502,18 +509,18 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     }
                 } else {
                     // Shorthand: {name}  →  key="name", binding=name
-                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_key)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
-                        ushort reg = self.declare_var(prop_tok.str_value, kind);
+                        ushort reg = self.declare_var(prop_key, kind);
                         binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                        binds[bind_count].name_idx = self.add_string_constant(prop_key);
+                        binds[bind_count].key_idx = self.add_string_constant(prop_key);
                         binds[bind_count].has_default = false;
 
                         // Check for default
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_key)!;
                         }
 
                         bind_count++;
@@ -1028,14 +1035,15 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     }
                 }
             } else {
-                Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+                // Property key — see object_destructure for the multi-type rule.
+                char[] prop_key = self.destructuring_property_key()!;
 
                 if (self.match(TokenType.COLON)) {
                     // Keyed: {key: binding_name} or {key: pattern}
                     if (self.check(TokenType.LBRACE)) {
                         self.advance()!; // consume '{'
-                        Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
+                        char[] nested_key = self.destructuring_property_key()!;
+                        if (is_restricted_name(nested_key)) return COMPILE_ERROR~;
 
                         if (self.match(TokenType.COLON)) {
                             Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
@@ -1051,10 +1059,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 }
                                 binds[bind_count].reg = reg;
                                 binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     binds[bind_count].has_default = true;
@@ -1066,7 +1074,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         } else {
                             if (bind_count < 32) {
                                 ushort reg;
-                                if (try existing = self.resolve_var(nested_name.str_value)) {
+                                if (try existing = self.resolve_var(nested_key)) {
                                     reg = existing;
                                     binds[bind_count].is_resolved = false;
                                 } else {
@@ -1074,19 +1082,19 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     binds[bind_count].is_resolved = false;
                                 }
                                 binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].name_idx = self.add_string_constant(nested_key);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
+                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
                                 bind_count++;
                             }
                         }
 
                         while (self.match(TokenType.COMMA)) {
                             if (self.check(TokenType.RBRACE)) break;
-                            Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
+                            char[] nested_prop = self.destructuring_property_key()!;
+                            if (is_restricted_name(nested_prop)) return COMPILE_ERROR~;
                             if (self.match(TokenType.COLON)) {
                                 Token nested_bind2 = self.expect(TokenType.IDENTIFIER)!;
                                 if (is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
@@ -1101,16 +1109,16 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     }
                                     binds[bind_count].reg = reg;
                                     binds[bind_count].name_idx = self.add_string_constant(nested_bind2.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                     binds[bind_count].has_default = false;
                                     binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
                                     bind_count++;
                                 }
                             } else {
                                 if (bind_count < 32) {
                                     ushort reg;
-                                    if (try existing = self.resolve_var(nested_prop.str_value)) {
+                                    if (try existing = self.resolve_var(nested_prop)) {
                                         reg = existing;
                                         binds[bind_count].is_resolved = false;
                                     } else {
@@ -1118,11 +1126,11 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                         binds[bind_count].is_resolved = false;
                                     }
                                     binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop);
+                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                     binds[bind_count].has_default = false;
                                     binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
+                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
                                     bind_count++;
                                 }
                             }
@@ -1142,11 +1150,11 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                 continue;
                             }
 
-                            Token arr_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(arr_el.str_value)) return COMPILE_ERROR~;
+                            char[] arr_el = self.destructuring_property_key()!;
+                            if (is_restricted_name(arr_el)) return COMPILE_ERROR~;
                             if (bind_count < 32) {
                                 ushort reg;
-                                if (try existing = self.resolve_var(arr_el.str_value)) {
+                                if (try existing = self.resolve_var(arr_el)) {
                                     reg = existing;
                                     binds[bind_count].is_resolved = false;
                                 } else {
@@ -1154,8 +1162,8 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                                     binds[bind_count].is_resolved = false;
                                 }
                                 binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(arr_el.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                                binds[bind_count].name_idx = self.add_string_constant(arr_el);
+                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
                                 binds[bind_count].has_default = false;
                                 binds[bind_count].is_array_nested = true;
                                 binds[bind_count].arr_nested_idx = arr_idx;
@@ -1181,7 +1189,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             }
                             binds[bind_count].reg = reg;
                             binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                            binds[bind_count].key_idx = self.add_string_constant(prop_key);
                             binds[bind_count].has_default = false;
 
                             if (self.match(TokenType.ASSIGN)) {
@@ -1194,10 +1202,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     }
                 } else {
                     // Shorthand: {name}  →  key="name", binding=name
-                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_key)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
                         ushort reg;
-                        if (try existing = self.resolve_var(prop_tok.str_value)) {
+                        if (try existing = self.resolve_var(prop_key)) {
                             reg = existing;
                             binds[bind_count].is_resolved = false;
                         } else {
@@ -1205,13 +1213,13 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                             binds[bind_count].is_resolved = false;
                         }
                         binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                        binds[bind_count].name_idx = self.add_string_constant(prop_key);
+                        binds[bind_count].key_idx = self.add_string_constant(prop_key);
                         binds[bind_count].has_default = false;
 
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_key)!;
                         }
 
                         bind_count++;
@@ -1584,7 +1592,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
         self.expect(TokenType.LBRACE)!;
         if (!self.check(TokenType.RBRACE)) {
             for (;;) {
-                Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
+                char[] prop_key = self.destructuring_property_key()!;
 
                 if (self.match(TokenType.COLON)) {
                     Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
@@ -1593,7 +1601,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                         ushort reg = self.declare_var(bind_tok.str_value, kind);
                         binds[bind_count].reg = reg;
                         binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                        binds[bind_count].key_idx = self.add_string_constant(prop_key);
                         binds[bind_count].has_default = false;
 
                         // Check for default
@@ -1605,18 +1613,18 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                         bind_count++;
                     }
                 } else {
-                    if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
+                    if (is_restricted_name(prop_key)) return COMPILE_ERROR~;
                     if (bind_count < 32) {
-                        ushort reg = self.declare_var(prop_tok.str_value, kind);
+                        ushort reg = self.declare_var(prop_key, kind);
                         binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(prop_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(prop_tok.str_value);
+                        binds[bind_count].name_idx = self.add_string_constant(prop_key);
+                        binds[bind_count].key_idx = self.add_string_constant(prop_key);
                         binds[bind_count].has_default = false;
 
                         // Check for default
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_key)!;
                         }
 
                         bind_count++;
