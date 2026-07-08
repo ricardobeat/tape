@@ -189,24 +189,11 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
             // null/undefined → TypeError: not iterable
             if (src_tv.is_null() || src_tv.is_undefined()) {
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[80] spr_buf;
-                    int slen = libc::snprintf(&spr_buf, 80, "Cannot spread %s",
-                                              (src_tv.is_null() ? "null" : "undefined"));
-                    HString* msg_str = null;
-                    if (slen > 0 && slen < 80) {
-                        msg_str = intern_string(vm, spr_buf[:slen]);
-                    }
-                    if (msg_str != null) {
-                        TVal msg_val; msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &err_val);
-                } else { return VM_ERROR~; }
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot spread %s",
+                                          (src_tv.is_null() ? "null" : "undefined"),
+                                          ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
                 return (TVal){};
             }
 
@@ -239,23 +226,9 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             }
             if (!has_method) {
                 HString* type_str = typeof_string(vm, &src_tv);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] it_buf;
-                    int it_len = libc::snprintf(&it_buf, types::ERROR_MSG_BUF, "%s is not iterable",
-                                                type_str.get_cstr());
-                    if (it_len > 0 && it_len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, it_buf[:it_len]);
-                        if (msg_str != null) {
-                            TVal msg_val; msg_val.set_string(msg_str);
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                    }
-                    TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &err_val);
-                } else { return VM_ERROR~; }
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not iterable", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
                 return (TVal){};
             }
 
@@ -399,24 +372,11 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
             // null/undefined → TypeError
             if (src_tv.is_null() || src_tv.is_undefined()) {
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[80] spr_buf;
-                    int slen = libc::snprintf(&spr_buf, 80, "Cannot spread %s",
-                                              (src_tv.is_null() ? "null" : "undefined"));
-                    HString* msg_str = null;
-                    if (slen > 0 && slen < 80) {
-                        msg_str = intern_string(vm, spr_buf[:slen]);
-                    }
-                    if (msg_str != null) {
-                        TVal msg_val; msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &err_val);
-                } else { return VM_ERROR~; }
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot spread %s",
+                                          (src_tv.is_null() ? "null" : "undefined"),
+                                          ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
                 return (TVal){};
             }
 
@@ -441,23 +401,9 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             }
             if (!has_method) {
                 HString* type_str = typeof_string(vm, &src_tv);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] it_buf;
-                    int it_len = libc::snprintf(&it_buf, types::ERROR_MSG_BUF, "%s is not iterable",
-                                                type_str.get_cstr());
-                    if (it_len > 0 && it_len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, it_buf[:it_len]);
-                        if (msg_str != null) {
-                            TVal msg_val; msg_val.set_string(msg_str);
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                    }
-                    TVal err_val; err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &err_val);
-                } else { return VM_ERROR~; }
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not iterable", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
                 return (TVal){};
             }
 

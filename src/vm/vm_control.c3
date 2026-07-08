@@ -483,26 +483,9 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             // Throw TypeError if the value in register A is null or undefined.
             // Used for object destructuring pattern null/undefined check.
             if (ra.is_null() || ra.is_undefined()) {
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF,
-                        "Cannot destructure '%s'",
-                        (ra.is_null() ? "null" : "undefined"));
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_tv;
-                    err_tv.set_object(err);
-                    if (!vm_throw_value(vm, err_tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_tv);
-                    }
-                }
+                vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot destructure '%s'",
+                                    (ra.is_null() ? "null" : "undefined"),
+                                    ds.act, &ds.curr_pc, &ds.needs_restart);
             }
             return (TVal){};
         }

@@ -573,14 +573,9 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     TVal tresult = vm.heap.call_fn(vm, thr_method, &targs, 1, itv);
                     if (vm_check_call_fn_error(vm)) return VM_ERROR~;
                     if (!tresult.is_object() || tresult.get_heapptr() == null) {
-                        HObject*? er = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try e = er) {
-                            e.prototype = vm.heap.type_err_proto;
-                            HString* ms = intern_string(vm, "IteratorResult is not an object"); TVal mt; mt.set_string(ms);
-                            HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e.put_prop(mk, mt, hobject::PROP_FLAGS_WEC);
-                            TVal ev; ev.set_object(e);
-                            if (!vm_throw_value(vm, ev, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &ev);
-                        } else { return VM_ERROR~; }
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "IteratorResult is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
                         ds.needs_restart = true; break;
                     }
                     HObject* tro = (HObject*)tresult.get_heapptr();
@@ -633,14 +628,9 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     TVal rresult = vm.heap.call_fn(vm, ret_method, &rargs, 1, itv2);
                     if (vm_check_call_fn_error(vm)) return VM_ERROR~;
                     if (!rresult.is_object() || rresult.get_heapptr() == null) {
-                        HObject*? er2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try e2 = er2) {
-                            e2.prototype = vm.heap.type_err_proto;
-                            HString* ms2 = intern_string(vm, "IteratorResult is not an object"); TVal mt2; mt2.set_string(ms2);
-                            HString* mk2 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e2.put_prop(mk2, mt2, hobject::PROP_FLAGS_WEC);
-                            TVal ev2; ev2.set_object(e2);
-                            if (!vm_throw_value(vm, ev2, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &ev2);
-                        } else { return VM_ERROR~; }
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "IteratorResult is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
                         ds.needs_restart = true; break;
                     }
                     HObject* rro2 = (HObject*)rresult.get_heapptr();
@@ -683,20 +673,9 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 if (iter_sym == null) iter_sym = builtins::ensure_iterator_symbol(vm.heap);
                 if (iter_sym == null) {
                     HString* tstr = typeof_string(vm, &iterable_val);
-                    HObject*? er3 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try e3 = er3) {
-                        e3.prototype = vm.heap.type_err_proto;
-                        char[128] buf; int bl = libc::snprintf(&buf, 128, "%s is not iterable", tstr.get_cstr());
-                        if (bl > 0 && bl < 128) {
-                            HString* ms3 = intern_string(vm, buf[:bl]);
-                            if (ms3 != null) {
-                                TVal mt3; mt3.set_string(ms3);
-                                HString* mk3 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e3.put_prop(mk3, mt3, hobject::PROP_FLAGS_WEC);
-                            }
-                        }
-                        TVal ev3; ev3.set_object(e3);
-                        if (!vm_throw_value(vm, ev3, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &ev3);
-                    } else { return VM_ERROR~; }
+                    if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not iterable", tstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
                     ds.needs_restart = true; break;
                 }
                 TVal iter_method; bool has_method = false;
@@ -716,20 +695,9 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 }
                 if (!has_method) {
                     HString* tstr2 = typeof_string(vm, &iterable_val);
-                    HObject*? er4 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try e4 = er4) {
-                        e4.prototype = vm.heap.type_err_proto;
-                        char[128] buf2; int bl2 = libc::snprintf(&buf2, 128, "%s is not iterable", tstr2.get_cstr());
-                        if (bl2 > 0 && bl2 < 128) {
-                            HString* ms4 = intern_string(vm, buf2[:bl2]);
-                            if (ms4 != null) {
-                                TVal mt4; mt4.set_string(ms4);
-                                HString* mk4 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e4.put_prop(mk4, mt4, hobject::PROP_FLAGS_WEC);
-                            }
-                        }
-                        TVal ev4; ev4.set_object(e4);
-                        if (!vm_throw_value(vm, ev4, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &ev4);
-                    } else { return VM_ERROR~; }
+                    if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not iterable", tstr2.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
                     ds.needs_restart = true; break;
                 }
                 TVal itv3 = vm.heap.call_fn(vm, iter_method, null, 0, iterable_val);
@@ -750,14 +718,9 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 TVal nres = vm.heap.call_fn(vm, nm, &nargs, 1, itv4);
                 if (vm_check_call_fn_error(vm)) return VM_ERROR~;
                 if (!nres.is_object() || nres.get_heapptr() == null) {
-                    HObject*? er5 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try e5 = er5) {
-                        e5.prototype = vm.heap.type_err_proto;
-                        HString* ms5 = intern_string(vm, "IteratorResult is not an object"); TVal mt5; mt5.set_string(ms5);
-                        HString* mk5 = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE]; e5.put_prop(mk5, mt5, hobject::PROP_FLAGS_WEC);
-                        TVal ev5; ev5.set_object(e5);
-                        if (!vm_throw_value(vm, ev5, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &ev5);
-                    } else { return VM_ERROR~; }
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, "IteratorResult is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
                     ds.needs_restart = true; break;
                 }
                 HObject* nro = (HObject*)nres.get_heapptr();

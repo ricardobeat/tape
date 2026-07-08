@@ -2,6 +2,10 @@ module duktape::vm;
 
 import duktape::types;
 import duktape::bytecode;
+import duktape::hobject;
+import duktape::hstring;
+import duktape::heap;
+import libc;
 
 // ============================================================================
 // Catcher chain — helper functions
@@ -119,6 +123,55 @@ fn TVal? vm_uncaught_error(Vm* vm, TVal* err_val) {
     vm.heap.tval_copy_ref(&vm.heap.error_value, err_val);
     vm.heap.tval_copy_ref(&vm.return_val, err_val);
     return VM_ERROR~;
+}
+
+/// Create and throw an error object with the given prototype and message.
+/// Returns true if a catcher caught the error (caller continues execution).
+/// Returns false if uncaught (caller should `return VM_ERROR~`).
+/// On allocation failure, also returns false.
+fn bool vm_throw_error(Vm* vm, HObject* proto, char[] msg, Activation* act,
+                       Instruction** curr_pc, bool* needs_restart) {
+    HObject*? err_obj = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_obj) {
+        err.prototype = proto;
+        if (msg.len > 0) {
+            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+            HString* msg_str = intern_string(vm, msg);
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+        }
+        TVal err_val;
+        err_val.set_object(err);
+        if (vm_throw_value(vm, err_val, act, curr_pc, needs_restart)) {
+            return true;
+        }
+        (void)vm_uncaught_error(vm, &err_val);
+        return false;
+    }
+    return false;
+}
+
+/// Create and throw an error with a single %s formatted message.
+fn bool vm_throw_error_fmt(Vm* vm, HObject* proto, char* fmt, char* arg,
+                           Activation* act, Instruction** curr_pc, bool* needs_restart) {
+    char[types::ERROR_MSG_BUF] buf;
+    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, (ZString)fmt, arg);
+    if (len > 0 && len < types::ERROR_MSG_BUF) {
+        return vm_throw_error(vm, proto, buf[:len], act, curr_pc, needs_restart);
+    }
+    return vm_throw_error(vm, proto, buf[:0], act, curr_pc, needs_restart);
+}
+
+/// Create and throw an error with two %s formatted arguments.
+fn bool vm_throw_error_fmt2(Vm* vm, HObject* proto, char* fmt, char* arg1, char* arg2,
+                            Activation* act, Instruction** curr_pc, bool* needs_restart) {
+    char[types::ERROR_MSG_BUF] buf;
+    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, (ZString)fmt, arg1, arg2);
+    if (len > 0 && len < types::ERROR_MSG_BUF) {
+        return vm_throw_error(vm, proto, buf[:len], act, curr_pc, needs_restart);
+    }
+    return vm_throw_error(vm, proto, buf[:0], act, curr_pc, needs_restart);
 }
 
 /// Helper to get index from valstack base to a pointer

@@ -78,21 +78,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_bottom = ds.regs_base + frame_start;
 
                     if (vm.activation_count >= MAX_CALLS) {
-                        {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.range_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
-                                TVal msg_tv; msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val; err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
-                                return VM_ERROR~;
-                            }
+                        if (!vm_throw_error(vm, vm.heap.range_err_proto, "Maximum call stack size exceeded", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
                         }
                         return (TVal){};
                     }
@@ -331,25 +318,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (!func_val.is_object()) {
                 // TypeError: value is not a function
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a function", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -360,25 +329,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (hobj == null || !hobj.is_callable()) {
                 // TypeError: object is not callable (e.g., a non-function object)
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err2 = err_raw2) {
-                    err2.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val2;
-                    err_val2.set_object(err2);
-                    if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val2);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a function", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -522,25 +473,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 } else {
                     // Callable object with no compiled function and no builtin index: error
                     HString* type_str = typeof_string(vm, &func_val);
-                    HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err2 = err_raw2) {
-                        err2.prototype = vm.heap.type_err_proto;
-                        char[types::ERROR_MSG_BUF] buf;
-                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a function",
-                                                 type_str.get_cstr());
-                        if (len > 0 && len < types::ERROR_MSG_BUF) {
-                            HString* msg_str = intern_string(vm, buf[:len]);
-                            TVal msg_val;
-                            msg_val.set_string(msg_str);
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                        TVal err_val2;
-                        err_val2.set_object(err2);
-                        if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val2);
-                        }
-                    } else {
+                    if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a function", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return VM_ERROR~;
                     }
                     return (TVal){};
@@ -608,21 +541,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
 
                     if (vm.activation_count >= MAX_CALLS) {
                         gs.state = GEN_SUSPENDED_YIELD;
-                        {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.range_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
-                                TVal msg_tv; msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val; err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
-                                return VM_ERROR~;
-                            }
+                        if (!vm_throw_error(vm, vm.heap.range_err_proto, "Maximum call stack size exceeded", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
                         }
                         return (TVal){};
                     }
@@ -809,21 +729,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_bottom = ds.regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
-                {
-                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = vm.heap.range_err_proto;
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
-                        TVal msg_tv; msg_tv.set_string(msg_val);
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                        TVal err_val; err_val.set_object(err);
-                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val);
-                        }
-                    } else {
-                        return VM_ERROR~;
-                    }
+                if (!vm_throw_error(vm, vm.heap.range_err_proto, "Maximum call stack size exceeded", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
                 }
                 return (TVal){};
             }
@@ -1059,25 +966,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (!super_val.is_object()) {
                 // TypeError: superclass is not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                }
+                vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart);
                 return (TVal){};
             }
 
@@ -1085,25 +974,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (super_hobj == null || !super_hobj.is_callable() || !super_hobj.is_constructable()) {
                 // TypeError: not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
-                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err2 = err_raw2) {
-                    err2.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len2 = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                              type_str.get_cstr());
-                    if (len2 > 0 && len2 < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len2]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val2;
-                    err_val2.set_object(err2);
-                    if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val2);
-                    }
-                }
+                vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart);
                 return (TVal){};
             }
 
@@ -1158,21 +1029,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_bottom = ds.regs_base + frame_start;
 
             if (vm.activation_count >= MAX_CALLS) {
-                {
-                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = vm.heap.range_err_proto;
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
-                        TVal msg_tv; msg_tv.set_string(msg_val);
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                        TVal err_val; err_val.set_object(err);
-                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val);
-                        }
-                    } else {
-                        return VM_ERROR~;
-                    }
+                if (!vm_throw_error(vm, vm.heap.range_err_proto, "Maximum call stack size exceeded", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
                 }
                 return (TVal){};
             }
@@ -1327,25 +1185,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 HObject* ctor_proto = lightfunc_get_proto(vm, fn_idx);
                 if (ctor_proto == null) {
                     HString* type_str = typeof_string(vm, &func_val);
-                    HObject*? err_raw_nc = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err_nc = err_raw_nc) {
-                        err_nc.prototype = vm.heap.type_err_proto;
-                        char[types::ERROR_MSG_BUF] buf;
-                        int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                                 type_str.get_cstr());
-                        if (len > 0 && len < types::ERROR_MSG_BUF) {
-                            HString* msg_str = intern_string(vm, buf[:len]);
-                            TVal msg_val;
-                            msg_val.set_string(msg_str);
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err_nc.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                        TVal err_val_nc;
-                        err_val_nc.set_object(err_nc);
-                        if (!vm_throw_value(vm, err_val_nc, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val_nc);
-                        }
-                    } else {
+                    if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return VM_ERROR~;
                     }
                     return (TVal){};
@@ -1377,25 +1217,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (!func_val.is_object()) {
                 // TypeError: value is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -1405,25 +1227,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (hobj == null || !hobj.is_callable() || !hobj.is_constructable()) {
                 // TypeError: object is not a constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err2 = err_raw2) {
-                    err2.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val2;
-                    err_val2.set_object(err2);
-                    if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val2);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -1496,25 +1300,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 // Object claims to be callable but has no compiled function
                 // and no builtin index — treat as non-constructor
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw2 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err2 = err_raw2) {
-                    err2.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err2.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val2;
-                    err_val2.set_object(err2);
-                    if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val2);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -1525,25 +1311,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             // Arrow functions cannot be used as constructors (ES6 §14.2.2)
             if (target.is_arrow()) {
                 HString* type_str = typeof_string(vm, &func_val);
-                HObject*? err_raw3 = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err3 = err_raw3) {
-                    err3.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not a constructor",
-                                             type_str.get_cstr());
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err3.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val3;
-                    err_val3.set_object(err3);
-                    if (!vm_throw_value(vm, err_val3, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val3);
-                    }
-                } else {
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 return (TVal){};
@@ -1585,21 +1353,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             func_slot = ds.regs_base + callee_reg;
 
             if (vm.activation_count >= MAX_CALLS) {
-                {
-                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = vm.heap.range_err_proto;
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
-                        TVal msg_tv; msg_tv.set_string(msg_val);
-                        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                        TVal err_val; err_val.set_object(err);
-                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val);
-                        }
-                    } else {
-                        return VM_ERROR~;
-                    }
+                if (!vm_throw_error(vm, vm.heap.range_err_proto, "Maximum call stack size exceeded", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
                 }
                 return (TVal){};
             }

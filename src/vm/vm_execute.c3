@@ -1483,20 +1483,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             if (!rval.is_object()) {
                 // TypeError: right-hand side must be an object
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not an object");
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_val);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Right-hand side of instanceof is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 continue;
@@ -1505,20 +1492,7 @@ fn TVal? Vm.run(Vm* vm) {
             HObject* rfunc = (HObject*)rval.get_heapptr();
             if (rfunc == null || !rfunc.is_callable()) {
                 // TypeError: right-hand side must be callable
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                    HString* msg_val = intern_string(vm, "Right-hand side of instanceof is not callable");
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_val);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Right-hand side of instanceof is not callable", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 continue;
@@ -1570,20 +1544,7 @@ fn TVal? Vm.run(Vm* vm) {
                 // Object, throw a TypeError exception. The spec does NOT
                 // allow the silent-false fallback — the result must always
                 // be defined (or an abrupt completion).
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                    HString* msg_val = intern_string(vm, "'prototype' property is not an object");
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_val);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "'prototype' property is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 continue;
@@ -1607,20 +1568,7 @@ fn TVal? Vm.run(Vm* vm) {
             // (compiler can emit IN r3, r3, r4 when result overwrites the key).
             if (!rc.is_object()) {
                 ra.set_boolean(false);
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                    HString* msg_val = intern_string(vm, "in requires an object");
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_val);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                } else {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "in requires an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
                 continue;
@@ -2030,28 +1978,10 @@ fn TVal? Vm.run(Vm* vm) {
                             TVal v_raw = cur.bindings.prop_values()[idx];
                             if (env::is_tdz_sentinel(&v_raw)) {
                                 HString* name_hstr = (HString*)key;
-                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                                if (try err = err_raw) {
-                                    err.prototype = vm.heap.ref_err_proto;
-                                    char[types::ERROR_MSG_BUF] buf;
-                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
-                                                             name_hstr.get_cstr());
-                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                        HString* msg_str = intern_string(vm, buf[:len]);
-                                        TVal msg_val;
-                                        msg_val.set_string(msg_str);
-                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                                    }
-                                    TVal err_val;
-                                    err_val.set_object(err);
-                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                        return vm_uncaught_error(vm, &err_val);
-                                    }
-                                    found = true; // prevent duplicate error
-                                } else {
+                                if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "Cannot access '%s' before initialization", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return VM_ERROR~;
                                 }
+                                found = true; // prevent duplicate error
                             } else if (cur.bindings.get_prop_flags((uint)idx).is_accessor) {
                                 // Accessor property: invoke getter
                                 TVal getter = hobject::hobject_access_getter(v_raw);
@@ -2140,25 +2070,7 @@ fn TVal? Vm.run(Vm* vm) {
                     } else {
                         // ReferenceError: variable not declared
                         HString* name_hstr = (HString*)key;
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.ref_err_proto;
-                            char[types::ERROR_MSG_BUF] buf;
-                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "%s is not defined",
-                                                     name_hstr.get_cstr());
-                            if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                HString* msg_str = intern_string(vm, buf[:len]);
-                                TVal msg_val;
-                                msg_val.set_string(msg_str);
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "%s is not defined", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                     }
@@ -2230,25 +2142,7 @@ fn TVal? Vm.run(Vm* vm) {
                             if (env::is_tdz_sentinel(&v_raw)) {
                                 // TDZ: throw ReferenceError (ES6 behavior)
                                 HString* name_hstr = (HString*)key;
-                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                                if (try err = err_raw) {
-                                    err.prototype = vm.heap.ref_err_proto;
-                                    char[types::ERROR_MSG_BUF] buf;
-                                    int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot access '%s' before initialization",
-                                                             name_hstr.get_cstr());
-                                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                        HString* msg_str = intern_string(vm, buf[:len]);
-                                        TVal msg_val;
-                                        msg_val.set_string(msg_str);
-                                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                                    }
-                                    TVal err_val;
-                                    err_val.set_object(err);
-                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                        return vm_uncaught_error(vm, &err_val);
-                                    }
-                                } else {
+                                if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "Cannot access '%s' before initialization", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return VM_ERROR~;
                                 }
                             } else if (cur.bindings.get_prop_flags((uint)idx).is_accessor) {
@@ -2361,25 +2255,7 @@ fn TVal? Vm.run(Vm* vm) {
                     if (put_result == -1) {
                         // Const violation — throw TypeError
                         HString* name_hstr = (HString*)key;
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            char[types::ERROR_MSG_BUF] buf;
-                            int len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Assignment to constant variable '%s'",
-                                                     name_hstr.get_cstr());
-                            if (len > 0 && len < types::ERROR_MSG_BUF) {
-                                HString* msg_str = intern_string(vm, buf[:len]);
-                                TVal msg_val;
-                                msg_val.set_string(msg_str);
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Assignment to constant variable '%s'", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         break;

@@ -77,20 +77,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     // Strict-only engine: always throws.
                     if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
                         && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            HString* emsg = intern_string(vm, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode");
-                            if (emsg != null) {
-                                TVal emsg_val; emsg_val.set_string(emsg);
-                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val; err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         return (TVal){};
@@ -99,20 +86,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION) {
                         HString* key_hstr = (HString*)key;
                         if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* emsg = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                                if (emsg != null) {
-                                    TVal emsg_val; emsg_val.set_string(emsg);
-                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val; err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
                             return (TVal){};
@@ -216,32 +190,18 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (rc.is_string()) {
                     name_hstr = (HString*)rc.get_heapptr();
                 }
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len;
-                    if (name_hstr != null) {
-                        len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
-                                             (rb.is_null() ? "null" : "undefined"),
-                                             name_hstr.get_cstr());
-                    } else {
-                        len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s",
-                                             (rb.is_null() ? "null" : "undefined"));
-                    }
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
+                char[types::ERROR_MSG_BUF] msg_buf;
+                int msg_len;
+                if (name_hstr != null) {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
+                                              (rb.is_null() ? "null" : "undefined"),
+                                              name_hstr.get_cstr());
                 } else {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot read properties of %s",
+                                              (rb.is_null() ? "null" : "undefined"));
+                }
+                char[] msg_slice = (msg_len > 0 && msg_len < types::ERROR_MSG_BUF) ? msg_buf[:msg_len] : msg_buf[:0];
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, msg_slice, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
             } else if (rb.is_string()) {
@@ -409,20 +369,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         } else { ra.set_undefined(); }
                     } else if (key.equals("caller") || key.equals("arguments")) {
                         // ES5 strict mode: accessing .caller and .arguments throws TypeError
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            HString* msg_val = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                            TVal msg_tv;
-                            msg_tv.set_string(msg_val);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                     } else if (vm.heap.function_proto != null) {
@@ -484,20 +431,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         // Strict-only engine: always throws.
                         if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
                             && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* emsg = intern_string(vm, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode");
-                                if (emsg != null) {
-                                    TVal emsg_val; emsg_val.set_string(emsg);
-                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val; err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
                             return (TVal){};
@@ -505,20 +439,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         // ES5 strict mode: function.caller and function.arguments throw TypeError
                         if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION
                             && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* emsg = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                                if (emsg != null) {
-                                    TVal emsg_val; emsg_val.set_string(emsg);
-                                    HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                                }
-                                TVal err_val; err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
                             return (TVal){};
@@ -598,32 +519,18 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         ra.set_undefined();
                     }
                 } else if (rb.is_null() || rb.is_undefined()) {
-                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = vm.heap.type_err_proto;
-                        char[types::ERROR_MSG_BUF] buf;
-                        int len;
-                        if (key_hstr != null) {
-                            len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
-                                                 (rb.is_null() ? "null" : "undefined"),
-                                                 key_hstr.get_cstr());
-                        } else {
-                            len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot read properties of %s",
-                                                 (rb.is_null() ? "null" : "undefined"));
-                        }
-                        if (len > 0 && len < types::ERROR_MSG_BUF) {
-                            HString* msg_str = intern_string(vm, buf[:len]);
-                            TVal msg_val;
-                            msg_val.set_string(msg_str);
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                        TVal err_val;
-                        err_val.set_object(err);
-                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val);
-                        }
+                    char[types::ERROR_MSG_BUF] msg_buf;
+                    int msg_len;
+                    if (key_hstr != null) {
+                        msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot read properties of %s (reading '%s')",
+                                                  (rb.is_null() ? "null" : "undefined"),
+                                                  key_hstr.get_cstr());
                     } else {
+                        msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot read properties of %s",
+                                                  (rb.is_null() ? "null" : "undefined"));
+                    }
+                    char[] msg_slice = (msg_len > 0 && msg_len < types::ERROR_MSG_BUF) ? msg_buf[:msg_len] : msg_buf[:0];
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, msg_slice, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return VM_ERROR~;
                     }
                 } else if (rb.is_string()) {
@@ -749,20 +656,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             } else { ra.set_undefined(); }
                         } else if (key_hstr.equals("caller") || key_hstr.equals("arguments")) {
                             // ES5 strict mode: accessing .caller and .arguments throws TypeError
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                                TVal msg_tv;
-                                msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
                         } else if (vm.heap.function_proto != null) {
@@ -1843,40 +1737,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         new_len = 0; // placeholder, will be overwritten by put_prop
                     }
                     if (!length_valid) {
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.range_err_proto;
-                            HString* emsg = intern_string(vm, "Invalid array length");
-                            if (emsg != null) {
-                                TVal emsg_val; emsg_val.set_string(emsg);
-                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val; err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error(vm, vm.heap.range_err_proto, "Invalid array length", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         return (TVal){};
                     }
                     if (rc.is_undefined()) {
                         // TypeError: undefined is not a valid length
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            HString* emsg = intern_string(vm, "Invalid array length: undefined");
-                            if (emsg != null) {
-                                TVal emsg_val; emsg_val.set_string(emsg);
-                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val; err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "Invalid array length: undefined", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         return (TVal){};
@@ -1968,20 +1836,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             }
                         } else if (!exist_flags.writable) {
                             // Strict-only engine: non-writable property assignment always throws.
-                            HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                            if (try err = err_raw) {
-                                err.prototype = vm.heap.type_err_proto;
-                                HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                HString* msg_val = intern_string(vm, "Cannot assign to read only property");
-                                TVal msg_tv;
-                                msg_tv.set_string(msg_val);
-                                err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                TVal err_val;
-                                err_val.set_object(err);
-                                if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &err_val);
-                                }
-                            } else {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot assign to read only property", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
                             return (TVal){};
@@ -2057,20 +1912,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             } else {
                                 // ES5 §9.1.2 step 5b: if O is not extensible, throw TypeError.
                                 // Strict-only engine: always throws.
-                                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                                if (try err = err_raw) {
-                                    err.prototype = vm.heap.type_err_proto;
-                                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                    HString* msg_val = intern_string(vm, "Cannot add property to non-extensible object");
-                                    TVal msg_tv;
-                                    msg_tv.set_string(msg_val);
-                                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                                    TVal err_val;
-                                    err_val.set_object(err);
-                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                        return vm_uncaught_error(vm, &err_val);
-                                    }
-                                } else {
+                                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot add property to non-extensible object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return VM_ERROR~;
                                 }
                             }
@@ -2083,32 +1925,18 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (rb.is_string()) {
                     name_hstr = (HString*)rb.get_heapptr();
                 }
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    char[types::ERROR_MSG_BUF] buf;
-                    int len;
-                    if (name_hstr != null) {
-                        len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot set properties of %s (setting '%s')",
-                                             (ra.is_null() ? "null" : "undefined"),
-                                             name_hstr.get_cstr());
-                    } else {
-                        len = libc::snprintf(&buf, types::ERROR_MSG_BUF, "Cannot set properties of %s",
-                                             (ra.is_null() ? "null" : "undefined"));
-                    }
-                    if (len > 0 && len < types::ERROR_MSG_BUF) {
-                        HString* msg_str = intern_string(vm, buf[:len]);
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
+                char[types::ERROR_MSG_BUF] msg_buf;
+                int msg_len;
+                if (name_hstr != null) {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot set properties of %s (setting '%s')",
+                                              (ra.is_null() ? "null" : "undefined"),
+                                              name_hstr.get_cstr());
                 } else {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot set properties of %s",
+                                              (ra.is_null() ? "null" : "undefined"));
+                }
+                char[] msg_slice = (msg_len > 0 && msg_len < types::ERROR_MSG_BUF) ? msg_buf[:msg_len] : msg_buf[:0];
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, msg_slice, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
             }
@@ -2124,23 +1952,10 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             // for null/undefined. This must run BEFORE the value check,
             // because the runtime semantics require ToObject on the base.
             if (rb.is_null() || rb.is_undefined()) {
-                HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = vm.heap.type_err_proto;
-                    HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                    HString* msg_val = intern_string(vm, "Cannot delete property of null or undefined");
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_val);
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                    TVal err_val;
-                    err_val.set_object(err);
-                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &err_val);
-                    }
-                    return (TVal){};
-                } else {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot delete property of null or undefined", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
+                return (TVal){};
             }
 
             ra.set_boolean(true);
@@ -2152,22 +1967,10 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     if (!hobj.es_delete_prop(key)) {
                         ra.set_boolean(false);
                         // Strict-only engine: non-configurable delete always throws.
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            HString* msg_val = intern_string(vm, "Delete failed: property is non-configurable");
-                            TVal msg_tv;
-                            msg_tv.set_string(msg_val);
-                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "Delete failed: property is non-configurable", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
+                        return (TVal){};
                     } else {
                         ra.set_boolean(true);
                     }
