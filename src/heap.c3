@@ -226,6 +226,7 @@ struct Heap {
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
     HObject* typedarray_proto; // Shared %TypedArray%.prototype
     HObject* arraybuffer_proto; // ArrayBuffer.prototype
+    HObject* dataview_proto; // DataView.prototype
 
     // Generator resume state (set by .next()/.throw()/.return() builtins,
     // read by the VM CALL handler and YIELD/RET opcodes).
@@ -1079,6 +1080,7 @@ fn void Heap.reset(&self) {
     self.iterator_proto       = null;
     self.typedarray_proto = null;
     self.arraybuffer_proto = null;
+    self.dataview_proto = null;
 
     // Clear builtin string cache
     for (usz i = 0; i < STRS_CACHE_SIZE; i++) {
@@ -1747,6 +1749,7 @@ fn void Heap.mark_roots(&self) {
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
     if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
     if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
+    if (self.dataview_proto != null) { self.mark_hobject(self.dataview_proto); }
 
     // Scan the VM value stack as a GC root — all live TVal slots
     // (from base to top) may reference heap objects or strings.
@@ -1970,21 +1973,21 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check built-in constructor prototypes
-    ZString[19] ctor_names = {
+    ZString[20] ctor_names = {
         "object_proto", "bool_proto", "string_proto", "number_proto",
         "array_proto", "function_proto", "date_proto", "regexp_proto",
         "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
         "symbol_proto", "promise_proto", "generator_proto", "generator_func_proto",
-        "iterator_proto", "typedarray_proto", "arraybuffer_proto"
+        "iterator_proto", "typedarray_proto", "arraybuffer_proto", "dataview_proto"
     };
-    HObject*[19] ctor_protos = {
+    HObject*[20] ctor_protos = {
         self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
         self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
         self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
         self.symbol_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
-        self.iterator_proto, self.typedarray_proto, self.arraybuffer_proto
+        self.iterator_proto, self.typedarray_proto, self.arraybuffer_proto, self.dataview_proto
     };
-    for (uint i = 0; i < 19; i++) {
+    for (uint i = 0; i < 20; i++) {
         if (ctor_protos[i] != null) {
             if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
             checked++;

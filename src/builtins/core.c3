@@ -249,7 +249,28 @@ const uint BUILTIN_TYPEDARRAY_PROTO_BYTEOFFSET_GET     = 358;
 const uint BUILTIN_TYPEDARRAY_PROTO_BUFFER_GET         = 359;
 const uint BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET    = 360;
 
-const uint BUILTIN_COUNT                       = 361;
+const uint BUILTIN_DATAVIEW                           = 361;
+const uint BUILTIN_DATAVIEW_PROTO_BUFFER_GET          = 362;
+const uint BUILTIN_DATAVIEW_PROTO_BYTELENGTH_GET      = 363;
+const uint BUILTIN_DATAVIEW_PROTO_BYTEOFFSET_GET      = 364;
+const uint BUILTIN_DATAVIEW_GET_INT8                  = 365;
+const uint BUILTIN_DATAVIEW_GET_UINT8                 = 366;
+const uint BUILTIN_DATAVIEW_GET_INT16                 = 367;
+const uint BUILTIN_DATAVIEW_GET_UINT16                = 368;
+const uint BUILTIN_DATAVIEW_GET_INT32                 = 369;
+const uint BUILTIN_DATAVIEW_GET_UINT32                = 370;
+const uint BUILTIN_DATAVIEW_GET_FLOAT32               = 371;
+const uint BUILTIN_DATAVIEW_GET_FLOAT64               = 372;
+const uint BUILTIN_DATAVIEW_SET_INT8                  = 373;
+const uint BUILTIN_DATAVIEW_SET_UINT8                 = 374;
+const uint BUILTIN_DATAVIEW_SET_INT16                 = 375;
+const uint BUILTIN_DATAVIEW_SET_UINT16                = 376;
+const uint BUILTIN_DATAVIEW_SET_INT32                 = 377;
+const uint BUILTIN_DATAVIEW_SET_UINT32                = 378;
+const uint BUILTIN_DATAVIEW_SET_FLOAT32               = 379;
+const uint BUILTIN_DATAVIEW_SET_FLOAT64               = 380;
+
+const uint BUILTIN_COUNT                       = 381;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2422,6 +2443,28 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_TYPEDARRAY_PROTO_BYTEOFFSET_GET] = &builtin_typedarray_proto_byteoffset_get,
     [BUILTIN_TYPEDARRAY_PROTO_BUFFER_GET] = &builtin_typedarray_proto_buffer_get,
     [BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET] = &builtin_typedarray_proto_tostringtag_get,
+
+    // DataView constructor/prototype (plan 049 stage 3)
+    [BUILTIN_DATAVIEW] = &builtin_dataview,
+    [BUILTIN_DATAVIEW_PROTO_BUFFER_GET] = &builtin_dataview_proto_buffer_get,
+    [BUILTIN_DATAVIEW_PROTO_BYTELENGTH_GET] = &builtin_dataview_proto_bytelength_get,
+    [BUILTIN_DATAVIEW_PROTO_BYTEOFFSET_GET] = &builtin_dataview_proto_byteoffset_get,
+    [BUILTIN_DATAVIEW_GET_INT8] = &builtin_dataview_get_int8,
+    [BUILTIN_DATAVIEW_GET_UINT8] = &builtin_dataview_get_uint8,
+    [BUILTIN_DATAVIEW_GET_INT16] = &builtin_dataview_get_int16,
+    [BUILTIN_DATAVIEW_GET_UINT16] = &builtin_dataview_get_uint16,
+    [BUILTIN_DATAVIEW_GET_INT32] = &builtin_dataview_get_int32,
+    [BUILTIN_DATAVIEW_GET_UINT32] = &builtin_dataview_get_uint32,
+    [BUILTIN_DATAVIEW_GET_FLOAT32] = &builtin_dataview_get_float32,
+    [BUILTIN_DATAVIEW_GET_FLOAT64] = &builtin_dataview_get_float64,
+    [BUILTIN_DATAVIEW_SET_INT8] = &builtin_dataview_set_int8,
+    [BUILTIN_DATAVIEW_SET_UINT8] = &builtin_dataview_set_uint8,
+    [BUILTIN_DATAVIEW_SET_INT16] = &builtin_dataview_set_int16,
+    [BUILTIN_DATAVIEW_SET_UINT16] = &builtin_dataview_set_uint16,
+    [BUILTIN_DATAVIEW_SET_INT32] = &builtin_dataview_set_int32,
+    [BUILTIN_DATAVIEW_SET_UINT32] = &builtin_dataview_set_uint32,
+    [BUILTIN_DATAVIEW_SET_FLOAT32] = &builtin_dataview_set_float32,
+    [BUILTIN_DATAVIEW_SET_FLOAT64] = &builtin_dataview_set_float64,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -2679,6 +2722,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register ArrayBuffer constructor and prototype (plan 049 stage 1)
     if (!register_arraybuffer(global_env, heap)) return false;
+
+    // Register DataView constructor and prototype (plan 049 stage 3)
+    if (!register_dataview(global_env, heap)) return false;
 
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;
