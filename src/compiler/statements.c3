@@ -1181,7 +1181,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             arr_binds[bind_count].has_default = true;
-                                            arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                            arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
                                         }
 
                                         bind_count++;
@@ -1248,7 +1248,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                 if (self.match(TokenType.ASSIGN)) {
                                                     arr_binds[bind_count].has_default = true;
-                                                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                                 }
 
                                                 bind_count++;
@@ -1270,7 +1270,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                 if (self.match(TokenType.ASSIGN)) {
                                                     arr_binds[bind_count].has_default = true;
-                                                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                                 }
 
                                                 bind_count++;
@@ -1369,7 +1369,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         arr_binds[bind_count].has_default = true;
-                                        arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
                                     }
 
                                     bind_count++;
@@ -1419,7 +1419,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 arr_binds[bind_count].has_default = true;
-                                                arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                             }
 
                                             bind_count++;
@@ -1440,7 +1440,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 arr_binds[bind_count].has_default = true;
-                                                arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                             }
 
                                             bind_count++;
@@ -1480,7 +1480,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     arr_binds[bind_count].has_default = true;
-                                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
                                 }
 
                                 bind_count++;
@@ -1544,7 +1544,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 obj_binds[bind_count].has_default = true;
-                                                obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(elem_tok.str_value)!;
                                             }
 
                                             bind_count++;
@@ -1589,7 +1589,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                     if (self.match(TokenType.ASSIGN)) {
                                                         obj_binds[bind_count].has_default = true;
-                                                        obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                                     }
 
                                                     bind_count++;
@@ -1607,7 +1607,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                     if (self.match(TokenType.ASSIGN)) {
                                                         obj_binds[bind_count].has_default = true;
-                                                        obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(inner_prop_tok.str_value)!;
                                                     }
 
                                                     bind_count++;
@@ -1643,7 +1643,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             obj_binds[bind_count].has_default = true;
-                                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                         }
 
                                         bind_count++;
@@ -1660,7 +1660,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         obj_binds[bind_count].has_default = true;
-                                        obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                     }
 
                                     bind_count++;
@@ -2509,7 +2509,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                             if (self.match(TokenType.ASSIGN)) {
                                 fin_binds[fbind_count].has_default = true;
-                                fin_binds[fbind_count].default_val_reg = self.assignment_expr()!;
+                                fin_binds[fbind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
                             }
 
                             fbind_count++;
@@ -3348,7 +3348,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                             if (self.match(TokenType.ASSIGN)) {
                                 arr_binds[bind_count].has_default = true;
-                                arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -3415,7 +3415,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         arr_binds[bind_count].has_default = true;
-                                        arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                     }
 
                                     bind_count++;
@@ -3437,7 +3437,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         arr_binds[bind_count].has_default = true;
-                                        arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                     }
 
                                     bind_count++;
@@ -3535,7 +3535,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                         if (self.match(TokenType.ASSIGN)) {
                             arr_binds[bind_count].has_default = true;
-                            arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
                         }
 
                         bind_count++;
@@ -3592,7 +3592,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     arr_binds[bind_count].has_default = true;
-                                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                 }
 
                                 bind_count++;
@@ -3614,7 +3614,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     arr_binds[bind_count].has_default = true;
-                                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                 }
 
                                 bind_count++;
@@ -3657,7 +3657,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                     if (self.match(TokenType.ASSIGN)) {
                         arr_binds[bind_count].has_default = true;
-                        arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
                     }
 
                     bind_count++;
@@ -3727,7 +3727,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     obj_binds[bind_count].has_default = true;
-                                    obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(elem_tok.str_value)!;
                                 }
 
                                 bind_count++;
@@ -3772,7 +3772,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             obj_binds[bind_count].has_default = true;
-                                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                         }
 
                                         bind_count++;
@@ -3790,7 +3790,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             obj_binds[bind_count].has_default = true;
-                                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(inner_prop_tok.str_value)!;
                                         }
 
                                         bind_count++;
@@ -3826,7 +3826,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                             if (self.match(TokenType.ASSIGN)) {
                                 obj_binds[bind_count].has_default = true;
-                                obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -3843,7 +3843,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                         if (self.match(TokenType.ASSIGN)) {
                             obj_binds[bind_count].has_default = true;
-                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                         }
 
                         bind_count++;
@@ -4660,7 +4660,7 @@ fn void? CompilerContext.emit_bare_forin_destruct_loop(&self, bool is_array_patt
                 arr_binds[bind_count].has_default = false;
                 if (self.match(TokenType.ASSIGN)) {
                     arr_binds[bind_count].has_default = true;
-                    arr_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
                 }
                 bind_count++;
             }
@@ -4685,7 +4685,7 @@ fn void? CompilerContext.emit_bare_forin_destruct_loop(&self, bool is_array_patt
                         obj_binds[bind_count].has_default = false;
                         if (self.match(TokenType.ASSIGN)) {
                             obj_binds[bind_count].has_default = true;
-                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                         }
                         bind_count++;
                     }
@@ -4698,7 +4698,7 @@ fn void? CompilerContext.emit_bare_forin_destruct_loop(&self, bool is_array_patt
                         obj_binds[bind_count].has_default = false;
                         if (self.match(TokenType.ASSIGN)) {
                             obj_binds[bind_count].has_default = true;
-                            obj_binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                         }
                         bind_count++;
                     }

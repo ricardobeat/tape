@@ -211,7 +211,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                     binds[bind_count].has_default = false;
                     if (self.match(TokenType.ASSIGN)) {
                         binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                        binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                     }
                     bind_count++;
                 }
@@ -319,7 +319,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                             // Check for default
                             if (self.match(TokenType.ASSIGN)) {
                                 binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                binds[bind_count].default_val_reg = self.destructuring_default_expr(val_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -398,7 +398,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                                 // Check for default
                                 if (self.match(TokenType.ASSIGN)) {
                                     binds[bind_count].has_default = true;
-                                    binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    binds[bind_count].default_val_reg = self.destructuring_default_expr(nested_bind.str_value)!;
                                 }
 
                                 bind_count++;
@@ -494,7 +494,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                             // Check for default
                             if (self.match(TokenType.ASSIGN)) {
                                 binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -513,7 +513,7 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
                         // Check for default
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                         }
 
                         bind_count++;
@@ -823,7 +823,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                     binds[bind_count].has_default = false;
                     if (self.match(TokenType.ASSIGN)) {
                         binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
+                        binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                     }
                     bind_count++;
                 }
@@ -962,7 +962,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
                             if (self.match(TokenType.ASSIGN)) {
                                 binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                binds[bind_count].default_val_reg = self.destructuring_default_expr(val_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -1058,7 +1058,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     binds[bind_count].has_default = true;
-                                    binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                    binds[bind_count].default_val_reg = self.destructuring_default_expr(nested_bind.str_value)!;
                                 }
 
                                 bind_count++;
@@ -1186,7 +1186,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
                             if (self.match(TokenType.ASSIGN)) {
                                 binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.assignment_expr()!;
+                                binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                             }
 
                             bind_count++;
@@ -1211,7 +1211,7 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
 
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                         }
 
                         bind_count++;
@@ -1599,7 +1599,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                         // Check for default
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                         }
 
                         bind_count++;
@@ -1616,7 +1616,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                         // Check for default
                         if (self.match(TokenType.ASSIGN)) {
                             binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.assignment_expr()!;
+                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                         }
 
                         bind_count++;
