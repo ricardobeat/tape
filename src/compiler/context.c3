@@ -1313,6 +1313,10 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_generator = self.is_generator;
     func.flags.is_async = self.is_async;
     func.flags.uses_arguments = self.uses_arguments;
+    // Direct eval must run in the caller's lexical environment: the CALL
+    // paths only set ACT_FLAG_DIRECT_EVAL (which builtin_eval checks) when
+    // this flag is present on the compiled function.
+    func.flags.has_direct_eval = self.has_direct_eval;
 
     // `needs_env` controls whether the CALL fast path allocates a fresh
     // env record + bindings object per call (2 allocations).  We only need
