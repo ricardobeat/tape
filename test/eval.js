@@ -39,10 +39,12 @@ var r5 = eval("1 < 2");
 if (r5 === true) { print("PASS: eval('1<2') === true"); pass++; }
 else { print("FAIL: eval('1<2') expected true"); fail++; }
 
-// --- Test 6: eval with variable declaration (global) ---
+// --- Test 6: eval var does NOT leak (strict-only engine) ---
+// Strict eval installs declarations in a fresh declarative env
+// (ES2015 §18.2.1.3), so eval_x must not become a global binding.
 eval("var eval_x = 42");
-if (eval_x === 42) { print("PASS: global var from eval"); pass++; }
-else { print("FAIL: global var from eval expected 42 got " + eval_x); fail++; }
+if (typeof eval_x === "undefined") { print("PASS: strict eval var does not leak"); pass++; }
+else { print("FAIL: strict eval var leaked, eval_x = " + eval_x); fail++; }
 
 // --- Test 7: eval returns last expression value ---
 var r7 = eval("1; 2; 3");
