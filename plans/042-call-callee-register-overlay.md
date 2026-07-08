@@ -1,4 +1,4 @@
-# Plan 041: CALL callee-frame register overlay
+# Plan 042: CALL callee-frame register overlay
 
 **Status:** Worked around (compiler-side register placement), not resolved.
 **Priority:** Medium — blocks clean compiler register allocation for any

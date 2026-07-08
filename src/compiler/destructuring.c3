@@ -318,9 +318,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             // Now call nested_array.slice(inner_idx)
             uint rest_idx = binds[i].inner_idx;
             ushort callee_reg = self.alloc_reg();
-            if (self.next_reg < callee_reg + 3) {
-                self.next_reg = callee_reg + 3;
-            }
+            self.reserve_call_frame(callee_reg, 1);
 
             ushort slice_key_reg = self.alloc_reg();
             uint slice_key_idx = self.add_string_constant("slice");
@@ -351,9 +349,7 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
             // CALL convention: callee at callee_reg, this at callee_reg+1, args at callee_reg+2..
             ushort callee_reg = self.alloc_reg();
             // Ensure the call area (callee, this, args) is above next_reg
-            if (self.next_reg < callee_reg + 3) {
-                self.next_reg = callee_reg + 3;
-            }
+            self.reserve_call_frame(callee_reg, 1);
 
             // Get "slice" method from rhs
             ushort slice_key_reg = self.alloc_reg();
@@ -1008,10 +1004,10 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
         // packed — the auto allocator would skip a slot after a
         // free, leaving a gap and breaking the layout.
         ushort assign_callee_reg = self.alloc_reg();
-        // Ensure callee+2 is reserved for the rhs argument.
-        if (self.next_reg <= assign_callee_reg + 2) {
-            self.next_reg = assign_callee_reg + 3;
-        }
+        // CALL below is emitted with nargs=2, so the VM reads arg slots at
+        // callee+2 and callee+3 and overlays the callee frame from callee+2.
+        // Reserve both arg slots so neither can be handed to live state.
+        self.reserve_call_frame(assign_callee_reg, 2);
         ushort assign_this_reg = assign_callee_reg + 1;
         ushort rhs_arg_reg = assign_callee_reg + 2;
         // Empty object literal: {}
@@ -1421,9 +1417,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
             // Now call nested_array.slice(inner_idx)
             uint rest_idx = binds[i].inner_idx;
             ushort callee_reg = self.alloc_reg();
-            if (self.next_reg < callee_reg + 3) {
-                self.next_reg = callee_reg + 3;
-            }
+            self.reserve_call_frame(callee_reg, 1);
 
             ushort slice_key_reg = self.alloc_reg();
             uint slice_key_idx = self.add_string_constant("slice");
@@ -1452,9 +1446,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
 
             // CALL convention: callee at callee_reg, this at callee_reg+1, args at callee_reg+2..
             ushort callee_reg = self.alloc_reg();
-            if (self.next_reg < callee_reg + 3) {
-                self.next_reg = callee_reg + 3;
-            }
+            self.reserve_call_frame(callee_reg, 1);
 
             ushort slice_key_reg = self.alloc_reg();
             uint slice_key_idx = self.add_string_constant("slice");
@@ -2179,9 +2171,9 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
         // Use CONTIGUOUS call area: callee, this, arg1 must be in
         // adjacent registers (callee+1 = this, callee+2 = arg1).
         ushort assign_callee_reg = self.alloc_reg();
-        if (self.next_reg <= assign_callee_reg + 2) {
-            self.next_reg = assign_callee_reg + 3;
-        }
+        // CALL below uses nargs=2 (arg slots callee+2, callee+3). Reserve
+        // both so neither is handed to live state. See the twin site above.
+        self.reserve_call_frame(assign_callee_reg, 2);
         ushort assign_this_reg = assign_callee_reg + 1;
         ushort rhs_arg_reg = assign_callee_reg + 2;
         ushort empty_obj_reg = self.alloc_reg();
@@ -2379,9 +2371,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                 ushort push_callee_reg = self.alloc_reg();
                 self.emit_abc(Opcode.LDREG, (uint)push_callee_reg, (uint)push_method_reg, 0);
                 self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 1), (uint)arr_reg, 0);
-                if (self.next_reg < push_callee_reg + 3) {
-                    self.next_reg = push_callee_reg + 3;
-                }
+                self.reserve_call_frame(push_callee_reg, 1);
                 self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 2), (uint)inner_val_reg, 0);
                 self.free_reg(inner_val_reg);
                 self.free_reg(push_method_reg);

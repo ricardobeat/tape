@@ -410,10 +410,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
     for (uint i = 0; i < 64; i++) expected_idx[i] = 0xFFFF;
 
     // Pre-scan: allocate group_regs for rest synthetics before any iterator
-    // setup, so they land below callee_reg and are safe from CALL frame overlay.
+    // setup, so they land below callee_reg and survive the per-iteration CALL
+    // frame overlay (see plan 042/043). alloc_persistent_reg documents that
+    // these registers must outlive the collection-loop calls.
     for (uint di = 0; di < count; di++) {
         if (binds[di].is_synthetic && !binds[di].is_object && binds[di].key_idx == 0xFFFF) {
-            group_regs[di] = self.alloc_reg();
+            group_regs[di] = self.alloc_persistent_reg();
         }
     }
 

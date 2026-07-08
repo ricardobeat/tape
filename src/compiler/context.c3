@@ -554,7 +554,7 @@ fn void CompilerContext.emit_destruct_param_defaults(&self) {
         self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
 
         ushort call_base = self.alloc_reg();
-        if (self.next_reg <= call_base + 1) self.next_reg = call_base + 2;
+        self.reserve_call_frame(call_base, 0);
         self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
         self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
         self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
