@@ -2125,17 +2125,51 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
     builtin_ta_proto_join(ctx);
 }
 
+// ---- %TypedArray% intrinsic abstract constructor ----
+
+/// %TypedArray% abstract constructor (§22.2.1) — always throws TypeError.
+fn void builtin_typedarray_intrinsic(BuiltinContext* ctx) {
+    arraybuffer_throw_type_error(ctx, "Abstract class TypedArray not directly constructable");
+}
+
 // ---- Static: %TypedArray%.of / %TypedArray%.from ----
-// Installed on Int8Array only as a smoke test; remaining 8 ctors are a TODO.
+// Installed on the %TypedArray% intrinsic; inherited by all 9 per-class ctors.
+
+/// Resolve the ObjClass from a TypedArray per-class constructor (this_val).
+/// Returns INT8ARRAY as default if this_val is not a recognisable TA ctor.
+fn hobject::ObjClass ta_ctor_class(BuiltinContext* ctx) {
+    if (!ctx.this_val.is_object() || ctx.this_val.get_heapptr() == null) {
+        return hobject::ObjClass.INT8ARRAY;
+    }
+    HObject* ctor_obj = (HObject*)ctx.this_val.get_heapptr();
+    // Look up the constructor's .prototype and infer class from its first TA instance.
+    // Simpler: map via .name property on the constructor.
+    HString* name_key = builtin_intern_string(ctx.heap, "name");
+    if (name_key == null) return hobject::ObjClass.INT8ARRAY;
+    TVal? name_tv = ctor_obj.get_prop(name_key);
+    if (catch e = name_tv) return hobject::ObjClass.INT8ARRAY;
+    TVal nv = name_tv;
+    if (!nv.is_string() || nv.get_heapptr() == null) return hobject::ObjClass.INT8ARRAY;
+    HString* name_hs = (HString*)nv.get_heapptr();
+    char[] nm = name_hs.get_data();
+    if (nm.len >= 5 && nm[0] == 'I' && nm[1] == 'n' && nm[2] == 't' && nm[3] == '8') return hobject::ObjClass.INT8ARRAY;
+    if (nm.len >= 6 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '8' && nm.len > 5 && nm[5] == 'C') return hobject::ObjClass.UINT8CLAMPEDARRAY;
+    if (nm.len >= 6 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '8') return hobject::ObjClass.UINT8ARRAY;
+    if (nm.len >= 6 && nm[0] == 'I' && nm[1] == 'n' && nm[2] == 't' && nm[3] == '1' && nm[4] == '6') return hobject::ObjClass.INT16ARRAY;
+    if (nm.len >= 7 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '1' && nm[5] == '6') return hobject::ObjClass.UINT16ARRAY;
+    if (nm.len >= 6 && nm[0] == 'I' && nm[1] == 'n' && nm[2] == 't' && nm[3] == '3' && nm[4] == '2') return hobject::ObjClass.INT32ARRAY;
+    if (nm.len >= 7 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '3' && nm[5] == '2') return hobject::ObjClass.UINT32ARRAY;
+    if (nm.len >= 7 && nm[0] == 'F' && nm[1] == 'l' && nm[2] == 'o' && nm[3] == 'a' && nm[4] == 't' && nm[5] == '3' && nm[6] == '2') return hobject::ObjClass.FLOAT32ARRAY;
+    if (nm.len >= 7 && nm[0] == 'F' && nm[1] == 'l' && nm[2] == 'o' && nm[3] == 'a' && nm[4] == 't' && nm[5] == '6' && nm[6] == '4') return hobject::ObjClass.FLOAT64ARRAY;
+    return hobject::ObjClass.INT8ARRAY;
+}
 
 /// %TypedArray%.of(...items) — §23.2.2.2.
-/// Expects to be called on the per-class constructor (ctx.callee_obj).
+/// Installed on %TypedArray% intrinsic; inherited by all 9 per-class ctors.
 fn void builtin_ta_of(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
-    hobject::ObjClass cls = hobject::ObjClass.INT8ARRAY;
+    hobject::ObjClass cls = ta_ctor_class(ctx);
 
-    // For static call Int8Array.of(...), this_val IS Int8Array constructor.
-    // Resolve per-ctor prototype from constructor.prototype so instanceof works.
     HObject* ctor_proto = null;
     if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
         HObject* ctor_obj = (HObject*)ctx.this_val.get_heapptr();
@@ -2152,7 +2186,6 @@ fn void builtin_ta_of(BuiltinContext* ctx) {
     HObject* result = ta_alloc_same_class(ctx, cls, items_count);
     if (result == null) return;
 
-    // Set per-ctor prototype so instanceof Int8Array works.
     if (ctor_proto != null) result.prototype = ctor_proto;
 
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
@@ -2169,7 +2202,7 @@ fn void builtin_ta_of(BuiltinContext* ctx) {
 }
 
 /// %TypedArray%.from(source, mapFn?, thisArg?) — §23.2.2.1.
-/// Installed on Int8Array only; remaining 8 ctors are a TODO.
+/// Installed on %TypedArray% intrinsic; inherited by all 9 per-class ctors.
 fn void builtin_ta_from(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
     if (ctx.argc < 1) {
@@ -2193,9 +2226,8 @@ fn void builtin_ta_from(BuiltinContext* ctx) {
     }
     if (ctx.argc >= 3) map_this = ctx.regs[ctx.base_reg + 2];
 
-    hobject::ObjClass cls = hobject::ObjClass.INT8ARRAY;
+    hobject::ObjClass cls = ta_ctor_class(ctx);
 
-    // For static call Int8Array.from(...), this_val IS Int8Array constructor.
     HObject* ctor_proto = null;
     if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
         HObject* ctor_obj2 = (HObject*)ctx.this_val.get_heapptr();
@@ -2208,7 +2240,7 @@ fn void builtin_ta_from(BuiltinContext* ctx) {
         }
     }
 
-    // Collect values from array-like or iterable (simplified: array-like path).
+    // Collect values from array-like (simplified: no full iterable protocol here).
     HObject* src_obj = null;
     if (source.is_object() && source.get_heapptr() != null) {
         src_obj = (HObject*)source.get_heapptr();
@@ -2375,7 +2407,8 @@ fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn
     (*ctor.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     ctor.flags.callable = true;
     ctor.flags.constructable = true;
-    ctor.prototype = heap.function_proto;
+    // [[Prototype]] of each per-class ctor is the %TypedArray% intrinsic (§22.2.2).
+    ctor.prototype = heap.typedarray_intrinsic != null ? heap.typedarray_intrinsic : heap.function_proto;
 
     // Set .name
     HString* name_key = builtin_intern_string(heap, "name");
@@ -2443,6 +2476,40 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     HObject* proto = proto_raw;
     proto.prototype = heap.object_proto;
     heap.typedarray_proto = proto;
+
+    // Create the %TypedArray% intrinsic abstract constructor (§22.2.1).
+    // Its [[Prototype]] is Function.prototype; its .prototype is typedarray_proto.
+    HObject*? intr_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = intr_raw) return false;
+    HObject* intrinsic = intr_raw;
+    (*intrinsic.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TYPEDARRAY_INTRINSIC;
+    intrinsic.flags.callable = true;
+    intrinsic.flags.constructable = false;
+    intrinsic.prototype = heap.function_proto;
+    heap.typedarray_intrinsic = intrinsic;
+
+    // intrinsic.prototype = typedarray_proto
+    {
+        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal proto_tv;
+        proto_tv.set_object(proto);
+        PropFlags proto_pflags;
+        proto_pflags.writable = false;
+        proto_pflags.enumerable = false;
+        proto_pflags.configurable = false;
+        proto_pflags.is_accessor = false;
+        intrinsic.put_prop(prototype_key, proto_tv, proto_pflags);
+    }
+
+    // typedarray_proto.constructor = intrinsic
+    {
+        HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+        TVal intr_tv;
+        intr_tv.set_object(intrinsic);
+        proto.put_prop(constructor_key, intr_tv, hobject::PROP_FLAGS_WC);
+    }
+
+    set_func_ctor_name_length(intrinsic, heap, "TypedArray", 0);
 
     // Shared prototype accessors (length/byteLength/byteOffset/buffer).
     if (!register_typedarray_accessor(proto, heap, "length", BUILTIN_TYPEDARRAY_PROTO_LENGTH_GET)) return false;
@@ -2531,20 +2598,10 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_ta_ctor(global_env, heap, "Float32Array",            BUILTIN_FLOAT32ARRAY,           proto)) return false;
     if (!register_ta_ctor(global_env, heap, "Float64Array",            BUILTIN_FLOAT64ARRAY,           proto)) return false;
 
-    // Install of/from static methods on Int8Array (smoke-test; TODO: all 9 ctors).
-    {
-        HString* int8_key = builtin_intern_string(heap, "Int8Array");
-        if (int8_key != null) {
-            TVal? ctv = env::env_get(global_env, int8_key);
-            if (try cv = ctv) {
-                if (cv.is_object() && cv.get_heapptr() != null) {
-                    HObject* ctor = (HObject*)cv.get_heapptr();
-                    if (!register_string_proto_method(ctor, heap, "of",   BUILTIN_TA_OF))   return false;
-                    if (!register_string_proto_method(ctor, heap, "from", BUILTIN_TA_FROM)) return false;
-                }
-            }
-        }
-    }
+    // Install of/from on the %TypedArray% intrinsic so all 9 per-class ctors
+    // inherit them via [[Prototype]] chain (§22.2.2.1, §22.2.2.2).
+    if (!register_string_proto_method(intrinsic, heap, "of",   BUILTIN_TA_OF))   return false;
+    if (!register_string_proto_method(intrinsic, heap, "from", BUILTIN_TA_FROM)) return false;
 
     return true;
 }

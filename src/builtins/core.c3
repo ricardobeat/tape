@@ -306,8 +306,9 @@ const uint BUILTIN_TA_PROTO_TO_STRING          = 410;
 const uint BUILTIN_TA_PROTO_TO_LOCALE_STRING   = 411;
 const uint BUILTIN_TA_OF                       = 412;
 const uint BUILTIN_TA_FROM                     = 413;
+const uint BUILTIN_TYPEDARRAY_INTRINSIC        = 414;
 
-const uint BUILTIN_COUNT                       = 414;
+const uint BUILTIN_COUNT                       = 415;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2547,6 +2548,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_TA_PROTO_TO_LOCALE_STRING] = &builtin_ta_proto_toLocaleString,
     [BUILTIN_TA_OF]                    = &builtin_ta_of,
     [BUILTIN_TA_FROM]                  = &builtin_ta_from,
+    [BUILTIN_TYPEDARRAY_INTRINSIC]     = &builtin_typedarray_intrinsic,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

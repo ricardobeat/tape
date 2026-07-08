@@ -144,6 +144,49 @@ const char[] ISCON_HARNESS = "function isConstructor(f){try{var p=new Proxy({},{
 // the hidden global __detachArrayBuffer (see src/builtins/arraybuffer.c3).
 const char[] HOST262_HARNESS = "var $262={detachArrayBuffer:function(b){return __detachArrayBuffer(b);},global:this,gc:function(){},evalScript:function(s){return eval(s);},createRealm:function(){throw new Error('createRealm not supported');},agent:{}};function $DETACHBUFFER(b){return __detachArrayBuffer(b);}";
 
+// Parse test262 metadata frontmatter for `includes: [a.js, b.js]` and load each
+// harness file. Called once per test after the boilerplate harness is loaded.
+fn void load_test_includes(Vm* v, Heap* hp, char[] src) {
+    // Find "includes:" within the /*---...---*/ frontmatter (first 4KB is plenty).
+    usz scan_end = src.len < 4096 ? src.len : (usz)4096;
+    usz i = 0;
+    while (i + 9 < scan_end) {
+        if (src[i] == 'i' && src[i+1] == 'n' && src[i+2] == 'c' && src[i+3] == 'l'
+            && src[i+4] == 'u' && src[i+5] == 'd' && src[i+6] == 'e' && src[i+7] == 's'
+            && src[i+8] == ':') {
+            i += 9;
+            break;
+        }
+        i++;
+    }
+    if (i + 9 >= scan_end) return;
+    // Skip whitespace + '[' expected
+    while (i < scan_end && (src[i] == ' ' || src[i] == '\t')) { i++; }
+    if (i >= scan_end || src[i] != '[') return;
+    i++;
+    // Read comma-separated filenames until ']'
+    while (i < scan_end && src[i] != ']') {
+        while (i < scan_end && (src[i] == ' ' || src[i] == '\t' || src[i] == ',' || src[i] == '\n' || src[i] == '\r')) { i++; }
+        if (i >= scan_end || src[i] == ']') break;
+        usz start = i;
+        while (i < scan_end && src[i] != ',' && src[i] != ']' && src[i] != ' ' && src[i] != '\t' && src[i] != '\n' && src[i] != '\r') { i++; }
+        usz end = i;
+        if (end <= start) break;
+        // Build path "test262/harness/<name>"
+        char[128] path_buf;
+        char[] prefix = "test262/harness/";
+        usz p = 0;
+        for (usz k = 0; k < prefix.len && p < 127; k++) { path_buf[p++] = prefix[k]; }
+        for (usz k = start; k < end && p < 127; k++) { path_buf[p++] = src[k]; }
+        path_buf[p] = 0;
+        char[] path = path_buf[:p];
+        char[]? h_opt = file::load_temp((String)path);
+        if (try h = h_opt) {
+            exec_js(v, hp, h);
+        }
+    }
+}
+
 fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[] property_helper_src) {
     char[]? source = file::load_temp((String)test_path);
     if (catch err = source) { return 1; }
@@ -178,6 +221,9 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
         done_src = ds;
         if (exec_js(v, hp, done_src) != 0) { io::eprintfn("  FAIL: doneprintHandle.js"); }
     }
+
+    // Load per-test `includes:` harness files (testTypedArray.js, detachArrayBuffer.js, etc.)
+    load_test_includes(v, hp, src);
 
     int src_rc = exec_js(v, hp, src);
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
