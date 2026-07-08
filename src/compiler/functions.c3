@@ -1237,6 +1237,10 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
                 // Expression position — skip the entire function expression
                 // body so we don't compile it here.  The statement parser
                 // will see the `function` token on the second pass.
+                // Clear any is_async latched by the `async function` detection
+                // above — this function is being skipped, so the flag must not
+                // leak into later declarations in the scan.
+                self.is_async = false;
                 self.skip_function_body();
                 prev_toplevel = TokenType.FUNCTION;
                 has_prev = true;
@@ -1334,8 +1338,10 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             uint name_idx = self.add_string_constant(name_tok2.str_value);
             self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
 
-            // Lexer is now past the function body. Continue scanning.
-            prev_toplevel = TokenType.FUNCTION;
+            // Lexer is now past the function body. A completed declaration
+            // ends at its `}`, so record RBRACE (a statement terminator) —
+            // the next top-level `function` starts a new declaration.
+            prev_toplevel = TokenType.RBRACE;
             has_prev = true;
             continue;
         }
