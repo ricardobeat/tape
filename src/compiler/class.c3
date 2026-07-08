@@ -292,7 +292,16 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         // *enclosing* function's context, so we must not clear the flags here.
         bool saved_is_generator = self.is_generator;
         bool saved_is_async = self.is_async;
+        // ES2017 §14.6: async-method shorthand — `async m() { await ... }`.
+        // `async` is not a keyword; match_async_method_prefix consumes it only
+        // when it is a modifier (followed on the same line by a method name),
+        // so `async() {}` still parses as a method named "async".
+        bool is_async_method = self.match_async_method_prefix();
         bool is_generator_method = self.match(TokenType.STAR);
+        // Async generator methods (`async *m() {}`) are not supported.
+        if (is_async_method && is_generator_method) {
+            return self.fail("async generator methods are not supported")~;
+        }
 
         // Get the method name
         Token method_name;
@@ -445,14 +454,21 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             return COMPILE_ERROR~;
         }
 
-        // Propagate the generator flag into compile_inner_function, then
-        // immediately restore the saved flag so the next sibling element
-        // does not inherit it. Async methods are not yet supported inside
-        // class bodies (B44); the saved_is_async round-trip still happens
-        // for symmetry with function_expr.
-        if (is_generator_method) {
-            self.is_generator = true;
+        // ES2017 §14.6: async methods cannot be constructors, getters, or
+        // setters either (`async constructor()`, `async get x()` are
+        // SyntaxErrors).
+        if (is_async_method && (is_constructor || is_getter || is_setter)) {
+            return COMPILE_ERROR~;
         }
+
+        // Set the generator/async flags to exactly this method's own kind so
+        // compile_inner_function propagates them into the method body; the
+        // saved flags are restored right after so the next sibling element
+        // (and the enclosing context) do not inherit them. Assign (not just
+        // set-on-true): a plain method defined inside a generator/async body
+        // must NOT inherit the enclosing function's flags.
+        self.is_generator = is_generator_method;
+        self.is_async = is_async_method;
 
         // ES2015 §14.5.13: getter/setter methods in class bodies have a name
         // prefixed with "get " or "set " (matching object literal semantics).

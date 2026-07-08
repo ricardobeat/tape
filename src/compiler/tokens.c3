@@ -262,6 +262,62 @@ fn bool CompilerContext.is_async_arrow_lookahead(&self) {
     return false;
 }
 
+/// Detect the `async` modifier for method shorthand in class bodies and
+/// object literals (ES2017 §14.6): identifier "async" followed — on the
+/// same line, per the [no LineTerminator here] restriction — by a token
+/// that can start a method name: identifier, keyword, string, number,
+/// `[` (computed key), or `*` (async generator — the callers reject that
+/// combination). It is NOT a modifier when followed by `(` (a method
+/// literally named `async`), `:` (property key), `,` / `}` (shorthand
+/// property), or `=` (cover-initializer).
+/// Consumes the `async` token and returns true when it is a modifier;
+/// otherwise leaves the input untouched and returns false.
+fn bool CompilerContext.match_async_method_prefix(&self) {
+    if (self.peek_type() != TokenType.IDENTIFIER) return false;
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    if (cur.str_value.len != 5 ||
+        cur.str_value[0] != 'a' || cur.str_value[1] != 's' ||
+        cur.str_value[2] != 'y' || cur.str_value[3] != 'n' ||
+        cur.str_value[4] != 'c') {
+        self.pushback(cur);
+        return false;
+    }
+    // Peek the following token WITHOUT consuming it — on a true result the
+    // method name (and everything after) must remain unconsumed so that
+    // compile_inner_function, which builds a fresh context reading the shared
+    // lexer directly, still sees it (compiler-context pushbacks would be
+    // invisible to the inner context).
+    Token next_tok;
+    if (self.pushback_count > 0) {
+        next_tok = self.pushback_stack[self.pushback_count - 1];
+    } else {
+        Token? peek_opt = self.lexer.peek();
+        if (catch _e = peek_opt) {
+            self.pushback(cur);
+            return false;
+        }
+        next_tok = peek_opt;
+    }
+    if (next_tok.line != cur.line) {
+        // [no LineTerminator here] between `async` and the method name.
+        self.pushback(cur);
+        return false;
+    }
+    bool starts_name = next_tok.type == TokenType.IDENTIFIER
+        || next_tok.type == TokenType.STRING
+        || next_tok.type == TokenType.NUMBER
+        || next_tok.type == TokenType.LBRACKET
+        || next_tok.type == TokenType.STAR
+        || lexer::keyword_to_string(next_tok.type).len > 0;
+    if (!starts_name) {
+        self.pushback(cur);
+        return false;
+    }
+    return true;  // `async` stays consumed
+}
+
 /// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
 /// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
 /// Used by loop rotation to skip over the for-loop increment without emitting code.

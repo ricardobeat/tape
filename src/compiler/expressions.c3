@@ -2555,7 +2555,17 @@ fn ushort? CompilerContext.object_literal(&self) {
             // we must not clear the flags here.
             bool saved_is_generator = self.is_generator;
             bool saved_is_async = self.is_async;
+            // ES2017 §14.6: async-method shorthand — `{ async m() {} }`.
+            // `async` is not a keyword; match_async_method_prefix consumes it
+            // only when it is a modifier (followed on the same line by a
+            // method-name token), so `{ async: 1 }`, `{ async }`, and
+            // `{ async() {} }` all keep their existing meaning.
+            bool is_async_method = self.match_async_method_prefix();
             bool is_generator_method = self.match(TokenType.STAR);
+            // Async generator methods (`{ async *m() {} }`) are not supported.
+            if (is_async_method && is_generator_method) {
+                return self.fail("async generator methods are not supported")~;
+            }
 
             // Parse property key
             ushort key_reg;
@@ -2609,6 +2619,10 @@ fn ushort? CompilerContext.object_literal(&self) {
                 }
 
                 if (is_obj_getter || is_obj_setter) {
+                    // `async get x() {}` / `async set x(v) {}` are SyntaxErrors
+                    // per ES2017 §14.6 — the async modifier only combines with
+                    // plain method shorthand.
+                    if (is_async_method) return COMPILE_ERROR~;
                     // Parse the actual property name
                     TokenType prop_tt = self.peek_type();
                     if (prop_tt == TokenType.LBRACKET) {
@@ -2659,6 +2673,11 @@ fn ushort? CompilerContext.object_literal(&self) {
                     // Compile the getter/setter function body — pass the
                     // source offset of the `get`/`set` keyword so the retained
                     // source span starts there (per ES2019 §19.2.3.5).
+                    // Accessors are never generators or async; clear the flags
+                    // so an accessor defined inside a generator/async body does
+                    // not inherit the enclosing function's kind.
+                    self.is_generator = false;
+                    self.is_async = false;
                     ushort accessor_reg = self.function_expr_body(key_src_start)!;
                     if (is_obj_getter) {
                         self.emit_abc(Opcode.INITGET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
@@ -2764,10 +2783,13 @@ fn ushort? CompilerContext.object_literal(&self) {
             // Check for method shorthand or data property
             if (self.check(TokenType.LPAREN)) {
                 // Method shorthand: key() { ... } — name inferred from key (set above)
-                // Propagate the generator flag when this is a `*method()` shorthand
-                // and restore saved flags immediately after so the next iteration
-                // starts clean.
-                if (is_generator_method) self.is_generator = true;
+                // Set the generator/async flags to exactly this method's own
+                // kind (assign, not set-on-true: a plain method defined inside
+                // a generator/async body must NOT inherit the enclosing
+                // function's flags) and restore the saved flags immediately
+                // after so the next iteration starts clean.
+                self.is_generator = is_generator_method;
+                self.is_async = is_async_method;
                 // Pass key_src_start so the retained source span starts at the
                 // key token (or `*`, or first computed-key bracket).
                 ushort method_reg = self.function_expr_body(key_src_start)!;
@@ -2782,8 +2804,9 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // comes from the binding named by the key. Only legal when
                 // the property key came from an IdentifierReference or
                 // StringLiteral, never a numeric/computed key. `*a` shorthand
-                // is not legal (must be a method).
-                if (is_generator_method) return COMPILE_ERROR~;
+                // is not legal (must be a method), nor is `async a` (the
+                // async modifier requires a method).
+                if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 // Read the binding into a register, then PUTPROP as usual.
                 ushort val_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)val_reg, shorthand_name_idx));
@@ -2795,8 +2818,8 @@ fn ushort? CompilerContext.object_literal(&self) {
             } else {
                 // key: value — name inferred from key (set above)
                 // `*a: 1` is not legal per ES2015 §14.3 — generator shorthand
-                // must be a method (`*a() {}`).
-                if (is_generator_method) return COMPILE_ERROR~;
+                // must be a method (`*a() {}`). Same for `async a: 1`.
+                if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
                 self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
