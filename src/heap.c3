@@ -545,11 +545,13 @@ fn Heap*? create(
         libc::memset(h.mega_cache, 0, MEGA_CACHE_SIZE * hobject::MegamorphicEntry::size);
     }
 
-    // Allocate microtask queue (32 entries initial = 16 handler+arg pairs)
+    // Allocate microtask queue: 16 entries, each a (handler, arg, downstream)
+    // TRIPLE — 48 TVal slots. (Was sized for pairs, so entry 11+ wrote past
+    // the allocation.)
     h.microtask_capacity = 16;
-    h.microtask_queue = (TVal*)afn(udata, TVal::size * 32);
+    h.microtask_queue = (TVal*)afn(udata, TVal::size * 48);
     if (h.microtask_queue != null) {
-        libc::memset(h.microtask_queue, 0, TVal::size * 32);
+        libc::memset(h.microtask_queue, 0, TVal::size * 48);
     }
     h.microtask_count = 0;
     h.microtask_draining = false;
@@ -1520,6 +1522,30 @@ fn void Heap.mark_tval(&self, TVal* v) {
     }
 }
 
+/// Mark all references held by a suspended GeneratorState (used by both
+/// generator objects and async/await resume/reject builtin functions).
+fn void Heap.mark_generator_state(&self, GeneratorState* gs) {
+    if (gs == null) return;
+    // Mark saved registers (contains TVal references to live objects)
+    if (gs.saved_regs != null) {
+        for (uint i = 0; i < gs.num_regs; i++) {
+            self.mark_tval(&gs.saved_regs[i]);
+        }
+    }
+    // Mark TVal fields
+    self.mark_tval(&gs.this_binding);
+    self.mark_tval(&gs.resume_value);
+    self.mark_tval(&gs.throw_value);
+    self.mark_tval(&gs.return_value);
+    // Mark heap object pointers
+    if (gs.delegated_iter != null) {
+        self.mark_hobject((HObject*)gs.delegated_iter);
+    }
+    if (gs.async_promise != null) {
+        self.mark_hobject((HObject*)gs.async_promise);
+    }
+}
+
 /**
  * Mark an HObject pointer as reachable and schedule it for child
  * processing via the gray stack.  No-op when already reachable.
@@ -1581,6 +1607,13 @@ fn void Heap.drain_gray(&self) {
                 if ((*obj.extra_ptr()).func.lex_env != null && (*obj.extra_ptr()).func.lex_env.bindings != null) {
                     self.mark_hobject((*obj.extra_ptr()).func.lex_env.bindings);
                 }
+                // Async/await resume/reject builtins stash their GeneratorState
+                // in var_env; keep it alive so suspended async functions are
+                // not collected while waiting for their Promise to settle.
+                if (obj.flags.is_async_state) {
+                    GeneratorState* gs = (GeneratorState*)(*obj.extra_ptr()).func.var_env;
+                    self.mark_generator_state(gs);
+                }
                 break;
             case ObjClass.GENERATOR:
                 if ((*obj.extra_ptr()).gen.var_env != null && (*obj.extra_ptr()).gen.var_env.bindings != null) {
@@ -1591,26 +1624,7 @@ fn void Heap.drain_gray(&self) {
                 }
                 // Mark GeneratorState fields for suspended generators
                 GeneratorState* gs = (GeneratorState*)(*obj.extra_ptr()).gen.generator_data;
-                if (gs != null) {
-                    // Mark saved registers (contains TVal references to live objects)
-                    if (gs.saved_regs != null) {
-                        for (uint i = 0; i < gs.num_regs; i++) {
-                            self.mark_tval(&gs.saved_regs[i]);
-                        }
-                    }
-                    // Mark TVal fields
-                    self.mark_tval(&gs.this_binding);
-                    self.mark_tval(&gs.resume_value);
-                    self.mark_tval(&gs.throw_value);
-                    self.mark_tval(&gs.return_value);
-                    // Mark heap object pointers
-                    if (gs.delegated_iter != null) {
-                        self.mark_hobject((HObject*)gs.delegated_iter);
-                    }
-                    if (gs.async_promise != null) {
-                        self.mark_hobject((HObject*)gs.async_promise);
-                    }
-                }
+                self.mark_generator_state(gs);
                 break;
             case ObjClass.PROMISE:
                 // Mark the resolved value/rejection reason and the linked list
@@ -2607,16 +2621,17 @@ fn void Heap.drain_microtasks(&self, void* vm) {
     self.microtask_draining = true;
     defer self.microtask_draining = false;
 
-    // Snapshot the current count and process those tasks. New tasks enqueued
-    // during processing are added to the end of the queue and processed in
-    // subsequent batches (matches ES2015+ microtask ordering).
-    for (;;) {
-        uint count = self.microtask_count;
-        if (count == 0) break;
-        self.microtask_count = 0;
-
-        for (uint i = 0; i < count; i++) {
+    // Process the queue in strict FIFO order with a read cursor. Handlers may
+    // enqueue new jobs during processing — those append past the cursor and
+    // are processed in the same drain (ES2015+ job-queue ordering). Do NOT
+    // reset microtask_count before processing: new enqueues would overwrite
+    // the in-flight batch from slot 0 (and the still-queued entries stop
+    // being GC-visible).
+    {
+        uint i = 0;
+        while (i < self.microtask_count) {
             uint base = i * 3;
+            i++;
             TVal handler    = self.microtask_queue[base];
             TVal arg        = self.microtask_queue[base + 1];
             TVal downstream = self.microtask_queue[base + 2];
@@ -2633,5 +2648,6 @@ fn void Heap.drain_microtasks(&self, void* vm) {
                 self.microtask_after_fn((void*)self, vm, result, downstream);
             }
         }
+        self.microtask_count = 0;
     }
 }

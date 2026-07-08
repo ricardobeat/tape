@@ -216,6 +216,9 @@ bitstruct ObjFlags : uint {
     /// distinguish Date.prototype (must throw TypeError) from a Date instance
     /// with NaN time value (must return NaN).
     bool is_date_proto     : 23;
+    /// True for async/await resume/reject builtin functions, whose var_env
+    /// stores a GeneratorState* that must be kept alive by GC.
+    bool is_async_state    : 24;
 }
 
 // ============================================================================

@@ -265,6 +265,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 HObject* resume_fn = resume_raw;
                 (*resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::BUILTIN_ASYNC_RESUME;
                 (*resume_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+                resume_fn.flags.is_async_state = true;
                 TVal resume_tv;
                 resume_tv.set_object(resume_fn);
 
@@ -276,6 +277,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 HObject* reject_fn = reject_raw;
                 (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::BUILTIN_ASYNC_REJECT;
                 (*reject_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+                reject_fn.flags.is_async_state = true;
                 TVal reject_tv;
                 reject_tv.set_object(reject_fn);
 
