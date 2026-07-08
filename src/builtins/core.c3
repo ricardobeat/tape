@@ -12,6 +12,7 @@ import duktape::compiler;
 import duktape::lexer;
 import duktape::re_bindings;
 import duktape::vm;
+import duktape::dtoa_bindings;
 import std::io;
 import std::math;
 import libc;
@@ -513,7 +514,17 @@ fn void print_tval(TVal* val) {
                 if ((double)iv == v && iv >= types::DUK_MIN_SAFE_INT && iv <= types::DUK_MAX_SAFE_INT) {
                     io::printf("%d", iv);
                 } else {
-                    io::printf("%f", v);
+                    // Shortest round-trip form, same as ToString(Number).
+                    char[64] nbuf;
+                    char[dtoa_bindings::DTOA_FORMAT_TMP_SIZE] ntmp;
+                    int nlen = dtoa_bindings::duktape_js_dtoa(&nbuf, v, 10, 0,
+                        dtoa_bindings::JS_DTOA_FORMAT_FREE, &ntmp);
+                    if (nlen > 0 && nlen < 64) {
+                        nbuf[nlen] = 0;
+                        io::printf("%s", (ZString)&nbuf);
+                    } else {
+                        io::printf("%f", v);
+                    }
                 }
             }
         case FASTINT:
@@ -1192,6 +1203,37 @@ fn void coll_delete(BuiltinContext* ctx, HObject* coll, TVal key, uint stride, b
 // ToString helper (ES3 ToString for primitive types)
 // ============================================================================
 
+/// ToString(Number) per ES2015 §7.1.12.1 — shortest round-trip decimal via
+/// QuickJS js_dtoa (FREE mode), spec exponent format (1e+21, 1e-7).
+fn HString* builtin_number_to_hstring(Heap* heap, double d) {
+    if (math::is_nan(d)) return (HString*)heap.strs[heap::BuiltinStr.NAN_STR];
+    if (math::is_inf(d)) {
+        return (d > 0.0)
+            ? (HString*)heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
+            : (HString*)heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY];
+    }
+    // -0 must produce "0"
+    if (d == 0.0) return builtin_intern_string(heap, "0");
+    // Integers below 10^21 use plain decimal notation
+    if (d == math::trunc(d) && d > -1e21 && d < 1e21) {
+        char[64] ibuf;
+        int ilen = libc::snprintf(&ibuf, 64, "%.0f", d);
+        if (ilen >= 0 && ilen < 64) {
+            return builtin_intern_string(heap, ibuf[:ilen]);
+        }
+    }
+    char[64] buf;
+    char[dtoa_bindings::DTOA_FORMAT_TMP_SIZE] tmp;
+    int len = dtoa_bindings::duktape_js_dtoa(&buf, d, 10, 0,
+        dtoa_bindings::JS_DTOA_FORMAT_FREE, &tmp);
+    if (len > 0 && len < 64) {
+        return builtin_intern_string(heap, buf[:len]);
+    }
+    // Unreachable for finite doubles; keep a safe fallback.
+    int flen = libc::snprintf(&buf, 64, "%.17g", d);
+    return builtin_intern_string(heap, buf[:flen]);
+}
+
 fn HString* builtin_to_string(Heap* heap, TVal* val) {
     switch (val.get_tag()) {
         case STRING: {
@@ -1224,91 +1266,7 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             return s;
         }
         case NUMBER: {
-            double d = val.get_number();
-            // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
-            if (math::is_nan(d)) return (HString*)heap.strs[heap::BuiltinStr.NAN_STR];
-            if (math::is_inf(d)) {
-                return (d > 0.0)
-                    ? (HString*)heap.strs[heap::BuiltinStr.POSITIVE_INFINITY]
-                    : (HString*)heap.strs[heap::BuiltinStr.NEGATIVE_INFINITY];
-            }
-            // ES5 §9.8.1: ToString(number) — -0 must produce "0", not "-0"
-            if (d == 0.0) {
-                return builtin_intern_string(heap, "0");
-            }
-            // ES5 §9.8.1 steps 5-7: integers with |val| < 10^21 use decimal notation
-            if (d == math::trunc(d) && d > -1e21 && d < 1e21) {
-                char[64] ibuf;
-                int ilen = libc::snprintf(&ibuf, 64, "%.0f", d);
-                if (ilen >= 0 && ilen < 64) {
-                    return builtin_intern_string(heap, ibuf[:ilen]);
-                }
-            }
-            // ES5 §9.8.1: non-integer numbers — compute base-10 exponent
-            double abs_d = d < 0.0 ? -d : d;
-            int exp10 = (int)math::floor(math_log10(abs_d));
-            char[64] buf;
-            int len;
-            ulong val_bits = bitcast(d, ulong);
-            if (exp10 >= -6 && exp10 < 21) {
-                // ES5 §9.8.1 step 5: decimal notation
-                int k = exp10 + 1;
-                if (k < 1) k = 1;
-                int nfrac = 17 - k;
-                if (nfrac < 0) nfrac = 0;
-                len = libc::snprintf(&buf, 64, "%.*f", nfrac, d);
-                // Trim trailing zeros after decimal point
-                while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
-                if (len > 1 && buf[len - 1] == '.') len--;
-                // Progressively trim trailing digits while round-trip holds
-                buf[len] = 0;
-                while (len > 0) {
-                    char last = buf[len - 1];
-                    if (last == '.' || last == '-') break;
-                    buf[len - 1] = 0;
-                    double parsed = libc::strtod(&buf, null);
-                    if (bitcast(parsed, ulong) == val_bits) {
-                        len--;
-                    } else {
-                        buf[len - 1] = last;
-                        break;
-                    }
-                }
-            } else {
-                // ES5 §9.8.1 step 6: exponential notation
-                len = libc::snprintf(&buf, 64, "%.15e", d);
-                // Trim trailing zeros AFTER the decimal point but BEFORE 'e'.
-                // e.g. "1.000000000000000e+21" → "1e+21"
-                // Find the decimal point
-                int dot_pos = -1;
-                int e_pos = len;
-                for (int j = 0; j < len; j++) {
-                    if (buf[j] == '.') dot_pos = j;
-                    if (buf[j] == 'e' || buf[j] == 'E') { e_pos = j; break; }
-                }
-                if (dot_pos >= 0) {
-                    // Trim zeros between dot and 'e'
-                    int trim = e_pos;
-                    while (trim > dot_pos + 1 && buf[trim - 1] == '0') trim--;
-                    // If only the dot remains between mantissa digits and 'e', remove it too
-                    if (trim == dot_pos + 1) trim = dot_pos;
-                    // Shift everything after trim left
-                    int shift = e_pos - trim;
-                    if (shift > 0) {
-                        for (int j = trim; j + shift < len; j++) buf[j] = buf[j + shift];
-                        len -= shift;
-                    }
-                }
-                // Remove leading zero in exponent: e-07 → e-7, e+07 → e+7
-                int ei = len - 1;
-                while (ei > 0 && buf[ei] != 'e' && buf[ei] != 'E') ei--;
-                if (ei > 0 && ei + 3 < len && buf[ei + 2] == '0') {
-                    for (int j = ei + 3; j < len; j++) buf[j - 1] = buf[j];
-                    len--;
-                }
-            }
-            if (len < 0 || len >= 64) return null;
-            return builtin_intern_string(heap, buf[:len]);
+            return builtin_number_to_hstring(heap, val.get_number());
         }
         case FASTINT: {
             char[64] buf;

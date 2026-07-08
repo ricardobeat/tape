@@ -8,6 +8,7 @@ import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
+import duktape::dtoa_bindings;
 import std::io;
 
 // ============================================================================
@@ -677,25 +678,20 @@ fn usz json_number_to_string(double d, char* buf, usz buf_size) {
         buf[0] = '0';
         return 1;
     }
-    // Try decreasing precisions to find the shortest round-trip representation.
-    // Start at 17 (enough for IEEE 754 double) and decrease.
-    for (int prec = 17; prec >= 1; prec--) {
-        char[8] fmt;
-        fmt[0] = '%'; fmt[1] = '.'; fmt[2] = (char)('0' + prec); fmt[3] = 'g'; fmt[4] = 0;
-        int len = libc::snprintf(buf, buf_size, (ZString)(char*)&fmt, d);
-        if (len <= 0 || (usz)len >= buf_size) continue;
-        // Round-trip check: does parsing the string give the same double?
-        char saved = buf[len];
-        buf[len] = 0;
-        double roundtrip = libc::strtod(buf, null);
-        buf[len] = saved;
-        if (roundtrip == d) {
-            return (usz)len;
-        }
+    // Shortest round-trip decimal via QuickJS js_dtoa (FREE mode), same as
+    // ToString(Number) — spec exponent format, correct final-digit rounding.
+    if (buf_size < 64) {
+        int glen = libc::snprintf(buf, buf_size, "%.17g", d);
+        return (glen > 0) ? (usz)glen : 0;
     }
-    // Fallback: full precision
-    int len = libc::snprintf(buf, buf_size, "%.17g", d);
-    return (len > 0) ? (usz)len : 0;
+    char[dtoa_bindings::DTOA_FORMAT_TMP_SIZE] tmp;
+    int len = dtoa_bindings::duktape_js_dtoa(buf, d, 10, 0,
+        dtoa_bindings::JS_DTOA_FORMAT_FREE, &tmp);
+    if (len > 0 && (usz)len < buf_size) {
+        return (usz)len;
+    }
+    int flen = libc::snprintf(buf, buf_size, "%.17g", d);
+    return (flen > 0) ? (usz)flen : 0;
 }
 
 /// ES5 §15.12.3 step 5: Type unwrapping via ToString/ToNumber/ToBoolean.

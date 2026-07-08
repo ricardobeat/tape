@@ -8,6 +8,7 @@ import duktape::hobject;
 import duktape::env;
 import duktape::builtins;
 import duktape::re_bindings;
+import duktape::dtoa_bindings;
 import std::io;
 import std::math;
 import libc;
@@ -279,19 +280,6 @@ fn HString* typeof_string(Vm* vm, TVal* val) {
 
 // int_to_buf is defined in duktape::hstring and available via the module import.
 
-/// Remove leading zero from exponent in %g/%e output: e-07 → e-7, e+07 → e+7.
-/// Returns possibly shortened length.
-fn int es5_fix_exponent(char[] buf, int len) {
-    if (len <= 0) return len;
-    int ei = len - 1;
-    while (ei > 0 && buf[ei] != 'e' && buf[ei] != 'E') ei--;
-    if (ei > 0 && ei + 3 < len && buf[ei + 2] == '0') {
-        for (int j = ei + 3; j < len; j++) buf[j - 1] = buf[j];
-        len--;
-    }
-    return len;
-}
-
 /// Convert a double to an interned HString* using shortest round-trip formatting.
 fn HString*? vm_number_to_string(Vm* vm, double val) {
     // ES5 §9.8.1: ToString(Infinity) = "Infinity", ToString(NaN) = "NaN"
@@ -318,71 +306,17 @@ fn HString*? vm_number_to_string(Vm* vm, double val) {
         }
     }
 
+    // ES2015 §7.1.12.1 ToString(Number): QuickJS js_dtoa in FREE mode emits
+    // the shortest round-trip decimal in spec format (decimal for 1e-6..1e21,
+    // exponential outside, correct rounding — a truncate-and-retry loop can't
+    // produce e.g. "7.300000000000001" from "7.3000000000000007").
     char[64] buf;
-    ulong val_bits = bitcast(val, ulong);
-
-    // ES5 §9.8.1: compute base-10 exponent for decimal/exponential decision
-    double abs_d = val < 0.0 ? -val : val;
-    int exp10 = (int)math::floor(builtins::math_log10(abs_d));
-
-    if (exp10 >= -6 && exp10 < 21) {
-        // ES5 §9.8.1 step 5: decimal notation — format with %.*f
-        int k = exp10 + 1;
-        if (k < 1) k = 1;
-        int nfrac = 17 - k;
-        if (nfrac < 0) nfrac = 0;
-        int len = libc::snprintf(&buf, 64, "%.*f", nfrac, val);
-        // Trim trailing zeros after decimal point
-        while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
-        if (len > 1 && buf[len - 1] == '.') len--;
-        // Progressively trim trailing digits while round-trip still holds,
-        // producing the shortest decimal representation (e.g. 123.1234567
-        // instead of 123.12345670000001).
-        buf[len] = 0;
-        while (len > 0) {
-            char last = buf[len - 1];
-            if (last == '.' || last == '-') break;
-            buf[len - 1] = 0;
-            double parsed = libc::strtod(&buf, null);
-            if (bitcast(parsed, ulong) == val_bits) {
-                len--;
-            } else {
-                buf[len - 1] = last;
-                break;
-            }
-        }
-        if (len >= 0 && len < 64) {
-            return vm.heap.str_intern(buf[:len]);
-        }
-    }
-
-    // Try %.15g first — shortest common case
-    int len = libc::snprintf(&buf, 64, "%.15g", val);
-    if (len >= 0 && len < 64) {
-        double parsed = libc::strtod(&buf, null);
-        if (bitcast(parsed, ulong) == val_bits) {
-            // ES5 §9.8.1: remove leading zero in exponent (e-07 → e-7)
-            len = es5_fix_exponent(&buf, len);
-            return vm.heap.str_intern(buf[:len]);
-        }
-    }
-
-    // Fall back to %.16g
-    len = libc::snprintf(&buf, 64, "%.16g", val);
-    if (len >= 0 && len < 64) {
-        double parsed = libc::strtod(&buf, null);
-        if (bitcast(parsed, ulong) == val_bits) {
-            len = es5_fix_exponent(&buf, len);
-            return vm.heap.str_intern(buf[:len]);
-        }
-    }
-
-    // Final fallback to %.17g (always round-trips, no check needed)
-    len = libc::snprintf(&buf, 64, "%.17g", val);
-    if (len < 0 || len >= 64) {
+    char[dtoa_bindings::DTOA_FORMAT_TMP_SIZE] tmp;
+    int len = dtoa_bindings::duktape_js_dtoa(&buf, val, 10, 0,
+        dtoa_bindings::JS_DTOA_FORMAT_FREE, &tmp);
+    if (len <= 0 || len >= 64) {
         return null;
     }
-    len = es5_fix_exponent(&buf, len);
     return vm.heap.str_intern(buf[:len]);
 }
 

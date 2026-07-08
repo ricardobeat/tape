@@ -159,38 +159,9 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
 
     // Radix 10: use existing ToString formatting
     if (radix == 10) {
-        char[64] buf;
-        int len = libc::snprintf(&buf, 64, "%.17g", d);
-        if (len < 0 || len >= 64) {
-            ctx.result.set_undefined();
-            return;
-        }
-        // Trim trailing zeros in decimal notation (before any 'e')
-        ulong val_bits = bitcast(d, ulong);
-        bool has_exp = false;
-        for (int i = 0; i < len; i++) {
-            if (buf[i] == 'e' || buf[i] == 'E') { has_exp = true; break; }
-        }
-        if (!has_exp) {
-            while (len > 1 && buf[len - 1] == '0' && buf[len - 2] != '.') len--;
-            if (len > 1 && buf[len - 1] == '.') len--;
-            // Progressively trim trailing digits while round-trip holds
-            buf[len] = 0;
-            while (len > 0) {
-                char last = buf[len - 1];
-                if (last == '.' || last == '-') break;
-                buf[len - 1] = 0;
-                double parsed = libc::strtod(&buf, null);
-                if (bitcast(parsed, ulong) == val_bits) {
-                    len--;
-                } else {
-                    buf[len - 1] = last;
-                    break;
-                }
-            }
-        }
-        HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-        ctx.result.set_string(s);
+        HString* s10 = builtin_number_to_hstring(ctx.heap, d);
+        if (s10 == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_string(s10);
         return;
     }
 
@@ -354,13 +325,8 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
 
     if (ctx.argc == 0) {
         // No arg: return ToString(x)
-        char[64] buf;
-        int len = libc::snprintf(&buf, 64, "%.17g", d);
-        if (len < 0 || len >= 64) {
-            ctx.result.set_undefined();
-            return;
-        }
-        HString* s = builtin_intern_string(ctx.heap, buf[:len]);
+        HString* s = builtin_number_to_hstring(ctx.heap, d);
+        if (s == null) { ctx.result.set_undefined(); return; }
         ctx.result.set_string(s);
         return;
     }

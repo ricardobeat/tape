@@ -822,16 +822,13 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         }
         TVal key_val = ctx.regs[ctx.base_reg + 1];
         void* key = null;
-        char[64] key_buf;
         if (key_val.is_string()) {
             key = key_val.get_heapptr();
         } else if (key_val.is_fastint()) {
             key = ctx.heap.int_to_hstring(key_val.get_fastint());
             if (key == null) { ctx.result.set_undefined(); return; }
         } else if (key_val.is_number()) {
-            int len = libc::snprintf(&key_buf, 64, "%.17g", key_val.get_number());
-            if (len < 0 || len >= 64) { ctx.result.set_undefined(); return; }
-            key = ctx.heap.str_intern(key_buf[:len]);
+            key = builtin_number_to_hstring(ctx.heap, key_val.get_number());
             if (key == null) { ctx.result.set_undefined(); return; }
         } else {
             ctx.result.set_undefined();
