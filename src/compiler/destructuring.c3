@@ -15,536 +15,77 @@ import std::io;
 
 /// Parse array destructuring pattern: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
+///
+/// Uses the ES2015 §13.3.3 iterator protocol via the shared, recursive
+/// `emit_destruct_bindings` emitter — the same machinery the function-parameter
+/// path uses. This makes statement-level destructuring work for any iterable
+/// (generators, custom iterables), at arbitrary nesting depth, not just Arrays.
+/// See plan 044; mirrors QuickJS's OP_for_of_start/OP_for_of_next lowering.
 fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
-    ArrayBind[32] binds;
-    uint bind_count = 0;
+    DestructBind[MAX_DESTRUCT_BINDS] binds;
+    uint count = 0;
 
-    // Parse pattern elements, declaring each binding as we go
-    uint array_idx = 0;
+    // Parse the pattern into the recursive DestructBind model. The source
+    // register (arg_idx) for top-level binds is patched to the RHS register
+    // once it is known (RHS is parsed after the pattern). Nested binds carry a
+    // parent_idx instead and resolve their source from the parent group temp.
+    self.collect_arr_param_binds(binds[..], &count, 0, 0xFFFF)!;
 
-    for (;;) {
-        if (self.check(TokenType.RBRACKET)) break;
+    ushort[MAX_DESTRUCT_BINDS] group_regs;
+    ushort[MAX_DESTRUCT_BINDS] binding_regs;
+    for (uint i = 0; i < count; i++) { group_regs[i] = 0xFFFF; binding_regs[i] = 0xFFFF; }
 
-        if (self.check(TokenType.COMMA)) {
-            self.advance()!;
-            if (bind_count < 32) {
-                binds[bind_count].is_hole = true;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-                bind_count++;
-            }
-            array_idx++;
-            continue;
-        }
-
-        if (self.match(TokenType.ELLIPSIS)) {
-            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
-            if (bind_count < 32) {
-                ushort reg = self.declare_var(rest_tok.str_value, kind);
-                binds[bind_count].reg = reg;
-                binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
-                binds[bind_count].is_rest = true;
-                binds[bind_count].is_hole = false;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-                bind_count++;
-            }
-            while (self.match(TokenType.COMMA)) {}
-            break;
-        }
-
-        // Check for nested array pattern
-        if (self.check(TokenType.LBRACKET)) {
-            self.advance()!; // consume '['
-            uint nested_outer = array_idx;
-            array_idx++;
-            uint inner_idx = 0;
-
-            // Parse inner elements of the nested pattern
-            for (;;) {
-                if (self.check(TokenType.RBRACKET)) break;
-
-                if (self.check(TokenType.COMMA)) {
-                    self.advance()!;
-                    if (bind_count < 32) {
-                        binds[bind_count].is_hole = true;
-                        binds[bind_count].has_default = false;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 1;
-                        binds[bind_count].depth2_idx = 0;
-                        bind_count++;
-                    }
-                    inner_idx++;
-                    continue;
-                }
-
-                // Check for rest element in nested array: [a, [b, ...rest]]
-                if (self.match(TokenType.ELLIPSIS)) {
-                    Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(rest_tok.str_value, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
-                        binds[bind_count].is_rest = true;
-                        binds[bind_count].is_hole = false;
-                        binds[bind_count].has_default = false;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 1;
-                        binds[bind_count].depth2_idx = 0;
-                        bind_count++;
-                    }
-                    while (self.match(TokenType.COMMA)) {}
-                    break;
-                }
-
-                // Check for triple nesting: [[[a]]] or [[[a = expr]]]
-                if (self.check(TokenType.LBRACKET)) {
-                    self.advance()!; // consume inner '['
-                    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-
-                    // Check for default: a = expr
-                    bool has_default_val = false;
-                    ushort default_val_reg = 0;
-                    if (self.match(TokenType.ASSIGN)) {
-                        has_default_val = true;
-                        default_val_reg = self.assignment_expr()!;
-                    }
-
-                    self.expect(TokenType.RBRACKET)!;
-
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(name_tok.str_value, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].is_rest = false;
-                        binds[bind_count].is_hole = false;
-                        binds[bind_count].has_default = has_default_val;
-                        binds[bind_count].default_val_reg = default_val_reg;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 2;
-                        binds[bind_count].depth2_idx = 0;
-
-                        bind_count++;
-                    }
-                    inner_idx++;
-
-                    if (!self.match(TokenType.COMMA)) break;
-                    continue;
-                }
-
-                Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-                if (bind_count < 32) {
-                    ushort reg = self.declare_var(name_tok.str_value, kind);
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                    binds[bind_count].is_rest = false;
-                    binds[bind_count].is_hole = false;
-                    binds[bind_count].has_default = false;
-                    binds[bind_count].is_nested = true;
-                    binds[bind_count].outer_idx = nested_outer;
-                    binds[bind_count].inner_idx = inner_idx;
-                    binds[bind_count].nest_depth = 1;
-                    binds[bind_count].depth2_idx = 0;
-
-                    // Check for default: a = expr
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
-                    }
-
-                    bind_count++;
-                }
-                inner_idx++;
-
-                if (!self.match(TokenType.COMMA)) break;
-            }
-
-            self.expect(TokenType.RBRACKET)!;
-        } else if (self.check(TokenType.LBRACE)) {
-            // Nested object pattern: [a, {x, y}] = rhs or [a, {x: y}] = rhs
-            self.advance()!; // consume '{'
-            uint obj_array_idx = array_idx;
-            ushort obj_default_val_reg = 0;
-            bool obj_has_default = false;
-
-            // Parse all properties of the nested object
-            for (;;) {
-                if (self.check(TokenType.RBRACE)) break;
-
-                Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
-
-                Token bind_tok = prop_tok;  // default: shorthand
-                if (self.match(TokenType.COLON)) {
-                    bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                }
-
-                if (bind_count < 32) {
-                    ushort reg = self.declare_var(bind_tok.str_value, kind);
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                    binds[bind_count].is_rest = false;
-                    binds[bind_count].is_hole = false;
-                    binds[bind_count].has_default = false;
-                    binds[bind_count].is_nested = false;
-                    binds[bind_count].is_obj_nested = true;
-                    binds[bind_count].outer_idx = obj_array_idx;
-                    binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
-                    binds[bind_count].has_obj_default = false;
-                    binds[bind_count].obj_default_val_reg = 0;
-
-                    // Check for per-property default: {x = expr}
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
-                    }
-
-                    bind_count++;
-                }
-
-                if (!self.match(TokenType.COMMA)) break;
-            }
-
-            self.expect(TokenType.RBRACE)!;
-
-            // Default value applies to the WHOLE nested object: [a, {x,y} = def]
-            // Per ES2015 §13.3.3.5 step 4: if the value of the
-            // destructured slot is undefined, the default is used.
-            if (self.match(TokenType.ASSIGN)) {
-                obj_has_default = true;
-                obj_default_val_reg = self.assignment_expr()!;
-            }
-
-            // Attach the whole-object default to the FIRST binding of the
-            // nested object so the codegen can apply it before extracting
-            // individual properties.
-            if (obj_has_default && bind_count > 0) {
-                for (uint bi = 0; bi < bind_count; bi++) {
-                    if (binds[bi].is_obj_nested && binds[bi].outer_idx == obj_array_idx) {
-                        binds[bi].has_obj_default = true;
-                        binds[bi].obj_default_val_reg = obj_default_val_reg;
-                        break;
-                    }
-                }
-            }
-
-            array_idx++;
-        } else {
-            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-            if (bind_count < 32) {
-                ushort reg = self.declare_var(name_tok.str_value, kind);
-                binds[bind_count].reg = reg;
-                binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                binds[bind_count].is_rest = false;
-                binds[bind_count].is_hole = false;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-
-                // Check for default: a = expr
-                if (self.match(TokenType.ASSIGN)) {
-                    binds[bind_count].has_default = true;
-                    // Compile the default expression into a temp register
-                    binds[bind_count].default_val_reg = self.assignment_expr()!;
-                }
-
-                bind_count++;
-            }
-            array_idx++;
-        }
-
-        if (!self.match(TokenType.COMMA)) break;
+    // Declare each non-synthetic (leaf) binding as a variable in the requested
+    // scope. Synthetics are intermediate extraction points — no variable.
+    // The scope entry keeps the name slice alive for the rest of the enclosing
+    // function body, so it must not point into the stack-local `binds` array —
+    // use the interned constant-pool string bytes (stable for the compilation).
+    ushort pre_decl_next = self.next_reg;
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].is_synthetic) continue;
+        HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
+        ushort dreg = self.declare_var(hs.get_data(), kind);
+        binding_regs[i] = dreg;
     }
 
-    self.expect(TokenType.RBRACKET)!;
-
-    // Default to undefined if no initializer
+    // No initializer (`var [a, b];`): bind everything to undefined.
     if (!self.match(TokenType.ASSIGN)) {
-        for (uint i = 0; i < bind_count; i++) {
-            if (binds[i].is_hole) continue;
-            self.emit_abc(Opcode.LDUNDEF, (uint)binds[i].reg, 0, 0);
-            self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+        for (uint i = 0; i < count; i++) {
+            if (binds[i].is_synthetic) continue;
+            ushort dreg = binding_regs[i];
+            self.emit_abc(Opcode.LDUNDEF, (uint)dreg, 0, 0);
+            self.emit_var_store(dreg, binds[i].name_idx, is_lexical, is_const);
         }
         return;
     }
 
-    // Evaluate RHS (after all bindings declared, so their regs are below RHS regs)
+    // Evaluate RHS (after all bindings declared, so their regs are below the
+    // RHS reg, keeping loop-carried collectors safe from CALL frame overlay).
+    // Save the watermark so all destructuring temporaries (RHS + iterator
+    // state + per-element scratch) are released together afterward, preventing
+    // register drift across successive destructuring statements.
+    ushort saved_next = self.next_reg;
     ushort rhs_reg = self.assignment_expr()!;
 
-    // Emit code for each binding: get property from RHS, store in binding reg
-    ushort nested_temp_reg = 0;
-    bool has_nested_temp = false;
-    uint nested_temp_outer_idx = 0;
-
-    for (uint i = 0; i < bind_count; i++) {
-        if (binds[i].is_hole) continue;
-
-        if (binds[i].is_rest && binds[i].is_nested) {
-            // Nested rest element: [a, [b, ...rest]] → call nested_array.slice(inner_idx)
-            // First ensure nested temp is available
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            // Now call nested_array.slice(inner_idx)
-            uint rest_idx = binds[i].inner_idx;
-            ushort callee_reg = self.alloc_reg();
-            self.reserve_call_frame(callee_reg, 1);
-
-            ushort slice_key_reg = self.alloc_reg();
-            uint slice_key_idx = self.add_string_constant("slice");
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
-            ushort method_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)nested_temp_reg, (uint)slice_key_reg);
-
-            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
-            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)nested_temp_reg, 0);
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
-
-            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
-
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
-            self.free_regs_to(callee_reg);
-        } else if (binds[i].is_rest) {
-            // Free nested temp if any
-            if (has_nested_temp) {
-                self.free_reg(nested_temp_reg);
-                has_nested_temp = false;
-            }
-
-            // Rest element: call rhs.slice(rest_idx)
-            // Use outer_idx as the starting index
-            uint rest_idx = binds[i].outer_idx;
-
-            // Method call setup
-            // CALL convention: callee at callee_reg, this at callee_reg+1, args at callee_reg+2..
-            ushort callee_reg = self.alloc_reg();
-            // Ensure the call area (callee, this, args) is above next_reg
-            self.reserve_call_frame(callee_reg, 1);
-
-            // Get "slice" method from rhs
-            ushort slice_key_reg = self.alloc_reg();
-            uint slice_key_idx = self.add_string_constant("slice");
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
-            ushort method_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)rhs_reg, (uint)slice_key_reg);
-
-            // Move method to callee_reg (CALL reads function from callee_reg)
-            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
-
-            // this = rhs at callee_reg + 1 (CALL reads 'this' from here)
-            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)rhs_reg, 0);
-
-            // arg = rest_idx at callee_reg + 2 (CALL reads args from here)
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
-
-            // Call: rhs.slice(rest_idx)
-            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
-
-            // Store result into binding register (result is in callee_reg after CALL)
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
-
-            // Free call area + temp regs (callee_reg, this, arg, slice_key, method)
-            // All of these are above callee_reg, so free_regs_to handles them.
-            // binds[i].reg is below callee_reg, so it survives.
-            self.free_regs_to(callee_reg);
-        } else if (binds[i].is_nested) {
-            // Nested binding: GETPROP outer[inner_idx] → reg
-            // First, ensure we have the outer element in a temp register
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                // Free old temp if switching to a different outer index
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                // GETPROP rhs[outer_idx] → temp
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            if (binds[i].nest_depth == 2) {
-                // Two-level nesting: temp2 = temp[inner_idx], result = temp2[depth2_idx]
-                ushort temp2_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)temp2_reg, (uint)nested_temp_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-
-                ushort idx_reg2 = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg2, (int)binds[i].depth2_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)temp2_reg, (uint)idx_reg2);
-                self.free_reg(idx_reg2);
-                self.free_reg(temp2_reg);
-            } else {
-                // One-level nesting: result = temp[inner_idx]
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-            }
-
-            // Apply default if present: if value is undefined, use default
-            if (binds[i].has_default) {
-                // Check if value is undefined
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                // If not undefined, jump over default
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                // Load default value
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-
-                // Patch jump
-                self.patch_jump(skip_default);
-
-                // Free the default value register
-                self.free_reg(binds[i].default_val_reg);
-            }
-        } else if (binds[i].is_obj_nested) {
-            // Object nested in array: [a, {x, y}] or [a, {x, y} = def]
-            // Get rhs[outer_idx] first, cache it, then get object property from it
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                // Free old temp if switching to a different outer index
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                // GETPROP rhs[outer_idx] → temp (temp is the object at array index)
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-
-                // The default (if any) applies to the whole nested object,
-                // not to the first property. The default is recorded on the
-                // first binding of this nested object.
-                if (binds[i].has_obj_default) {
-                    ushort undef_check_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                    ushort is_undef_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)nested_temp_reg, (uint)undef_check_reg);
-                    self.free_reg(undef_check_reg);
-
-                    uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                    self.free_reg(is_undef_reg);
-
-                    self.emit_abc(Opcode.LDREG, (uint)nested_temp_reg, (uint)binds[i].obj_default_val_reg, 0);
-                    self.patch_jump(skip_default);
-
-                    self.free_reg(binds[i].obj_default_val_reg);
-                }
-
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            // GETPROP temp[obj_key] → reg (get property from object)
-            ushort key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].obj_key_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)key_reg);
-            self.free_reg(key_reg);
-
-            // Apply per-property default if present: {x = expr}
-            if (binds[i].has_default) {
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-                self.patch_jump(skip_default);
-
-                self.free_reg(binds[i].default_val_reg);
-            }
-        } else {
-            // Free nested temp if transitioning from nested to non-nested
-            if (has_nested_temp) {
-                self.free_reg(nested_temp_reg);
-                has_nested_temp = false;
-            }
-
-            // Regular element: GETPROP rhs[outer_idx] → bind_reg
-            ushort idx_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)idx_reg);
-            self.free_reg(idx_reg);
-
-            // Apply default if present: if value is undefined, use default
-            if (binds[i].has_default) {
-                // Check if value is undefined
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                // If not undefined, jump over default
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                // Load default value
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-
-                // Patch jump
-                self.patch_jump(skip_default);
-
-                // Free the default value register
-                self.free_reg(binds[i].default_val_reg);
-            }
-        }
-
-        self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+    // Patch top-level binds to read from the RHS register.
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].parent_idx == 0xFFFF) binds[i].arg_idx = rhs_reg;
     }
 
-    // Free nested temp if still active
-    if (has_nested_temp) {
-        self.free_reg(nested_temp_reg);
-    }
+    self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
+                                DestructStoreMode.DECLARE, is_lexical, is_const);
 
-    self.free_reg(rhs_reg);
+    self.free_regs_to(saved_next);
+
+    // At global scope, var bindings are env-resident (resolve_var skips the
+    // global scope), so their registers are only needed as the DECLVAR source.
+    // Free them to prevent register drift, matching the simple-declaration path.
+    if (self.is_global && !is_lexical) {
+        self.free_regs_to(pre_decl_next);
+    }
+    return;
 }
+
 
 /// Parse object destructuring pattern: {a, b: c, x = default} = rhs
 /// The '{' has already been consumed.
@@ -1081,547 +622,59 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 /// Parse array destructuring assignment: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
 /// Returns the RHS register (destructuring assignment evaluates to RHS value).
+///
+/// Uses the ES2015 §13.3.3 iterator protocol via the shared, recursive
+/// `emit_destruct_bindings` emitter — works for any iterable at arbitrary
+/// nesting depth. Targets are identifiers (resolved or assigned by name via
+/// PUTVAR). See plan 044.
 fn ushort? CompilerContext.array_destructure_assign(&self) {
-    ArrayBind[32] binds;
-    uint bind_count = 0;
+    DestructBind[MAX_DESTRUCT_BINDS] binds;
+    uint count = 0;
 
-    // Parse pattern elements, resolving existing variables instead of declaring new ones
-    uint array_idx = 0;
+    // Parse the pattern into the recursive DestructBind model.
+    self.collect_arr_param_binds(binds[..], &count, 0, 0xFFFF)!;
 
-    for (;;) {
-        if (self.check(TokenType.RBRACKET)) break;
+    ushort[MAX_DESTRUCT_BINDS] group_regs;
+    ushort[MAX_DESTRUCT_BINDS] binding_regs;
+    for (uint i = 0; i < count; i++) { group_regs[i] = 0xFFFF; binding_regs[i] = 0xFFFF; }
 
-        if (self.check(TokenType.COMMA)) {
-            self.advance()!;
-            if (bind_count < 32) {
-                binds[bind_count].is_hole = true;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-                bind_count++;
+    // Each leaf target is an existing variable. Resolve it to its register if
+    // it lives in the local register cache, else allocate a temp that the
+    // emitter's PUTVAR (by name) will write back to the environment binding.
+    // At global scope all reads/writes go through the environment (resolve_var
+    // is skipped there, matching identifier assignment), so always use a temp.
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].is_synthetic) continue;
+        char[] name = binds[i].name_buf[:binds[i].name_len];
+        if (!self.is_global) {
+            if (try existing = self.resolve_var(name)) {
+                binding_regs[i] = existing;
+                continue;
             }
-            array_idx++;
-            continue;
         }
-
-        if (self.match(TokenType.ELLIPSIS)) {
-            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
-            if (bind_count < 32) {
-                ushort reg;
-                if (try existing = self.resolve_var(rest_tok.str_value)) {
-                    reg = existing;
-                    binds[bind_count].is_resolved = false;
-                } else {
-                    reg = self.alloc_reg();
-                    binds[bind_count].is_resolved = false;
-                }
-                binds[bind_count].reg = reg;
-                binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
-                binds[bind_count].is_rest = true;
-                binds[bind_count].is_hole = false;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-                bind_count++;
-            }
-            while (self.match(TokenType.COMMA)) {}
-            break;
-        }
-
-        // Check for nested array pattern
-        if (self.check(TokenType.LBRACKET)) {
-            self.advance()!; // consume '['
-            uint nested_outer = array_idx;
-            array_idx++;
-            uint inner_idx = 0;
-
-            // Parse inner elements of the nested pattern
-            for (;;) {
-                if (self.check(TokenType.RBRACKET)) break;
-
-                if (self.check(TokenType.COMMA)) {
-                    self.advance()!;
-                    if (bind_count < 32) {
-                        binds[bind_count].is_hole = true;
-                        binds[bind_count].has_default = false;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 1;
-                        binds[bind_count].depth2_idx = 0;
-                        bind_count++;
-                    }
-                    inner_idx++;
-                    continue;
-                }
-
-                // Check for rest element in nested array: [a, [b, ...rest]]
-                if (self.match(TokenType.ELLIPSIS)) {
-                    Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
-                    if (bind_count < 32) {
-                        ushort reg;
-                        if (try existing = self.resolve_var(rest_tok.str_value)) {
-                            reg = existing;
-                            binds[bind_count].is_resolved = false;
-                        } else {
-                            reg = self.alloc_reg();
-                            binds[bind_count].is_resolved = false;
-                        }
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
-                        binds[bind_count].is_rest = true;
-                        binds[bind_count].is_hole = false;
-                        binds[bind_count].has_default = false;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 1;
-                        binds[bind_count].depth2_idx = 0;
-                        bind_count++;
-                    }
-                    while (self.match(TokenType.COMMA)) {}
-                    break;
-                }
-
-                // Check for triple nesting: [[[a]]] or [[[a = expr]]]
-                if (self.check(TokenType.LBRACKET)) {
-                    self.advance()!; // consume inner '['
-                    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-
-                    // Check for default: a = expr
-                    bool has_default_val = false;
-                    ushort default_val_reg = 0;
-                    if (self.match(TokenType.ASSIGN)) {
-                        has_default_val = true;
-                        default_val_reg = self.assignment_expr()!;
-                    }
-
-                    self.expect(TokenType.RBRACKET)!;
-
-                    if (bind_count < 32) {
-                        ushort reg;
-                        if (try existing = self.resolve_var(name_tok.str_value)) {
-                            reg = existing;
-                            binds[bind_count].is_resolved = true;
-                        } else {
-                            reg = self.alloc_reg();
-                            binds[bind_count].is_resolved = false;
-                        }
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].is_rest = false;
-                        binds[bind_count].is_hole = false;
-                        binds[bind_count].has_default = has_default_val;
-                        binds[bind_count].default_val_reg = default_val_reg;
-                        binds[bind_count].is_nested = true;
-                        binds[bind_count].outer_idx = nested_outer;
-                        binds[bind_count].inner_idx = inner_idx;
-                        binds[bind_count].nest_depth = 2;
-                        binds[bind_count].depth2_idx = 0;
-
-                        bind_count++;
-                    }
-                    inner_idx++;
-
-                    if (!self.match(TokenType.COMMA)) break;
-                    continue;
-                }
-
-                Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-                if (bind_count < 32) {
-                    ushort reg;
-                    if (try existing = self.resolve_var(name_tok.str_value)) {
-                        reg = existing;
-                        binds[bind_count].is_resolved = false;
-                    } else {
-                        reg = self.alloc_reg();
-                        binds[bind_count].is_resolved = false;
-                    }
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                    binds[bind_count].is_rest = false;
-                    binds[bind_count].is_hole = false;
-                    binds[bind_count].has_default = false;
-                    binds[bind_count].is_nested = true;
-                    binds[bind_count].outer_idx = nested_outer;
-                    binds[bind_count].inner_idx = inner_idx;
-                    binds[bind_count].nest_depth = 1;
-                    binds[bind_count].depth2_idx = 0;
-
-                    // Check for default: a = expr
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
-                    }
-
-                    bind_count++;
-                }
-                inner_idx++;
-
-                if (!self.match(TokenType.COMMA)) break;
-            }
-
-            self.expect(TokenType.RBRACKET)!;
-        } else if (self.check(TokenType.LBRACE)) {
-            // Nested object pattern: [a, {x, y}] = rhs or [a, {x,y} = def] = rhs
-            self.advance()!; // consume '{'
-            uint obj_array_idx = array_idx;
-            ushort obj_default_val_reg = 0;
-            bool obj_has_default = false;
-
-            // Parse all properties of the nested object
-            for (;;) {
-                if (self.check(TokenType.RBRACE)) break;
-
-                Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
-
-                Token bind_tok = prop_tok;  // default: shorthand
-                if (self.match(TokenType.COLON)) {
-                    bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                }
-
-                if (bind_count < 32) {
-                    ushort reg;
-                    if (try existing = self.resolve_var(bind_tok.str_value)) {
-                        reg = existing;
-                        binds[bind_count].is_resolved = false;
-                    } else {
-                        reg = self.alloc_reg();
-                        binds[bind_count].is_resolved = false;
-                    }
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                    binds[bind_count].is_rest = false;
-                    binds[bind_count].is_hole = false;
-                    binds[bind_count].has_default = false;
-                    binds[bind_count].is_nested = false;
-                    binds[bind_count].nest_depth = 1;
-                    binds[bind_count].depth2_idx = 0;
-                    binds[bind_count].is_obj_nested = true;
-                    binds[bind_count].outer_idx = obj_array_idx;
-                    binds[bind_count].obj_key_idx = self.add_string_constant(prop_tok.str_value);
-                    binds[bind_count].has_obj_default = false;
-                    binds[bind_count].obj_default_val_reg = 0;
-
-                    // Check for per-property default: {x = expr}
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.assignment_expr()!;
-                    }
-
-                    bind_count++;
-                }
-
-                if (!self.match(TokenType.COMMA)) break;
-            }
-
-            self.expect(TokenType.RBRACE)!;
-
-            // Default value applies to the WHOLE nested object: [a, {x,y} = def] = rhs
-            if (self.match(TokenType.ASSIGN)) {
-                obj_has_default = true;
-                obj_default_val_reg = self.assignment_expr()!;
-            }
-
-            // Attach the whole-object default to the FIRST binding of the
-            // nested object so the codegen can apply it before extracting
-            // individual properties.
-            if (obj_has_default && bind_count > 0) {
-                for (uint bi = 0; bi < bind_count; bi++) {
-                    if (binds[bi].is_obj_nested && binds[bi].outer_idx == obj_array_idx) {
-                        binds[bi].has_obj_default = true;
-                        binds[bi].obj_default_val_reg = obj_default_val_reg;
-                        break;
-                    }
-                }
-            }
-
-            array_idx++;
-        } else {
-            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-            if (bind_count < 32) {
-                ushort reg;
-                if (try existing = self.resolve_var(name_tok.str_value)) {
-                    reg = existing;
-                    binds[bind_count].is_resolved = false;
-                } else {
-                    reg = self.alloc_reg();
-                    binds[bind_count].is_resolved = false;
-                }
-                binds[bind_count].reg = reg;
-                binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                binds[bind_count].is_rest = false;
-                binds[bind_count].is_hole = false;
-                binds[bind_count].has_default = false;
-                binds[bind_count].is_nested = false;
-                binds[bind_count].outer_idx = array_idx;
-                binds[bind_count].nest_depth = 1;
-                binds[bind_count].depth2_idx = 0;
-
-                // Check for default: a = expr
-                if (self.match(TokenType.ASSIGN)) {
-                    binds[bind_count].has_default = true;
-                    // Compile the default expression into a temp register
-                    binds[bind_count].default_val_reg = self.assignment_expr()!;
-                }
-
-                bind_count++;
-            }
-            array_idx++;
-        }
-
-        if (!self.match(TokenType.COMMA)) break;
+        binding_regs[i] = self.alloc_reg();
     }
 
-    self.expect(TokenType.RBRACKET)!;
+    // Consume the '=' separating pattern from RHS (the caller verified it via
+    // lookahead but did not consume it), then evaluate the RHS.
     self.expect(TokenType.ASSIGN)!;
-
-    // Evaluate RHS
     ushort rhs_reg = self.assignment_expr()!;
-
-    // Emit code for each binding: get property from RHS, store in binding
-    ushort nested_temp_reg = 0;
-    bool has_nested_temp = false;
-    uint nested_temp_outer_idx = 0;
-
-    for (uint i = 0; i < bind_count; i++) {
-        if (binds[i].is_hole) continue;
-
-        if (binds[i].is_rest && binds[i].is_nested) {
-            // Nested rest element: [a, [b, ...rest]] → call nested_array.slice(inner_idx)
-            // First ensure nested temp is available
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            // Now call nested_array.slice(inner_idx)
-            uint rest_idx = binds[i].inner_idx;
-            ushort callee_reg = self.alloc_reg();
-            self.reserve_call_frame(callee_reg, 1);
-
-            ushort slice_key_reg = self.alloc_reg();
-            uint slice_key_idx = self.add_string_constant("slice");
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
-            ushort method_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)nested_temp_reg, (uint)slice_key_reg);
-
-            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
-            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)nested_temp_reg, 0);
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
-
-            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
-
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
-            self.free_regs_to(callee_reg);
-        } else if (binds[i].is_rest) {
-            // Free nested temp if any
-            if (has_nested_temp) {
-                self.free_reg(nested_temp_reg);
-                has_nested_temp = false;
-            }
-
-            // Rest element: call rhs.slice(rest_idx)
-            // Use outer_idx as the starting index
-            uint rest_idx = binds[i].outer_idx;
-
-            // CALL convention: callee at callee_reg, this at callee_reg+1, args at callee_reg+2..
-            ushort callee_reg = self.alloc_reg();
-            self.reserve_call_frame(callee_reg, 1);
-
-            ushort slice_key_reg = self.alloc_reg();
-            uint slice_key_idx = self.add_string_constant("slice");
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)slice_key_reg, slice_key_idx));
-            ushort method_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)rhs_reg, (uint)slice_key_reg);
-
-            self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)method_reg, 0);
-            self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)rhs_reg, 0);
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)(callee_reg + 2), (int)rest_idx));
-
-            self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
-
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)callee_reg, 0);
-            self.free_regs_to(callee_reg);
-        } else if (binds[i].is_nested) {
-            // Nested binding: GETPROP outer[inner_idx] → reg
-            // First, ensure we have the outer element in a temp register
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                // Free old temp if switching to a different outer index
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                // GETPROP rhs[outer_idx] → temp
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            if (binds[i].nest_depth == 2) {
-                // Two-level nesting: temp2 = temp[inner_idx], result = temp2[depth2_idx]
-                ushort temp2_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)temp2_reg, (uint)nested_temp_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-
-                ushort idx_reg2 = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg2, (int)binds[i].depth2_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)temp2_reg, (uint)idx_reg2);
-                self.free_reg(idx_reg2);
-                self.free_reg(temp2_reg);
-            } else {
-                // One-level nesting: result = temp[inner_idx]
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].inner_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-            }
-
-            // Apply default if present: if value is undefined, use default
-            if (binds[i].has_default) {
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-                self.patch_jump(skip_default);
-                self.free_reg(binds[i].default_val_reg);
-            }
-        } else if (binds[i].is_obj_nested) {
-            // Object nested in array: [a, {x, y}] or [a, {x, y} = def]
-            if (!has_nested_temp || nested_temp_outer_idx != binds[i].outer_idx) {
-                // Free old temp if switching to a different outer index
-                if (has_nested_temp) {
-                    self.free_reg(nested_temp_reg);
-                }
-                // GETPROP rhs[outer_idx] → temp (temp is the object at array index)
-                nested_temp_reg = self.alloc_reg();
-                ushort idx_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-                self.emit_abc(Opcode.GETPROP, (uint)nested_temp_reg, (uint)rhs_reg, (uint)idx_reg);
-                self.free_reg(idx_reg);
-
-                // The default (if any) applies to the whole nested object,
-                // not to the first property. The default is recorded on the
-                // first binding of this nested object.
-                if (binds[i].has_obj_default) {
-                    ushort undef_check_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                    ushort is_undef_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)nested_temp_reg, (uint)undef_check_reg);
-                    self.free_reg(undef_check_reg);
-
-                    uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                    self.free_reg(is_undef_reg);
-
-                    self.emit_abc(Opcode.LDREG, (uint)nested_temp_reg, (uint)binds[i].obj_default_val_reg, 0);
-                    self.patch_jump(skip_default);
-
-                    self.free_reg(binds[i].obj_default_val_reg);
-                }
-
-                has_nested_temp = true;
-                nested_temp_outer_idx = binds[i].outer_idx;
-            }
-
-            // GETPROP temp[obj_key] → reg (get property from object)
-            ushort key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].obj_key_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)nested_temp_reg, (uint)key_reg);
-            self.free_reg(key_reg);
-
-            // Apply per-property default if present: {x = expr}
-            if (binds[i].has_default) {
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-                self.patch_jump(skip_default);
-
-                self.free_reg(binds[i].default_val_reg);
-            }
-        } else {
-            // Free nested temp if transitioning from nested to non-nested
-            if (has_nested_temp) {
-                self.free_reg(nested_temp_reg);
-                has_nested_temp = false;
-            }
-
-            // Regular element: GETPROP rhs[outer_idx] → bind_reg
-            ushort idx_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)binds[i].outer_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)idx_reg);
-            self.free_reg(idx_reg);
-
-            // Apply default if present: if value is undefined, use default
-            if (binds[i].has_default) {
-                ushort undef_check_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-                ushort is_undef_reg = self.alloc_reg();
-                self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-                self.free_reg(undef_check_reg);
-
-                uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-                self.free_reg(is_undef_reg);
-
-                self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-                self.patch_jump(skip_default);
-                self.free_reg(binds[i].default_val_reg);
-            }
-        }
-
-        // For assignment: if variable wasn't resolved locally, emit PUTVAR to write to env
-        if (!binds[i].is_resolved) {
-            ushort tmp = self.alloc_reg();
-            self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)binds[i].reg, 0);
-            self.emit_a_bc(Opcode.PUTVAR, (uint)binds[i].reg, binds[i].name_idx);
-            self.free_reg(binds[i].reg);
-            binds[i].reg = tmp;
-        }
-        // If resolved locally, value is already in the register cache — no PUTVAR needed
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].parent_idx == 0xFFFF) binds[i].arg_idx = rhs_reg;
     }
 
-    // Free nested temp if still active
-    if (has_nested_temp) {
-        self.free_reg(nested_temp_reg);
-    }
+    // Assignment (not declaration): register-resident targets are written
+    // directly by the extraction; env-resident targets get a bare PUTVAR.
+    self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
+                                DestructStoreMode.ASSIGN_TARGET);
 
-    self.free_reg(rhs_reg);
+    // Release all destructuring temporaries above the RHS register (iterator
+    // state + per-element scratch), keeping rhs_reg live so the destructuring
+    // assignment can evaluate to the RHS value. Prevents register drift across
+    // successive destructuring statements.
+    self.free_regs_to((ushort)(rhs_reg + 1));
+
+    // Destructuring assignment evaluates to the RHS value.
     return rhs_reg;
 }
 

@@ -1,6 +1,20 @@
 # Plan 044: Iterator protocol for statement-level array destructuring
 
-**Status:** Planned.
+**Status:** Implemented. `array_destructure` / `array_destructure_assign` now
+build the recursive `DestructBind[]` model and delegate to
+`emit_destruct_bindings`; the legacy index/`.slice()` emitters are deleted.
+The emitter gained a `DestructStoreMode` (PARAM_SYNC / DECLARE /
+ASSIGN_TARGET) because the three call sites need different env-store ops:
+parameters re-assign an existing binding (PUTVAR + GETVAR reload), statement
+declarations must *declare* (DECLVAR / PUTLEX / PUTLEX_C via
+`emit_var_store`), and assignment targets write register-resident locals
+directly or bare-PUTVAR env residents (a PUTVAR+GETVAR pair would be
+misread as loop-var sync by the register-locals elision and dropped).
+Scope-stack names are backed by interned constant-pool bytes — a slice into
+the stack-local `binds` array dangles after the parse function returns.
+Oracle: `test/test_statement_destructure_iter.js` (13/13).
+Known pre-existing, unrelated failure: closures over lexical locals lose
+their PUTLEX stores to the env-elision gate (tracked separately).
 **Related:** extends the plan-042 fix (iterator protocol for *function-parameter*
 array destructuring) to the *statement* path. Discovered while validating
 [043-call-frame-isolation.md](043-call-frame-isolation.md).

@@ -25,6 +25,23 @@ struct DestructIterState {
     ushort callee_this_reg; // this register for .next calls
 }
 
+/// How emit_destruct_bindings syncs each leaf binding to the environment.
+/// PARAM_SYNC: function parameters — already declared in the env at call entry;
+///   PUTVAR + GETVAR reload (PUTVAR clears the source register). The adjacent
+///   same-reg/same-name pair is elided by the register-locals pass when the
+///   function needs no runtime env.
+/// DECLARE: statement declarations (var/let/const [pattern] = rhs) — declare
+///   the binding via emit_var_store (DECLVAR / PUTLEX / PUTLEX_C).
+/// ASSIGN_TARGET: destructuring assignment ([a, b] = rhs) — register-resident
+///   locals are written directly by the extraction (no env op); everything
+///   else gets a bare PUTVAR (no GETVAR reload — the pair would be
+///   misidentified as loop-var sync and elided, dropping genuine env stores).
+enum DestructStoreMode {
+    PARAM_SYNC,
+    DECLARE,
+    ASSIGN_TARGET,
+}
+
 /// Collected info for a single destructured binding from a function parameter.
 struct DestructBind {
     uint name_idx;       // constant index of the binding name (0xFFFFFFFF for synthetic)
@@ -397,7 +414,9 @@ fn ushort find_destruct_iter(ushort src_reg, DestructIterState[] states, uint* c
 /// protocol (array patterns) to extract values into group_regs / binding_regs.
 fn void CompilerContext.emit_destruct_bindings(&self,
     DestructBind[] binds, uint count,
-    ushort[] group_regs, ushort[] binding_regs)
+    ushort[] group_regs, ushort[] binding_regs,
+    DestructStoreMode store_mode = PARAM_SYNC,
+    bool is_lexical = false, bool is_const = false)
 {
     if (count == 0) return;
 
@@ -685,9 +704,18 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
             }
 
-            // Sync binding to environment
-            self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
-            self.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+            // Sync binding to environment per store mode (see DestructStoreMode).
+            switch (store_mode) {
+                case PARAM_SYNC:
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                    self.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+                case DECLARE:
+                    self.emit_var_store(bind_reg, ni, is_lexical, is_const);
+                case ASSIGN_TARGET:
+                    if (!self.is_local_var_reg(bind_reg)) {
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                    }
+            }
         }
     }
 
