@@ -117,7 +117,10 @@ assertEq(JSON.stringify({prop: 1}, replacer3), '{}', "replacer omit obj prop →
 assertEq(JSON.stringify({a: {b: [1]}}, replacer3), '{"a":{"b":[null]}}', "replacer omit nested");
 
 // Replacer function wrapper
+// configurable so the cleanup `delete Object.prototype['']` below succeeds —
+// without it the property defaults to non-configurable and strict delete throws.
 Object.defineProperty(Object.prototype, '', {
+  configurable: true,
   set: function() { throw new Error("Set should not be called"); }
 });
 var wrapperVal = {};

@@ -480,6 +480,15 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         // Handle short-circuit operators specially
         if (tt == TokenType.LOG_AND) {
             self.advance()!;
+            // Result merges into `left`'s register — if that is a live local
+            // variable register, copy to a temp first so the variable isn't
+            // clobbered (same guard as the regular binary path below).
+            if (left_is_local) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+                left = tmp;
+                left_is_local = false;
+            }
             // Short-circuit: if left is falsy, skip right and result is left
             uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
 
@@ -493,6 +502,13 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
 
         if (tt == TokenType.LOG_OR) {
             self.advance()!;
+            // Copy live local out of the merge register (see LOG_AND above).
+            if (left_is_local) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+                left = tmp;
+                left_is_local = false;
+            }
             // Short-circuit: if left is truthy, skip right and result is left
             uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
 
@@ -506,6 +522,13 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
 
         if (tt == TokenType.NULLISH) {
             self.advance()!;
+            // Copy live local out of the merge register (see LOG_AND above).
+            if (left_is_local) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
+                left = tmp;
+                left_is_local = false;
+            }
             // Nullish coalescing: if left is not null/undefined, use left.
             // Reuse left as result register (no separate allocation).
             ushort cmp_reg = self.alloc_reg();
