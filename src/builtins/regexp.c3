@@ -686,7 +686,9 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
             arr_idx++;
 
             if (out_end == search_pos) {
-                search_pos = out_end + 1;
+                bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                search_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                    input[:input_len], (uint)out_end, unicode_flag);
                 if (search_pos > input_len) break;
             } else {
                 search_pos = out_end;
@@ -949,7 +951,11 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
             for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
 
             if (out_end == search_pos) {
-                search_pos = out_end + 1;
+                bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                int next_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                    input[:input_len], (uint)out_end, unicode_flag);
+                for (usz i = (usz)out_end; i < (usz)next_pos && bOff < 8192; i++) buf[bOff++] = input[i];
+                search_pos = next_pos;
                 if (search_pos > input_len) break;
             } else {
                 search_pos = out_end;

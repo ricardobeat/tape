@@ -640,6 +640,22 @@ fn uint utf16_unit_byte_len(char[] data, uint offset) @inline {
     return utf8_seq_len(data[offset]);
 }
 
+/// ES `AdvanceStringIndex(S, index, unicode)`: the byte width to advance past
+/// a zero-length match at `data[offset]`. Under `unicode`, if the code unit
+/// at `offset` is a high surrogate immediately followed by a low surrogate,
+/// the pair advances together (matches astral characters); otherwise (or
+/// without `unicode`) a single code unit advances.
+fn uint advance_string_index_byte_len(char[] data, uint offset, bool unicode) {
+    uint seq_len = utf16_unit_byte_len(data, offset);
+    if (!unicode || (usz)(offset + seq_len) >= data.len) return seq_len;
+    uint cp = decode_codepoint(data, offset);
+    if (!is_high_surrogate(cp)) return seq_len;
+    uint next_len = utf16_unit_byte_len(data, offset + seq_len);
+    uint next_cp = decode_codepoint(data, offset + seq_len);
+    if (is_low_surrogate(next_cp)) return seq_len + next_len;
+    return seq_len;
+}
+
 /// True when `data` contains any raw 4-byte UTF-8 lead byte (0xF0-0xF7),
 /// i.e. an astral codepoint encoded as standard UTF-8 rather than CESU-8.
 /// Every internal string is expected to be CESU-8-canonical (see

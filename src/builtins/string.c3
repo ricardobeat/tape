@@ -910,7 +910,9 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             }
 
             if (out_end == search_pos) {
-                search_pos = out_end + 1;
+                bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                search_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                    input[:input_len], (uint)out_end, unicode_flag);
                 if (search_pos > input_len) break;
             } else {
                 search_pos = out_end;
@@ -1376,7 +1378,11 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                 for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
 
                 if (out_end == search_pos) {
-                    search_pos = out_end + 1;
+                    bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                    int next_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                        input[:input_len], (uint)out_end, unicode_flag);
+                    for (usz i = (usz)out_end; i < (usz)next_pos && bOff < 8192; i++) buf[bOff++] = input[i];
+                    search_pos = next_pos;
                     if (search_pos > input_len) break;
                 } else {
                     search_pos = out_end;
@@ -1592,7 +1598,11 @@ fn void builtin_string_proto_replaceAll(BuiltinContext* ctx) {
             for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
 
             if (out_end == search_pos) {
-                search_pos = out_end + 1;
+                bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                int next_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                    input[:ilen], (uint)out_end, unicode_flag);
+                for (usz i = (usz)out_end; i < (usz)next_pos && bOff < 8192; i++) buf[bOff++] = input[i];
+                search_pos = next_pos;
                 if (search_pos > ilen) break;
             } else {
                 search_pos = out_end;
@@ -2341,9 +2351,12 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
                 arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
                 arr_idx++;
 
-                // Advance: if empty match, move by one; else go to end of match
+                // Advance: if empty match, move by one code unit (or surrogate
+                // pair under the u/v flag); else go to end of match
                 if (out_end == search_pos) {
-                    search_pos = out_end + 1;
+                    bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
+                    search_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                        input[:input_len], (uint)out_end, unicode_flag);
                     if (search_pos > input_len) break;
                 } else {
                     search_pos = out_end;
