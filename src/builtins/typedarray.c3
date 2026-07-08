@@ -2399,7 +2399,7 @@ fn bool register_typedarray_symbol_accessor(HObject* proto, Heap* heap, HString*
 }
 
 /// Register a single typed array constructor globally.
-fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn_index, HObject* proto) {
+fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn_index, HObject* proto, uint bpe) {
     // Create constructor as a proper HObject (not lightfunc) so it's constructable
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
@@ -2449,6 +2449,23 @@ fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal ctor_val_tv; ctor_val_tv.set_object(ctor);
     ctor_proto.put_prop(constructor_key, ctor_val_tv, hobject::PROP_FLAGS_WC);
+
+    // BYTES_PER_ELEMENT on both constructor and per-class prototype.
+    // Attributes: {writable:false, enumerable:false, configurable:false}.
+    {
+        HString* bpe_key = builtin_intern_string(heap, "BYTES_PER_ELEMENT");
+        if (bpe_key != null) {
+            PropFlags bpe_pflags;
+            bpe_pflags.writable = false;
+            bpe_pflags.enumerable = false;
+            bpe_pflags.configurable = false;
+            bpe_pflags.is_accessor = false;
+            TVal bpe_tv;
+            bpe_tv.set_fastint((long)bpe);
+            ctor.put_prop(bpe_key, bpe_tv, bpe_pflags);
+            ctor_proto.put_prop(bpe_key, bpe_tv, bpe_pflags);
+        }
+    }
 
     // Register globally
     uint hash = heap.hash_string(name);
@@ -2588,15 +2605,15 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     }
 
     // Register each typed array constructor
-    if (!register_ta_ctor(global_env, heap, "Int8Array",               BUILTIN_INT8ARRAY,              proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint8Array",              BUILTIN_UINT8ARRAY,             proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint8ClampedArray",       BUILTIN_UINT8CLAMPEDARRAY,      proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Int16Array",              BUILTIN_INT16ARRAY,             proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint16Array",             BUILTIN_UINT16ARRAY,            proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Int32Array",              BUILTIN_INT32ARRAY,             proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint32Array",             BUILTIN_UINT32ARRAY,            proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Float32Array",            BUILTIN_FLOAT32ARRAY,           proto)) return false;
-    if (!register_ta_ctor(global_env, heap, "Float64Array",            BUILTIN_FLOAT64ARRAY,           proto)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int8Array",               BUILTIN_INT8ARRAY,              proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint8Array",              BUILTIN_UINT8ARRAY,             proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint8ClampedArray",       BUILTIN_UINT8CLAMPEDARRAY,      proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int16Array",              BUILTIN_INT16ARRAY,             proto, 2)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint16Array",             BUILTIN_UINT16ARRAY,            proto, 2)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int32Array",              BUILTIN_INT32ARRAY,             proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint32Array",             BUILTIN_UINT32ARRAY,            proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Float32Array",            BUILTIN_FLOAT32ARRAY,           proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Float64Array",            BUILTIN_FLOAT64ARRAY,           proto, 8)) return false;
 
     // Install of/from on the %TypedArray% intrinsic so all 9 per-class ctors
     // inherit them via [[Prototype]] chain (§22.2.2.1, §22.2.2.2).

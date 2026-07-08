@@ -492,12 +492,8 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
         proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
     }
 
-    // Static ArrayBuffer.isView
-    HString* isview_key = builtin_intern_string(heap, "isView");
-    if (isview_key == null) return false;
-    TVal isview_tv;
-    isview_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAYBUFFER_ISVIEW);
-    ctor.put_prop(isview_key, isview_tv, hobject::PROP_FLAGS_WC);
+    // Static ArrayBuffer.isView — proper HObject so .length/.name are accessible.
+    if (!register_string_proto_method(ctor, heap, "isView", BUILTIN_ARRAYBUFFER_ISVIEW)) return false;
 
     // Static @@species accessor (returns `this` constructor).
     HString* species_sym = ensure_species_symbol(heap);

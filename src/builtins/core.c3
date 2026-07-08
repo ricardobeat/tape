@@ -1813,6 +1813,28 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 327: return { "[Symbol.replace]", 2 };
         case 328: return { "[Symbol.split]", 2 };
         case 329: return { "next", 0 };
+        // ArrayBuffer constructor / statics / prototype
+        case 349: return { "ArrayBuffer", 1 };
+        case 350: return { "isView", 1 };
+        case 352: return { "slice", 2 };
+        // DataView constructor / prototype
+        case 361: return { "DataView", 1 };
+        case 365: return { "getInt8", 1 };
+        case 366: return { "getUint8", 1 };
+        case 367: return { "getInt16", 1 };
+        case 368: return { "getUint16", 1 };
+        case 369: return { "getInt32", 1 };
+        case 370: return { "getUint32", 1 };
+        case 371: return { "getFloat32", 1 };
+        case 372: return { "getFloat64", 1 };
+        case 373: return { "setInt8", 2 };
+        case 374: return { "setUint8", 2 };
+        case 375: return { "setInt16", 2 };
+        case 376: return { "setUint16", 2 };
+        case 377: return { "setInt32", 2 };
+        case 378: return { "setUint32", 2 };
+        case 379: return { "setFloat32", 2 };
+        case 380: return { "setFloat64", 2 };
         // %TypedArray%.prototype wave A (plan 049 stage 4)
         case 381: return { "values", 0 };
         case 382: return { "keys", 0 };
@@ -1823,6 +1845,33 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 387: return { "fill", 1 };
         case 388: return { "copyWithin", 2 };
         case 389: return { "slice", 2 };
+        // %TypedArray%.prototype wave B (plan 049 stage 5)
+        case 390: return { "indexOf", 1 };
+        case 391: return { "lastIndexOf", 1 };
+        case 392: return { "includes", 1 };
+        case 393: return { "join", 1 };
+        case 394: return { "forEach", 1 };
+        case 395: return { "every", 1 };
+        case 396: return { "some", 1 };
+        case 397: return { "reduce", 1 };
+        case 398: return { "reduceRight", 1 };
+        case 399: return { "map", 1 };
+        case 400: return { "filter", 1 };
+        case 401: return { "find", 1 };
+        case 402: return { "findIndex", 1 };
+        case 403: return { "findLast", 1 };
+        case 404: return { "findLastIndex", 1 };
+        case 405: return { "reverse", 0 };
+        case 406: return { "toReversed", 0 };
+        case 407: return { "at", 1 };
+        case 408: return { "sort", 1 };
+        case 409: return { "toSorted", 1 };
+        case 410: return { "toString", 0 };
+        case 411: return { "toLocaleString", 0 };
+        // %TypedArray% intrinsic statics
+        case 412: return { "of", 0 };
+        case 413: return { "from", 1 };
+        case 414: return { "TypedArray", 0 };
         default: return { "", -1 };
     }
 }
