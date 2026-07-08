@@ -1354,6 +1354,9 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     if (result_arr == null) { ctx.result.set_undefined(); return; }
 
+    // ES2022 §23.1.3.24 steps 9-11: n advances every iteration, so holes in
+    // the source stay holes at the same relative position in the result, and
+    // the final length is the full count even when it ends in holes.
     ulong n = 0;
     for (ulong i = k; i < final_val; i++) {
         if (arr_has_prop(obj, i, ctx.heap)) {
@@ -1364,9 +1367,9 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
                     ctx.result.set_undefined();
                     return;
                 }
-                n++;
             }
         }
+        n++;
     }
     array_set_length_ulong(result_arr, n, ctx.heap);
 
