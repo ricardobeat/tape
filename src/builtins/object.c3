@@ -1469,6 +1469,33 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     uint arr_new_len = 0;
     bool arr_has_new_len = false;
     if (is_array_length) {
+        // ES5 §15.4.5.1 step 2 / ArraySetLength: If 'value' is present, validate it
+        // via ToNumber/ToUint32 FIRST. Per ES2015 §10.4.2.4 ArraySetLength, this
+        // RangeError check must precede the descriptor-flag (get/set, configurable,
+        // writable, enumerable) TypeError rejections below.
+        HString* val_k = builtin_intern_string(ctx.heap, "value");
+        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
+        if (has_value_in_desc) {
+            TVal new_len_val = desc_vals[0];
+
+            // ES5 §15.4.5.1 step 3.c: ToNumber then ToUint32. Use the VM-aware
+            // helper so object values are converted via ToPrimitive (valueOf/toString).
+            double num = builtin_to_number_vm(ctx, &new_len_val);
+            if (ctx.should_throw) {
+                return;
+            }
+
+            // ToUint32: reject NaN, ±∞, negative, non-integer, > 2^32-1
+            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
+                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
+                return;
+            }
+
+            uint new_len = (uint)num;
+            arr_new_len = new_len;
+            arr_has_new_len = true;
+        }
+
         // Check for accessor descriptor on length — reject (length is always data)
         HString* get_k = builtin_intern_string(ctx.heap, "get");
         HString* set_k = builtin_intern_string(ctx.heap, "set");
@@ -1503,43 +1530,18 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
             return;
         }
-
-        // ES5 §15.4.5.1 step 2: If 'value' is present, validate it.
-        HString* val_k = builtin_intern_string(ctx.heap, "value");
-        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
-        if (has_value_in_desc) {
-            TVal new_len_val = desc_vals[0];
-
-            // ES5 §15.4.5.1 step 3.c: ToNumber then ToUint32. Use the VM-aware
-            // helper so object values are converted via ToPrimitive (valueOf/toString).
-            double num = builtin_to_number_vm(ctx, &new_len_val);
-            if (ctx.should_throw) {
-                return;
-            }
-
-            // ToUint32: reject NaN, ±∞, negative, non-integer, > 2^32-1
-            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
-                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
-                return;
-            }
-
-            uint new_len = (uint)num;
-            arr_new_len = new_len;
-            arr_has_new_len = true;
-
-            // ES5 §15.4.5.1 step 3.l: truncate elements when new < old
-            uint old_len = array_get_length(obj, ctx.heap);
-            if (new_len < old_len) {
-                for (uint di = old_len; di > new_len; di--) {
-                    array_delete_elem(obj, di - 1, ctx.heap);
-                }
-            }
-        }
     }
     // Array length: return early. The only valid operation is changing the value.
     // configurable/writable are rejected above, and enumerable cannot be changed.
     if (is_array_length) {
         if (arr_has_new_len) {
+            // ES5 §15.4.5.1 step 3.l: truncate elements when new < old
+            uint old_len = array_get_length(obj, ctx.heap);
+            if (arr_new_len < old_len) {
+                for (uint di = old_len; di > arr_new_len; di--) {
+                    array_delete_elem(obj, di - 1, ctx.heap);
+                }
+            }
             array_set_length(obj, arr_new_len, ctx.heap);
         }
         ctx.result.set_object(obj);
