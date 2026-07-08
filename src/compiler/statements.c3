@@ -2538,7 +2538,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         fobj_binds[fbind_count].has_default = true;
-                                        fobj_binds[fbind_count].default_val_reg = self.assignment_expr()!;
+                                        fobj_binds[fbind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
                                     }
 
                                     fbind_count++;
@@ -2554,7 +2554,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         fobj_binds[fbind_count].has_default = true;
-                                        fobj_binds[fbind_count].default_val_reg = self.assignment_expr()!;
+                                        fobj_binds[fbind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
                                     }
 
                                     fbind_count++;

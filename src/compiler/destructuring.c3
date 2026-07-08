@@ -13,6 +13,85 @@ import std::io;
 // Destructuring patterns (array and object)
 // ============================================================================
 
+/// Parse a destructuring-default AssignmentExpression with the binding name
+/// available as the inferred function name (per ES2015 §13.3.3.7 step 3 / §14.1.20
+/// SetFunctionName — NamedEvaluation tags an anonymous function/arrow/class/
+/// generator default with the binding identifier). Saves and restores the
+/// surrounding inferred_name slot so the binding-name propagation is scoped
+/// to this one default and doesn't leak to siblings.
+fn ushort? CompilerContext.destructuring_default_expr(&self, char[] binding_name) {
+    bool saved_has = self.has_inferred_name;
+    char[128] saved_buf;
+    ushort saved_len = self.inferred_name_len;
+    for (usz i = 0; i < (usz)saved_len; i++) saved_buf[i] = self.inferred_name_buf[i];
+    self.has_inferred_name = binding_name.len > 0 && binding_name.len < 128;
+    self.inferred_name_len = (ushort)(self.has_inferred_name ? binding_name.len : 0);
+    for (usz i = 0; i < (usz)binding_name.len && i < 128; i++) {
+        self.inferred_name_buf[i] = binding_name[i];
+    }
+    ushort? r = self.assignment_expr();
+    self.has_inferred_name = saved_has;
+    self.inferred_name_len = saved_len;
+    for (usz i = 0; i < (usz)saved_len; i++) self.inferred_name_buf[i] = saved_buf[i];
+    return r;
+}
+
+/// Parse a property key in a destructuring binding pattern.
+/// Per ES2015 §13.3.3.7 the property key can be an IdentifierName, a string
+/// literal, a numeric literal, or a computed key. Reserved words are
+/// allowed as binding keys (mirroring object-literal property syntax) — they
+/// are stored under their keyword spelling in the constant pool, so the
+/// runtime property lookup matches the lexical key.
+///
+/// Returns the key as a `char[]` slice (backed by the token's str_value;
+/// valid until the lexer advances past the consumed token).
+fn char[]? CompilerContext.destructuring_property_key(&self) {
+    TokenType tt = self.peek_type();
+    // Identifier or reserved-word key
+    if (tt == TokenType.IDENTIFIER) {
+        Token t = self.advance()!;
+        return t.str_value;
+    }
+    // String literal key (e.g. {"a b": c})
+    if (tt == TokenType.STRING) {
+        Token t = self.advance()!;
+        return t.str_value;
+    }
+    // Numeric literal key (e.g. {1: c}) — ConvertToPropertyKey stores as string
+    if (tt == TokenType.NUMBER) {
+        Token t = self.advance()!;
+        return t.str_value;
+    }
+    // Reserved word (keyword) key — only when a keyword has a string spelling.
+    // The lexer's keyword tokens carry str_value only for the contextual
+    // keywords set up as object-literal keys (default, if, etc.); for plain
+    // keywords we extract the canonical spelling.
+    char[] kw_str = lexer::keyword_to_string(tt);
+    if (kw_str.len > 0) {
+        self.advance()!;
+        return kw_str;
+    }
+    return COMPILE_ERROR~;
+}
+
+/// Parse an identifier or computed/multi-type key as a destructuring binding
+/// target — the *value* side of `{key: target}`. Per ES2015 §13.3.3.7 this
+/// can be a BindingIdentifier with an optional default value, a nested object
+/// pattern, or a nested array pattern. Computed keys are handled by the caller
+/// before this is invoked.
+fn Token? CompilerContext.destructuring_binding_target(&self) {
+    // Expect either a binding identifier (any IdentifierName — keywords are
+    // not allowed as bindings) or a nested pattern.
+    TokenType tt = self.peek_type();
+    if (tt == TokenType.IDENTIFIER) {
+        return self.advance();
+    }
+    if (lexer::keyword_to_string(tt).len > 0) {
+        return COMPILE_ERROR~;  // keywords may not be binding identifiers
+    }
+    return COMPILE_ERROR~;
+}
+
 /// Parse array destructuring pattern: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
 ///
@@ -461,6 +540,12 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 
     // Evaluate RHS
     ushort rhs_reg = self.assignment_expr()!;
+
+    // Per ES2015 §13.3.3.7 step 1 / §13.3.3.5, RequireObjectCoercible throws
+    // TypeError for null/undefined sources before any property read. Applies
+    // to the empty pattern too (the source must be Object-coercible even when
+    // no key is read). Emitted once after RHS eval, so `var {} = null` throws.
+    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)rhs_reg, 0, 0);
 
     // Emit GETPROP for each property: rhs[key] → bind_reg
     for (uint i = 0; i < bind_count; i++) {
@@ -1144,6 +1229,11 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
     // Evaluate RHS
     ushort rhs_reg = self.assignment_expr()!;
 
+    // Per ES2015 §13.3.3.7 step 1, RequireObjectCoercible throws TypeError
+    // for null/undefined sources — applies to empty {} too. Mirrors the
+    // declaration form above.
+    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)rhs_reg, 0, 0);
+
     // Emit GETPROP for each property: rhs[key] → bind_reg
     for (uint i = 0; i < bind_count; i++) {
         if (binds[i].is_array_nested) {
@@ -1330,7 +1420,7 @@ fn void? CompilerContext.destructure_for_value(&self, ushort value_reg, ScopeKin
                 // Check for default
                 if (self.match(TokenType.ASSIGN)) {
                     binds[bind_count].has_default = true;
-                    binds[bind_count].default_val_reg = self.assignment_expr()!;
+                    binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
                 }
 
                 bind_count++;
