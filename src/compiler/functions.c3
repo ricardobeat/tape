@@ -2630,7 +2630,6 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     }
 
     CompiledFunction* func = arrow_ctx.finish()!;
-    func.flags.is_arrow = true;
 
     // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
     // See compile_inner_function for rationale. We use `body_end_pos` (captured
@@ -2837,7 +2836,6 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.num_args = param_count;
 
     CompiledFunction* func = arrow_ctx.finish()!;
-    func.flags.is_arrow = true;
 
     // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
     // See compile_inner_function for rationale. We use `body_end_pos` (captured

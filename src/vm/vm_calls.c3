@@ -1187,23 +1187,10 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.parent = ds.act;
             new_act.func = super_target;
             new_act.var_env = super_var_env;
-            // Named function expressions get a fresh declarative lex_env
-            // with the function name bound immutably (ES2015 §14.1.20).
-            if (super_target.is_namebinding()) {
-                char[] name_data = super_target.get_name();
-                HString* name_hstr = intern_string(vm, name_data);
-                if (name_hstr != null) {
-                    if (try name_lex = setup_named_function_expr_env(vm, super_var_env, name_hstr, super_hobj)) {
-                        new_act.lex_env = name_lex;
-                    } else {
-                        new_act.lex_env = super_var_env;
-                    }
-                } else {
-                    new_act.lex_env = super_var_env;
-                }
-            } else {
-                new_act.lex_env = super_var_env;
-            }
+            // Captured block scope + named-function-expression name
+            // binding — shared with every other call path; see
+            // resolve_call_lex_env.
+            new_act.lex_env = resolve_call_lex_env(vm, super_hobj, super_target, super_var_env);
             new_act.cat = null;
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;

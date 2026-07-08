@@ -5042,6 +5042,7 @@ fn void? CompilerContext.try_statement(&self) {
         has_catch = true;
         uint catch_scope = self.scope_depth;
         ushort catch_saved_reg = self.next_reg;
+        bool catch_binding_scope = false;
 
         if (self.match(TokenType.LPAREN)) {
             // Catch parameter — either a plain identifier (ES5) or a
@@ -5054,6 +5055,12 @@ fn void? CompilerContext.try_statement(&self) {
                 self.advance()!; // consume '[' or '{'
                 ushort catch_val_reg = self.alloc_reg();
                 self.emit_abc(Opcode.CATCH, (uint)catch_val_reg, 0, 0);
+                // Catch bindings live in their own lexical scope so they
+                // shadow (not clobber) same-named outer bindings. The VM's
+                // CATCH handler rebalanced lex_env to the TRY-entry level.
+                self.emit_simple(Opcode.PUSH_LEX);
+                self.cur_lex_depth++;
+                catch_binding_scope = true;
 
                 // Per spec: the thrown value must be object-coercible
                 // (null/undefined throws TypeError) for object patterns
@@ -5086,13 +5093,16 @@ fn void? CompilerContext.try_statement(&self) {
                     self.has_captured_local = true;
                 }
                 self.emit_abc(Opcode.CATCH, (uint)catch_var, 0, 0);
-                // PUTVAR the exception into the env so that subsequent
-                // GETVAR/TYPEOFIDENT for the catch variable finds it.
-                // Required in ALL scopes (not just global) because the VM
-                // resolves catch variables via environment lookup, not register.
+                // The catch parameter lives in its own lexical scope so it
+                // shadows (not clobbers) a same-named outer binding: PUTLEX
+                // declares it in the fresh env. Subsequent GETVAR/TYPEOFIDENT
+                // resolve it through the environment chain.
+                self.emit_simple(Opcode.PUSH_LEX);
+                self.cur_lex_depth++;
+                catch_binding_scope = true;
                 {
                     uint name_idx = self.add_string_constant(catch_param.str_value);
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)catch_var, name_idx);
+                    self.emit_a_bc(Opcode.PUTLEX, (uint)catch_var, name_idx);
                 }
             }
         } else {
@@ -5104,6 +5114,14 @@ fn void? CompilerContext.try_statement(&self) {
 
         // Compile catch block
         self.block(false)!;
+
+        // Close the catch-binding scope on the normal exit path (exceptional
+        // exits rebalance via the Catcher's saved lex_env; returns tear down
+        // the activation).
+        if (catch_binding_scope) {
+            self.emit_simple(Opcode.POP_LEX);
+            self.cur_lex_depth--;
+        }
 
         self.pop_scope_to(catch_scope);
         self.free_regs_to(catch_saved_reg);

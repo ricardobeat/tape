@@ -1324,6 +1324,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_class_ctor = self.is_constructable && self.in_class_body;
     func.flags.is_generator = self.is_generator;
     func.flags.is_async = self.is_async;
+    func.flags.is_arrow = self.is_arrow;
     func.flags.uses_arguments = self.uses_arguments;
     // Direct eval must run in the caller's lexical environment: the CALL
     // paths only set ACT_FLAG_DIRECT_EVAL (which builtin_eval checks) when

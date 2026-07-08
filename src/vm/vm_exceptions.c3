@@ -49,6 +49,7 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             cat.thrown_val.set_undefined();
             cat.catch_pc = catch_pc;
             cat.finally_pc = finally_pc;
+            cat.saved_lex_env = (void*)ds.act.lex_env;
 
             ds.act.cat = (void*)cat;
             return (TVal){};
@@ -80,6 +81,11 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             // Read the thrown exception from the nearest catcher
             Catcher* cat = (Catcher*)ds.act.cat;
             if (cat != null) {
+                // Exceptional entry skipped the try block's POP_LEX ops —
+                // rebalance the lex chain to the TRY-entry level.
+                if (cat.saved_lex_env != null) {
+                    ds.act.lex_env = (env::EnvRecord*)cat.saved_lex_env;
+                }
                 vm.heap.tval_copy_ref(ra, &cat.thrown_val);
                 track_heap_store(ds.act, ra, (uint)insn.a);
 
@@ -116,6 +122,11 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 Catcher* fin_cat = (Catcher*)ds.act.cat;
                 if (fin_cat != null) {
                     fin_cat.flags |= CATCHER_FLAG_IN_FINALLY;
+                    // Exceptional entry skipped POP_LEX ops (harmless no-op on
+                    // the balanced normal-flow entry).
+                    if (fin_cat.saved_lex_env != null) {
+                        ds.act.lex_env = (env::EnvRecord*)fin_cat.saved_lex_env;
+                    }
                 }
             }
             return (TVal){};

@@ -130,6 +130,10 @@ struct Catcher {
     TVal return_val;
     /// Saved PC target for break/continue-through-finally.
     Instruction* pending_pc;
+    /// Lexical environment at TRY entry (EnvRecord*). Exceptional exits skip
+    /// the try block's POP_LEX instructions, so CATCH/FINALLY restore this to
+    /// keep the lex chain balanced and give the catch scope a clean base.
+    void* saved_lex_env;
 }
 
 // ============================================================================
