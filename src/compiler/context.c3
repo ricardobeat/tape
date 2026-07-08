@@ -1129,11 +1129,28 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                      && !self.is_generator
                      && !self.is_async;
         if (!self.disable_optimize && elide_ok) {
+            // TYPEOFIDENT relies on the INITTZ sentinel in the block env to
+            // throw for `typeof x` inside x's temporal dead zone — collect the
+            // name indices it references so those sentinels are kept.
+            uint[64] typeof_names;
+            uint typeof_name_count = 0;
+            for (uint i = 0; i < self.code_count; i++) {
+                if (self.code[i].op == Opcode.TYPEOFIDENT && typeof_name_count < 64) {
+                    typeof_names[typeof_name_count++] = self.code[i].get_bc();
+                }
+            }
             for (uint i = 0; i < self.code_count; i++) {
                 Opcode dop = self.code[i].op;
                 // Declarations always target the function's own immediate scope.
                 if (dop == Opcode.DECLVAR || dop == Opcode.PUTLEX
                     || dop == Opcode.PUTLEX_C || dop == Opcode.INITTZ) {
+                    if (dop == Opcode.INITTZ) {
+                        bool keep_tdz = false;
+                        for (uint k = 0; k < typeof_name_count; k++) {
+                            if (typeof_names[k] == self.code[i].get_bc()) { keep_tdz = true; break; }
+                        }
+                        if (keep_tdz) { continue; }
+                    }
                     self.code[i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
                     continue;
                 }

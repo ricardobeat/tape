@@ -2505,9 +2505,10 @@ fn TVal? Vm.run(Vm* vm) {
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
 
-                    $if types::ENV_STRICT:
-                    if (vm.current_func.needs_env() == false) { unreachable("ENV_STRICT: needs_env=false fn touched own env: INITTZ"); }
-                    $endif
+                    // No ENV_STRICT trap here: INITTZ targets the innermost
+                    // PUSH_LEX block environment, which exists even for
+                    // needs_env=false functions — the elide pass keeps a
+                    // sentinel alive when a TYPEOFIDENT references its name.
 
                     TVal tdz = env::tdz_sentinel();
                     ds.act.lex_env.bindings.put_prop(key, tdz, hobject::PROP_FLAGS_WEC);
