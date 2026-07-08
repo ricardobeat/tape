@@ -461,6 +461,14 @@ enum Opcode : char {
     /// Used for destructuring binding patterns.
     REQUIRE_OBJ,
 
+    /// IteratorClose: if the value in A is an object and has a callable
+    /// `.return` method, call it with this = A and discard the result. Used
+    /// after a pattern walk so destructuring of partially-exhausted
+    /// iterators notifies the iterator (ES2015 §13.3.3.8 IteratorClose).
+    /// A = iterator register. B = scratch register used to fetch the
+    /// .return method (allocated by the VM); B = C on exit.
+    ITER_CLOSE,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -546,6 +554,7 @@ case PUTLEX:     return A_BC;
         case DEC_VAR:    return A_BC;
         case GETPROPC2:  return ABC;
         case REQUIRE_OBJ: return ABC;
+        case ITER_CLOSE: return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -1175,6 +1184,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
     [Opcode.REQUIRE_OBJ.ordinal] = "REQUIRE_OBJ",
+    [Opcode.ITER_CLOSE.ordinal]  = "ITER_CLOSE",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

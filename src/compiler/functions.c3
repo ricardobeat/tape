@@ -743,6 +743,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
 
     // Free iterator registers
     for (uint i = 0; i < iter_count; i++) {
+        // IteratorClose (ES2015 §13.3.3.8): notify the iterator that we
+        // are done consuming. The VM handler is a no-op when the
+        // iterator is exhausted or has no `.return` method, so this is
+        // safe to emit unconditionally. Without this, partially-consumed
+        // iterators (e.g. generators) leak resources.
+        self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 0, 0);
         self.free_destruct_iter(&iter_states[i]);
     }
 }

@@ -5398,6 +5398,10 @@ fn void? CompilerContext.break_statement(&self) {
         self.emit_simple(Opcode.POP_LEX);
         self.cur_lex_depth--;
     }
+    // IteratorClose: if breaking from a for-of loop, close the iterator.
+    if (self.loop_stack[loop_idx].iter_close_reg >= 0) {
+        self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[loop_idx].iter_close_reg, 0, 0);
+    }
     uint jump_addr = self.emit_jump(Opcode.BREAK);
     self.add_break_patch(jump_addr);
 
@@ -5427,6 +5431,13 @@ fn void? CompilerContext.continue_statement(&self) {
                 while (self.cur_lex_depth > target_lex) {
                     self.emit_simple(Opcode.POP_LEX);
                     self.cur_lex_depth--;
+                }
+                // IteratorClose: emit for any for-of loops being exited
+                // (all loops from innermost down to but NOT including loop_idx).
+                for (int li = (int)self.loop_depth - 1; li > (int)loop_idx; li--) {
+                    if (self.loop_stack[li].iter_close_reg >= 0) {
+                        self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[li].iter_close_reg, 0, 0);
+                    }
                 }
                 // Use deferred patching so the continue target can be updated
                 // after the body is compiled (needed for rotated for-loops where

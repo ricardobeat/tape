@@ -105,6 +105,7 @@ struct LoopInfo {
     uint continue_patch_head; ///< chain of pending continue jumps (deferred until target resolved)
     bool is_loop;             ///< false for switch pseudo-loops (continue skips these)
     int  saved_lex_depth;     ///< cur_lex_depth at loop entry — break/continue POP_LEX back to this
+    int  iter_close_reg;      ///< >= 0: for-of iterator reg — emit ITER_CLOSE on break/return; -1 = none
 }
 
 struct TryInfo {
