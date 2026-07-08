@@ -57,6 +57,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     CompiledFunction* target_func = null;
     EnvRecord* var_env = null;
     EnvRecord* lex_env = null;
+    HObject* target_hobj = null;
 
     if (func_val.is_lightfunc()) {
         // Lightfunc: always strict, just call directly
@@ -67,6 +68,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
             target_func = (*hobj.extra_ptr()).func.comp_func;
             var_env = (*hobj.extra_ptr()).func.var_env;
             lex_env = (*hobj.extra_ptr()).func.lex_env;
+            target_hobj = hobj;
         } else {
             return false;
         }
@@ -109,7 +111,9 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     new_act.parent = caller_act;
     new_act.func = target_func;
     new_act.var_env = call_var_env;
-    new_act.lex_env = call_var_env;
+    new_act.lex_env = (target_hobj != null)
+        ? resolve_call_lex_env(vm, target_hobj, target_func, call_var_env)
+        : call_var_env;
     new_act.cat = null;
     new_act.curr_pc = null;
     new_act.bottom = new_bottom;
@@ -238,7 +242,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
     new_act.parent = act;
     new_act.func = target;
     new_act.var_env = invoke_getter_var_env;
-    new_act.lex_env = invoke_getter_var_env;
+    new_act.lex_env = resolve_call_lex_env(vm, func_obj, target, invoke_getter_var_env);
     new_act.cat = null;
     new_act.curr_pc = target.code;
     new_act.bottom = new_bottom;

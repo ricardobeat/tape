@@ -59,6 +59,12 @@ fn void CompilerContext.push_scope_marker(&self) {
 /// Declare a variable in the current scope.
 fn ushort CompilerContext.declare_var(&self, char[] name, ScopeKind kind) {
     ushort reg = self.alloc_reg();
+    // Lexical bindings must survive env-elision when a closure can read them
+    // through the env chain (see has_lexical_bindings in the elide/needs_env
+    // gates).
+    if (kind == LET || kind == CONST) {
+        self.has_lexical_bindings = true;
+    }
     // Push to scope_stack for all lexical declarations (even at global scope)
     // so duplicate let/const can be detected.  Var at global scope is still
     // hoisted to the function-scoped environment and doesn't need scope tracking.

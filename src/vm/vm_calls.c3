@@ -138,39 +138,10 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_act.parent = ds.act;
                     new_act.func = target_fast;
                     new_act.var_env = fast_var_env;
-                    // Named function expressions get a fresh declarative lex_env
-                    // with the function name bound immutably (ES2015 §14.1.20).
-                    // This takes precedence over the lex_bridge for default
-                    // thunks: the name binding must live in the function's own
-                    // immediate lex scope (not on the captured bridge).
-                    if (target_fast.is_namebinding()) {
-                        char[] name_data = target_fast.get_name();
-                        HString* name_hstr = intern_string(vm, name_data);
-                        if (name_hstr != null) {
-                            if (try name_lex2 = setup_named_function_expr_env(vm, fast_var_env, name_hstr, hobj_fast)) {
-                                new_act.lex_env = name_lex2;
-                            } else {
-                                new_act.lex_env = fast_var_env;
-                            }
-                        } else {
-                            new_act.lex_env = fast_var_env;
-                        }
-                    } else {
-                        // Use the captured lex_env so block-scoped let/const
-                        // bindings from the enclosing function body are visible.
-                        // Only when the captured env is a *declarative* (block) scope
-                        // — i.e., created by PUSH_LEX inside the function body —
-                        // not when it's the function-scope env or the global env
-                        // (which are object/object-like envs, not lexical block scopes).
-                        EnvRecord* cap_lex_noname = (*hobj_fast.extra_ptr()).func.lex_env;
-                        if (cap_lex_noname != null
-                            && cap_lex_noname != fast_var_env
-                            && cap_lex_noname.is_declarative) {
-                            new_act.lex_env = cap_lex_noname;
-                        } else {
-                            new_act.lex_env = fast_var_env;
-                        }
-                    }
+                    // Captured block scope + named-function-expression name
+                    // binding (ES2015 §14.1.20) — shared with every other call
+                    // path; see resolve_call_lex_env.
+                    new_act.lex_env = resolve_call_lex_env(vm, hobj_fast, target_fast, fast_var_env);
                     // Bridge captured lex scope for default thunks that need
                     // to see TDZ sentinels in the parent's param scope.
                     if (target_fast.needs_lex_bridge()) {
@@ -871,7 +842,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.parent = ds.act;
             new_act.func = target;
             new_act.var_env = call_var_env2;
-            new_act.lex_env = call_var_env2;
+            new_act.lex_env = resolve_call_lex_env(vm, hobj, target, call_var_env2);
             new_act.cat = null;
             new_act.curr_pc = target.code;
             new_act.bottom = new_bottom;

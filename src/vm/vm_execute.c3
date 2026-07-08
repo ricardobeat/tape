@@ -29,6 +29,31 @@ fn EnvRecord*? setup_named_function_expr_env(Vm* vm, EnvRecord* var_env,
     return lex_env;
 }
 
+/// Resolve the lexical environment for entering a compiled-function call frame.
+/// Closures created inside a PUSH_LEX block scope capture that declarative env
+/// in func.lex_env; the frame must enter with it as lex_env so the block's
+/// let/const bindings stay visible (GETVAR walks lex_env, then var_env).
+/// Named function expressions additionally get a fresh declarative env binding
+/// their own name (ES2015 §14.1.20), chained above the captured scope.
+fn EnvRecord* resolve_call_lex_env(Vm* vm, HObject* func_obj,
+                                   CompiledFunction* target, EnvRecord* var_env) {
+    EnvRecord* base = var_env;
+    EnvRecord* cap_lex = (*func_obj.extra_ptr()).func.lex_env;
+    if (cap_lex != null && cap_lex != var_env && cap_lex.is_declarative) {
+        base = cap_lex;
+    }
+    if (target.is_namebinding()) {
+        char[] name_data = target.get_name();
+        HString* name_hstr = intern_string(vm, name_data);
+        if (name_hstr != null) {
+            if (try name_lex = setup_named_function_expr_env(vm, base, name_hstr, func_obj)) {
+                return name_lex;
+            }
+        }
+    }
+    return base;
+}
+
 /// Implementation of Heap.call_fn — calls a JS function with N arguments through the VM.
 fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal this_val) {
     Vm* vm = (Vm*)vm_ptr;
@@ -173,7 +198,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             act.func = target;
             act.parent = null;
             act.var_env = cfn_var_env;
-            act.lex_env = cfn_var_env;
+            act.lex_env = resolve_call_lex_env(vm, hobj, target, cfn_var_env);
             act.cat = null;
             act.curr_pc = target.code;
             act.async_promise = null;
@@ -445,7 +470,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     act.func = target;
     act.parent = null;
     act.var_env = cfn_var_env;
-    act.lex_env = cfn_var_env;
+    act.lex_env = resolve_call_lex_env(vm, ctor, target, cfn_var_env);
     act.cat = null;
     act.curr_pc = target.code;
     act.async_promise = null;

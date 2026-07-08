@@ -335,6 +335,12 @@ struct CompilerContext {
     // Set to true when the function body contains any var/function declarations
     // that would be hoisted to the function scope.
     bool has_local_bindings;
+    // Set by declare_var for let/const declarations. Lexical bindings live in
+    // PUSH_LEX block environments, not the function var_env, but a nested
+    // closure still reads them via the env chain (GETVAR) — so a function with
+    // lexical bindings and closures must keep its PUTLEX/PUTLEX_C/INITTZ
+    // stores and its runtime env.
+    bool has_lexical_bindings;
 
     // Closure tracking — set to true when a nested function is defined in
     // this function's body.  Combined with has_local_bindings to decide
@@ -1100,7 +1106,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // dominant cost in call-heavy code). NOP is a valid jump target → layout-safe.
     {
         bool elide_has_params_needing_env = self.has_rest || self.default_count > 0;
-        bool elide_needs_runtime_env = ((self.has_local_bindings || self.num_args > 0) && self.has_closures)
+        bool elide_needs_runtime_env = ((self.has_local_bindings || self.has_lexical_bindings || self.num_args > 0) && self.has_closures)
                               || self.uses_arguments
                               || self.has_direct_eval;
         bool elide_ok = !elide_needs_runtime_env
@@ -1320,7 +1326,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // Functions with var declarations but no closures, eval, or arguments
     // can reuse the parent's env directly.
     bool has_params_needing_env = self.has_rest || self.default_count > 0;
-    bool needs_runtime_env = ((self.has_local_bindings || self.num_args > 0) && self.has_closures)
+    bool needs_runtime_env = ((self.has_local_bindings || self.has_lexical_bindings || self.num_args > 0) && self.has_closures)
                           || self.uses_arguments
                           || self.has_direct_eval;
     bool can_skip_env = !needs_runtime_env

@@ -1903,7 +1903,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                         new_act.parent = ds.act;
                                         new_act.func = target;
                                         new_act.var_env = setter_var_env;
-                                        new_act.lex_env = setter_var_env;
+                                        new_act.lex_env = resolve_call_lex_env(vm, setter_obj, target, setter_var_env);
                                         new_act.cat = null;
                                         new_act.curr_pc = target.code;
                                         new_act.bottom = new_bottom;
@@ -1988,7 +1988,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     new_act.parent = ds.act;
                                     new_act.func = target;
                                     new_act.var_env = setter_var_env;
-                                    new_act.lex_env = setter_var_env;
+                                    new_act.lex_env = resolve_call_lex_env(vm, setter_obj, target, setter_var_env);
                                     new_act.cat = null;
                                     new_act.curr_pc = target.code;
                                     new_act.bottom = new_bottom;
