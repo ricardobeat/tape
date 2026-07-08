@@ -1,6 +1,7 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 267 (statement destructuring iterator protocol, lexical-closure/eval/capture-analysis scope fixes, catch-binding scope, architecture review — plan 046)
+**Last Updated:** Session 269 (plan 049 stages 1-3: ArrayBuffer core with detach + species-aware slice, TypedArray construction with 4 overloads + GETPROP/PUTPROP fast paths for all 9 classes + CanonicalNumericIndexString + accessor getters, DataView with 16 get/set methods + LE/BE endianness). Phase 22 (Buffers) not yet wired into run_test262.py — deferred to plan 049 stage 6.
+Prior: Session 267 (statement destructuring iterator protocol, lexical-closure/eval/capture-analysis scope fixes, catch-binding scope, architecture review — plan 046)
 **Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). At 81.6%: ~18.4 points away.
 
 ## Summary (full run, session 267, 2026-07-08)
