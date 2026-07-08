@@ -39,6 +39,7 @@ const uint MAX_CODE_HARD        = 1 << 22;  // 4M instructions
 const uint MAX_CONSTANTS_HARD   = 1 << 20;  // 1M constants
 const uint MAX_INNER_FUNCS_HARD = 1 << 16;  // 65K inner functions
 const uint MAX_SCOPE_DEPTH = 256;
+const uint MAX_CAPTURED_NAMES = 48;
 const uint MAX_LOOP_DEPTH  = 16;
 const uint MAX_TRY_DEPTH   = 8;
 const uint MAX_LABELS       = 16;
@@ -352,6 +353,17 @@ struct CompilerContext {
     // function must keep its scope object — its captured locals are read via
     // GETVAR, so the register-locals env-elision must not fire.
     bool has_captured_local;
+
+    // --- Capture pre-scan (plan 045) ---
+    // Names referenced inside nested callable bodies, collected by
+    // pre_scan_captures before the body compiles; declare_var marks matching
+    // locals is_captured so all their access goes through the environment.
+    char[64][48] captured_names;
+    ushort[48] captured_name_lens;
+    uint captured_count;
+    // Treat every local as captured: direct eval present, class body seen,
+    // or pre-scan capacity overflow.
+    bool capture_all;
 
     // Hoisted function declaration names (so main pass can skip recompilation).
     // Fixed-size — bounded by top-level function count in a single module.

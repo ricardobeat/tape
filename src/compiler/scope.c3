@@ -70,10 +70,17 @@ fn ushort CompilerContext.declare_var(&self, char[] name, ScopeKind kind) {
     // hoisted to the function-scoped environment and doesn't need scope tracking.
     bool push_scope = !self.is_global || kind != VAR;
     if (push_scope && self.scope_depth < MAX_SCOPE_DEPTH) {
+        // Locals referenced inside nested callable bodies (or reachable by
+        // direct eval) must be env-resident: force every access through
+        // GETVAR/PUTVAR so closure and eval reads/writes stay coherent
+        // (plan 045; the pre_scan_captures pass fills the capture set).
+        bool captured = !self.is_global && kind != SCOPEMARK
+                     && self.is_captured_name(name);
         self.scope_stack[self.scope_depth].name = name;
         self.scope_stack[self.scope_depth].reg = reg;
         self.scope_stack[self.scope_depth].kind = kind;
-        self.scope_stack[self.scope_depth].is_captured = false;
+        self.scope_stack[self.scope_depth].is_captured = captured;
+        if (captured) { self.has_captured_local = true; }
         self.scope_depth++;
     }
     return reg;
@@ -96,6 +103,21 @@ fn ushort? CompilerContext.resolve_var(&self, char[] name) {
             if (self.scope_stack[i].is_captured) {
                 return SCOPE_ERROR~;
             }
+            return self.scope_stack[i].reg;
+        }
+    }
+    return SCOPE_ERROR~;
+}
+
+/// Resolve a variable name to its register REGARDLESS of capture status.
+/// Only for declaration-site checks (e.g. `var` redeclaration must reuse the
+/// existing binding, never re-declare and clobber the env value) — normal
+/// reads/writes must use resolve_var so captured locals stay env-resident.
+fn ushort? CompilerContext.find_local_reg(&self, char[] name) {
+    uint i = self.scope_depth;
+    while (i > 0) {
+        i--;
+        if (str_eq(self.scope_stack[i].name, name)) {
             return self.scope_stack[i].reg;
         }
     }

@@ -473,7 +473,10 @@ fn void? CompilerContext.var_declaration(&self) {
                 // var declarations: check if already declared (from hoisting
                 // or from an outer var declaration in the same function).
                 // If so, reuse the existing register and skip DECLVAR/LDUNDEF.
-                ushort? existing = self.resolve_var(name_tok.str_value);
+                // Capture-blind lookup: a captured var must still be detected
+                // here, or a bare `var x;` redeclaration would emit
+                // LDUNDEF+DECLVAR and clobber the live env value.
+                ushort? existing = self.find_local_reg(name_tok.str_value);
                 if (try er = existing) {
                     reg = er;
                     already_declared = true;
@@ -2793,7 +2796,9 @@ fn void? CompilerContext.for_statement(&self) {
             // Declare the variable and optionally initialize
             ushort var_reg;
             if (!is_lexical) {
-                ushort? existing = self.resolve_var(name_tok.str_value);
+                // Capture-blind lookup: a captured var must be detected as
+                // already declared (see the var_declaration redecl note).
+                ushort? existing = self.find_local_reg(name_tok.str_value);
                 if (try er = existing) {
                     var_reg = er;
                 } else {
@@ -2802,7 +2807,12 @@ fn void? CompilerContext.for_statement(&self) {
             } else {
                 var_reg = self.declare_var(name_tok.str_value, decl_kind);
             }
-            has_for_var = !is_lexical && !self.is_global;
+            // Captured loop vars are env-resident: the condition/update
+            // compile to GETVAR/INC_VAR and the env is authoritative, so the
+            // register-cache sync machinery (which would write the stale
+            // register copy back over the env) must stay off.
+            has_for_var = !is_lexical && !self.is_global
+                       && !self.is_captured_name(name_tok.str_value);
             for_var_reg = var_reg;
             for_var_name_idx = self.add_string_constant(name_tok.str_value);
             if (is_lexical) { self.emit_simple(Opcode.PUSH_LEX); }

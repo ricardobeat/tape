@@ -1650,6 +1650,10 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     self.emit_destruct_bindings(destruct_binds[..], destruct_count,
                                 destruct_group_regs[..], destruct_binding_regs[..]);
 
+    // Collect names captured by nested callables (plan 045) before any body
+    // code is emitted, so declare_var can make them env-resident.
+    self.pre_scan_captures();
+
     // Hoist var and function declarations to the top of the function scope.
     self.hoist_decls(false)!;
 
@@ -2066,6 +2070,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Emit destructuring code for inner function parameters.
     inner_ctx.emit_destruct_bindings(inner_destruct_binds[..], inner_destruct_count,
                                      inner_destruct_group_regs[..], inner_destruct_binding_regs[..]);
+
+    // Collect names captured by nested callables (plan 045).
+    inner_ctx.pre_scan_captures();
 
     // Hoist var and function declarations to the top of the inner function scope.
     inner_ctx.hoist_decls(false)!;
@@ -2580,6 +2587,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     // Function.prototype.toString returns the exact source span.
     uint body_end_pos;
     if (arrow_ctx.check(TokenType.LBRACE)) {
+        // Collect names captured by nested callables (plan 045).
+        arrow_ctx.pre_scan_captures();
         // Block body: { ... }
         arrow_ctx.advance()!;
         while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {
@@ -2600,7 +2609,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
             arrow_ctx.emit_simple(Opcode.RETUNDEF);
         }
     } else {
-        // Expression body: implicitly return the expression value
+        // Expression body: implicitly return the expression value.
+        // Pre-scan in expression mode: nested arrows/functions inside the
+        // expression can capture this arrow's params (plan 045).
+        arrow_ctx.pre_scan_captures(true);
         ushort expr_reg = arrow_ctx.assignment_expr()!;
         arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
         body_end_pos = arrow_ctx.lexer.pos;
@@ -2785,6 +2797,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Function.prototype.toString returns the exact source span.
     uint body_end_pos;
     if (arrow_ctx.check(TokenType.LBRACE)) {
+        // Collect names captured by nested callables (plan 045).
+        arrow_ctx.pre_scan_captures();
         // Block body: { ... }
         arrow_ctx.advance()!;
         while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {
@@ -2805,7 +2819,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
             arrow_ctx.emit_simple(Opcode.RETUNDEF);
         }
     } else {
-        // Expression body: implicitly return the expression value
+        // Expression body: implicitly return the expression value.
+        // Pre-scan in expression mode: nested arrows/functions inside the
+        // expression can capture this arrow's params (plan 045).
+        arrow_ctx.pre_scan_captures(true);
         ushort expr_reg = arrow_ctx.assignment_expr()!;
         arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
         body_end_pos = arrow_ctx.lexer.pos;

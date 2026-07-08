@@ -1119,7 +1119,11 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
     // 'this' (at callee_reg+1) would clobber a live value (e.g. resolve
     // held in r1 when callee_reg=0 and next_reg=2), and inner call arg
     // setup would clobber live values for nested calls.
-    if (callee_reg + 1 < self.next_reg) {
+    // Also move when the callee register is a named local's home register:
+    // CALL writes the result to the callee base, which would destroy the
+    // binding (e.g. `function f(){} f(); f();` with f's register at the top
+    // of the stack — the first call's result clobbers f).
+    if (callee_reg + 1 < self.next_reg || self.is_local_var_reg(callee_reg)) {
         ushort new_callee = self.next_reg;
         self.emit_abc(Opcode.LDREG, (uint)new_callee, (uint)callee_reg, 0);
         callee_reg = new_callee;

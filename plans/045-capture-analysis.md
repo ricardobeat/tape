@@ -1,6 +1,15 @@
 # Plan 045: Capture analysis — env-resident captured locals
 
-**Status:** Planned.
+**Status:** Implemented (Phase A). `src/compiler/captures.c3` token pre-scan
+runs before every function/arrow body compile; `declare_var` (plus a
+retroactive pass for params) marks capture-set names `is_captured`. Also
+fixed along the way: emit_call clobbering a named local used as callee at
+top-of-stack, `var` redeclaration needing a capture-blind lookup
+(`find_local_reg`), and for_statement's register-cache sync writing a stale
+register over the env-authoritative captured loop var. Oracle:
+`test/test_capture_analysis.js` (17/17). Per-iteration `for(let…)` bindings
+remain open (closures now correctly share one binding; spec wants a fresh
+binding per iteration).
 **Priority:** High — silent wrong answers, not crashes. Almost certainly a
 test262 failure cluster (closures over mutable state are everywhere).
 **Related:** builds on the plan-044 store modes, the lexical-capture fix
