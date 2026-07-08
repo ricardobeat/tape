@@ -1,44 +1,45 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 265 (B46 sweep wave 2: indexOf/lastIndexOf large-index + spec-order; bind re-dispatch slow-path; String.prototype.replaceAll spec-order + IsRegExp)
-**Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). Original 80% milestone: ~4 points away.
+**Last Updated:** Session 265 (B46 sweep wave 2: indexOf/lastIndexOf large-index + spec-order; bind re-dispatch slow-path; String.prototype.replaceAll spec-order + IsRegExp) + full re-baseline
+**Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). At 79.6%: ~20.4 points away.
 
-## Summary (full run, session 254, 2026-07-06)
+## Summary (full run, session 265, 2026-07-08)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 29,444 |
-| Total passing | 22,607 |
-| **Overall pass rate** | **76.8%** |
-| Total failing | 6,214 |
-| CE unexpected (parser bugs) | 620 |
+| Total passing | 23,443 |
+| **Overall pass rate** | **79.6%** |
+| Total failing | 5,551 |
+| CE unexpected (parser bugs) | 447 |
 | CE expected (`negative: phase: parse`) | 3 |
 | Skipped | 12,402 |
 
-Up from the session-252 baseline (75.5%, 22,241 pass, 838 unexpected CE) after
-the session-253 B37 closure work and this session's full re-baseline. Gap to 100%
-= ~6,800 tests. Cluster breakdown, wave plan, and architecture
-blockers: `plans/040-test262-100-percent.md`.
+Up from the session-254 baseline (76.8%, 22,607 pass, 620 unexpected CE) after
+sessions 255-265 (destructuring, RegExp d-flag/named groups, UTF-16 string model
+migration, dtoa formatters, and the Array.prototype/bind/replaceAll conformance
+waves). Gap to 100% = ~6,001 tests (5,551 fail + 447 unexpected CE + 3 expected CE).
+Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-percent.md`.
 
-## Per-Phase Status (session 254, full run)
+## Per-Phase Status (session 265, full run)
 
 | Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected |
 |---|---|---|---|---|---|---|---|
-| 0-1: Core VM | 2185 | 827 | 235 | 1096 | 3 | 0 | 24 |
-| 1: Calling Convention & Closures | 426 | 217 | 112 | 90 | 0 | 0 | 7 |
-| 2: Basic Operators | 1969 | 1202 | 144 | 563 | 0 | 0 | 60 |
-| 3: Object System | 7766 | 5766 | 875 | 1082 | 0 | 0 | 43 |
-| 4: Error Handling & References | 402 | 208 | 82 | 103 | 0 | 0 | 9 |
-| 5: Built-in Constructors | 8615 | 6697 | 1100 | 813 | 0 | 0 | 5 |
-| 6: Built-in Prototype Methods | 4713 | 3629 | 652 | 427 | 0 | 0 | 5 |
-| 7: Remaining ES5 Features | 1035 | 372 | 126 | 458 | 0 | 0 | 79 |
-| 8: ES5 Built-in Objects | 2747 | 1257 | 967 | 522 | 0 | 0 | 1 |
-| 11: Arrow Functions & Templates | 465 | 192 | 106 | 158 | 0 | 0 | 9 |
+| 0-1: Core VM | 2185 | 829 | 233 | 1096 | 3 | 0 | 24 |
+| 1: Calling Convention & Closures | 426 | 231 | 98 | 90 | 0 | 0 | 7 |
+| 2: Basic Operators | 1969 | 1206 | 140 | 563 | 0 | 0 | 60 |
+| 3: Object System | 7766 | 5919 | 727 | 1082 | 0 | 0 | 38 |
+| 4: Error Handling & References | 402 | 212 | 86 | 103 | 0 | 0 | 1 |
+| 5: Built-in Constructors | 8615 | 6818 | 979 | 813 | 0 | 0 | 5 |
+| 6: Built-in Prototype Methods | 4713 | 3750 | 531 | 427 | 0 | 0 | 5 |
+| 7: Remaining ES5 Features | 1035 | 373 | 125 | 458 | 0 | 0 | 79 |
+| 8: ES5 Built-in Objects | 2747 | 1308 | 916 | 522 | 0 | 0 | 1 |
+| 11: Arrow Functions & Templates | 465 | 206 | 92 | 158 | 0 | 0 | 9 |
 | 12-13: Destructuring & Spread | 19 | 17 | 0 | 2 | 0 | 0 | 0 |
-| 14: for-of | 751 | 294 | 212 | 169 | 0 | 0 | 76 |
-| 15: Classes | 8520 | 951 | 1088 | 6318 | 0 | 0 | 163 |
-| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 981 | 168 | 463 | 0 | 0 | 2 |
-| 21: Generators | 619 | 189 | 284 | 138 | 0 | 0 | 8 |
+| 14: for-of | 751 | 313 | 222 | 169 | 0 | 0 | 47 |
+| 15: Classes | 8520 | 1063 | 976 | 6318 | 0 | 0 | 163 |
+| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 981 | 170 | 463 | 0 | 0 | 0 |
+| 21: Generators | 619 | 217 | 256 | 138 | 0 | 0 | 8 |
 
 ## Test Infrastructure
 
