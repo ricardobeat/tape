@@ -698,6 +698,435 @@ fn void builtin_typedarray_proto_tostringtag_get(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Wave A: %TypedArray%.prototype methods (plan 049 stage 4)
+// ============================================================================
+
+/// Validate that ctx.this_val is a live (non-detached) TypedArray.
+/// Returns the object on success, null + sets should_throw on failure.
+fn HObject* ta_validate(BuiltinContext* ctx) {
+    HObject* obj = ta_this_receiver(ctx);
+    if (obj == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray method called on incompatible receiver");
+        return null;
+    }
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    if (buf == null || (*buf.extra_ptr()).ab.data == null) {
+        arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
+        return null;
+    }
+    return obj;
+}
+
+/// Check detach status without throwing — inline guard after user-code calls.
+fn bool ta_is_detached(HObject* obj) {
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    return buf == null || (*buf.extra_ptr()).ab.data == null;
+}
+
+/// Normalize a relative index (ES2022 §23.2.4.1 ToIntegerOrInfinity + clamp).
+fn uint ta_norm_index(double d, uint len) {
+    if (d != d || d == 0.0) return 0;
+    if (d < 0.0) {
+        double v = (double)len + d;
+        return v < 0.0 ? 0u : (uint)(long)v;
+    }
+    if (d >= (double)len) return len;
+    return (uint)(long)d;
+}
+
+// ---- Iterator forwarders ----
+
+/// %TypedArray%.prototype.values() — §23.2.3.32. Returns array iterator kind=0.
+fn void builtin_ta_proto_values(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    create_array_iterator(ctx, 0);
+}
+
+/// %TypedArray%.prototype.keys() — §23.2.3.16. Returns array iterator kind=1.
+fn void builtin_ta_proto_keys(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    create_array_iterator(ctx, 1);
+}
+
+/// %TypedArray%.prototype.entries() — §23.2.3.6. Returns array iterator kind=2.
+fn void builtin_ta_proto_entries(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    create_array_iterator(ctx, 2);
+}
+
+/// %TypedArray%.prototype[@@iterator] — alias for values().
+fn void builtin_ta_proto_symbol_iterator(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    create_array_iterator(ctx, 0);
+}
+
+// ---- set ----
+
+/// %TypedArray%.prototype.set(source [, offset]) — §23.2.3.24.
+fn void builtin_ta_proto_set(BuiltinContext* ctx) {
+    HObject* dst = ta_validate(ctx);
+    if (dst == null) return;
+    Heap* heap = ctx.heap;
+
+    hobject::ObjClass dst_cls = dst.flags.obj_class;
+    uint dst_shift = ta_elem_shift(dst_cls);
+    HObject* dst_buf = (*dst.extra_ptr()).view.buffer;
+    uint dst_byte_off = (*dst.extra_ptr()).view.byte_offset;
+    uint dst_len = (*dst.extra_ptr()).view.byte_length >> dst_shift;
+
+    // Resolve offset argument
+    TVal offset_arg; offset_arg.set_undefined();
+    if (ctx.argc >= 2) offset_arg = ctx.regs[ctx.base_reg + 1];
+    double off_d = builtin_to_integer_vm(ctx, &offset_arg);
+    if (ctx.should_throw) return;
+    if (off_d < 0.0) {
+        arraybuffer_throw_range_error(ctx, "TypedArray.set: offset is negative");
+        return;
+    }
+    uint target_offset = (uint)(long)off_d;
+
+    TVal source_arg; source_arg.set_undefined();
+    if (ctx.argc >= 1) source_arg = ctx.regs[ctx.base_reg];
+
+    if (source_arg.is_object() && source_arg.get_heapptr() != null) {
+        HObject* src_obj = (HObject*)source_arg.get_heapptr();
+
+        if (is_typed_array_class(src_obj.flags.obj_class)) {
+            // TypedArray source path
+            hobject::ObjClass src_cls = src_obj.flags.obj_class;
+            HObject* src_buf = (*src_obj.extra_ptr()).view.buffer;
+            if (src_buf == null || (*src_buf.extra_ptr()).ab.data == null) {
+                arraybuffer_throw_type_error(ctx, "TypedArray.set: source buffer is detached");
+                return;
+            }
+            uint src_shift = ta_elem_shift(src_cls);
+            uint src_len = (*src_obj.extra_ptr()).view.byte_length >> src_shift;
+            uint src_byte_off = (*src_obj.extra_ptr()).view.byte_offset;
+
+            if (src_len + target_offset > dst_len) {
+                arraybuffer_throw_range_error(ctx, "TypedArray.set: source is too large");
+                return;
+            }
+
+            char* src_data = (*src_buf.extra_ptr()).ab.data + src_byte_off;
+            char* dst_data = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + (target_offset << dst_shift);
+
+            if (src_cls == dst_cls) {
+                // Same element type: memmove handles overlap (same buffer).
+                uint byte_count = src_len << dst_shift;
+                if (byte_count > 0) libc::memmove(dst_data, src_data, (usz)byte_count);
+            } else if (src_buf == dst_buf) {
+                // Cross-class, same buffer: copy elements via temporary scratch.
+                uint scratch_bytes = src_len * TVal::size;
+                TVal* scratch = (TVal*)heap.alloc_func(heap.heap_udata, (usz)scratch_bytes);
+                if (scratch == null) {
+                    arraybuffer_throw_range_error(ctx, "TypedArray.set: out of memory");
+                    return;
+                }
+                for (uint i = 0; i < src_len; i++) {
+                    scratch[i] = ta_load_element(src_data, src_cls, i);
+                }
+                for (uint i = 0; i < src_len; i++) {
+                    char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
+                    ta_write_element(dp, dst_cls, &scratch[i], ctx);
+                    if (ctx.should_throw) { heap.free_func(heap.heap_udata, scratch); return; }
+                }
+                heap.free_func(heap.heap_udata, scratch);
+            } else {
+                // Cross-class, different buffers: element loop.
+                for (uint i = 0; i < src_len; i++) {
+                    TVal v = ta_load_element(src_data, src_cls, i);
+                    char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
+                    ta_write_element(dp, dst_cls, &v, ctx);
+                    if (ctx.should_throw) return;
+                    if (ta_is_detached(dst)) {
+                        arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during set");
+                        return;
+                    }
+                }
+            }
+            *ctx.result = ctx.this_val;
+            return;
+        }
+    }
+
+    // Array-like source path
+    HObject* src_arr = null;
+    if (source_arg.is_object() && source_arg.get_heapptr() != null) {
+        src_arr = (HObject*)source_arg.get_heapptr();
+    }
+
+    HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    TVal len_tv; len_tv.set_fastint(0);
+    if (src_arr != null) {
+        TVal? lv = builtins_generic_get(src_arr, length_key, ctx);
+        if (ctx.should_throw) return;
+        if (try v = lv) len_tv = v;
+    }
+    double src_len_d = builtin_to_integer_vm(ctx, &len_tv);
+    if (ctx.should_throw) return;
+    if (src_len_d < 0.0) src_len_d = 0.0;
+    uint src_len = (uint)(long)src_len_d;
+
+    if (src_len + target_offset > dst_len) {
+        arraybuffer_throw_range_error(ctx, "TypedArray.set: source is too large");
+        return;
+    }
+
+    for (uint i = 0; i < src_len; i++) {
+        HString* idx_key = heap.int_to_hstring((long)i);
+        TVal elem; elem.set_undefined();
+        if (idx_key != null && src_arr != null) {
+            TVal? ev = builtins_generic_get(src_arr, idx_key, ctx);
+            if (ctx.should_throw) return;
+            if (try v = ev) elem = v;
+        }
+        // Convert first; then re-check detach.
+        double d = ta_val_to_number(&elem, ctx);
+        if (ctx.should_throw) return;
+        if (ta_is_detached(dst)) {
+            arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during set");
+            return;
+        }
+        char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
+        // Write the pre-converted double as a TVal.
+        TVal num_tv; num_tv.set_number(d);
+        ta_write_element(dp, dst_cls, &num_tv, ctx);
+        if (ctx.should_throw) return;
+    }
+    *ctx.result = ctx.this_val;
+}
+
+// ---- subarray ----
+
+/// %TypedArray%.prototype.subarray(begin, end) — §23.2.3.27.
+/// Returns a new TA of the same class sharing the same ArrayBuffer.
+fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint byte_len = (*obj.extra_ptr()).view.byte_length;
+    uint len = byte_len >> shift;
+
+    TVal begin_arg; begin_arg.set_undefined();
+    TVal end_arg;   end_arg.set_undefined();
+    if (ctx.argc >= 1) begin_arg = ctx.regs[ctx.base_reg];
+    if (ctx.argc >= 2) end_arg   = ctx.regs[ctx.base_reg + 1];
+
+    double begin_d = builtin_to_integer_vm(ctx, &begin_arg);
+    if (ctx.should_throw) return;
+    double end_d;
+    if (end_arg.is_undefined()) {
+        end_d = (double)len;
+    } else {
+        end_d = builtin_to_integer_vm(ctx, &end_arg);
+        if (ctx.should_throw) return;
+    }
+
+    uint begin_idx = ta_norm_index(begin_d, len);
+    uint end_idx   = ta_norm_index(end_d, len);
+    uint new_len   = end_idx > begin_idx ? end_idx - begin_idx : 0;
+
+    uint new_byte_off = byte_off + (begin_idx << shift);
+    uint new_byte_len = new_len << shift;
+
+    HObject*? raw = heap.alloc_object(cls);
+    if (catch err = raw) { ctx.result.set_undefined(); return; }
+    HObject* sub = raw;
+    sub.prototype = heap.typedarray_proto;
+    (*sub.extra_ptr()).view.byte_offset = new_byte_off;
+    (*sub.extra_ptr()).view.byte_length = new_byte_len;
+    typedarray_link_view(buf, sub);
+    ctx.result.set_object(sub);
+}
+
+// ---- fill ----
+
+/// %TypedArray%.prototype.fill(value, start, end) — §23.2.3.9.
+fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+
+    TVal val_arg; val_arg.set_undefined();
+    if (ctx.argc >= 1) val_arg = ctx.regs[ctx.base_reg];
+
+    // Convert value first (may run user code).
+    double fill_d = ta_val_to_number(&val_arg, ctx);
+    if (ctx.should_throw) return;
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during fill");
+        return;
+    }
+
+    TVal start_arg; start_arg.set_undefined();
+    TVal end_arg;   end_arg.set_undefined();
+    if (ctx.argc >= 2) start_arg = ctx.regs[ctx.base_reg + 1];
+    if (ctx.argc >= 3) end_arg   = ctx.regs[ctx.base_reg + 2];
+
+    double start_d = builtin_to_integer_vm(ctx, &start_arg);
+    if (ctx.should_throw) return;
+    double end_d;
+    if (end_arg.is_undefined()) {
+        end_d = (double)len;
+    } else {
+        end_d = builtin_to_integer_vm(ctx, &end_arg);
+        if (ctx.should_throw) return;
+    }
+
+    uint k = ta_norm_index(start_d, len);
+    uint final_k = ta_norm_index(end_d, len);
+
+    if (k < final_k) {
+        char* base = (*buf.extra_ptr()).ab.data + byte_off;
+        if (cls == hobject::ObjClass.UINT8ARRAY || cls == hobject::ObjClass.INT8ARRAY) {
+            // Single-byte fill: truncate to int8, then bulk memset.
+            char fill_byte = (char)(double_to_int32(fill_d) & 0xFF);
+            libc::memset(base + k, (int)fill_byte, (usz)(final_k - k));
+        } else if (cls == hobject::ObjClass.UINT8CLAMPEDARRAY) {
+            char clamped = ta_to_uint8_clamped(fill_d);
+            libc::memset(base + k, (int)clamped, (usz)(final_k - k));
+        } else {
+            TVal fill_tv; fill_tv.set_number(fill_d);
+            for (uint i = k; i < final_k; i++) {
+                char* p = base + (i << shift);
+                ta_write_element(p, cls, &fill_tv, ctx);
+                if (ctx.should_throw) return;
+            }
+        }
+    }
+
+    *ctx.result = ctx.this_val;
+}
+
+// ---- copyWithin ----
+
+/// %TypedArray%.prototype.copyWithin(target, start [, end]) — §23.2.3.6.
+fn void builtin_ta_proto_copyWithin(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+
+    TVal target_arg; target_arg.set_undefined();
+    TVal start_arg;  start_arg.set_undefined();
+    TVal end_arg;    end_arg.set_undefined();
+    if (ctx.argc >= 1) target_arg = ctx.regs[ctx.base_reg];
+    if (ctx.argc >= 2) start_arg  = ctx.regs[ctx.base_reg + 1];
+    if (ctx.argc >= 3) end_arg    = ctx.regs[ctx.base_reg + 2];
+
+    double to_d    = builtin_to_integer_vm(ctx, &target_arg);
+    if (ctx.should_throw) return;
+    double from_d  = builtin_to_integer_vm(ctx, &start_arg);
+    if (ctx.should_throw) return;
+    double final_d;
+    if (end_arg.is_undefined()) {
+        final_d = (double)len;
+    } else {
+        final_d = builtin_to_integer_vm(ctx, &end_arg);
+        if (ctx.should_throw) return;
+    }
+
+    // Re-check detach after argument coercions (may have run user code).
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during copyWithin");
+        return;
+    }
+
+    uint to    = ta_norm_index(to_d, len);
+    uint from  = ta_norm_index(from_d, len);
+    uint final_end = ta_norm_index(final_d, len);
+
+    uint count = final_end > from ? final_end - from : 0;
+    if (len > to && count > len - to) count = len - to;
+
+    if (count > 0) {
+        char* base = (*buf.extra_ptr()).ab.data + byte_off;
+        libc::memmove(base + (to << shift), base + (from << shift), (usz)(count << shift));
+    }
+
+    *ctx.result = ctx.this_val;
+}
+
+// ---- slice ----
+
+/// %TypedArray%.prototype.slice(start, end) — §23.2.3.25.
+/// Returns a new same-class TA with a fresh copy of the slice.
+fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* src_buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+
+    TVal start_arg; start_arg.set_undefined();
+    TVal end_arg;   end_arg.set_undefined();
+    if (ctx.argc >= 1) start_arg = ctx.regs[ctx.base_reg];
+    if (ctx.argc >= 2) end_arg   = ctx.regs[ctx.base_reg + 1];
+
+    double start_d = builtin_to_integer_vm(ctx, &start_arg);
+    if (ctx.should_throw) return;
+    double end_d;
+    if (end_arg.is_undefined()) {
+        end_d = (double)len;
+    } else {
+        end_d = builtin_to_integer_vm(ctx, &end_arg);
+        if (ctx.should_throw) return;
+    }
+
+    uint k = ta_norm_index(start_d, len);
+    uint final_k = ta_norm_index(end_d, len);
+    uint count = final_k > k ? final_k - k : 0;
+
+    // Fresh buffer of count<<shift bytes.
+    uint new_bytes = count << shift;
+    HObject* new_buf = typedarray_alloc_buffer(ctx, new_bytes);
+    if (new_buf == null) {
+        arraybuffer_throw_range_error(ctx, "TypedArray.slice: out of memory");
+        return;
+    }
+
+    if (count > 0) {
+        char* src_data = (*src_buf.extra_ptr()).ab.data + byte_off + (k << shift);
+        char* dst_data = (*new_buf.extra_ptr()).ab.data;
+        libc::memcpy(dst_data, src_data, (usz)new_bytes);
+    }
+
+    HObject*? raw = heap.alloc_object(cls);
+    if (catch err = raw) { ctx.result.set_undefined(); return; }
+    HObject* result = raw;
+    result.prototype = heap.typedarray_proto;
+    (*result.extra_ptr()).view.byte_offset = 0;
+    (*result.extra_ptr()).view.byte_length = new_bytes;
+    typedarray_link_view(new_buf, result);
+    ctx.result.set_object(result);
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -866,6 +1295,45 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     HString* tag_key = ensure_tostringtag_symbol(heap);
     if (tag_key != null) {
         if (!register_typedarray_symbol_accessor(proto, heap, tag_key, BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET)) return false;
+    }
+
+    // Wave A prototype methods (plan 049 stage 4)
+    if (!register_string_proto_method(proto, heap, "values",      BUILTIN_TA_PROTO_VALUES))      return false;
+    if (!register_string_proto_method(proto, heap, "keys",        BUILTIN_TA_PROTO_KEYS))        return false;
+    if (!register_string_proto_method(proto, heap, "entries",     BUILTIN_TA_PROTO_ENTRIES))     return false;
+    if (!register_string_proto_method(proto, heap, "set",         BUILTIN_TA_PROTO_SET))         return false;
+    if (!register_string_proto_method(proto, heap, "subarray",    BUILTIN_TA_PROTO_SUBARRAY))    return false;
+    if (!register_string_proto_method(proto, heap, "fill",        BUILTIN_TA_PROTO_FILL))        return false;
+    if (!register_string_proto_method(proto, heap, "copyWithin",  BUILTIN_TA_PROTO_COPYWITHIN))  return false;
+    if (!register_string_proto_method(proto, heap, "slice",       BUILTIN_TA_PROTO_SLICE))       return false;
+
+    // %TypedArray%.prototype[@@iterator] = values
+    {
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        if (iter_sym != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TA_PROTO_SYMBOL_ITERATOR;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+            HString* name_key = builtin_intern_string(heap, "name");
+            HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
+            if (name_key != null && name_val != null) {
+                TVal name_tv;
+                name_tv.set_string(name_val);
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (len_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(0);
+                fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+            TVal iter_tv;
+            iter_tv.set_object(fn_obj);
+            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
+        }
     }
 
     // Register each typed array constructor

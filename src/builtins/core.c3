@@ -270,7 +270,18 @@ const uint BUILTIN_DATAVIEW_SET_UINT32                = 378;
 const uint BUILTIN_DATAVIEW_SET_FLOAT32               = 379;
 const uint BUILTIN_DATAVIEW_SET_FLOAT64               = 380;
 
-const uint BUILTIN_COUNT                       = 381;
+// %TypedArray%.prototype wave A (plan 049 stage 4)
+const uint BUILTIN_TA_PROTO_VALUES             = 381;
+const uint BUILTIN_TA_PROTO_KEYS               = 382;
+const uint BUILTIN_TA_PROTO_ENTRIES            = 383;
+const uint BUILTIN_TA_PROTO_SYMBOL_ITERATOR    = 384;
+const uint BUILTIN_TA_PROTO_SET                = 385;
+const uint BUILTIN_TA_PROTO_SUBARRAY           = 386;
+const uint BUILTIN_TA_PROTO_FILL               = 387;
+const uint BUILTIN_TA_PROTO_COPYWITHIN         = 388;
+const uint BUILTIN_TA_PROTO_SLICE              = 389;
+
+const uint BUILTIN_COUNT                       = 390;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1775,6 +1786,16 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 327: return { "[Symbol.replace]", 2 };
         case 328: return { "[Symbol.split]", 2 };
         case 329: return { "next", 0 };
+        // %TypedArray%.prototype wave A (plan 049 stage 4)
+        case 381: return { "values", 0 };
+        case 382: return { "keys", 0 };
+        case 383: return { "entries", 0 };
+        case 384: return { "[Symbol.iterator]", 0 };
+        case 385: return { "set", 1 };
+        case 386: return { "subarray", 2 };
+        case 387: return { "fill", 1 };
+        case 388: return { "copyWithin", 2 };
+        case 389: return { "slice", 2 };
         default: return { "", -1 };
     }
 }
@@ -2465,6 +2486,16 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_DATAVIEW_SET_UINT32] = &builtin_dataview_set_uint32,
     [BUILTIN_DATAVIEW_SET_FLOAT32] = &builtin_dataview_set_float32,
     [BUILTIN_DATAVIEW_SET_FLOAT64] = &builtin_dataview_set_float64,
+    // %TypedArray%.prototype wave A (plan 049 stage 4)
+    [BUILTIN_TA_PROTO_VALUES]          = &builtin_ta_proto_values,
+    [BUILTIN_TA_PROTO_KEYS]            = &builtin_ta_proto_keys,
+    [BUILTIN_TA_PROTO_ENTRIES]         = &builtin_ta_proto_entries,
+    [BUILTIN_TA_PROTO_SYMBOL_ITERATOR] = &builtin_ta_proto_symbol_iterator,
+    [BUILTIN_TA_PROTO_SET]             = &builtin_ta_proto_set,
+    [BUILTIN_TA_PROTO_SUBARRAY]        = &builtin_ta_proto_subarray,
+    [BUILTIN_TA_PROTO_FILL]            = &builtin_ta_proto_fill,
+    [BUILTIN_TA_PROTO_COPYWITHIN]      = &builtin_ta_proto_copyWithin,
+    [BUILTIN_TA_PROTO_SLICE]           = &builtin_ta_proto_slice,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

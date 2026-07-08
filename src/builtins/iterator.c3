@@ -256,10 +256,18 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     TVal value;
     value.set_undefined();
 
-    // Get length: use cached array_length for ARRAY exotic, else .length property
+    // Get length: use cached array_length for ARRAY exotic, TA byte_length for
+    // TypedArrays, else .length property for generic objects.
     long len = 0;
     if (target.get_class() == hobject::ObjClass.ARRAY) {
         len = (long)*target.array_len_ptr();
+    } else if (target.get_class() >= hobject::ObjClass.INT8ARRAY
+               && target.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+        HObject* ta_buf = (*target.extra_ptr()).view.buffer;
+        if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
+            uint ta_shift = ta_elem_shift(target.get_class());
+            len = (long)((*target.extra_ptr()).view.byte_length >> ta_shift);
+        }
     } else {
         TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);
         if (try lv = len_val) {
@@ -273,6 +281,15 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
 
     if ((long)idx >= len) {
         done = true;
+    } else if (target.get_class() >= hobject::ObjClass.INT8ARRAY
+               && target.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+        // TypedArray: read element from backing store directly.
+        HObject* ta_buf = (*target.extra_ptr()).view.buffer;
+        if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
+            char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*target.extra_ptr()).view.byte_offset;
+            value = ta_load_element(ta_base, target.get_class(), idx);
+        }
+        // detached: value stays undefined (spec: detach mid-iteration -> undefined)
     } else {
         // Try dense array part first, then fall back to property table
         TVal? elem = target.get_array_idx(idx);
