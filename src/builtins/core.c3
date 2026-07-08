@@ -234,7 +234,16 @@ const uint BUILTIN_FUNCTION_PROTO_SPECIES_GETTER = 346;
 const uint BUILTIN_REGEXP_PROTO_GET_HASINDICES   = 347;
 const uint BUILTIN_REGEXP_PROTO_GET_UNICODESETS  = 348;
 
-const uint BUILTIN_COUNT                       = 349;
+// ArrayBuffer core (plan 049 stage 1)
+const uint BUILTIN_ARRAYBUFFER                        = 349;
+const uint BUILTIN_ARRAYBUFFER_ISVIEW                 = 350;
+const uint BUILTIN_ARRAYBUFFER_PROTO_BYTELENGTH_GET   = 351;
+const uint BUILTIN_ARRAYBUFFER_PROTO_SLICE            = 352;
+const uint BUILTIN_ARRAYBUFFER_PROTO_DETACHED_GET     = 353;
+const uint BUILTIN_ARRAYBUFFER_SPECIES_GET            = 354;
+const uint BUILTIN_DETACH_ARRAYBUFFER                 = 355;
+
+const uint BUILTIN_COUNT                       = 356;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2393,6 +2402,14 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_UINT32ARRAY] = &builtin_uint32array,
     [BUILTIN_FLOAT32ARRAY] = &builtin_float32array,
     [BUILTIN_FLOAT64ARRAY] = &builtin_float64array,
+    // ArrayBuffer core (plan 049 stage 1)
+    [BUILTIN_ARRAYBUFFER] = &builtin_arraybuffer,
+    [BUILTIN_ARRAYBUFFER_ISVIEW] = &builtin_arraybuffer_isview,
+    [BUILTIN_ARRAYBUFFER_PROTO_BYTELENGTH_GET] = &builtin_arraybuffer_proto_bytelength_get,
+    [BUILTIN_ARRAYBUFFER_PROTO_SLICE] = &builtin_arraybuffer_proto_slice,
+    [BUILTIN_ARRAYBUFFER_PROTO_DETACHED_GET] = &builtin_arraybuffer_proto_detached_get,
+    [BUILTIN_ARRAYBUFFER_SPECIES_GET] = &builtin_arraybuffer_species_get,
+    [BUILTIN_DETACH_ARRAYBUFFER] = &builtin_detach_arraybuffer,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -2647,6 +2664,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register TypedArray constructors (Int8Array, Uint8Array, etc.)
     if (!register_typed_array_constructors(global_env, heap)) return false;
+
+    // Register ArrayBuffer constructor and prototype (plan 049 stage 1)
+    if (!register_arraybuffer(global_env, heap)) return false;
 
     // Wire all prototype chains to Object.prototype
     if (heap.number_proto != null) heap.number_proto.prototype = heap.object_proto;

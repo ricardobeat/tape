@@ -225,6 +225,7 @@ struct Heap {
     HObject* generator_func_proto; // GeneratorFunction.prototype (ES6 §25.2.3)
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
     HObject* typedarray_proto; // Shared %TypedArray%.prototype
+    HObject* arraybuffer_proto; // ArrayBuffer.prototype
 
     // Generator resume state (set by .next()/.throw()/.return() builtins,
     // read by the VM CALL handler and YIELD/RET opcodes).
@@ -1077,6 +1078,7 @@ fn void Heap.reset(&self) {
     self.generator_func_proto = null;
     self.iterator_proto       = null;
     self.typedarray_proto = null;
+    self.arraybuffer_proto = null;
 
     // Clear builtin string cache
     for (usz i = 0; i < STRS_CACHE_SIZE; i++) {
@@ -1636,6 +1638,29 @@ fn void Heap.drain_gray(&self) {
                     reaction = (HObject*)reaction.next;
                 }
                 break;
+            case ObjClass.ARRAYBUFFER:
+                // Mark all views chained off this buffer so they survive as
+                // long as the buffer does (mirrors PROMISE's reaction chain).
+                HObject* view_walk = (*obj.extra_ptr()).ab.views_head;
+                while (view_walk != null) {
+                    self.mark_hobject(view_walk);
+                    view_walk = (*view_walk.extra_ptr()).view.next_view;
+                }
+                break;
+            case ObjClass.DATAVIEW:
+            case ObjClass.INT8ARRAY:
+            case ObjClass.UINT8ARRAY:
+            case ObjClass.UINT8CLAMPEDARRAY:
+            case ObjClass.INT16ARRAY:
+            case ObjClass.UINT16ARRAY:
+            case ObjClass.INT32ARRAY:
+            case ObjClass.UINT32ARRAY:
+            case ObjClass.FLOAT32ARRAY:
+            case ObjClass.FLOAT64ARRAY:
+                if ((*obj.extra_ptr()).view.buffer != null) {
+                    self.mark_hobject((*obj.extra_ptr()).view.buffer);
+                }
+                break;
             case ObjClass.BOOLEAN:
             case ObjClass.NUMBER:
             case ObjClass.STRING:
@@ -1721,6 +1746,7 @@ fn void Heap.mark_roots(&self) {
     if (self.generator_func_proto != null) { self.mark_hobject(self.generator_func_proto); }
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
     if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
+    if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
 
     // Scan the VM value stack as a GC root — all live TVal slots
     // (from base to top) may reference heap objects or strings.
@@ -1944,21 +1970,21 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check built-in constructor prototypes
-    ZString[18] ctor_names = {
+    ZString[19] ctor_names = {
         "object_proto", "bool_proto", "string_proto", "number_proto",
         "array_proto", "function_proto", "date_proto", "regexp_proto",
         "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
         "symbol_proto", "promise_proto", "generator_proto", "generator_func_proto",
-        "iterator_proto", "typedarray_proto"
+        "iterator_proto", "typedarray_proto", "arraybuffer_proto"
     };
-    HObject*[18] ctor_protos = {
+    HObject*[19] ctor_protos = {
         self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
         self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
         self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
         self.symbol_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
-        self.iterator_proto, self.typedarray_proto
+        self.iterator_proto, self.typedarray_proto, self.arraybuffer_proto
     };
-    for (uint i = 0; i < 18; i++) {
+    for (uint i = 0; i < 19; i++) {
         if (ctor_protos[i] != null) {
             if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
             checked++;

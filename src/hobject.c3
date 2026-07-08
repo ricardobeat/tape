@@ -480,6 +480,21 @@ struct HObjectGetterSetter {
     TVal setter;
 }
 
+/// ArrayBuffer backing store. Active when obj_class == ARRAYBUFFER.
+struct HObjectArrayBuffer {
+    char*    data;          // heap.alloc_func'd, zeroed; null when detached
+    uint     byte_length;   // 0 when detached
+    HObject* views_head;    // intrusive list of views (via HObjectBufferView.next_view)
+}
+
+/// TypedArray or DataView. Active for INT8ARRAY..FLOAT64ARRAY and DATAVIEW.
+struct HObjectBufferView {
+    HObject* buffer;        // backing ARRAYBUFFER object (GC-traced)
+    HObject* next_view;     // intrusive list link (buffer.extra.ab.views_head chain)
+    uint     byte_offset;
+    uint     byte_length;   // in BYTES
+}
+
 /// Tagged union of subtype-specific fields.
 /// Discriminator is flags.obj_class (in the common header).
 union HObjectExtra {
@@ -491,6 +506,8 @@ union HObjectExtra {
     HObjectIterator              iter;
     HObjectRegExpStringIterator  regexp_iter;
     HObjectGetterSetter          gs;
+    HObjectArrayBuffer           ab;
+    HObjectBufferView            view;
     uint                         array_length;  // For ARRAY objects: dense-element count.
 }
 
@@ -1592,6 +1609,15 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         h.decref_tval(&(*obj.extra_ptr()).promise.result);
         (*obj.extra_ptr()).promise.reactions_head = null;
         (*obj.extra_ptr()).promise.reactions_tail = null;
+    }
+
+    // Free the ArrayBuffer's backing store (unless already detached).
+    if (obj.flags.obj_class == ObjClass.ARRAYBUFFER && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        if ((*obj.extra_ptr()).ab.data != null) {
+            h.free_func(h.heap_udata, (*obj.extra_ptr()).ab.data);
+            (*obj.extra_ptr()).ab.data = null;
+        }
     }
 
     // Free the per-object property hash table.
