@@ -13,6 +13,16 @@
       "panic-msg": false,
       "debug-info": "none"
     },
+    "duktape_c3_debug": {
+      "type": "executable",
+      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "opt": "O2",
+      "single-module": true,
+      "fp-math": "relaxed",
+      "panic-msg": false,
+      "debug-info": "line-tables",
+      "features": [ "TRACE_VM" ]
+    },
     "duktape_c3_envstrict": {
       "type": "executable",
       "sources": [ "src", "benchmarks/duktape_c3.c3" ],

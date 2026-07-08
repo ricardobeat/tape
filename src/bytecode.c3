@@ -704,6 +704,7 @@ macro Instruction from_raw(uint raw) {
 ///   `LDCONST   r0 = K[42]`
 ///   `JUMP      +17`
 fn usz Instruction.disassemble(&self, char[] buf) {
+    $if $feature(TRACE_VM):
     if (buf.len == 0) { return 0; }
 
     Opcode op = self.op;
@@ -770,6 +771,13 @@ fn usz Instruction.disassemble(&self, char[] buf) {
     }
 
     return pos;
+    $else
+    // TRACE_VM disabled — keep callers (CLI -c/--format json) linkable.
+    // The CLI in the release build detects missing TRACE_VM and tells the
+    // user to use `just build-trace`. Code should never reach this stub.
+    (void)buf;
+    return 0;
+    $endif
 }
 
 // ============================================================================
@@ -1058,6 +1066,15 @@ fn uint CompiledFunction.get_line(&self, uint pc) {
 
 // ============================================================================
 // Opcode name table (for disassembly / debugging)
+//
+// The 119-entry string table below is always declared (C3 $if cannot
+// appear at module level, so we can't make this conditional). The
+// *code paths* that read it (`Instruction.disassemble`,
+// `write_opcode_name`, and `trace_instruction` in `vm_trace.c3`) gate their
+// bodies on $feature(TRACE_VM) so release builds skip the .text cost.
+// The remaining ~3.5KB of .rodata is the price we pay for keeping a single
+// translation unit. Build the `duktape_c3_debug` target (or pass
+// `-D TRACE_VM`) to additionally wire `vm_trace.c3` and CLI dump helpers.
 // ============================================================================
 
 /// String names for each opcode, indexed by ordinal.
@@ -1179,7 +1196,8 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
 };
 
 /// Return the human-readable name for an opcode, or "???" for unknown
-/// values.
+/// values. Always present (called by `write_opcode_name` whose caller
+/// chain is gated on TRACE_VM), so OPCODE_NAMES must be reachable too.
 fn char* get_opcode_name(Opcode op) {
     uint idx = (uint)op.ordinal;
     if (idx <= Opcode.LAST_OP.ordinal) {
@@ -1197,6 +1215,7 @@ fn char* get_opcode_name(Opcode op) {
 
 /// Write an opcode name into `buf` starting at `pos`.  Returns new pos.
 fn usz write_opcode_name(Opcode op, char[] buf, usz pos) {
+$if $feature(TRACE_VM):
     char* name = get_opcode_name(op);
     usz i = 0;
     while (name[i] != 0 && pos < buf.len) {
@@ -1205,10 +1224,17 @@ fn usz write_opcode_name(Opcode op, char[] buf, usz pos) {
         i++;
     }
     return pos;
+$else
+    // Stub for non-TRACE_VM builds. Body only reachable via
+    // Instruction.disassemble (also stubbed above).
+    (void)op; (void)buf;
+    return pos;
+$endif
 }
 
 /// Write a C string into `buf` starting at `pos`.  Returns new pos.
 fn usz write_str(char[] buf, usz pos, char* s) {
+$if $feature(TRACE_VM):
     usz i = 0;
     while (s[i] != 0 && pos < buf.len) {
         buf[pos] = s[i];
@@ -1216,10 +1242,15 @@ fn usz write_str(char[] buf, usz pos, char* s) {
         i++;
     }
     return pos;
+$else
+    (void)buf; (void)s;
+    return pos;
+$endif
 }
 
 /// Write an unsigned integer (decimal) into `buf` starting at `pos`.
 fn usz write_uint(char[] buf, usz pos, uint val) {
+$if $feature(TRACE_VM):
     // Small stack buffer for decimal digits (max 10 digits for uint).
     char[12] tmp;
     usz len = 0;
@@ -1246,10 +1277,15 @@ fn usz write_uint(char[] buf, usz pos, uint val) {
         pos++;
     }
     return pos;
+$else
+    (void)buf; (void)val;
+    return pos;
+$endif
 }
 
 /// Write a signed integer (decimal) into `buf` starting at `pos`.
 fn usz write_int(char[] buf, usz pos, int val) {
+$if $feature(TRACE_VM):
     if (val < 0) {
         if (pos < buf.len) {
             buf[pos] = '-';
@@ -1268,4 +1304,8 @@ fn usz write_int(char[] buf, usz pos, int val) {
         }
     }
     return write_uint(buf, pos, (uint)val);
+$else
+    (void)buf; (void)val;
+    return pos;
+$endif
 }

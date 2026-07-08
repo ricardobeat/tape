@@ -743,10 +743,12 @@ fn TVal? Vm.run(Vm* vm) {
             TVal* rb = ds.regs_base + ((uint)insn.b);
             TVal* rc = ds.regs_base + ((uint)insn.c);
 
+        $if $feature(TRACE_VM):
         if (@unlikely(vm.trace)) {
             trace_instruction(vm, ds.curr_pc - 1, (uint)((ds.curr_pc - 1) - ds.code_base),
                               ra, rb, rc, ds.regs_base, ds.act);
         }
+        $endif
 
         switch (op) {
 
