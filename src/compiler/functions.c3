@@ -16,6 +16,15 @@ import std::io;
 /// Maximum number of bindings collected from destructuring function parameters.
 const uint MAX_DESTRUCT_BINDS = 64;
 
+/// Iterator state for a source register used in array destructuring.
+struct DestructIterState {
+    ushort src_reg;       // the source register this iterator is for
+    ushort method_reg;    // register holding the iterator object (result of @@iterator call)
+    ushort next_reg;      // register holding the .next method
+    ushort callee_reg;    // callee register for .next calls
+    ushort callee_this_reg; // this register for .next calls
+}
+
 /// Collected info for a single destructured binding from a function parameter.
 struct DestructBind {
     uint name_idx;       // constant index of the binding name (0xFFFFFFFF for synthetic)
@@ -293,6 +302,397 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
 
     self.expect(TokenType.RBRACKET)!;
     return;
+}
+
+// ---------------------------------------------------------------------------
+// Iterator protocol helpers for array destructuring
+// ---------------------------------------------------------------------------
+
+/// Emit the full iterator protocol setup for a source register.
+/// Sets up: src[Symbol.iterator]() → iterator, iterator.next → next method.
+/// Populates the DestructIterState with the register numbers.
+fn void CompilerContext.emit_destruct_iter_setup(&self, ushort src_reg, DestructIterState* state) {
+    // Get Symbol.iterator from the global Symbol object
+    ushort sym_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+
+    ushort iter_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+
+    ushort symbol_val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+    self.free_reg(iter_key_reg);
+    self.free_reg(sym_reg);
+
+    // Look up @@iterator method on source
+    ushort method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)src_reg, (uint)symbol_val_reg);
+    self.free_reg(symbol_val_reg);
+
+    // Call @@iterator() → iterator object
+    ushort this_slot = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)src_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+    self.free_reg(this_slot);
+
+    // Get .next method from iterator
+    ushort next_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+
+    ushort next_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+    self.free_reg(next_key_reg);
+
+    // Set up callee/this pair for .next calls
+    ushort callee_reg = self.alloc_reg();
+    ushort callee_this_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+
+    state.src_reg = src_reg;
+    state.method_reg = method_reg;
+    state.next_reg = next_reg;
+    state.callee_reg = callee_reg;
+    state.callee_this_reg = callee_this_reg;
+}
+
+/// Advance the iterator by calling .next(), extract .value into dest_reg.
+/// Must be preceded by emit_destruct_iter_setup for the same iterator state.
+fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state, ushort dest_reg) {
+    // Reload callee/this each call (generators may overwrite)
+    self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
+
+    // Call .next() → result
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
+
+    // Extract .value
+    ushort val_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)dest_reg, (uint)result_reg, (uint)val_key_reg);
+    self.free_reg(val_key_reg);
+    self.free_reg(result_reg);
+}
+
+/// Free registers held by an iterator state.
+fn void CompilerContext.free_destruct_iter(&self, DestructIterState* state) {
+    self.free_reg(state.callee_this_reg);
+    self.free_reg(state.callee_reg);
+    self.free_reg(state.next_reg);
+    self.free_reg(state.method_reg);
+}
+
+/// Find or create iterator state for a source register.
+fn ushort find_destruct_iter(ushort src_reg, DestructIterState[] states, uint* count) {
+    for (uint i = 0; i < *count; i++) {
+        if (states[i].src_reg == src_reg) return (ushort)i;
+    }
+    return 0xFFFF;
+}
+
+/// Shared emission helper for function-parameter destructuring bindings.
+/// Walks binds in declaration order, resolving source registers from arg slots
+/// or parent group temps, and emits GETPROP (object patterns) or iterator
+/// protocol (array patterns) to extract values into group_regs / binding_regs.
+fn void CompilerContext.emit_destruct_bindings(&self,
+    DestructBind[] binds, uint count,
+    ushort[] group_regs, ushort[] binding_regs)
+{
+    if (count == 0) return;
+
+    DestructIterState[MAX_DESTRUCT_BINDS] iter_states;
+    uint iter_count = 0;
+
+    // Track the next expected index per source register (for hole/elision gaps).
+    // Source registers are argument slots (low numbers), so we index by arg_idx.
+    ushort[64] expected_idx;
+    for (uint i = 0; i < 64; i++) expected_idx[i] = 0xFFFF;
+
+    // Pre-scan: allocate group_regs for rest synthetics before any iterator
+    // setup, so they land below callee_reg and are safe from CALL frame overlay.
+    for (uint di = 0; di < count; di++) {
+        if (binds[di].is_synthetic && !binds[di].is_object && binds[di].key_idx == 0xFFFF) {
+            group_regs[di] = self.alloc_reg();
+        }
+    }
+
+    for (uint di = 0; di < count; di++) {
+        // Resolve source register — either the argument slot or a parent group temp
+        ushort src_reg;
+        if (binds[di].parent_idx == 0xFFFF) {
+            src_reg = binds[di].arg_idx;
+        } else {
+            src_reg = group_regs[binds[di].parent_idx];
+        }
+
+        // ---- Hole / elision: advance iterator past gaps ----
+        // For any array bind (not object), ensure iterator is at the target index.
+        // This covers: element binds, synthetic binds, and rest binds.
+        if (!binds[di].is_object) {
+            ushort ei = expected_idx[src_reg];
+            if (ei == 0xFFFF) ei = 0;
+            ushort target = binds[di].index;
+            while (ei < target) {
+                ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+                if (iter_idx == 0xFFFF) {
+                    iter_idx = (ushort)iter_count;
+                    iter_count++;
+                    self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+                }
+                ushort hole_reg = self.alloc_reg();
+                self.emit_destruct_iter_next(&iter_states[iter_idx], hole_reg);
+                self.free_reg(hole_reg);
+                ei++;
+            }
+        }
+        // Update expected next index after consuming this element.
+        if (!binds[di].is_object && binds[di].key_idx != 0xFFFF) {
+            if (expected_idx[src_reg] == 0xFFFF) expected_idx[src_reg] = 0;
+            expected_idx[src_reg] = (ushort)(binds[di].index + 1);
+        }
+
+        if (binds[di].is_synthetic) {
+            // Use pre-allocated group_reg for rest synthetics, allocate now for others.
+            ushort group_reg;
+            if (binds[di].key_idx == 0xFFFF) {
+                group_reg = group_regs[di];
+            } else {
+                group_reg = self.alloc_reg();
+                group_regs[di] = group_reg;
+            }
+
+            if (binds[di].is_object) {
+                // Object pattern: GETPROP
+                ushort key_reg = self.alloc_reg();
+                self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
+                self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                self.free_reg(key_reg);
+            } else if (binds[di].key_idx == 0xFFFF) {
+                // Synthetic rest: collect remaining iterator values into an array.
+                self.emit_abc(Opcode.NEWARR, (uint)group_reg, 0, 0);
+
+                ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+                if (iter_idx == 0xFFFF) {
+                    iter_idx = (ushort)iter_count;
+                    iter_count++;
+                    self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+                }
+                DestructIterState* state = &iter_states[iter_idx];
+
+                ushort result_reg = self.alloc_reg();
+                ushort done_key_reg = self.alloc_reg();
+                ushort done_reg = self.alloc_reg();
+
+                uint collect_start = self.code_count;
+
+                self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
+                self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
+
+                self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
+
+                self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+                uint done_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+                ushort val_key_reg = self.alloc_reg();
+                ushort val_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
+                self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)val_key_reg);
+                self.free_reg(val_key_reg);
+
+                ushort push_key_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);
+                ushort push_method_reg = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)push_method_reg, (uint)group_reg, (uint)push_key_reg);
+                self.free_reg(push_key_reg);
+
+                ushort push_callee_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)push_callee_reg, (uint)push_method_reg, 0);
+                self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 1), (uint)group_reg, 0);
+                if (self.next_reg < push_callee_reg + 3) {
+                    self.next_reg = push_callee_reg + 3;
+                }
+                self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 2), (uint)val_reg, 0);
+                self.free_reg(val_reg);
+                self.free_reg(push_method_reg);
+                self.emit_abc(Opcode.CALL, (uint)push_callee_reg, (uint)push_callee_reg, 1);
+                self.free_reg(push_callee_reg);
+
+                int back_offset = (int)collect_start - (int)self.code_count - 1;
+                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+                self.patch_jump(done_jump);
+
+                self.free_reg(done_key_reg);
+                self.free_reg(done_reg);
+                self.free_reg(result_reg);
+            } else {
+                // Array pattern element: single iterator advance.
+                ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+                if (iter_idx == 0xFFFF) {
+                    iter_idx = (ushort)iter_count;
+                    iter_count++;
+                    self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+                }
+                self.emit_destruct_iter_next(&iter_states[iter_idx], group_reg);
+            }
+
+            // Default value check for nested patterns: if group_reg is
+            // undefined, evaluate the default thunk before REQUIRE_OBJ.
+            if (binds[di].has_default && binds[di].key_idx != 0xFFFF) {
+                ushort undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                ushort cmp_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)group_reg, (uint)undef_reg);
+                self.free_reg(undef_reg);
+
+                uint skip_addr = self.code_count;
+                self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+                self.free_reg(cmp_reg);
+
+                ushort closure_reg = self.alloc_reg();
+                self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, binds[di].default_func_idx);
+
+                ushort call_base = self.alloc_reg();
+                if (self.next_reg <= call_base + 1) { self.next_reg = call_base + 2; }
+                self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+                self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+                self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+                self.emit_abc(Opcode.LDREG, (uint)group_reg, (uint)call_base, 0);
+                self.free_regs_to(call_base);
+
+                int skip_off = (int)self.code_count - (int)skip_addr - 1;
+                self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+            }
+
+            // REQUIRE_OBJ — TypeError if null/undefined nested target.
+            // Skip for rest synthetics (always an array).
+            if (binds[di].key_idx != 0xFFFF) {
+                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
+            }
+        } else {
+            // Leaf binding — a real variable
+            ushort bind_reg = binding_regs[di];
+            uint ni = binds[di].name_idx;
+
+            // Extract value from source into bind_reg
+            if (binds[di].is_object) {
+                ushort key_reg = self.alloc_reg();
+                self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
+                self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                self.free_reg(key_reg);
+            } else {
+                if (binds[di].key_idx == 0xFFFF) {
+                    // Rest element: collect remaining iterator values into a new array.
+                    // Use bind_reg (pre-allocated low register from declare_var)
+                    // directly for the array to avoid the CALL callee-frame overlay
+                    // (CALL places callee frame at callee_reg+2, which would
+                    // clobber a freshly allocated register).
+                    self.emit_abc(Opcode.NEWARR, (uint)bind_reg, 0, 0);
+
+                    ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+                    if (iter_idx == 0xFFFF) {
+                        iter_idx = (ushort)iter_count;
+                        iter_count++;
+                        self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+                    }
+                    DestructIterState* state = &iter_states[iter_idx];
+
+                    ushort result_reg = self.alloc_reg();
+                    ushort done_key_reg = self.alloc_reg();
+                    ushort done_reg = self.alloc_reg();
+
+                    uint collect_start = self.code_count;
+
+                    self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
+                    self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
+
+                    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
+
+                    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+                    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+                    uint done_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+                    ushort val_key_reg = self.alloc_reg();
+                    ushort val_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
+                    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)val_key_reg);
+                    self.free_reg(val_key_reg);
+
+                    ushort push_key_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);
+                    ushort push_method_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.GETPROP, (uint)push_method_reg, (uint)bind_reg, (uint)push_key_reg);
+                    self.free_reg(push_key_reg);
+
+                    ushort push_callee_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDREG, (uint)push_callee_reg, (uint)push_method_reg, 0);
+                    self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 1), (uint)bind_reg, 0);
+                    if (self.next_reg < push_callee_reg + 3) {
+                        self.next_reg = push_callee_reg + 3;
+                    }
+                    self.emit_abc(Opcode.LDREG, (uint)(push_callee_reg + 2), (uint)val_reg, 0);
+                    self.free_reg(val_reg);
+                    self.free_reg(push_method_reg);
+                    self.emit_abc(Opcode.CALL, (uint)push_callee_reg, (uint)push_callee_reg, 1);
+                    self.free_reg(push_callee_reg);
+
+                    int back_offset = (int)collect_start - (int)self.code_count - 1;
+                    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+                    self.patch_jump(done_jump);
+
+                    self.free_reg(done_key_reg);
+                    self.free_reg(done_reg);
+                    self.free_reg(result_reg);
+                } else {
+                    // Array pattern: use iterator protocol
+                    ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+                    if (iter_idx == 0xFFFF) {
+                        iter_idx = (ushort)iter_count;
+                        iter_count++;
+                        self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+                    }
+                    self.emit_destruct_iter_next(&iter_states[iter_idx], bind_reg);
+                }
+            }
+
+            // Default value check: if bind_reg is undefined, use the default thunk
+            if (binds[di].has_default) {
+                ushort undef_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
+                ushort cmp_reg = self.alloc_reg();
+                self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
+                self.free_reg(undef_reg);
+
+                uint skip_addr = self.code_count;
+                self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
+                self.free_reg(cmp_reg);
+
+                ushort closure_reg = self.alloc_reg();
+                self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, binds[di].default_func_idx);
+
+                ushort call_base = self.alloc_reg();
+                if (self.next_reg <= call_base + 1) { self.next_reg = call_base + 2; }
+                self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
+                self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+                self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
+                self.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
+                self.free_regs_to(call_base);
+
+                int skip_off = (int)self.code_count - (int)skip_addr - 1;
+                self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
+            }
+
+            // Sync binding to environment
+            self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+            self.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
+        }
+    }
+
+    // Free iterator registers
+    for (uint i = 0; i < iter_count; i++) {
+        self.free_destruct_iter(&iter_states[i]);
+    }
 }
 
 /// Skip past a braced block in the lexer without compiling.
@@ -1217,122 +1617,8 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     }
 
     // Emit destructuring code for destructured function parameters.
-    // Walk bindings in declaration order:
-    //   Synthetics: GETPROP from parent's source → group_reg, REQUIRE_OBJ
-    //   Leaves:     GETPROP from parent's group_reg (or arg) → bind_reg
-    if (destruct_count > 0) {
-        for (uint di = 0; di < destruct_count; di++) {
-            // Resolve source register — either the argument slot or a parent group temp
-            ushort src_reg;
-            if (destruct_binds[di].parent_idx == 0xFFFF) {
-                src_reg = destruct_binds[di].arg_idx;
-            } else {
-                src_reg = destruct_group_regs[destruct_binds[di].parent_idx];
-            }
-
-            if (destruct_binds[di].is_synthetic) {
-                // Allocate a temp register for this intermediate extraction
-                ushort group_reg = self.alloc_reg();
-                destruct_group_regs[di] = group_reg;
-
-                // GETPROP/LDREG source → group_reg
-                if (destruct_binds[di].is_object) {
-                    ushort key_reg = self.alloc_reg();
-                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, destruct_binds[di].key_idx);
-                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    self.free_reg(key_reg);
-                } else {
-                    ushort key_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)destruct_binds[di].index));
-                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    self.free_reg(key_reg);
-                }
-
-                // Default value check for nested patterns: if group_reg is
-                // undefined, evaluate the default thunk before REQUIRE_OBJ.
-                if (destruct_binds[di].has_default) {
-                    ushort undef_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)group_reg, (uint)undef_reg);
-                    self.free_reg(undef_reg);
-
-                    uint skip_addr = self.code_count;
-                    self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    self.free_reg(cmp_reg);
-
-                    ushort closure_reg = self.alloc_reg();
-                    self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, destruct_binds[di].default_func_idx);
-
-                    ushort call_base = self.alloc_reg();
-                    if (self.next_reg <= call_base + 1) { self.next_reg = call_base + 2; }
-                    self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    self.emit_abc(Opcode.LDREG, (uint)group_reg, (uint)call_base, 0);
-                    self.free_regs_to(call_base);
-
-                    int skip_off = (int)self.code_count - (int)skip_addr - 1;
-                    self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                // REQUIRE_OBJ — TypeError if null/undefined nested target
-                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
-            } else {
-                // Leaf binding — a real variable
-                ushort bind_reg = destruct_binding_regs[di];
-                uint ni = destruct_binds[di].name_idx;
-
-                // GETPROP/LDREG source → bind_reg
-                if (destruct_binds[di].is_object) {
-                    ushort key_reg = self.alloc_reg();
-                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, destruct_binds[di].key_idx);
-                    self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                    self.free_reg(key_reg);
-                } else {
-                    if (destruct_binds[di].key_idx == 0xFFFF) {
-                        self.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
-                    } else {
-                        ushort key_reg = self.alloc_reg();
-                        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)destruct_binds[di].index));
-                        self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                        self.free_reg(key_reg);
-                    }
-                }
-
-                // Default value check: if bind_reg is undefined, use the default thunk
-                if (destruct_binds[di].has_default) {
-                    ushort undef_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
-                    self.free_reg(undef_reg);
-
-                    uint skip_addr = self.code_count;
-                    self.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    self.free_reg(cmp_reg);
-
-                    ushort closure_reg = self.alloc_reg();
-                    self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, destruct_binds[di].default_func_idx);
-
-                    ushort call_base = self.alloc_reg();
-                    if (self.next_reg <= call_base + 1) { self.next_reg = call_base + 2; }
-                    self.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    self.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    self.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
-                    self.free_regs_to(call_base);
-
-                    int skip_off = (int)self.code_count - (int)skip_addr - 1;
-                    self.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                // Sync binding to environment
-                self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
-                self.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
-            }
-        }
-    }
+    self.emit_destruct_bindings(destruct_binds[..], destruct_count,
+                                destruct_group_regs[..], destruct_binding_regs[..]);
 
     // Hoist var and function declarations to the top of the function scope.
     self.hoist_decls(false)!;
@@ -1747,112 +2033,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // parse_destruct_param_default / emit_destruct_param_defaults).
     inner_ctx.emit_destruct_param_defaults();
 
-    // Emit destructuring code — single pass walking synthetics then leaves.
-    if (inner_destruct_count > 0) {
-        for (uint di = 0; di < inner_destruct_count; di++) {
-            ushort src_reg;
-            if (inner_destruct_binds[di].parent_idx == 0xFFFF) {
-                src_reg = inner_destruct_binds[di].arg_idx;
-            } else {
-                src_reg = inner_destruct_group_regs[inner_destruct_binds[di].parent_idx];
-            }
-
-            if (inner_destruct_binds[di].is_synthetic) {
-                ushort group_reg = inner_ctx.alloc_reg();
-                inner_destruct_group_regs[di] = group_reg;
-
-                if (inner_destruct_binds[di].is_object) {
-                    ushort key_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, inner_destruct_binds[di].key_idx);
-                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    inner_ctx.free_reg(key_reg);
-                } else {
-                    ushort key_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)inner_destruct_binds[di].index));
-                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    inner_ctx.free_reg(key_reg);
-                }
-
-                // Default value check for nested patterns: if group_reg is
-                // undefined, evaluate the default thunk before REQUIRE_OBJ.
-                if (inner_destruct_binds[di].has_default) {
-                    ushort undef_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)group_reg, (uint)undef_reg);
-                    inner_ctx.free_reg(undef_reg);
-
-                    uint skip_addr = inner_ctx.code_count;
-                    inner_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    inner_ctx.free_reg(cmp_reg);
-
-                    ushort closure_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, inner_destruct_binds[di].default_func_idx);
-
-                    ushort call_base = inner_ctx.alloc_reg();
-                    if (inner_ctx.next_reg <= call_base + 1) { inner_ctx.next_reg = call_base + 2; }
-                    inner_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    inner_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    inner_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    inner_ctx.emit_abc(Opcode.LDREG, (uint)group_reg, (uint)call_base, 0);
-                    inner_ctx.free_regs_to(call_base);
-
-                    int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
-                    inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                inner_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
-            } else {
-                ushort bind_reg = inner_destruct_binding_regs[di];
-                uint ni = inner_destruct_binds[di].name_idx;
-
-                if (inner_destruct_binds[di].is_object) {
-                    ushort key_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, inner_destruct_binds[di].key_idx);
-                    inner_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                    inner_ctx.free_reg(key_reg);
-                } else {
-                    if (inner_destruct_binds[di].key_idx == 0xFFFF) {
-                        inner_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
-                    } else {
-                        ushort key_reg = inner_ctx.alloc_reg();
-                        inner_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)inner_destruct_binds[di].index));
-                        inner_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                        inner_ctx.free_reg(key_reg);
-                    }
-                }
-
-                if (inner_destruct_binds[di].has_default) {
-                    ushort undef_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
-                    inner_ctx.free_reg(undef_reg);
-
-                    uint skip_addr = inner_ctx.code_count;
-                    inner_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    inner_ctx.free_reg(cmp_reg);
-
-                    ushort closure_reg = inner_ctx.alloc_reg();
-                    inner_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, inner_destruct_binds[di].default_func_idx);
-
-                    ushort call_base = inner_ctx.alloc_reg();
-                    if (inner_ctx.next_reg <= call_base + 1) { inner_ctx.next_reg = call_base + 2; }
-                    inner_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    inner_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    inner_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    inner_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
-                    inner_ctx.free_regs_to(call_base);
-
-                    int skip_off = (int)inner_ctx.code_count - (int)skip_addr - 1;
-                    inner_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                inner_ctx.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
-                inner_ctx.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
-            }
-        }
-    }
+    // Emit destructuring code for inner function parameters.
+    inner_ctx.emit_destruct_bindings(inner_destruct_binds[..], inner_destruct_count,
+                                     inner_destruct_group_regs[..], inner_destruct_binding_regs[..]);
 
     // Hoist var and function declarations to the top of the inner function scope.
     inner_ctx.hoist_decls(false)!;
@@ -2358,112 +2541,9 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     // parse_destruct_param_default / emit_destruct_param_defaults).
     arrow_ctx.emit_destruct_param_defaults();
 
-    // Emit destructuring code — single pass walking synthetics then leaves.
-    if (arrow_destruct_count > 0) {
-        for (uint di = 0; di < arrow_destruct_count; di++) {
-            ushort src_reg;
-            if (arrow_destruct_binds[di].parent_idx == 0xFFFF) {
-                src_reg = arrow_destruct_binds[di].arg_idx;
-            } else {
-                src_reg = arrow_destruct_group_regs[arrow_destruct_binds[di].parent_idx];
-            }
-
-            if (arrow_destruct_binds[di].is_synthetic) {
-                ushort group_reg = arrow_ctx.alloc_reg();
-                arrow_destruct_group_regs[di] = group_reg;
-
-                if (arrow_destruct_binds[di].is_object) {
-                    ushort key_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, arrow_destruct_binds[di].key_idx);
-                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    arrow_ctx.free_reg(key_reg);
-                } else {
-                    ushort key_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)arrow_destruct_binds[di].index));
-                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                    arrow_ctx.free_reg(key_reg);
-                }
-
-                // Default value check for nested patterns: if group_reg is
-                // undefined, evaluate the default thunk before REQUIRE_OBJ.
-                if (arrow_destruct_binds[di].has_default) {
-                    ushort undef_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)group_reg, (uint)undef_reg);
-                    arrow_ctx.free_reg(undef_reg);
-
-                    uint skip_addr = arrow_ctx.code_count;
-                    arrow_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    arrow_ctx.free_reg(cmp_reg);
-
-                    ushort closure_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, arrow_destruct_binds[di].default_func_idx);
-
-                    ushort call_base = arrow_ctx.alloc_reg();
-                    if (arrow_ctx.next_reg <= call_base + 1) { arrow_ctx.next_reg = call_base + 2; }
-                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    arrow_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    arrow_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)group_reg, (uint)call_base, 0);
-                    arrow_ctx.free_regs_to(call_base);
-
-                    int skip_off = (int)arrow_ctx.code_count - (int)skip_addr - 1;
-                    arrow_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                arrow_ctx.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
-            } else {
-                ushort bind_reg = arrow_destruct_binding_regs[di];
-                uint ni = arrow_destruct_binds[di].name_idx;
-
-                if (arrow_destruct_binds[di].is_object) {
-                    ushort key_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_a_bc(Opcode.LDCONST, (uint)key_reg, arrow_destruct_binds[di].key_idx);
-                    arrow_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                    arrow_ctx.free_reg(key_reg);
-                } else {
-                    if (arrow_destruct_binds[di].key_idx == 0xFFFF) {
-                        arrow_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)src_reg, 0);
-                    } else {
-                        ushort key_reg = arrow_ctx.alloc_reg();
-                        arrow_ctx.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)key_reg, (int)arrow_destruct_binds[di].index));
-                        arrow_ctx.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                        arrow_ctx.free_reg(key_reg);
-                    }
-                }
-
-                if (arrow_destruct_binds[di].has_default) {
-                    ushort undef_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_abc(Opcode.LDUNDEF, (uint)undef_reg, 0, 0);
-                    ushort cmp_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_abc(Opcode.SNEQ, (uint)cmp_reg, (uint)bind_reg, (uint)undef_reg);
-                    arrow_ctx.free_reg(undef_reg);
-
-                    uint skip_addr = arrow_ctx.code_count;
-                    arrow_ctx.emit(bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, 0));
-                    arrow_ctx.free_reg(cmp_reg);
-
-                    ushort closure_reg = arrow_ctx.alloc_reg();
-                    arrow_ctx.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, arrow_destruct_binds[di].default_func_idx);
-
-                    ushort call_base = arrow_ctx.alloc_reg();
-                    if (arrow_ctx.next_reg <= call_base + 1) { arrow_ctx.next_reg = call_base + 2; }
-                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)call_base, (uint)closure_reg, 0);
-                    arrow_ctx.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
-                    arrow_ctx.emit_abc(Opcode.CALL, (uint)call_base, (uint)call_base, 0);
-                    arrow_ctx.emit_abc(Opcode.LDREG, (uint)bind_reg, (uint)call_base, 0);
-                    arrow_ctx.free_regs_to(call_base);
-
-                    int skip_off = (int)arrow_ctx.code_count - (int)skip_addr - 1;
-                    arrow_ctx.code[skip_addr] = bytecode::make_a_sbx(Opcode.IF_TRUE, (uint)cmp_reg, skip_off);
-                }
-
-                arrow_ctx.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
-                arrow_ctx.emit_a_bc(Opcode.GETVAR, (uint)bind_reg, ni);
-            }
-        }
-    }
+    // Emit destructuring code for arrow function parameters.
+    arrow_ctx.emit_destruct_bindings(arrow_destruct_binds[..], arrow_destruct_count,
+                                     arrow_destruct_group_regs[..], arrow_destruct_binding_regs[..]);
 
     // Determine if body is block or expression. Capture `body_end_pos` right
     // after the last body token (before any trailing whitespace or comment) so
