@@ -139,6 +139,11 @@ const char[] NFM_HARNESS = "function validateNativeFunctionSource(source){var po
 
 const char[] ISCON_HARNESS = "function isConstructor(f){try{var p=new Proxy({},{getPrototypeOf:function(){return null;}});new f(p);return true;}catch(e){return false;}}";
 
+// Minimal $262 host object for tests that call $262.detachArrayBuffer,
+// $DETACHBUFFER, etc. The detach primitive is provided by the engine as
+// the hidden global __detachArrayBuffer (see src/builtins/arraybuffer.c3).
+const char[] HOST262_HARNESS = "var $262={detachArrayBuffer:function(b){return __detachArrayBuffer(b);},global:this,gc:function(){},evalScript:function(s){return eval(s);},createRealm:function(){throw new Error('createRealm not supported');},agent:{}};function $DETACHBUFFER(b){return __detachArrayBuffer(b);}";
+
 fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[] property_helper_src) {
     char[]? source = file::load_temp((String)test_path);
     if (catch err = source) { return 1; }
@@ -162,6 +167,9 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
 
     // Load simplified isConstructor
     if (exec_js(v, hp, ISCON_HARNESS) != 0) { io::eprintfn("  FAIL: ISCON_HARNESS"); }
+
+    // Load $262 host object (detachArrayBuffer bridge for TA/AB tests)
+    if (exec_js(v, hp, HOST262_HARNESS) != 0) { io::eprintfn("  FAIL: HOST262_HARNESS"); }
 
     // Load $DONE helper for async tests (tests with `flags: [async]`).
     char[]? done_src_opt = file::load_temp((String)"test262/harness/doneprintHandle.js");

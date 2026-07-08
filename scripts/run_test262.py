@@ -122,6 +122,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Math\.sumPrecise|RegExp\.escape|json-parse-with-source|"
     r"regexp-modifiers|regexp-duplicate-named-groups|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
+    r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|iterator-helpers|"
     # ES2024+ features (implement later)
     r"Array\.fromAsync|set-methods|promise-with-resolvers|"
@@ -375,6 +376,15 @@ PHASES = [
             "language/expressions/yield",
             "language/expressions/generators",
             "language/statements/generators",
+        ],
+    },
+    {
+        "label": "Phase 22: Buffers",
+        "dirs": [
+            "built-ins/ArrayBuffer",
+            "built-ins/TypedArray",
+            "built-ins/TypedArrayConstructors",
+            "built-ins/DataView",
         ],
     },
 ]
