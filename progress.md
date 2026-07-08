@@ -1,27 +1,26 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 265 (B46 sweep wave 2: indexOf/lastIndexOf large-index + spec-order; bind re-dispatch slow-path; String.prototype.replaceAll spec-order + IsRegExp) + full re-baseline
-**Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). At 79.6%: ~20.4 points away.
+**Last Updated:** Session 266 (array-destructuring iterator protocol for function params: generators, iterables, rest collection, elision, nested rest)
+**Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). At 80.1%: ~19.9 points away.
 
-## Summary (full run, session 265, 2026-07-08)
+## Summary (full run, session 266, 2026-07-08)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 29,444 |
-| Total passing | 23,443 |
-| **Overall pass rate** | **79.6%** |
-| Total failing | 5,551 |
+| Total passing | 23,595 |
+| **Overall pass rate** | **80.1%** |
+| Total failing | 5,399 |
 | CE unexpected (parser bugs) | 447 |
 | CE expected (`negative: phase: parse`) | 3 |
 | Skipped | 12,402 |
 
-Up from the session-254 baseline (76.8%, 22,607 pass, 620 unexpected CE) after
-sessions 255-265 (destructuring, RegExp d-flag/named groups, UTF-16 string model
-migration, dtoa formatters, and the Array.prototype/bind/replaceAll conformance
-waves). Gap to 100% = ~6,001 tests (5,551 fail + 447 unexpected CE + 3 expected CE).
+Up from the session-265 baseline (79.6%, 23,443 pass, 5,551 fail) after
+implementing iterator-protocol array destructuring for function params
+(+224 Phase 15, +40 Phase 21). Gap to 100% = ~5,849 tests.
 Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-percent.md`.
 
-## Per-Phase Status (session 265, full run)
+## Per-Phase Status (session 266, full run)
 
 | Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected |
 |---|---|---|---|---|---|---|---|
@@ -37,9 +36,9 @@ Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-
 | 11: Arrow Functions & Templates | 465 | 206 | 92 | 158 | 0 | 0 | 9 |
 | 12-13: Destructuring & Spread | 19 | 17 | 0 | 2 | 0 | 0 | 0 |
 | 14: for-of | 751 | 313 | 222 | 169 | 0 | 0 | 47 |
-| 15: Classes | 8520 | 1063 | 976 | 6318 | 0 | 0 | 163 |
+| 15: Classes | 8520 | 1287 | 752 | 6318 | 0 | 0 | 163 |
 | 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 981 | 170 | 463 | 0 | 0 | 0 |
-| 21: Generators | 619 | 217 | 256 | 138 | 0 | 0 | 8 |
+| 21: Generators | 619 | 261 | 212 | 138 | 0 | 0 | 8 |
 
 ## Test Infrastructure
 
@@ -54,7 +53,9 @@ Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-
 ## Session Log (condensed, newest first, last 10 sessions)
 
 | Session | Summary | test262 impact |
+| 266 | **Array-destructuring iterator protocol for function params** (src/compiler/functions.c3, test/destructure_{comprehensive,iterable,iterable2,array_check,rest_debug}.js). Replaced direct indexed property access (LDINT + GETPROP) with iterator protocol for all function-parameter array destructuring, fixing destructuring of generators, custom iterables, and non-Array iterables. Added shared `emit_destruct_bindings` helper (eliminates 3 duplicate ~115-line emission loops), proper rest element collection (NEWARR + push loop), hole/elision handling (advance iterator past unbound positions), and nested rest support (synthetic binds with rest-collection loop + pre-allocated group_regs to avoid CALL frame overlay). | Phase 15: +224 pass, −224 fail; Phase 21: +40 pass, −40 fail |
 |---|---|---|
+
 | 261 | **B51 (full UTF-16 code-unit string model migration) + B32 (libregexp UTF-16 exec wiring)** (src/hstring.c3, src/lexer.c3, src/heap.c3, src/compiler/constants.c3, src/builtins/{core,global,symbol,iterator,array,string,regexp}.c3, libregexp/re_wrapper.c, BACKLOG.md, progress.md). Migrated the string model from UTF-8/codepoint-indexed storage to CESU-8 (each UTF-16 code unit, including surrogate halves, independently encoded as its own standalone UTF-8 sequence) — matches real Duktape's internal representation (verified against vendored `duktape/src-separate/duk_unicode_support.c`). Landed in 5 tracked stages, each built + rosetta 100/100 + test262-phase-gated + committed separately (`05bf848`, `15651d0`, `f7e0903`). **Stage 1+2**: encode/decode primitives; `Heap.str_intern` established as the single normalization chokepoint (two other hand-rolled interning paths bypassed it and broke `===`/property-lookup for literal-vs-`\u{}`-escape spellings of the same astral string — fixed); `charCodeAt`/`codePointAt`/`.at()`/`fromCodePoint` surrogate semantics; string iterator/`split("")`/`Array.from(string)` now combine surrogate pairs into one iteration step; `print()` output re-encodes CESU-8 back to standard UTF-8. **Stage 3**: `charAt`/`slice`/`substring`/`substr`/`indexOf`/`lastIndexOf`/`includes`/`startsWith`/`endsWith`/`padStart`/`padEnd` rewritten on code-unit semantics; fixed an unrelated latent 256-byte truncation bug in `slice`/`substring`. **Stage 4**: JSON escape round-trip audited, no changes needed. **Stage 5 (B32)**: `re_wrapper.c`'s `re_exec` converts the CESU-8 subject to a flat UTF-16 buffer and calls `lre_exec` with `cbuf_type=1` (libregexp internally promotes to `cbuf_type=2` — surrogate-pair combining — whenever the compiled bytecode has the `u`/`v` flag; passing `cbuf_type=2` directly from the wrapper is wrong because it doubles `cbuf_end`'s stride against a buffer that's always 2 bytes/unit). Capture offsets map back from UTF-16 code-unit indices to CESU-8 byte offsets via a per-call offset table. Surfaced and fixed two related pre-existing bugs: `AdvanceStringIndex` on a zero-length global match advanced by a fixed 1 byte instead of one code unit / full surrogate pair (new `hstring::advance_string_index_byte_len`, applied at all 6 empty-match-advance sites in `regexp.c3`/`string.c3`); the replace/replaceAll loops silently dropped skipped source characters when advancing past an empty match (`"ab".replace(/x*/g,"-")` gave `"-b-"` instead of `"-a-b-"`). Phase 8 (ES5 Built-ins): 1257 → 1275 pass. Ad hoc RegExp/string-regex-method sweep: 876 → 878 pass, 1 pre-existing timeout eliminated. Known residual gaps (documented, not fixed): raw astral UTF-8 typed literally in source bypasses lexer's fast-path normalization; `String.prototype.normalize()` doesn't recombine surrogate pairs before libunicode; named capture groups (`.groups`) return `undefined` regardless of astral content (confirmed pre-existing on plain ASCII, unrelated). Filed **B55** (native UTF-16/Latin1 storage, avoiding CESU-8's per-regex-exec conversion cost and byte overhead) as an explicit follow-up rather than silently accepted debt. | Phase 8: 1257→1275 pass; RegExp sweep: 876→878 pass |
 | 262 | **B39 nested destructuring default parameters + B49 property-descriptor matrix progress** (`src/compiler/functions.c3`, `src/builtins/object.c3`, `src/builtins/array.c3`, `src/vm/vm_objects.c3`, `BACKLOG.md`, `progress.md`). **B39**: `collect_obj_param_binds`/`collect_arr_param_binds` now mark nested patterns as synthetic so a trailing `= default` binds to the synthetic group; destructuring loops in `compile_inner_function`, `compile_arrow_inner_reparse`, and `parse_function_body` now evaluate the default thunk when the synthetic group is undefined before `REQUIRE_OBJ`. Closes `language/statements/function/dstr/ary-ptrn-elem-ary-elem-init.js` and related surfaces. **B49**: Array-exotic `.length` created by `SETALEN` and `Array.of` now uses `PROP_FLAGS_WENC` (writable, non-enumerable, non-configurable); `Object.defineProperty` array-length path rejects `{enumerable:true}` and converts descriptor `value` through `builtin_to_number_vm` so objects coerce via ToPrimitive. Closes `15.2.3.6-4-118`/119/121/125/146-151. Local: rosetta 100/100; phase 3 rerun 5857 pass / 789 fail / 38 CE:unexpected (+19 pass, −19 fail vs session-254 baseline). | Phase 3: +19 pass, −19 fail; rosetta 100/100 |
 | 263 | **Closed backlog wave: B33, B34, B39, B46(slice), B48, B49, B50** (`src/builtins/{array,core,number,object,regexp,string}.c3`, `src/compiler/functions.c3`, `src/vm/vm_objects.c3`, `src/dtoa_bindings.c3`, `src/dtoa_wrapper.{c,h}`, `scripts/run_test262.py`, `BACKLOG.md`, `progress.md`). **B33**: RegExp `d`-flag `.indices` runtime + `hasIndices`/`unicodeSets` getters. **B34**: `String.prototype.match` named groups for non-global regexps. **B39**: nested destructuring parameter defaults attach to synthetic bindings and evaluate before `REQUIRE_OBJ`. **B46(slice)**: `Get(length)` now precedes `IsCallable` in `map`/`filter`/`every`/`some`/`flatMap`. **B48**: QuickJS `dtoa` formatters for `Number.prototype.toFixed/toExponential/toPrecision`. **B49**: Array-exotic `.length` descriptors use `PROP_FLAGS_WENC`; `defineProperty` length path rejects `{enumerable:true}` and coerces values via ToPrimitive. **B50**: `run_test262.py --retry-fails`. Local: rosetta 100/100; phase 3 rerun 5857 pass / 789 fail / 38 CE:unexpected (+19 pass, −19 fail vs session-254 baseline). | Phase 3: +19 pass, −19 fail; rosetta 100/100 |
