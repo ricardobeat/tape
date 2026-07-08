@@ -879,8 +879,22 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 }
                             }
                         } else if (r1.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
-                            // Can't fuse accessors easily — abort
-                            mid_val.set_undefined();
+                            // Accessor on the first hop: invoke the getter
+                            // synchronously via the reentrant call_fn path.
+                            // (A frame-based invoke_getter would resume past
+                            // the fused pair and skip hop 2 entirely.)
+                            TVal getter1 = r1.acc.accessor_fn;
+                            if (!getter1.is_undefined() && !getter1.is_null() && vm.heap.call_fn != null) {
+                                TVal this_tv1;
+                                this_tv1.set_object(hobj1);
+                                mid_val = vm.heap.call_fn(vm, getter1, null, 0, this_tv1);
+                                if (vm.heap.has_error) {
+                                    vm.has_error = true;
+                                    return VM_ERROR~;
+                                }
+                            } else {
+                                mid_val.set_undefined();
+                            }
                         }
                     }
                 }
@@ -942,8 +956,20 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     }
                                 }
                             } else if (r2.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
-                                // Can't fuse accessors
-                                ra2.set_undefined();
+                                // Accessor on the second hop: synchronous
+                                // getter call with this = the hop-1 result.
+                                TVal getter2 = r2.acc.accessor_fn;
+                                if (!getter2.is_undefined() && !getter2.is_null() && vm.heap.call_fn != null) {
+                                    TVal gv2 = vm.heap.call_fn(vm, getter2, null, 0, mid_val);
+                                    if (vm.heap.has_error) {
+                                        vm.has_error = true;
+                                        return VM_ERROR~;
+                                    }
+                                    vm.heap.tval_copy_ref(ra2, &gv2);
+                                    track_heap_store(ds.act, ra2, dst2_reg);
+                                } else {
+                                    ra2.set_undefined();
+                                }
                             } else {
                                 ra2.set_undefined();
                             }
@@ -1333,8 +1359,20 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     }
                                 }
                             } else if (r2.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
-                                // Can't fuse accessors
-                                ra2.set_undefined();
+                                // Accessor on the second hop: synchronous
+                                // getter call with this = the hop-1 result.
+                                TVal getter2 = r2.acc.accessor_fn;
+                                if (!getter2.is_undefined() && !getter2.is_null() && vm.heap.call_fn != null) {
+                                    TVal gv2 = vm.heap.call_fn(vm, getter2, null, 0, mid_val);
+                                    if (vm.heap.has_error) {
+                                        vm.has_error = true;
+                                        return VM_ERROR~;
+                                    }
+                                    vm.heap.tval_copy_ref(ra2, &gv2);
+                                    track_heap_store(ds.act, ra2, dst2_reg);
+                                } else {
+                                    ra2.set_undefined();
+                                }
                             } else {
                                 ra2.set_undefined();
                             }

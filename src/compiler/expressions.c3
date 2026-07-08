@@ -2259,19 +2259,60 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.next_reg = first_arg;
                 }
                 ushort arg_count = 0;
+                bool has_spread = false;
+                ushort spread_count_reg = MAX_REGISTERS;
+                ushort total_count_reg = MAX_REGISTERS;
                 if (!self.check(TokenType.RPAREN)) {
                     for (;;) {
-                        ushort arg_reg = self.assignment_expr()!;
-                        ushort expected = first_arg + arg_count;
-                        if (arg_reg != expected) {
-                            self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
-                            self.free_reg(arg_reg);
-                            if (self.next_reg <= expected) {
-                                self.next_reg = expected + 1;
+                        // Spread argument: super(...iterable) — same lowering
+                        // as emit_call (SPREAD_ARG + runtime count register).
+                        if (self.match(TokenType.ELLIPSIS)) {
+                            ushort dest_start = first_arg + arg_count;
+                            if (self.next_reg <= dest_start + 1) {
+                                self.next_reg = dest_start + 2;
+                            }
+                            ushort spread_reg = self.assignment_expr()!;
+                            if (spread_reg >= dest_start && spread_reg <= dest_start + 10) {
+                                ushort safe_reg = self.alloc_reg();
+                                self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
+                                self.free_reg(spread_reg);
+                                spread_reg = safe_reg;
+                            }
+                            if (!has_spread) {
+                                has_spread = true;
+                                spread_count_reg = self.alloc_reg();
+                                total_count_reg = self.alloc_reg();
+                                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                            }
+                            self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                            self.free_reg(spread_reg);
+                            self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
+                            if (self.next_reg <= dest_start + 1) {
+                                self.next_reg = dest_start + 2;
+                            }
+                        } else {
+                            ushort arg_reg = self.assignment_expr()!;
+                            if (has_spread) {
+                                // Slot depends on the runtime spread count.
+                                self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                                self.free_reg(arg_reg);
+                            } else {
+                                ushort expected = first_arg + arg_count;
+                                if (arg_reg != expected) {
+                                    self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                                    self.free_reg(arg_reg);
+                                    if (self.next_reg <= expected) {
+                                        self.next_reg = expected + 1;
+                                    }
+                                }
+                                arg_count++;
                             }
                         }
-                        arg_count++;
                         if (!self.match(TokenType.COMMA)) {
+                            break;
+                        }
+                        // Trailing comma: ',)' is valid per ES2017
+                        if (self.check(TokenType.RPAREN)) {
                             break;
                         }
                     }
@@ -2281,8 +2322,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // Place 'this' slot
                 self.emit_abc(Opcode.LDTHIS, (uint)(super_reg + 1), 0, 0);
 
-                // Emit SUPER_CALL, reusing super_reg as result
-                self.emit_abc(Opcode.SUPER_CALL, (uint)super_reg, (uint)super_reg, (uint)arg_count);
+                // Emit SUPER_CALL / SUPER_CALL_S, reusing super_reg as result
+                if (has_spread) {
+                    self.emit_abc(Opcode.SUPER_CALL_S, (uint)super_reg, (uint)super_reg, (uint)total_count_reg);
+                } else {
+                    self.emit_abc(Opcode.SUPER_CALL, (uint)super_reg, (uint)super_reg, (uint)arg_count);
+                }
 
                 // Free arg regs and super_reg (callee+this no longer needed after SUPER_CALL)
                 self.free_regs_to(super_reg);
