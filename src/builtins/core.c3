@@ -281,7 +281,33 @@ const uint BUILTIN_TA_PROTO_FILL               = 387;
 const uint BUILTIN_TA_PROTO_COPYWITHIN         = 388;
 const uint BUILTIN_TA_PROTO_SLICE              = 389;
 
-const uint BUILTIN_COUNT                       = 390;
+// %TypedArray%.prototype wave B (plan 049 stage 5)
+const uint BUILTIN_TA_PROTO_INDEX_OF           = 390;
+const uint BUILTIN_TA_PROTO_LAST_INDEX_OF      = 391;
+const uint BUILTIN_TA_PROTO_INCLUDES           = 392;
+const uint BUILTIN_TA_PROTO_JOIN               = 393;
+const uint BUILTIN_TA_PROTO_FOR_EACH           = 394;
+const uint BUILTIN_TA_PROTO_EVERY              = 395;
+const uint BUILTIN_TA_PROTO_SOME               = 396;
+const uint BUILTIN_TA_PROTO_REDUCE             = 397;
+const uint BUILTIN_TA_PROTO_REDUCE_RIGHT       = 398;
+const uint BUILTIN_TA_PROTO_MAP                = 399;
+const uint BUILTIN_TA_PROTO_FILTER             = 400;
+const uint BUILTIN_TA_PROTO_FIND               = 401;
+const uint BUILTIN_TA_PROTO_FIND_INDEX         = 402;
+const uint BUILTIN_TA_PROTO_FIND_LAST          = 403;
+const uint BUILTIN_TA_PROTO_FIND_LAST_INDEX    = 404;
+const uint BUILTIN_TA_PROTO_REVERSE            = 405;
+const uint BUILTIN_TA_PROTO_TO_REVERSED        = 406;
+const uint BUILTIN_TA_PROTO_AT                 = 407;
+const uint BUILTIN_TA_PROTO_SORT               = 408;
+const uint BUILTIN_TA_PROTO_TO_SORTED          = 409;
+const uint BUILTIN_TA_PROTO_TO_STRING          = 410;
+const uint BUILTIN_TA_PROTO_TO_LOCALE_STRING   = 411;
+const uint BUILTIN_TA_OF                       = 412;
+const uint BUILTIN_TA_FROM                     = 413;
+
+const uint BUILTIN_COUNT                       = 414;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2496,6 +2522,31 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_TA_PROTO_FILL]            = &builtin_ta_proto_fill,
     [BUILTIN_TA_PROTO_COPYWITHIN]      = &builtin_ta_proto_copyWithin,
     [BUILTIN_TA_PROTO_SLICE]           = &builtin_ta_proto_slice,
+    // %TypedArray%.prototype wave B (plan 049 stage 5)
+    [BUILTIN_TA_PROTO_INDEX_OF]        = &builtin_ta_proto_indexOf,
+    [BUILTIN_TA_PROTO_LAST_INDEX_OF]   = &builtin_ta_proto_lastIndexOf,
+    [BUILTIN_TA_PROTO_INCLUDES]        = &builtin_ta_proto_includes,
+    [BUILTIN_TA_PROTO_JOIN]            = &builtin_ta_proto_join,
+    [BUILTIN_TA_PROTO_FOR_EACH]        = &builtin_ta_proto_forEach,
+    [BUILTIN_TA_PROTO_EVERY]           = &builtin_ta_proto_every,
+    [BUILTIN_TA_PROTO_SOME]            = &builtin_ta_proto_some,
+    [BUILTIN_TA_PROTO_REDUCE]          = &builtin_ta_proto_reduce,
+    [BUILTIN_TA_PROTO_REDUCE_RIGHT]    = &builtin_ta_proto_reduceRight,
+    [BUILTIN_TA_PROTO_MAP]             = &builtin_ta_proto_map,
+    [BUILTIN_TA_PROTO_FILTER]          = &builtin_ta_proto_filter,
+    [BUILTIN_TA_PROTO_FIND]            = &builtin_ta_proto_find,
+    [BUILTIN_TA_PROTO_FIND_INDEX]      = &builtin_ta_proto_findIndex,
+    [BUILTIN_TA_PROTO_FIND_LAST]       = &builtin_ta_proto_findLast,
+    [BUILTIN_TA_PROTO_FIND_LAST_INDEX] = &builtin_ta_proto_findLastIndex,
+    [BUILTIN_TA_PROTO_REVERSE]         = &builtin_ta_proto_reverse,
+    [BUILTIN_TA_PROTO_TO_REVERSED]     = &builtin_ta_proto_toReversed,
+    [BUILTIN_TA_PROTO_AT]              = &builtin_ta_proto_at,
+    [BUILTIN_TA_PROTO_SORT]            = &builtin_ta_proto_sort,
+    [BUILTIN_TA_PROTO_TO_SORTED]       = &builtin_ta_proto_toSorted,
+    [BUILTIN_TA_PROTO_TO_STRING]       = &builtin_ta_proto_toString,
+    [BUILTIN_TA_PROTO_TO_LOCALE_STRING] = &builtin_ta_proto_toLocaleString,
+    [BUILTIN_TA_OF]                    = &builtin_ta_of,
+    [BUILTIN_TA_FROM]                  = &builtin_ta_from,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

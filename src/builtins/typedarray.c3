@@ -703,6 +703,8 @@ fn void builtin_typedarray_proto_tostringtag_get(BuiltinContext* ctx) {
 
 /// Validate that ctx.this_val is a live (non-detached) TypedArray.
 /// Returns the object on success, null + sets should_throw on failure.
+/// A zero-length buffer has data==null but byte_length==0 — that is valid.
+/// Actual detach sets data=null while byte_length remains > 0.
 fn HObject* ta_validate(BuiltinContext* ctx) {
     HObject* obj = ta_this_receiver(ctx);
     if (obj == null) {
@@ -710,7 +712,12 @@ fn HObject* ta_validate(BuiltinContext* ctx) {
         return null;
     }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || (*buf.extra_ptr()).ab.data == null) {
+    if (buf == null) {
+        arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
+        return null;
+    }
+    // data==null with byte_length>0 means detached. data==null with byte_length==0 is valid.
+    if ((*buf.extra_ptr()).ab.data == null && (*buf.extra_ptr()).ab.byte_length > 0) {
         arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
         return null;
     }
@@ -718,9 +725,11 @@ fn HObject* ta_validate(BuiltinContext* ctx) {
 }
 
 /// Check detach status without throwing — inline guard after user-code calls.
+/// Zero-length buffers (data==null, byte_length==0) are valid, not detached.
 fn bool ta_is_detached(HObject* obj) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    return buf == null || (*buf.extra_ptr()).ab.data == null;
+    if (buf == null) return true;
+    return (*buf.extra_ptr()).ab.data == null && (*buf.extra_ptr()).ab.byte_length > 0;
 }
 
 /// Normalize a relative index (ES2022 §23.2.4.1 ToIntegerOrInfinity + clamp).
@@ -1127,6 +1136,1157 @@ fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Wave B: %TypedArray%.prototype methods (plan 049 stage 5)
+// ============================================================================
+
+/// Check that val is callable (object with callable flag). Throws TypeError if not.
+fn bool ta_check_callback(TVal val, BuiltinContext* ctx) {
+    if (val.is_object() && val.get_heapptr() != null && ((HObject*)val.get_heapptr()).is_callable()) {
+        return true;
+    }
+    arraybuffer_throw_type_error(ctx, "TypedArray callback is not a function");
+    return false;
+}
+
+/// Call callback(element, index, ta) with thisArg. Sets ctx.should_throw on error.
+fn TVal ta_call_callback(BuiltinContext* ctx, TVal callback, TVal thisArg, TVal v, uint k, HObject* ta) {
+    TVal[3] args;
+    args[0] = v;
+    TVal k_tv; k_tv.set_fastint((long)k);
+    args[1] = k_tv;
+    args[2].set_object((void*)ta);
+    TVal res = ctx.heap.call_fn(ctx.vm, callback, &args[0], 3, thisArg);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+    }
+    return res;
+}
+
+/// Allocate a new same-class TA of `length` elements (fresh zeroed buffer).
+/// `src_proto` is the prototype of the source TA (so the result inherits the
+/// same per-ctor prototype and instanceof checks work). Pass null to fall back
+/// to the shared %TypedArray%.prototype.
+fn HObject* ta_alloc_same_class(BuiltinContext* ctx, hobject::ObjClass cls, uint length) {
+    uint shift = ta_elem_shift(cls);
+    uint new_bytes = length << shift;
+    HObject* new_buf = typedarray_alloc_buffer(ctx, new_bytes);
+    if (new_buf == null) {
+        arraybuffer_throw_range_error(ctx, "TypedArray: out of memory");
+        return null;
+    }
+    HObject*? raw = ctx.heap.alloc_object(cls);
+    if (catch err = raw) {
+        arraybuffer_throw_range_error(ctx, "TypedArray: out of memory");
+        return null;
+    }
+    HObject* result = raw;
+    result.prototype = ctx.heap.typedarray_proto;
+    (*result.extra_ptr()).view.byte_offset = 0;
+    (*result.extra_ptr()).view.byte_length = new_bytes;
+    typedarray_link_view(new_buf, result);
+    return result;
+}
+
+/// Allocate same-class TA, inheriting the source object's prototype chain
+/// so instanceof checks work (e.g., map on Uint8Array returns Uint8Array).
+fn HObject* ta_alloc_same_class_from(BuiltinContext* ctx, HObject* src, uint length) {
+    hobject::ObjClass cls = src.flags.obj_class;
+    HObject* result = ta_alloc_same_class(ctx, cls, length);
+    if (result != null && src.prototype != null) {
+        result.prototype = src.prototype;
+    }
+    return result;
+}
+
+/// %TypedArray%.prototype.indexOf(searchElement, fromIndex=0) — §23.2.3.14.
+/// NaN search always returns -1 (strict equality, NaN !== NaN).
+fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal search_arg; search_arg.set_undefined();
+    if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
+    double search_d = ta_val_to_number(&search_arg, ctx);
+    if (ctx.should_throw) return;
+    // NaN: strict equality never matches
+    if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
+
+    uint from = 0;
+    if (ctx.argc >= 2) {
+        TVal from_arg = ctx.regs[ctx.base_reg + 1];
+        double from_d = ta_val_to_number(&from_arg, ctx);
+        if (ctx.should_throw) return;
+        if (from_d >= (double)len) { ctx.result.set_fastint(-1); return; }
+        if (from_d < 0.0) {
+            double v = (double)len + from_d;
+            from = v < 0.0 ? 0u : (uint)(long)v;
+        } else {
+            from = (uint)(long)from_d;
+        }
+    }
+
+    for (uint i = from; i < len; i++) {
+        TVal elem = ta_load_element(base, cls, i);
+        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
+        if (elem_d == search_d) {
+            ctx.result.set_fastint((long)i);
+            return;
+        }
+    }
+    ctx.result.set_fastint(-1);
+}
+
+/// %TypedArray%.prototype.lastIndexOf(searchElement, fromIndex=length-1) — §23.2.3.18.
+fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    if (len == 0) { ctx.result.set_fastint(-1); return; }
+
+    TVal search_arg; search_arg.set_undefined();
+    if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
+    double search_d = ta_val_to_number(&search_arg, ctx);
+    if (ctx.should_throw) return;
+    if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
+
+    long from = (long)len - 1;
+    if (ctx.argc >= 2) {
+        TVal from_arg = ctx.regs[ctx.base_reg + 1];
+        double from_d = ta_val_to_number(&from_arg, ctx);
+        if (ctx.should_throw) return;
+        if (from_d < 0.0) {
+            from = (long)len + (long)from_d;
+        } else {
+            long fd = (long)from_d;
+            from = fd < (long)len ? fd : (long)len - 1;
+        }
+    }
+
+    for (long i = from; i >= 0; i--) {
+        TVal elem = ta_load_element(base, cls, (uint)i);
+        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
+        if (elem_d == search_d) {
+            ctx.result.set_fastint(i);
+            return;
+        }
+    }
+    ctx.result.set_fastint(-1);
+}
+
+/// %TypedArray%.prototype.includes(searchElement, fromIndex=0) — §23.2.3.13.
+/// SameValueZero: NaN matches NaN, +0 matches -0.
+fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal search_arg; search_arg.set_undefined();
+    if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
+    double search_d = ta_val_to_number(&search_arg, ctx);
+    if (ctx.should_throw) return;
+    bool search_nan = (search_d != search_d);
+
+    uint from = 0;
+    if (ctx.argc >= 2) {
+        TVal from_arg = ctx.regs[ctx.base_reg + 1];
+        double from_d = ta_val_to_number(&from_arg, ctx);
+        if (ctx.should_throw) return;
+        if (from_d >= (double)len) { ctx.result.set_boolean(false); return; }
+        if (from_d < 0.0) {
+            double v = (double)len + from_d;
+            from = v < 0.0 ? 0u : (uint)(long)v;
+        } else {
+            from = (uint)(long)from_d;
+        }
+    }
+
+    for (uint i = from; i < len; i++) {
+        TVal elem = ta_load_element(base, cls, i);
+        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
+        // SameValueZero: NaN == NaN, else == (handles +0/-0 naturally since both are 0.0)
+        if (search_nan) {
+            if (elem_d != elem_d) { ctx.result.set_boolean(true); return; }
+        } else {
+            if (elem_d == search_d) { ctx.result.set_boolean(true); return; }
+        }
+    }
+    ctx.result.set_boolean(false);
+}
+
+/// %TypedArray%.prototype.join(separator=",") — §23.2.3.15.
+fn void builtin_ta_proto_join(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    // Separator
+    char[] sep = ",";
+    HString* sep_hs = null;
+    if (ctx.argc >= 1) {
+        TVal sep_arg = ctx.regs[ctx.base_reg];
+        if (!sep_arg.is_undefined()) {
+            sep_hs = builtin_to_string(heap, &sep_arg);
+            if (sep_hs != null) {
+                ((types::HeapHeader*)sep_hs).incref();
+                sep = sep_hs.get_data();
+            }
+        }
+    }
+
+    if (len == 0) {
+        if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
+        HString* empty = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+        if (empty != null) ctx.result.set_string(empty);
+        return;
+    }
+
+    // Collect element strings.
+    HString*[64] stack_strs;
+    HString** heap_strs = null;
+    HString*[] elem_strs;
+    if (len <= 64) {
+        elem_strs = stack_strs[:len];
+    } else {
+        heap_strs = (HString**)heap.alloc_func(heap.heap_udata, HString*::size * len);
+        if (heap_strs == null) {
+            if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
+            ctx.result.set_undefined();
+            return;
+        }
+        elem_strs = heap_strs[:len];
+    }
+
+    usz total_len = 0;
+    for (uint i = 0; i < len; i++) {
+        TVal elem = ta_load_element(base, cls, i);
+        HString* es = builtin_number_to_hstring(heap, elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number());
+        if (es == null) es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+        ((types::HeapHeader*)es).incref();
+        elem_strs[i] = es;
+        total_len += es.blen;
+    }
+    if (len > 1) total_len += sep.len * (usz)(len - 1);
+
+    char* rbuf = (char*)heap.alloc_func(heap.heap_udata, total_len > 0 ? total_len : 1);
+    if (rbuf == null) {
+        if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
+        for (uint i = 0; i < len; i++) heap.decref((types::HeapHeader*)elem_strs[i]);
+        if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+        ctx.result.set_undefined();
+        return;
+    }
+
+    usz off = 0;
+    for (uint i = 0; i < len; i++) {
+        if (i > 0 && sep.len > 0) {
+            libc::memcpy(&rbuf[off], &sep[0], sep.len);
+            off += sep.len;
+        }
+        char[] ed = elem_strs[i].get_data();
+        if (ed.len > 0) { libc::memcpy(&rbuf[off], &ed[0], ed.len); off += ed.len; }
+        heap.decref((types::HeapHeader*)elem_strs[i]);
+    }
+    if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
+    if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+
+    uint hash = heap.hash_string(rbuf[:total_len]);
+    HString*? hs_raw = hstring::hstring_alloc(heap, rbuf[:total_len], hash);
+    heap.free_func(heap.heap_udata, rbuf);
+    if (catch err = hs_raw) { ctx.result.set_undefined(); return; }
+    HString* hs = hs_raw;
+    heap.str_table_insert(hs);
+    ctx.result.set_string(hs);
+}
+
+/// %TypedArray%.prototype.forEach(callbackFn, thisArg?) — §23.2.3.12.
+fn void builtin_ta_proto_forEach(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (ta_is_detached(obj)) break;
+    }
+    ctx.result.set_undefined();
+}
+
+/// %TypedArray%.prototype.every(callbackFn, thisArg?) — §23.2.3.7.
+fn void builtin_ta_proto_every(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (!builtin_to_boolean(&test)) {
+            ctx.result.set_boolean(false);
+            return;
+        }
+        if (ta_is_detached(obj)) break;
+    }
+    ctx.result.set_boolean(true);
+}
+
+/// %TypedArray%.prototype.some(callbackFn, thisArg?) — §23.2.3.28.
+fn void builtin_ta_proto_some(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            ctx.result.set_boolean(true);
+            return;
+        }
+        if (ta_is_detached(obj)) break;
+    }
+    ctx.result.set_boolean(false);
+}
+
+/// %TypedArray%.prototype.reduce(callbackFn, initialValue?) — §23.2.3.22.
+fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+
+    TVal acc;
+    uint k = 0;
+    if (ctx.argc >= 2) {
+        acc = ctx.regs[ctx.base_reg + 1];
+    } else {
+        if (len == 0) {
+            arraybuffer_throw_type_error(ctx, "Reduce of empty TypedArray with no initial value");
+            return;
+        }
+        acc = ta_load_element(base, cls, 0);
+        k = 1;
+    }
+
+    TVal undef_this; undef_this.set_undefined();
+    for (; k < len; k++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, k);
+        TVal[4] args;
+        args[0] = acc;
+        args[1] = elem;
+        TVal k_tv; k_tv.set_fastint((long)k);
+        args[2] = k_tv;
+        args[3].set_object((void*)obj);
+        acc = ctx.heap.call_fn(ctx.vm, cb_val, &args[0], 4, undef_this);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
+        }
+        if (ta_is_detached(obj)) break;
+    }
+    (*ctx.result) = acc;
+}
+
+/// %TypedArray%.prototype.reduceRight(callbackFn, initialValue?) — §23.2.3.23.
+fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+
+    TVal acc;
+    long k;
+    if (ctx.argc >= 2) {
+        acc = ctx.regs[ctx.base_reg + 1];
+        k = (long)len - 1;
+    } else {
+        if (len == 0) {
+            arraybuffer_throw_type_error(ctx, "Reduce of empty TypedArray with no initial value");
+            return;
+        }
+        k = (long)len - 1;
+        acc = ta_load_element(base, cls, (uint)k);
+        k--;
+    }
+
+    TVal undef_this; undef_this.set_undefined();
+    for (; k >= 0; k--) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, (uint)k);
+        TVal[4] args;
+        args[0] = acc;
+        args[1] = elem;
+        TVal k_tv; k_tv.set_fastint(k);
+        args[2] = k_tv;
+        args[3].set_object((void*)obj);
+        acc = ctx.heap.call_fn(ctx.vm, cb_val, &args[0], 4, undef_this);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
+        }
+        if (ta_is_detached(obj)) break;
+    }
+    (*ctx.result) = acc;
+}
+
+/// %TypedArray%.prototype.map(callbackFn, thisArg?) — §23.2.3.19.
+/// Allocates a fresh same-class TA; species is deferred.
+fn void builtin_ta_proto_map(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    HObject* result = ta_alloc_same_class_from(ctx, obj, len);
+    if (result == null) return;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* res_base = (*res_buf.extra_ptr()).ab.data;
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal mapped = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        char* dp = res_base + (i << shift);
+        ta_write_element(dp, cls, &mapped, ctx);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (ta_is_detached(obj)) break;
+    }
+    ctx.result.set_object(result);
+}
+
+/// %TypedArray%.prototype.filter(callbackFn, thisArg?) — §23.2.3.9.
+/// Collects matching values, then allocates same-class TA of that size.
+fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    // Collect passing values into scratch.
+    TVal* scratch = (TVal*)heap.alloc_func(heap.heap_udata, len > 0 ? (usz)(len * TVal::size) : 1);
+    if (scratch == null && len > 0) {
+        arraybuffer_throw_range_error(ctx, "TypedArray.filter: out of memory");
+        return;
+    }
+    uint count = 0;
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) {
+            if (scratch != null) heap.free_func(heap.heap_udata, scratch);
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) {
+            if (scratch != null) heap.free_func(heap.heap_udata, scratch);
+            ctx.result.set_undefined();
+            return;
+        }
+        if (builtin_to_boolean(&test)) {
+            scratch[count] = elem;
+            count++;
+        }
+        if (ta_is_detached(obj)) break;
+    }
+
+    HObject* result = ta_alloc_same_class_from(ctx, obj, count);
+    if (result == null) {
+        if (scratch != null) heap.free_func(heap.heap_udata, scratch);
+        return;
+    }
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* res_base = (*res_buf.extra_ptr()).ab.data;
+
+    for (uint i = 0; i < count; i++) {
+        char* dp = res_base + (i << shift);
+        ta_write_element(dp, cls, &scratch[i], ctx);
+        if (ctx.should_throw) {
+            heap.free_func(heap.heap_udata, scratch);
+            ctx.result.set_undefined();
+            return;
+        }
+    }
+    if (scratch != null) heap.free_func(heap.heap_udata, scratch);
+    ctx.result.set_object(result);
+}
+
+/// %TypedArray%.prototype.find(predicate, thisArg?) — §23.2.3.10.
+fn void builtin_ta_proto_find(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            (*ctx.result) = elem;
+            return;
+        }
+    }
+    ctx.result.set_undefined();
+}
+
+/// %TypedArray%.prototype.findIndex(predicate, thisArg?) — §23.2.3.11.
+fn void builtin_ta_proto_findIndex(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (uint i = 0; i < len; i++) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            ctx.result.set_fastint((long)i);
+            return;
+        }
+    }
+    ctx.result.set_fastint(-1);
+}
+
+/// %TypedArray%.prototype.findLast(predicate, thisArg?) — §23.2.3.12.
+fn void builtin_ta_proto_findLast(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (long i = (long)len - 1; i >= 0; i--) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, (uint)i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            (*ctx.result) = elem;
+            return;
+        }
+    }
+    ctx.result.set_undefined();
+}
+
+/// %TypedArray%.prototype.findLastIndex(predicate, thisArg?) — §23.2.3.13.
+fn void builtin_ta_proto_findLastIndex(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal cb_val; cb_val.set_undefined();
+    if (ctx.argc >= 1) cb_val = ctx.regs[ctx.base_reg];
+    if (!ta_check_callback(cb_val, ctx)) return;
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    for (long i = (long)len - 1; i >= 0; i--) {
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem = ta_load_element(base, cls, (uint)i);
+        TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (builtin_to_boolean(&test)) {
+            ctx.result.set_fastint(i);
+            return;
+        }
+    }
+    ctx.result.set_fastint(-1);
+}
+
+/// %TypedArray%.prototype.reverse() — §23.2.3.23. Mutates in place.
+fn void builtin_ta_proto_reverse(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint elem_sz = ta_elem_size(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length / elem_sz;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    // Swap element pairs using a byte-level buffer.
+    char[8] tmp;
+    uint lo = 0;
+    uint hi = len > 0 ? len - 1 : 0;
+    while (lo < hi) {
+        char* lp = base + lo * elem_sz;
+        char* hp = base + hi * elem_sz;
+        libc::memcpy(&tmp[0], lp, (usz)elem_sz);
+        libc::memcpy(lp, hp, (usz)elem_sz);
+        libc::memcpy(hp, &tmp[0], (usz)elem_sz);
+        lo++;
+        hi--;
+    }
+    (*ctx.result) = ctx.this_val;
+}
+
+/// %TypedArray%.prototype.toReversed() — §23.2.3.30. Returns new reversed TA.
+fn void builtin_ta_proto_toReversed(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    uint elem_sz = ta_elem_size(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* src = (*buf.extra_ptr()).ab.data + byte_off;
+
+    HObject* result = ta_alloc_same_class_from(ctx, obj, len);
+    if (result == null) return;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* dst = (*res_buf.extra_ptr()).ab.data;
+
+    for (uint i = 0; i < len; i++) {
+        libc::memcpy(dst + i * elem_sz, src + (len - 1 - i) * elem_sz, (usz)elem_sz);
+    }
+    ctx.result.set_object(result);
+}
+
+/// %TypedArray%.prototype.at(index) — §23.2.3.1.
+fn void builtin_ta_proto_at(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    TVal idx_arg; idx_arg.set_fastint(0);
+    if (ctx.argc >= 1) idx_arg = ctx.regs[ctx.base_reg];
+    double idx_d = ta_val_to_number(&idx_arg, ctx);
+    if (ctx.should_throw) return;
+    // ToIntegerOrInfinity
+    if (idx_d != idx_d || idx_d == 0.0) idx_d = 0.0;
+    long idx;
+    if (idx_d >= 9007199254740991.0) {
+        idx = (long)len;
+    } else if (idx_d <= -9007199254740991.0) {
+        ctx.result.set_undefined();
+        return;
+    } else {
+        idx = (long)idx_d;
+    }
+
+    if (idx < 0) idx = (long)len + idx;
+    if (idx < 0 || (uint)idx >= len) { ctx.result.set_undefined(); return; }
+    (*ctx.result) = ta_load_element(base, cls, (uint)idx);
+}
+
+/// Numeric comparator for TA sort (spec §23.2.3.29.1).
+/// NaN sorts after finite values.
+fn int ta_numeric_compare(double a, double b) {
+    bool a_nan = (a != a);
+    bool b_nan = (b != b);
+    if (a_nan && b_nan) return 0;
+    if (a_nan) return 1;
+    if (b_nan) return -1;
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
+/// Insertion sort on a double[] slice — O(n²) but correct and stable for small n.
+fn void ta_insertion_sort(double[] arr, BuiltinContext* ctx, TVal comparefn, bool has_comparefn) {
+    uint n = (uint)arr.len;
+    for (uint i = 1; i < n; i++) {
+        double key = arr[i];
+        long j = (long)i - 1;
+        while (j >= 0) {
+            int cmp;
+            if (has_comparefn && ctx.heap.call_fn != null && ctx.vm != null) {
+                TVal av; av.set_number(arr[(uint)j]);
+                TVal bv; bv.set_number(key);
+                TVal[2] args; args[0] = av; args[1] = bv;
+                TVal this_val; this_val.set_undefined();
+                TVal res = ctx.heap.call_fn(ctx.vm, comparefn, &args[0], 2, this_val);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    return;
+                }
+                double rd;
+                if (res.is_fastint()) { rd = (double)res.get_fastint(); }
+                else if (res.is_number()) { rd = res.get_number(); }
+                else { rd = 0.0; }
+                cmp = rd < 0.0 ? -1 : (rd > 0.0 ? 1 : 0);
+            } else {
+                cmp = ta_numeric_compare(arr[(uint)j], key);
+            }
+            if (cmp <= 0) break;
+            arr[(uint)(j + 1)] = arr[(uint)j];
+            j--;
+        }
+        arr[(uint)(j + 1)] = key;
+    }
+}
+
+/// %TypedArray%.prototype.sort(compareFn?) — §23.2.3.29.
+fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    bool has_comparefn = false;
+    TVal comparefn; comparefn.set_undefined();
+    if (ctx.argc >= 1) {
+        TVal arg0 = ctx.regs[ctx.base_reg];
+        if (!arg0.is_undefined()) {
+            if (!arg0.is_object() || arg0.get_heapptr() == null ||
+                !((HObject*)arg0.get_heapptr()).is_callable()) {
+                arraybuffer_throw_type_error(ctx, "TypedArray.sort: comparefn is not a function or undefined");
+                return;
+            }
+            comparefn = arg0;
+            has_comparefn = true;
+        }
+    }
+
+    if (len <= 1) { (*ctx.result) = ctx.this_val; return; }
+
+    // Copy elements into a scratch double array, sort, write back.
+    double[512] stack_scratch;
+    double[] scratch;
+    double* heap_scratch = null;
+    if (len <= 512) {
+        scratch = stack_scratch[:len];
+    } else {
+        heap_scratch = (double*)heap.alloc_func(heap.heap_udata, (usz)(len * double::size));
+        if (heap_scratch == null) {
+            arraybuffer_throw_range_error(ctx, "TypedArray.sort: out of memory");
+            return;
+        }
+        scratch = heap_scratch[:len];
+    }
+
+    for (uint i = 0; i < len; i++) {
+        TVal v = ta_load_element(base, cls, i);
+        scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
+    }
+
+    ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
+
+    if (!ctx.should_throw) {
+        for (uint i = 0; i < len; i++) {
+            TVal tv; tv.set_number(scratch[i]);
+            char* dp = base + (i << shift);
+            ta_write_element(dp, cls, &tv, ctx);
+            if (ctx.should_throw) break;
+        }
+    }
+
+    if (heap_scratch != null) heap.free_func(heap.heap_udata, heap_scratch);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    (*ctx.result) = ctx.this_val;
+}
+
+/// %TypedArray%.prototype.toSorted(compareFn?) — §23.2.3.32. Returns new sorted TA.
+fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* src = (*buf.extra_ptr()).ab.data + byte_off;
+    uint elem_sz = ta_elem_size(cls);
+
+    bool has_comparefn = false;
+    TVal comparefn; comparefn.set_undefined();
+    if (ctx.argc >= 1) {
+        TVal arg0 = ctx.regs[ctx.base_reg];
+        if (!arg0.is_undefined()) {
+            if (!arg0.is_object() || arg0.get_heapptr() == null ||
+                !((HObject*)arg0.get_heapptr()).is_callable()) {
+                arraybuffer_throw_type_error(ctx, "TypedArray.toSorted: comparefn is not a function or undefined");
+                return;
+            }
+            comparefn = arg0;
+            has_comparefn = true;
+        }
+    }
+
+    HObject* result = ta_alloc_same_class_from(ctx, obj, len);
+    if (result == null) return;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* dst = (*res_buf.extra_ptr()).ab.data;
+
+    // Copy source bytes into result, then sort result in place.
+    if (len > 0) libc::memcpy(dst, src, (usz)(len * elem_sz));
+
+    if (len <= 1) { ctx.result.set_object(result); return; }
+
+    double[512] stack_scratch;
+    double[] scratch;
+    double* heap_scratch = null;
+    if (len <= 512) {
+        scratch = stack_scratch[:len];
+    } else {
+        heap_scratch = (double*)heap.alloc_func(heap.heap_udata, (usz)(len * double::size));
+        if (heap_scratch == null) {
+            arraybuffer_throw_range_error(ctx, "TypedArray.toSorted: out of memory");
+            return;
+        }
+        scratch = heap_scratch[:len];
+    }
+
+    for (uint i = 0; i < len; i++) {
+        TVal v = ta_load_element(dst, cls, i);
+        scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
+    }
+
+    ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
+
+    if (!ctx.should_throw) {
+        for (uint i = 0; i < len; i++) {
+            TVal tv; tv.set_number(scratch[i]);
+            char* dp = dst + (i << shift);
+            ta_write_element(dp, cls, &tv, ctx);
+            if (ctx.should_throw) break;
+        }
+    }
+
+    if (heap_scratch != null) heap.free_func(heap.heap_udata, heap_scratch);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    ctx.result.set_object(result);
+}
+
+/// %TypedArray%.prototype.toString() — delegates to join with ",".
+fn void builtin_ta_proto_toString(BuiltinContext* ctx) {
+    // Reuse join with default comma separator (argc=0).
+    builtin_ta_proto_join(ctx);
+}
+
+/// %TypedArray%.prototype.toLocaleString() — alias of toString for now.
+fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
+    builtin_ta_proto_join(ctx);
+}
+
+// ---- Static: %TypedArray%.of / %TypedArray%.from ----
+// Installed on Int8Array only as a smoke test; remaining 8 ctors are a TODO.
+
+/// %TypedArray%.of(...items) — §23.2.2.2.
+/// Expects to be called on the per-class constructor (ctx.callee_obj).
+fn void builtin_ta_of(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = hobject::ObjClass.INT8ARRAY;
+
+    // For static call Int8Array.of(...), this_val IS Int8Array constructor.
+    // Resolve per-ctor prototype from constructor.prototype so instanceof works.
+    HObject* ctor_proto = null;
+    if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
+        HObject* ctor_obj = (HObject*)ctx.this_val.get_heapptr();
+        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal? pto_tv = ctor_obj.get_prop(prototype_key);
+        if (try ptv = pto_tv) {
+            if (ptv.is_object() && ptv.get_heapptr() != null) {
+                ctor_proto = (HObject*)ptv.get_heapptr();
+            }
+        }
+    }
+
+    uint items_count = (uint)ctx.argc;
+    HObject* result = ta_alloc_same_class(ctx, cls, items_count);
+    if (result == null) return;
+
+    // Set per-ctor prototype so instanceof Int8Array works.
+    if (ctor_proto != null) result.prototype = ctor_proto;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* res_base = items_count > 0 ? (*res_buf.extra_ptr()).ab.data : null;
+    uint shift = ta_elem_shift(cls);
+
+    for (uint i = 0; i < items_count; i++) {
+        TVal item = ctx.regs[ctx.base_reg + (int)i];
+        char* dp = res_base + (i << shift);
+        ta_write_element(dp, cls, &item, ctx);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    }
+    ctx.result.set_object(result);
+}
+
+/// %TypedArray%.from(source, mapFn?, thisArg?) — §23.2.2.1.
+/// Installed on Int8Array only; remaining 8 ctors are a TODO.
+fn void builtin_ta_from(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    if (ctx.argc < 1) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.from requires at least one argument");
+        return;
+    }
+    TVal source = ctx.regs[ctx.base_reg];
+    bool has_mapfn = false;
+    TVal mapfn; mapfn.set_undefined();
+    TVal map_this; map_this.set_undefined();
+    if (ctx.argc >= 2) {
+        mapfn = ctx.regs[ctx.base_reg + 1];
+        if (!mapfn.is_undefined() && !mapfn.is_null()) {
+            if (!mapfn.is_object() || mapfn.get_heapptr() == null ||
+                !((HObject*)mapfn.get_heapptr()).is_callable()) {
+                arraybuffer_throw_type_error(ctx, "TypedArray.from: mapFn is not a function");
+                return;
+            }
+            has_mapfn = true;
+        }
+    }
+    if (ctx.argc >= 3) map_this = ctx.regs[ctx.base_reg + 2];
+
+    hobject::ObjClass cls = hobject::ObjClass.INT8ARRAY;
+
+    // For static call Int8Array.from(...), this_val IS Int8Array constructor.
+    HObject* ctor_proto = null;
+    if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
+        HObject* ctor_obj2 = (HObject*)ctx.this_val.get_heapptr();
+        HString* prototype_key2 = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal? pto_tv2 = ctor_obj2.get_prop(prototype_key2);
+        if (try ptv2 = pto_tv2) {
+            if (ptv2.is_object() && ptv2.get_heapptr() != null) {
+                ctor_proto = (HObject*)ptv2.get_heapptr();
+            }
+        }
+    }
+
+    // Collect values from array-like or iterable (simplified: array-like path).
+    HObject* src_obj = null;
+    if (source.is_object() && source.get_heapptr() != null) {
+        src_obj = (HObject*)source.get_heapptr();
+    }
+
+    // Get length from source.length
+    uint src_len = 0;
+    if (src_obj != null) {
+        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal? lv = builtins_generic_get(src_obj, length_key, ctx);
+        if (ctx.should_throw) return;
+        if (try ltv = lv) {
+            double ld = ta_val_to_number(&ltv, ctx);
+            if (ctx.should_throw) return;
+            if (ld > 0.0 && ld < 4294967296.0) src_len = (uint)(long)ld;
+        }
+    }
+
+    // Handle string as array-like of chars.
+    HString* src_str = null;
+    if (source.is_string() && source.get_heapptr() != null) {
+        src_str = (HString*)source.get_heapptr();
+        src_len = (uint)src_str.blen;
+    }
+
+    HObject* result = ta_alloc_same_class(ctx, cls, src_len);
+    if (result == null) return;
+    if (ctor_proto != null) result.prototype = ctor_proto;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* res_base = src_len > 0 ? (*res_buf.extra_ptr()).ab.data : null;
+    uint shift = ta_elem_shift(cls);
+
+    for (uint i = 0; i < src_len; i++) {
+        TVal elem; elem.set_undefined();
+        if (src_str != null) {
+            char[] bytes = src_str.get_data();
+            char ch = i < (uint)bytes.len ? bytes[i] : 0;
+            // Produce a 1-char string so mapFn receives characters (per spec iterable semantics).
+            char[1] ch_buf; ch_buf[0] = ch;
+            HString* ch_hs = builtin_intern_string(heap, ch_buf[:1]);
+            if (ch_hs != null) {
+                elem.set_string(ch_hs);
+            } else {
+                elem.set_fastint((long)ch);
+            }
+        } else if (src_obj != null) {
+            HString* idx_key = heap.int_to_hstring((long)i);
+            if (idx_key != null) {
+                TVal? ev = builtins_generic_get(src_obj, idx_key, ctx);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (try etv = ev) elem = etv;
+            }
+        }
+
+        TVal final_elem = elem;
+        if (has_mapfn && ctx.heap.call_fn != null && ctx.vm != null) {
+            TVal[2] args; args[0] = elem;
+            TVal k_tv; k_tv.set_fastint((long)i);
+            args[1] = k_tv;
+            final_elem = ctx.heap.call_fn(ctx.vm, mapfn, &args[0], 2, map_this);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                ctx.result.set_undefined();
+                return;
+            }
+        }
+
+        char* dp = res_base + (i << shift);
+        ta_write_element(dp, cls, &final_elem, ctx);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    }
+    ctx.result.set_object(result);
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -1307,6 +2467,30 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "copyWithin",  BUILTIN_TA_PROTO_COPYWITHIN))  return false;
     if (!register_string_proto_method(proto, heap, "slice",       BUILTIN_TA_PROTO_SLICE))       return false;
 
+    // Wave B prototype methods (plan 049 stage 5)
+    if (!register_string_proto_method(proto, heap, "indexOf",         BUILTIN_TA_PROTO_INDEX_OF))        return false;
+    if (!register_string_proto_method(proto, heap, "lastIndexOf",     BUILTIN_TA_PROTO_LAST_INDEX_OF))   return false;
+    if (!register_string_proto_method(proto, heap, "includes",        BUILTIN_TA_PROTO_INCLUDES))        return false;
+    if (!register_string_proto_method(proto, heap, "join",            BUILTIN_TA_PROTO_JOIN))            return false;
+    if (!register_string_proto_method(proto, heap, "forEach",         BUILTIN_TA_PROTO_FOR_EACH))        return false;
+    if (!register_string_proto_method(proto, heap, "every",           BUILTIN_TA_PROTO_EVERY))           return false;
+    if (!register_string_proto_method(proto, heap, "some",            BUILTIN_TA_PROTO_SOME))            return false;
+    if (!register_string_proto_method(proto, heap, "reduce",          BUILTIN_TA_PROTO_REDUCE))          return false;
+    if (!register_string_proto_method(proto, heap, "reduceRight",     BUILTIN_TA_PROTO_REDUCE_RIGHT))    return false;
+    if (!register_string_proto_method(proto, heap, "map",             BUILTIN_TA_PROTO_MAP))             return false;
+    if (!register_string_proto_method(proto, heap, "filter",          BUILTIN_TA_PROTO_FILTER))          return false;
+    if (!register_string_proto_method(proto, heap, "find",            BUILTIN_TA_PROTO_FIND))            return false;
+    if (!register_string_proto_method(proto, heap, "findIndex",       BUILTIN_TA_PROTO_FIND_INDEX))      return false;
+    if (!register_string_proto_method(proto, heap, "findLast",        BUILTIN_TA_PROTO_FIND_LAST))       return false;
+    if (!register_string_proto_method(proto, heap, "findLastIndex",   BUILTIN_TA_PROTO_FIND_LAST_INDEX)) return false;
+    if (!register_string_proto_method(proto, heap, "reverse",         BUILTIN_TA_PROTO_REVERSE))         return false;
+    if (!register_string_proto_method(proto, heap, "toReversed",      BUILTIN_TA_PROTO_TO_REVERSED))     return false;
+    if (!register_string_proto_method(proto, heap, "at",              BUILTIN_TA_PROTO_AT))              return false;
+    if (!register_string_proto_method(proto, heap, "sort",            BUILTIN_TA_PROTO_SORT))            return false;
+    if (!register_string_proto_method(proto, heap, "toSorted",        BUILTIN_TA_PROTO_TO_SORTED))       return false;
+    if (!register_string_proto_method(proto, heap, "toString",        BUILTIN_TA_PROTO_TO_STRING))       return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleString",  BUILTIN_TA_PROTO_TO_LOCALE_STRING)) return false;
+
     // %TypedArray%.prototype[@@iterator] = values
     {
         HString* iter_sym = ensure_iterator_symbol(heap);
@@ -1346,6 +2530,21 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_ta_ctor(global_env, heap, "Uint32Array",             BUILTIN_UINT32ARRAY,            proto)) return false;
     if (!register_ta_ctor(global_env, heap, "Float32Array",            BUILTIN_FLOAT32ARRAY,           proto)) return false;
     if (!register_ta_ctor(global_env, heap, "Float64Array",            BUILTIN_FLOAT64ARRAY,           proto)) return false;
+
+    // Install of/from static methods on Int8Array (smoke-test; TODO: all 9 ctors).
+    {
+        HString* int8_key = builtin_intern_string(heap, "Int8Array");
+        if (int8_key != null) {
+            TVal? ctv = env::env_get(global_env, int8_key);
+            if (try cv = ctv) {
+                if (cv.is_object() && cv.get_heapptr() != null) {
+                    HObject* ctor = (HObject*)cv.get_heapptr();
+                    if (!register_string_proto_method(ctor, heap, "of",   BUILTIN_TA_OF))   return false;
+                    if (!register_string_proto_method(ctor, heap, "from", BUILTIN_TA_FROM)) return false;
+                }
+            }
+        }
+    }
 
     return true;
 }
