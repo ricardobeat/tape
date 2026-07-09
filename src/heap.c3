@@ -233,6 +233,14 @@ struct Heap {
     TVal yield_value;          /// Value yielded by YIELD opcode
     bool did_yield;            /// True when YIELD was just executed
 
+    // Initial generator call state — set by the initial-call path in vm_calls
+    // before eagerly running the frame, cleared by the GEN_START handler.
+    // Non-null while a generator function body is executing its parameter
+    // initialization phase (before the first GEN_START instruction is hit).
+    GeneratorState* gen_initial_gs;   /// Pre-allocated GeneratorState for the initial call
+    void*           gen_initial_obj;  /// HObject* — the generator object being initialized
+    TVal*           gen_initial_retval; /// Where to write the generator object in the caller's frame
+
     // Global symbol registry for Symbol.for / Symbol.keyFor
     HString** symbol_registry_keys;   /// Array of key HString* pointers
     HString** symbol_registry_syms;   /// Array of symbol HString* pointers
@@ -1846,6 +1854,13 @@ fn void Heap.mark_roots(&self) {
     // Mark activation-record env bindings (fresh per-call envs not otherwise rooted)
     if (self.mark_activations_fn != null && self.curr_thread != null) {
         self.mark_activations_fn(self.curr_thread, self);
+    }
+
+    // Mark the generator object being initialized during an initial generator call.
+    // gen_initial_obj is not yet reachable from any register or stack slot during
+    // param-init execution, so it must be marked explicitly to prevent GC collection.
+    if (self.gen_initial_obj != null) {
+        self.mark_hobject((HObject*)self.gen_initial_obj);
     }
 
     // Drain the gray stack — transitively marks all reachable objects

@@ -384,6 +384,24 @@ enum Opcode : char {
     /// ABC format: A=value_reg, B=0, C=0.
     AWAIT,
 
+    /// Marks the boundary between parameter initialization and the function
+    /// body in a generator function.  The compiler emits this once per
+    /// generator body, immediately after all parameter default checks and
+    /// destructuring are complete.
+    ///
+    /// On the initial call to a generator function the VM runs the frame
+    /// eagerly up to (and including) this instruction, then suspends: it
+    /// saves the current register state into the pre-allocated GeneratorState
+    /// and returns the generator object to the caller.  This ensures that
+    /// FunctionDeclarationInstantiation side effects (throwing defaults,
+    /// destructuring errors) happen at call time per ES2022 §27.5.3.2.
+    ///
+    /// On subsequent resumes this instruction is never reached because
+    /// saved_pc already points past it.
+    ///
+    /// NONE format (no operands).
+    GEN_START,
+
     // ---- Fastint arithmetic fusion ----------------------------------------
 
     /// `A = A + 1` (in-place fastint increment). Hot loop counter idiom.
@@ -519,6 +537,7 @@ case PUTLEX:     return A_BC;
         case YIELD:      return ABC;
         case YIELD_STAR: return ABC;
         case GETPROPC_CACHED: return ABC;
+        case GEN_START:      return NONE;
 
         // A-sBx format (signed 16-bit second operand)
         case LDINT:     return A_SBX;
@@ -1175,6 +1194,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
     [Opcode.REQUIRE_OBJ.ordinal] = "REQUIRE_OBJ",
+    [Opcode.GEN_START.ordinal]   = "GEN_START",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

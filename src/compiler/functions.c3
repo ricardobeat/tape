@@ -1656,6 +1656,14 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     self.emit_destruct_bindings(destruct_binds[..], destruct_count,
                                 destruct_group_regs[..], destruct_binding_regs[..]);
 
+    // Generator functions: emit GEN_START after all parameter initialization
+    // so that the VM can run eagerly up to this point on the initial call,
+    // satisfying the spec requirement that FunctionDeclarationInstantiation
+    // (including throwing defaults/destructuring) happens at call time.
+    if (self.is_generator && !self.is_async) {
+        self.emit_simple(Opcode.GEN_START);
+    }
+
     // Collect names captured by nested callables (plan 045) before any body
     // code is emitted, so declare_var can make them env-resident.
     self.pre_scan_captures();
@@ -2076,6 +2084,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Emit destructuring code for inner function parameters.
     inner_ctx.emit_destruct_bindings(inner_destruct_binds[..], inner_destruct_count,
                                      inner_destruct_group_regs[..], inner_destruct_binding_regs[..]);
+
+    // Generator functions: emit GEN_START after all parameter initialization
+    // so the VM can run eagerly up to this point on the initial call.
+    if (inner_ctx.is_generator && !inner_ctx.is_async) {
+        inner_ctx.emit_simple(Opcode.GEN_START);
+    }
 
     // Collect names captured by nested callables (plan 045).
     inner_ctx.pre_scan_captures();

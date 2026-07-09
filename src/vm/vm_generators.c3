@@ -827,6 +827,92 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             return (TVal){};
         }
 
+        case Opcode.GEN_START: {
+            // GEN_START — emitted by the compiler after all parameter initialization
+            // in a generator function.  Reached only during the initial call (when
+            // heap.gen_initial_gs is non-null).  Saves the current activation state
+            // into the pre-allocated GeneratorState, writes the generator object to
+            // the caller's result register, then returns to the caller.
+            //
+            // On subsequent resumes via .next()/.throw()/.return(), saved_pc already
+            // points past this instruction so GEN_START is never re-executed.
+            GeneratorState* gs = vm.heap.gen_initial_gs;
+            if (gs == null) {
+                // Should not happen in well-formed code, but be defensive.
+                return (TVal){};
+            }
+
+            // Save register state (the param-init code may have written to regs).
+            TVal* cur_regs = ds.act.bottom;
+            for (uint i = 0; i < gs.num_regs; i++) {
+                vm.heap.tval_copy_ref(&gs.saved_regs[i], &cur_regs[i]);
+            }
+
+            // saved_pc points to the instruction AFTER GEN_START (ds.curr_pc was
+            // already incremented before dispatch).
+            gs.saved_pc = ds.curr_pc;
+            gs.var_env = ds.act.var_env;
+            gs.lex_env = ds.act.lex_env;
+            gs.cat = ds.act.cat;
+            vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
+            gs.state = GEN_SUSPENDED_START;
+            gs.resume_kind = NEXT;
+
+            // Write the generator object to the caller's result register.
+            // Use ds.act.retval rather than gen_initial_retval: if ensure_valstack_grow
+            // ran during param-init, it relocates all activation retval pointers but
+            // gen_initial_retval would be stale.  ds.act.retval is always up to date.
+            HObject* gen_obj_g = (HObject*)vm.heap.gen_initial_obj;
+            TVal* retval_g = ds.act.retval;
+
+            // Clear the pending initial-call state.
+            vm.heap.gen_initial_gs = null;
+            vm.heap.gen_initial_obj = null;
+            vm.heap.gen_initial_retval = null;
+
+            if (gen_obj_g != null && retval_g != null) {
+                TVal gen_tv;
+                gen_tv.set_object(gen_obj_g);
+                vm.heap.tval_copy_ref(retval_g, &gen_tv);
+            }
+
+            // Pop the generator's activation and return to the caller.
+            decref_callee_regs(vm, ds.act);
+            vm.activation_count--;
+
+            if (vm.activation_count == 0) {
+                // Caller was the top-level — return the generator object.
+                if (retval_g != null) {
+                    ds.halt = true;
+                    ds.halt_value = *retval_g;
+                }
+                return (TVal){};
+            }
+
+            // Restore caller activation.
+            Activation* caller_act_g = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller_act_g.bottom;
+            if (caller_act_g.func != null) {
+                CompiledFunction* caller_func_g = (CompiledFunction*)caller_act_g.func;
+                vm.valstack_top = caller_act_g.bottom + caller_func_g.num_regs;
+                if (caller_func_g != vm.current_func) {
+                    vm.current_func = caller_func_g;
+                    ds.code_base = caller_func_g.code;
+                    ds.code_count = caller_func_g.code_count;
+                    ds.code_end = ds.code_base + ds.code_count;
+                    ds.constants = caller_func_g.constants;
+                    ds.ic_base = (hobject::ICEntry*)caller_func_g.ic_entries;
+                    ds.var_ic_base = (hobject::VarICEntry*)caller_func_g.var_ic_entries;
+                    ds.nregs = caller_func_g.num_regs;
+                }
+            }
+            ds.act = caller_act_g;
+            ds.curr_pc = caller_act_g.curr_pc;
+            ds.regs_base = caller_act_g.bottom;
+            ds.needs_restart = true;
+            return (TVal){};
+        }
+
         default:
             return (TVal){};
     }
