@@ -286,6 +286,11 @@ enum Opcode : char {
     INITGET,
     /// Define setter: `Object.defineProperty(A, B, {set: C})`.
     INITSETI,
+    /// `A[B] = C` — define a data property with WEC flags (overrides any
+    /// existing non-writable property, since DefinePropertyOrThrow semantics
+    /// allow replacement when the existing property is configurable). Used
+    /// for class static method installation.
+    INITPROP,
     /// Create the `arguments` exotic object for the current activation.
     CSVARI,
 

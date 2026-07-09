@@ -278,6 +278,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
     // Track constructor
     uint ctor_inner_idx = 0xFFFFFFFF;  // sentinel
 
+    // ES2015 §14.1.20 step 6.d: if the class has a static `name` method, the
+    // constructor's auto-set name will be overridden by the static method
+    // installation. Track it as we parse so the constructor's name is
+    // suppressed when a static name is present.
+    bool class_has_static_name = false;
+
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         // Skip semicolons (empty class elements)
         if (self.match(TokenType.SEMICOLON)) {
@@ -494,7 +500,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         usz method_name_len = 0;
         if (is_constructor) {
             // Constructor's name = className (empty for anonymous class)
-            if (class_name.len < 128) {
+            if (class_name.len < 128 && !class_has_static_name) {
                 for (usz i = 0; i < class_name.len; i++) method_name_buf[i] = class_name[i];
                 method_name_len = class_name.len;
             }
@@ -535,16 +541,25 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             methods[method_count].is_getter = is_getter;
             methods[method_count].is_setter = is_setter;
             methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
+            if (is_static && method_name.str_value == "name") {
+                class_has_static_name = true;
+            }
             method_count++;
         }
     }
 
     self.expect(TokenType.RBRACE)!;
 
-    // If no constructor was specified, create a default one
+    // If no constructor was specified, create a default one.
+    // ES2015 §14.1.20 SetFunctionName step 6.d: if the class has a static
+    // `name` method, it defines an own "name" property on the constructor
+    // that overrides the auto-set one. Suppress the inferred name so the
+    // static method installation can succeed.
+    char[] ctor_class_name = class_name;
+    if (class_has_static_name) ctor_class_name = {};
     if (ctor_inner_idx == 0xFFFFFFFF) {
         heap::Heap* hp = (heap::Heap*)self.heap;
-        CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding, class_name);
+        CompiledFunction*? ctor_func_raw = make_default_constructor(hp, self.has_super_binding, ctor_class_name);
         if (catch err = ctor_func_raw) {
             return COMPILE_ERROR~;
         }
@@ -613,6 +628,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
             self.emit_abc(Opcode.INITGET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         } else if (methods[mi].is_setter) {
             self.emit_abc(Opcode.INITSET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+        } else if (methods[mi].is_static) {
+            // Static data methods use INITPROP (DefinePropertyOrThrow
+            // semantics) so they can override the constructor's auto-set
+            // properties such as .name. Per ES2015 §14.5.13, class method
+            // installation uses DefinePropertyOrThrow — this isn't [[Set]],
+            // so a non-writable existing property can be replaced if it's
+            // configurable (which .name is).
+            self.emit_abc(Opcode.INITPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         } else {
             self.emit_abc(Opcode.PUTPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         }

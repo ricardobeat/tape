@@ -2511,6 +2511,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.INITGET:
         case Opcode.INITSET:
         case Opcode.INITSETI:
+        case Opcode.INITPROP:
         case Opcode.CSVARI:
         case Opcode.PUSH_LEX:
         case Opcode.POP_LEX:
