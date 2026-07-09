@@ -1223,8 +1223,13 @@ fn HString* builtin_number_to_hstring(Heap* heap, double d) {
     }
     // -0 must produce "0"
     if (d == 0.0) return builtin_intern_string(heap, "0");
-    // Integers below 10^21 use plain decimal notation
-    if (d == math::trunc(d) && d > -1e21 && d < 1e21) {
+    // Integers up to 2^53 (every value in this range is exactly representable
+    // and is therefore its own shortest round-trip decimal) use plain decimal
+    // notation via printf. Above 2^53, adjacent doubles are more than 1 apart,
+    // so the exact binary value's decimal expansion (as printf would produce)
+    // is no longer necessarily the shortest round-trip String; those go
+    // through dtoa's FREE format below to match ES ToString semantics.
+    if (d == math::trunc(d) && d > -9007199254740992.0 && d < 9007199254740992.0) {
         char[64] ibuf;
         int ilen = libc::snprintf(&ibuf, 64, "%.0f", d);
         if (ilen >= 0 && ilen < 64) {
@@ -1335,7 +1340,21 @@ fn double builtin_to_integer(TVal* val) {
 /// VM-aware ToInteger (ES2022 §7.1.5): properly handles objects by calling
 /// ToPrimitive via the VM (invoking valueOf/toString).  When ToPrimitive
 /// returns a non-primitive, throws TypeError instead of silently returning 0.
+/// ToIntegerOrInfinity first calls ToNumber, which throws TypeError for
+/// Symbol and BigInt arguments (ES2022 §7.1.4) — checked before the object
+/// path since Symbols/BigInts are not objects.
 fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
+    if (val.is_bigint()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a BigInt value to a number");
+        return 0.0 / 0.0;
+    }
+    if (val.is_string()) {
+        HString* hs = (HString*)val.get_heapptr();
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a Symbol value to a number");
+            return 0.0 / 0.0;
+        }
+    }
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, val, false);
