@@ -3719,6 +3719,12 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
     // ES2022 §23.1.3.18 step 2: get LengthOfArrayLike before checking IsCallable.
     ulong len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    // ArraySpeciesCreate(O, len) → ArrayCreate(len) throws RangeError if len > 2^32-1
+    // (per ES2022 §23.1.3.18 step 5 → §9.4.2.3 → §9.4.2.2 step 1).
+    if (len > 0xFFFFFFFFUL) {
+        arr_throw_range_error(ctx, "Invalid array length");
+        return;
+    }
     // Step 3: IsCallable(callbackfn) check.
     TVal cb_val;
     if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }

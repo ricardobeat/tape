@@ -1132,12 +1132,20 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                     }
                     if (!result.is_object() || result.get_heapptr() == null) break;
                     HObject* res_obj = (HObject*)result.get_heapptr();
+                    // Use accessor-aware reads for IteratorResult fields (ES2022 §7.4.4).
+                    // get_prop_proto bypasses accessor getters; builtins_generic_get
+                    // invokes [[Get]] so a throwing getter is caught.
                     HString* done_key = builtin_intern_string(ctx.heap, "done");
                     TVal done_val;
                     done_val.set_undefined();
                     if (done_key != null) {
-                        TVal? dv = res_obj.get_prop_proto(done_key);
-                        if (try d = dv) { done_val = d; }
+                        if (try d = builtins_generic_get(res_obj, done_key, ctx)) { done_val = d; }
+                    }
+                    if (ctx.should_throw) {
+                        // done getter threw — close iterator then propagate.
+                        arr_iterator_close_after_throw(ctx, iterator);
+                        ctx.result.set_undefined();
+                        return;
                     }
                     if (done_val.is_boolean() && done_val.get_boolean()) break;
 
@@ -1145,14 +1153,42 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                     TVal val_tv;
                     val_tv.set_undefined();
                     if (value_key != null) {
-                        TVal? vv = res_obj.get_prop_proto(value_key);
-                        if (try v = vv) { val_tv = v; }
+                        if (try v = builtins_generic_get(res_obj, value_key, ctx)) { val_tv = v; }
+                    }
+                    if (ctx.should_throw) {
+                        // value getter threw — close iterator then propagate (ES2022 §7.4.5).
+                        arr_iterator_close_after_throw(ctx, iterator);
+                        ctx.result.set_undefined();
+                        return;
                     }
                     if (is_pair) {
                         if (val_tv.is_object() && val_tv.get_heapptr() != null) {
                             HObject* pair_obj = (HObject*)val_tv.get_heapptr();
-                            TVal k = array_get_elem(pair_obj, 0, ctx.heap);
-                            TVal v = array_get_elem(pair_obj, 1, ctx.heap);
+                            // Use accessor-aware property reads (ES2022 §23.1.1.1 step 9h/9j).
+                            // array_get_elem is a fast path that bypasses accessor getters;
+                            // builtins_generic_get invokes [[Get]] correctly.
+                            HString* key0 = ctx.heap.int_to_hstring(0);
+                            HString* key1 = ctx.heap.int_to_hstring(1);
+                            TVal k; k.set_undefined();
+                            TVal v; v.set_undefined();
+                            if (key0 != null) {
+                                if (try kv = builtins_generic_get(pair_obj, key0, ctx)) { k = kv; }
+                            }
+                            if (ctx.should_throw) {
+                                // Getter for key[0] threw — close iterator then propagate.
+                                arr_iterator_close_after_throw(ctx, iterator);
+                                ctx.result.set_undefined();
+                                return;
+                            }
+                            if (key1 != null) {
+                                if (try vv = builtins_generic_get(pair_obj, key1, ctx)) { v = vv; }
+                            }
+                            if (ctx.should_throw) {
+                                // Getter for key[1] threw — close iterator then propagate.
+                                arr_iterator_close_after_throw(ctx, iterator);
+                                ctx.result.set_undefined();
+                                return;
+                            }
                             TVal[2] adder_args = { k, v };
                             TVal coll_tv2; coll_tv2.set_object(coll);
                             ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 2, coll_tv2);
@@ -1160,9 +1196,17 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                                 ctx.should_throw = true;
                                 ctx.throw_value = ctx.heap.error_value;
                                 ctx.heap.has_error = false;
+                                // adder threw — close iterator then propagate.
+                                arr_iterator_close_after_throw(ctx, iterator);
                                 ctx.result.set_undefined();
                                 return;
                             }
+                        } else {
+                            // pair entry is not an object — ES2022 §23.1.1.1 step 9f requires TypeError.
+                            coll_throw(ctx, "Iterator value must be an object");
+                            arr_iterator_close_after_throw(ctx, iterator);
+                            ctx.result.set_undefined();
+                            return;
                         }
                     } else {
                         if (!val_tv.is_undefined()) {
@@ -1173,6 +1217,8 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                                 ctx.should_throw = true;
                                 ctx.throw_value = ctx.heap.error_value;
                                 ctx.heap.has_error = false;
+                                // adder threw — close iterator then propagate.
+                                arr_iterator_close_after_throw(ctx, iterator);
                                 ctx.result.set_undefined();
                                 return;
                             }
