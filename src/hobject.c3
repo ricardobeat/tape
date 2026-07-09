@@ -1043,14 +1043,41 @@ fn PropValue*? HObject.find_prop(&self, void* key) {
 fn TVal? HObject.get_prop(&self, void* key) {
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
+        // ARRAY / ARGUMENTS exotic: numeric-string keys ("0", "1", ...) are own
+        // properties backed by the dense array part. Builtins like push() write
+        // only via set_array_idx, so the property table alone cannot answer
+        // string-index reads (mirrors the dense-part handling in delete_prop).
+        TVal dense;
+        if (self.dense_arridx_lookup(key, &dense)) {
+            return dense;
+        }
         return PROP_NOT_FOUND~;
     }
     return self.prop_values()[idx];
 }
 
+/// Look up an array-index string key ("0", "1", ...) in the dense array part
+/// of an ARRAY / ARGUMENTS exotic object. Returns true and stores the value in
+/// `out` when the slot exists and is not a hole (undefined = hole sentinel).
+fn bool HObject.dense_arridx_lookup(&self, void* key, TVal* out) {
+    if (key == null) return false;
+    if (self.get_class() != hobject::ObjClass.ARRAY && self.get_class() != hobject::ObjClass.ARGUMENTS) return false;
+    if (self.array_part() == null) return false;
+    HString* hkey = (HString*)key;
+    if (!hkey.is_arridx()) return false;
+    uint ai = (uint)hkey.array_index();
+    if (ai >= self.array_size) return false;
+    TVal v = self.array_part()[ai];
+    if (v.is_undefined()) return false;
+    *out = v;
+    return true;
+}
+
 /// Check whether the object has an own property with the given key.
 fn bool HObject.has_prop(&self, void* key) {
-    return self.find_prop_idx(key) >= 0;
+    if (self.find_prop_idx(key) >= 0) return true;
+    TVal dense;
+    return self.dense_arridx_lookup(key, &dense);
 }
 
 /// Check whether a property is writable.
@@ -1741,6 +1768,12 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
         if (idx >= 0) {
             return cur.prop_values()[idx];
         }
+        // ARRAY / ARGUMENTS exotic: string-index keys may live only in the
+        // dense array part (see get_prop).
+        TVal dense;
+        if (cur.dense_arridx_lookup(key, &dense)) {
+            return dense;
+        }
         cur = cur.prototype;
         depth++;
     }
@@ -2041,6 +2074,18 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
                 .owner = cur
             };
         }
+        // ARRAY / ARGUMENTS exotic: string-index keys may live only in the
+        // dense array part (see get_prop). Report without an owner so the
+        // caller's inline cache is not populated (dense slots have no stable
+        // prop_values pointer).
+        TVal dense;
+        if (cur.dense_arridx_lookup(key, &dense)) {
+            return {
+                .kind = PropLookupKind.PROP_DATA,
+                .data_val = dense,
+                .owner = null
+            };
+        }
         cur = cur.prototype;
         depth++;
     }
@@ -2055,6 +2100,12 @@ fn bool HObject.has_prop_proto(&self, void* key) {
 
     while (cur != null && depth < MAX_PROTO_DEPTH) {
         if (cur.find_prop_idx(key) >= 0) {
+            return true;
+        }
+        // ARRAY / ARGUMENTS exotic: string-index keys may live only in the
+        // dense array part (see get_prop).
+        TVal dense;
+        if (cur.dense_arridx_lookup(key, &dense)) {
             return true;
         }
         cur = cur.prototype;
