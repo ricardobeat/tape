@@ -695,15 +695,31 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
     if (obj.get_class() == ARRAY) {
         uint old_len = *obj.array_len_ptr();
         if (len_val < old_len) {
-            // Shrinking length must delete elements at dropped indices so
-            // subsequent reads see holes / inherited values instead of stale
-            // dense slots.
+            // Shrinking length: clear any dense-part slots in [len_val, array_size).
+            // Clamped to array_size so this loop is always bounded.
             TVal undef; undef.set_undefined();
-            for (uint i = len_val; i < old_len; i++) {
+            uint dense_limit = old_len < obj.array_size ? old_len : obj.array_size;
+            for (uint i = len_val; i < dense_limit; i++) {
                 obj.set_array_idx(i, undef);
-                HString* key = heap.int_to_hstring((long)i);
-                if (key != null) {
-                    obj.delete_prop(key);
+            }
+            // Delete named numeric properties that fall in the dropped range.
+            // Walk backwards through the property table; delete_prop compacts the
+            // table (shifting higher entries down), so scanning backward is safe.
+            ushort pc = obj.prop_count;
+            if (pc > 0) {
+                ushort pi = pc;
+                while (pi > 0) {
+                    pi--;
+                    void* pk = obj.prop_key_at((uint)pi);
+                    if (pk != null) {
+                        HString* pks = (HString*)pk;
+                        if (pks.is_arridx()) {
+                            uint ai = pks.array_index();
+                            if (ai >= len_val) {
+                                obj.delete_prop(pk);
+                            }
+                        }
+                    }
                 }
             }
         }
