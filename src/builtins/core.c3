@@ -484,6 +484,7 @@ const uint BUILTIN_STRING_PROTO_MATCHALL      = 304;
 const uint BUILTIN_STRING_PROTO_NORMALIZE     = 305;
 const uint BUILTIN_REFLECT_OWNKEYS            = 310;
 const uint BUILTIN_ERROR_CAPTURE_STACK_TRACE    = 311;
+const uint BUILTIN_STRING_RAW                  = 313;
 
 // ============================================================================
 // BuiltinContext — passed to every builtin handler
@@ -1815,6 +1816,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 267: return { "any", 1 };
         case 268: return { "AggregateError", 2 };
         case 311: return { "captureStackTrace", 2 };
+        case 313: return { "raw", 1 };
         case 269: return { "next", 0 };
         case 270: return { "next", 0 };
         case 271: return { "[Symbol.iterator]", 0 };
@@ -2482,6 +2484,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_STRING] = &builtin_string,
     [BUILTIN_STRING_FROMCHARCODE] = &builtin_string_fromcharcode,
     [BUILTIN_STRING_FROMCODEPOINT] = &builtin_string_fromcodepoint,
+    [BUILTIN_STRING_RAW] = &builtin_string_raw,
     [BUILTIN_STRING_ITERATOR_NEXT] = &builtin_string_iterator_next,
     [BUILTIN_STRING_PROTO_AT] = &builtin_string_proto_at,
     [BUILTIN_STRING_PROTO_CHARAT] = &builtin_string_proto_charAt,

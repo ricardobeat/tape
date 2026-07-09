@@ -206,6 +206,158 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
     ctx.result.set_string(result_str);
 }
 
+/// String.raw(template, ...substitutions) — ES2015 §22.1.2.4
+///
+/// Reads template.raw as an array-like, interleaves its string-coerced
+/// elements with the substitution arguments, and returns the concatenation.
+/// ToObject/Get/LengthOfArrayLike follow the spec exactly so getter
+/// side-effects and abrupt completions propagate correctly.
+fn void builtin_string_raw(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    if (ctx.argc == 0) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw requires a template argument");
+        return;
+    }
+
+    // Step 1-3: Let cooked = ToObject(template).
+    TVal template_val = ctx.regs[ctx.base_reg];
+    HObject* cooked = arr_to_object(template_val, heap);
+    if (cooked == null) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw: template is not an object");
+        return;
+    }
+
+    // Step 4: Let raw = ToObject(Get(cooked, "raw")).
+    HString* raw_key = builtin_intern_string(heap, "raw");
+    if (raw_key == null) { ctx.result.set_undefined(); return; }
+    TVal? raw_tv_opt = builtins_generic_get(cooked, raw_key, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal raw_tv;
+    if (try rv = raw_tv_opt) {
+        raw_tv = rv;
+    } else {
+        raw_tv.set_undefined();
+    }
+    HObject* raw_obj = arr_to_object(raw_tv, heap);
+    if (raw_obj == null) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw: template.raw is not an object");
+        return;
+    }
+
+    // Step 5: Let literalSegments = LengthOfArrayLike(raw).
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    if (len_key == null) { ctx.result.set_undefined(); return; }
+    TVal? len_opt = builtins_generic_get(raw_obj, len_key, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    long literal_segments = 0;
+    if (try lv = len_opt) {
+        double ld;
+        if (lv.is_fastint()) {
+            ld = (double)lv.get_fastint();
+        } else if (lv.is_number()) {
+            ld = lv.get_number();
+        } else if (lv.is_undefined() || lv.is_null()) {
+            ld = 0.0;
+        } else if (is_symbol_val(lv)) {
+            builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a number");
+            return;
+        } else {
+            ld = builtin_to_number_getdouble(ctx, &lv);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
+        if (math::is_nan(ld) || math::is_inf(ld) || ld < 0) {
+            ld = 0.0;
+        }
+        if (ld > (double)0x7FFFFFFF) ld = (double)0x7FFFFFFF;
+        literal_segments = (long)ld;
+    }
+
+    // Step 6: If literalSegments ≤ 0, return "".
+    if (literal_segments <= 0) {
+        HString* empty = builtin_intern_string(heap, "");
+        ctx.result.set_string(empty);
+        return;
+    }
+
+    // Step 12+: Accumulate in a heap-allocated growable buffer.
+    usz buf_cap = 256;
+    usz buf_len = 0;
+    char* buf = (char*)heap.alloc_func(heap.heap_udata, buf_cap);
+    if (buf == null) { ctx.result.set_undefined(); return; }
+
+    // Helper macro-like inline: append bytes to buf, growing as needed.
+    // Returns false and sets result to undefined on allocation failure.
+    for (long next_index = 0; next_index < literal_segments; next_index++) {
+        // Step 12.b: nextSeg = ToString(Get(raw, nextKey)).
+        HString* idx_key = heap.int_to_hstring(next_index);
+        if (idx_key == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        TVal? seg_opt = builtins_generic_get(raw_obj, idx_key, ctx);
+        if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        TVal seg_tv;
+        if (try sv = seg_opt) {
+            seg_tv = sv;
+        } else {
+            seg_tv.set_undefined();
+        }
+        if (is_symbol_val(seg_tv)) {
+            heap.free_func(heap.heap_udata, buf);
+            builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a string");
+            return;
+        }
+        HString* seg_str = builtin_to_string_vm(ctx, &seg_tv);
+        if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        if (seg_str != null && seg_str.blen > 0) {
+            usz need = buf_len + (usz)seg_str.blen;
+            if (need > buf_cap) {
+                usz new_cap = buf_cap * 2;
+                if (new_cap < need) new_cap = need + 64;
+                char* new_buf = (char*)libc::realloc(buf, new_cap);
+                if (new_buf == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+                buf = new_buf;
+                buf_cap = new_cap;
+            }
+            libc::memcpy(&buf[buf_len], seg_str.get_cstr(), seg_str.blen);
+            buf_len += (usz)seg_str.blen;
+        }
+
+        // Step 12.e: If nextIndex + 1 = literalSegments, finished — exit loop.
+        if (next_index + 1 == literal_segments) break;
+
+        // Step 12.f: Append substitutions[nextIndex] (if present).
+        // Substitution args start at base_reg + 1; ctx.argc includes the template arg.
+        long sub_argc = (long)ctx.argc - 1;
+        if (next_index < sub_argc) {
+            TVal sub_tv = ctx.regs[ctx.base_reg + 1 + (uint)next_index];
+            if (is_symbol_val(sub_tv)) {
+                heap.free_func(heap.heap_udata, buf);
+                builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a string");
+                return;
+            }
+            HString* sub_str = builtin_to_string_vm(ctx, &sub_tv);
+            if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+            if (sub_str != null && sub_str.blen > 0) {
+                usz need = buf_len + (usz)sub_str.blen;
+                if (need > buf_cap) {
+                    usz new_cap = buf_cap * 2;
+                    if (new_cap < need) new_cap = need + 64;
+                    char* new_buf = (char*)libc::realloc(buf, new_cap);
+                    if (new_buf == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+                    buf = new_buf;
+                    buf_cap = new_cap;
+                }
+                libc::memcpy(&buf[buf_len], sub_str.get_cstr(), sub_str.blen);
+                buf_len += (usz)sub_str.blen;
+            }
+        }
+    }
+
+    HString* result = heap.str_intern(buf[:buf_len]);
+    heap.free_func(heap.heap_udata, buf);
+    if (result == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_string(result);
+}
+
 /// String.prototype.toString — returns the wrapped string value
 fn void builtin_string_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -246,10 +398,21 @@ fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
 
 /// Helper: extract the string data and length from `this`, handling both
 /// primitive strings and String wrapper objects. Returns null on failure.
+///
+/// Implements RequireObjectCoercible + ToString(this) with full ToPrimitive
+/// support (Symbol.toPrimitive, toString, valueOf) for object receivers.
+/// Symbols as `this` throw TypeError per §7.1.17.
 fn HString* string_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_string()) {
-        return (HString*)this_val.get_heapptr();
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — ToString(Symbol) throws TypeError.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return null;
+        }
+        return hs;
     }
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
@@ -258,29 +421,39 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
             return (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         }
     }
-    // ES5 §15.5.4: CheckObjectCoercible (throws for undefined/null),
-    // then ToString (works for any other value).
+    // RequireObjectCoercible: throw for undefined/null.
     if (this_val.is_undefined() || this_val.is_null()) {
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "String.prototype method called on incompatible value");
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+            "String.prototype method called on incompatible value");
         return null;
     }
-    // ES5 §9.8 ToString for objects: use ToPrimitive with hint "string" (toString first,
-    // then valueOf), then convert the primitive to string. This ensures custom toString()
-    // and Date.prototype.toString() work correctly per ES5 §9.1.
+    // ToString for objects: ToPrimitive(hint "string") then ToString.
+    // The VM-aware path runs user-defined Symbol.toPrimitive/toString/valueOf
+    // and propagates abrupt completions (including accessor get errors).
     if (this_val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, &this_val, true);  // hint "string"
         if (vm_ptr.throw_pending) {
+            // Propagate the pending throw value so the caller's
+            // `ctx.should_throw` path surfaces the original exception.
             ctx.should_throw = true;
+            ctx.throw_value = vm_ptr.throw_value;
             return null;
         }
-        // Convert the primitive to string
+        // ToString the resulting primitive.
         if (prim.is_string()) {
-            return (HString*)prim.get_heapptr();
+            HString* ps = (HString*)prim.get_heapptr();
+            if (ps != null && ps.is_symbol()) {
+                builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                    "Cannot convert a Symbol value to a string");
+                return null;
+            }
+            return ps;
         }
         if (prim.is_object()) {
-            // ToPrimitive returned an object — error
-            ctx.should_throw = true;
+            // ToPrimitive returned an object — throw TypeError per §7.1.1.
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                "Cannot convert object to primitive value");
             return null;
         }
         return builtin_to_string(ctx.heap, &prim);
@@ -2168,35 +2341,65 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     }
 }
 
-/// String.prototype.match(regexp) — ES5 §15.5.4.10
+/// Helper: invoke @@match on an HObject `rx` with string argument `s_hstr`.
+/// Looks up the @@match method on rx's prototype chain and calls it.
+/// Returns false if no callable @@match was found (caller should handle fallback).
+fn bool invoke_regexp_match(BuiltinContext* ctx, HObject* rx, HString* s_hstr) {
+    HString* match_sym = ensure_match_symbol(ctx.heap);
+    if (match_sym == null) return false;
+    TVal? matcher_opt = rx.get_prop_proto(match_sym);
+    if (try matcher = matcher_opt) {
+        if (matcher.is_lightfunc() ||
+            (matcher.is_object() && matcher.get_heapptr() != null &&
+             ((HObject*)matcher.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0].set_string(s_hstr);
+            TVal this_val; this_val.set_object(rx);
+            TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
+            if (ctx.heap.has_error) { ctx.should_throw = true; return true; }
+            *ctx.result = res;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// String.prototype.match(regexp) — ES2019 §21.1.3.11
+///
+/// Step 2: If regexp is an object, GetMethod(regexp, @@match); if callable,
+/// invoke and return. (GetMethod returns undefined for null/undefined @@match.)
+/// Steps 3-4: Create RegExpCreate(regexp, undefined) and Invoke(rx, @@match, [S]).
 fn void builtin_string_proto_match(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
-    char* input = s_hstr.get_cstr();
-    int input_len = (int)s_hstr.blen;
 
-    // ES2015 §21.1.3.10: missing arg or undefined/null falls through to RegExpCreate.
-    // Earlier ES5 returned null, but ES2015+ (and test262) expects RegExp(undefined).match(this),
-    // e.g. "".match() === [""] (matches the empty string at position 0).
-    TVal* regexp_arg = &ctx.regs[ctx.base_reg];
-    bool arg_is_missing_or_nullish = (ctx.argc == 0)
+    TVal* regexp_arg = (ctx.argc > 0) ? &ctx.regs[ctx.base_reg] : null;
+    bool arg_nullish = (regexp_arg == null)
         || regexp_arg.is_null() || regexp_arg.is_undefined();
 
-    // ── Check for @@match protocol (ES2015 §21.1.3.10 step 2) ───────────────
-    if (!arg_is_missing_or_nullish) {
-        if (regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
-            HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
-            HString* match_sym = ensure_match_symbol(ctx.heap);
-            if (match_sym != null) {
-                if (try matcher = arg_obj.get_prop_proto(match_sym)) {
+    // Step 2: If regexp is neither undefined nor null, check @@match.
+    if (!arg_nullish && regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
+        HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
+        HString* match_sym = ensure_match_symbol(ctx.heap);
+        if (match_sym != null) {
+            TVal? matcher_opt = builtins_generic_get(arg_obj, match_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try matcher = matcher_opt) {
+                // GetMethod: if null or undefined, treat as not found and fall through.
+                if (!matcher.is_undefined() && !matcher.is_null()) {
                     if (matcher.is_lightfunc() ||
                         (matcher.is_object() && matcher.get_heapptr() != null &&
                          ((HObject*)matcher.get_heapptr()).is_callable())) {
                         TVal[1] args;
                         args[0].set_string(s_hstr);
-                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal this_val = *regexp_arg;
                         TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                        }
+                        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                         *ctx.result = res;
                         return;
                     }
@@ -2205,51 +2408,58 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
         }
     }
 
-    // ES2015 §21.1.3.10 step 4: arg is missing/nullish → RegExpCreate(arg).
-    // ES2017 §21.2.3.1 step 7: if pattern is undefined, P = ""; else P = ToString(pattern).
-    //   missing arg  → undefined → ""
-    //   null         → "null"
-    // Use the resulting regex's @@match against the string.
-    if (arg_is_missing_or_nullish) {
-        char[16] pat_buf;
-        int pat_len;
-        if (regexp_arg.is_null()) {
-            char[] s = "null";
-            pat_len = s.len;
-            libc::memcpy(&pat_buf[0], s.ptr, s.len);
-        } else {
-            // missing or undefined → empty string
-            pat_len = 0;
-        }
-        HObject* rx = create_regexp_from_string(ctx.heap, pat_buf[:pat_len], 0);
-        if (rx == null) { ctx.result.set_null(); return; }
-        TVal[1] args;
-        args[0].set_string(s_hstr);
-        TVal this_val; this_val.set_object(rx);
-        HString* match_sym = ensure_match_symbol(ctx.heap);
-        if (match_sym == null) { ctx.result.set_null(); return; }
-        if (try matcher = rx.get_prop(match_sym)) {
-            if (matcher.is_lightfunc() ||
-                (matcher.is_object() && matcher.get_heapptr() != null &&
-                 ((HObject*)matcher.get_heapptr()).is_callable())) {
-                TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
-                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                *ctx.result = res;
+    // Steps 3-4: Let rx = RegExpCreate(regexp, undefined); return Invoke(rx, @@match, [S]).
+    // ToString the pattern: null → "null", undefined/missing → "", anything else → ToString.
+    char[16] pat_buf;
+    int pat_len = 0;
+    if (!arg_nullish) {
+        if (regexp_arg.is_string()) {
+            HString* ps = (HString*)regexp_arg.get_heapptr();
+            if (ps != null && !ps.is_symbol()) {
+                // Use the string directly as the pattern.
+                HObject* rx = create_regexp_from_string(ctx.heap, ps.get_data(), 0);
+                if (rx == null) { ctx.result.set_null(); return; }
+                if (!invoke_regexp_match(ctx, rx, s_hstr)) { ctx.result.set_null(); }
                 return;
             }
         }
-        ctx.result.set_null();
+        // For objects whose @@match is null/undefined, convert to string (via toString)
+        // then create a RegExp from that string.
+        HString* pat_str;
+        if (regexp_arg.is_object()) {
+            pat_str = builtin_to_string_vm(ctx, regexp_arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        } else {
+            pat_str = builtin_to_string(ctx.heap, regexp_arg);
+        }
+        if (pat_str == null) { ctx.result.set_null(); return; }
+        HObject* rx = create_regexp_from_string(ctx.heap, pat_str.get_data(), 0);
+        if (rx == null) { ctx.result.set_null(); return; }
+        if (!invoke_regexp_match(ctx, rx, s_hstr)) { ctx.result.set_null(); }
+        return;
+    } else {
+        // arg is missing/null/undefined → RegExpCreate("" or "null") then @@match.
+        if (regexp_arg != null && regexp_arg.is_null()) {
+            char[] s = "null";
+            pat_len = s.len;
+            libc::memcpy(&pat_buf[0], s.ptr, s.len);
+        }
+        HObject* rx = create_regexp_from_string(ctx.heap, pat_buf[:pat_len], 0);
+        if (rx == null) { ctx.result.set_null(); return; }
+        if (!invoke_regexp_match(ctx, rx, s_hstr)) { ctx.result.set_null(); }
         return;
     }
+}
 
-    // If arg is a RegExp object, use it directly
-    if (is_regexp_object(regexp_arg)) {
-        HObject* rx = (HObject*)regexp_arg.get_heapptr();
+/// (Unused internal helper — RegExp@@match dispatch now handles direct exec.)
+fn void builtin_string_proto_match_regexp(BuiltinContext* ctx, HString* s_hstr, HObject* rx) {
+    char* input = s_hstr.get_cstr();
+    int input_len = (int)s_hstr.blen;
 
-        // Get global flag
-        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
+    // Get global flag
+    bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
 
-        if (!global_flag) {
+    if (!global_flag) {
             // Non-global: single exec call
             int out_start = 0;
             int out_end = 0;
@@ -2368,55 +2578,6 @@ fn void builtin_string_proto_match(BuiltinContext* ctx) {
             ctx.result.set_object(arr);
             return;
         }
-    }
-
-    // Non-RegExp arg: convert to string and do literal search
-    HString* search_hstr = builtin_to_string_vm(ctx, regexp_arg);
-    if (search_hstr == null) { ctx.result.set_null(); return; }
-    char* search_data = search_hstr.get_cstr();
-    uint search_len = search_hstr.blen;
-
-    // Find first occurrence via indexOf
-    int found_pos = -1;
-    for (uint i = 0; i + search_len <= (uint)input_len; i++) {
-        bool match = true;
-        for (uint j = 0; j < search_len; j++) {
-            if (input[i + j] != search_data[j]) { match = false; break; }
-        }
-        if (match) { found_pos = (int)i; break; }
-    }
-
-    if (found_pos < 0) {
-        ctx.result.set_null();
-        return;
-    }
-
-    // Create result array with single match
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_null(); return; }
-    HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
-
-    TVal elem;
-    elem.set_string(search_hstr);
-    HString* zero_key = builtin_intern_string(ctx.heap, "0");
-    arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
-
-    // ES5 §15.5.4.10 step 11: result array must have .index and .input
-    TVal idx_tv; idx_tv.set_fastint((long)found_pos);
-    HString* idx_key = builtin_intern_string(ctx.heap, "index");
-    arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
-
-    TVal input_tv; input_tv.set_string(s_hstr);
-    HString* input_key = builtin_intern_string(ctx.heap, "input");
-    arr.put_prop(input_key, input_tv, hobject::PROP_FLAGS_WEC);
-
-    TVal len_tv;
-    len_tv.set_fastint(1);
-    HString* len_key = builtin_intern_string(ctx.heap, "length");
-    arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-
-    ctx.result.set_object(arr);
 }
 
 /// Helper: create a RegExp HObject from a pattern string with JS flags.
@@ -2497,95 +2658,195 @@ fn HObject* create_regexp_string_iterator(Heap* heap, HObject* rx, HString* s_hs
     return iter;
 }
 
-/// String.prototype.matchAll(regexp) — ES2020 §21.1.3.12
-/// Returns a RegExpStringIterator that lazily yields match results.
+/// Helper: invoke @@matchAll on `rx` with string `s_hstr` as argument.
+/// Throws TypeError if @@matchAll is not callable (per spec Invoke semantics).
+/// Returns true if the call was attempted (result set); false on TypeError thrown.
+fn bool invoke_regexp_matchall(BuiltinContext* ctx, HObject* rx, HString* s_hstr) {
+    HString* matchall_sym = ensure_matchall_symbol(ctx.heap);
+    if (matchall_sym == null) return false;
+    // Use get_prop_proto so accessor getters on the prototype chain are NOT invoked
+    // (we need the raw property lookup first; actual invoke via call_fn handles the call).
+    // For @@matchAll on created rx (steps 4-5), use proto-chain lookup.
+    TVal? matcher_opt = rx.get_prop_proto(matchall_sym);
+    if (try matcher = matcher_opt) {
+        if (matcher.is_lightfunc() ||
+            (matcher.is_object() && matcher.get_heapptr() != null &&
+             ((HObject*)matcher.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0].set_string(s_hstr);
+            TVal this_val; this_val.set_object(rx);
+            TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            if (ctx.should_throw) { ctx.result.set_undefined(); return true; }
+            *ctx.result = res;
+            return true;
+        }
+    }
+    // @@matchAll not found or not callable → TypeError (Invoke requires callable).
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+        "RegExp[Symbol.matchAll] is not a function");
+    return false;
+}
+
+/// String.prototype.matchAll(regexp) — ES2021 §22.1.3.14
+///
+/// Step 2: IsRegExp check + Get("flags") + "g" check; then GetMethod(@@matchAll)
+/// delegation for any non-null/undefined argument. Steps 3-5: RegExpCreate with "g"
+/// flag + Invoke(@@matchAll) on the result.
 fn void builtin_string_proto_matchAll(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    if (ctx.argc == 0) {
-        // matchAll() with no args: RegExp(undefined) has no 'g' flag → TypeError
-        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(heap, "String.prototype.matchAll requires a global regular expression");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            TVal err_tv;
-            err_tv.set_object(err);
-            ctx.throw_value = err_tv;
-        }
-        ctx.result.set_undefined();
-        ctx.should_throw = true;
-        return;
-    }
+    TVal* regexp_arg = (ctx.argc > 0) ? &ctx.regs[ctx.base_reg] : null;
+    bool arg_nullish = (regexp_arg == null)
+        || regexp_arg.is_null() || regexp_arg.is_undefined();
 
-    TVal* search_val = &ctx.regs[ctx.base_reg];
+    // Step 2: If regexp is neither undefined nor null …
+    if (!arg_nullish && regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
+        HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
 
-    // If searchValue is a RegExp, check for global flag and create iterator
-    if (is_regexp_object(search_val)) {
-        HObject* rx = (HObject*)search_val.get_heapptr();
-
-        // Read the global flag directly from the internal flags byte.
-        bool global_flag = ((*rx.extra_ptr()).regexp.flags & 1) != 0;
-        if (!global_flag) {
-            HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = heap.type_err_proto;
-                HString* msg_str = builtin_intern_string(heap, "String.prototype.matchAll called with a non-global regular expression");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        // Step 2a: isRegExp = IsRegExp(regexp).
+        // IsRegExp: @@match property is truthy, or object has [[RegExpMatcher]].
+        bool is_regexp_like = false;
+        HString* match_sym = ensure_match_symbol(heap);
+        bool match_sym_seen = false;
+        if (match_sym != null) {
+            TVal? match_tv_opt = builtins_generic_get(arg_obj, match_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try mtv = match_tv_opt) {
+                if (!mtv.is_undefined()) {
+                    match_sym_seen = true;
+                    is_regexp_like = builtin_to_boolean(&mtv);
                 }
-                TVal err_tv;
-                err_tv.set_object(err);
-                ctx.throw_value = err_tv;
             }
-            ctx.result.set_undefined();
-            ctx.should_throw = true;
-            return;
+        }
+        if (!match_sym_seen) {
+            is_regexp_like = is_regexp_object(regexp_arg);
         }
 
-        // Reset lastIndex to 0 (per spec §21.2.7.5.1 step 5)
-        HString* li_key = builtin_intern_string(heap, "lastIndex");
-        TVal zero_tv; zero_tv.set_fastint(0);
-        rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+        // Step 2b: If isRegExp, Get("flags") and verify it contains "g".
+        if (is_regexp_like) {
+            HString* flags_key = builtin_intern_string(heap, "flags");
+            TVal? flags_tv_opt = builtins_generic_get(arg_obj, flags_key, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            HString* flags_hstr = null;
+            if (try fv = flags_tv_opt) {
+                // RequireObjectCoercible(flags): undefined → TypeError.
+                if (fv.is_undefined() || fv.is_null()) {
+                    builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                        "String.prototype.matchAll: flags is null/undefined");
+                    ctx.result.set_undefined();
+                    return;
+                }
+                if (is_symbol_val(fv)) {
+                    arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+                    ctx.result.set_undefined();
+                    return;
+                }
+                TVal* fv_ptr = &fv;
+                flags_hstr = builtin_to_string_vm(ctx, fv_ptr);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            } else {
+                builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                    "String.prototype.matchAll: missing flags property");
+                ctx.result.set_undefined();
+                return;
+            }
+            // Check that flags string contains "g".
+            bool has_g = false;
+            if (flags_hstr != null) {
+                char* fc = flags_hstr.get_cstr();
+                usz flen = flags_hstr.blen;
+                for (usz i = 0; i < flen; i++) {
+                    if (fc[i] == 'g') { has_g = true; break; }
+                }
+            }
+            if (!has_g) {
+                arr_throw_type_error(ctx,
+                    "String.prototype.matchAll called with a non-global regular expression");
+                ctx.result.set_undefined();
+                return;
+            }
+        }
 
-        // Create and return the RegExpStringIterator
-        HObject*? iter = create_regexp_string_iterator(heap, rx, s_hstr, true);
-        if (try it = iter) {
-            ctx.result.set_object(it);
+        // Step 2c: matcher = GetMethod(regexp, @@matchAll).
+        HString* matchall_sym = ensure_matchall_symbol(heap);
+        if (matchall_sym != null) {
+            TVal? matcher_opt = builtins_generic_get(arg_obj, matchall_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try matcher = matcher_opt) {
+                // GetMethod: null or undefined → treat as not found, fall through.
+                if (!matcher.is_undefined() && !matcher.is_null()) {
+                    if (matcher.is_lightfunc() ||
+                        (matcher.is_object() && matcher.get_heapptr() != null &&
+                         ((HObject*)matcher.get_heapptr()).is_callable())) {
+                        TVal[1] args;
+                        args[0].set_string(s_hstr);
+                        TVal this_val = *regexp_arg;
+                        TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                        }
+                        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                        *ctx.result = res;
+                        return;
+                    }
+                    // matcher found but not callable → TypeError.
+                    arr_throw_type_error(ctx, "regexp[Symbol.matchAll] is not a function");
+                    ctx.result.set_undefined();
+                    return;
+                }
+            }
+        }
+    }
+
+    // Steps 3-5: S = ToString(O) [done], rx = RegExpCreate(regexp, "g"),
+    //            Return Invoke(rx, @@matchAll, [S]).
+    // Pattern: null → "null", missing/undefined → "" (empty), string → use directly,
+    //          non-string non-null non-undefined → ToString.
+    char[16] pat_buf;
+    int pat_len = 0;
+    if (!arg_nullish) {
+        if (regexp_arg.is_string()) {
+            HString* ps = (HString*)regexp_arg.get_heapptr();
+            if (ps != null && !ps.is_symbol()) {
+                HObject* rx = create_regexp_from_string(heap, ps.get_data(), 1);
+                if (rx == null) { ctx.result.set_undefined(); return; }
+                invoke_regexp_matchall(ctx, rx, s_hstr);
+                return;
+            }
+        }
+        // Objects whose @@matchAll is null/undefined: stringify the object then RegExpCreate.
+        HString* pat_str;
+        if (regexp_arg.is_object()) {
+            pat_str = builtin_to_string_vm(ctx, regexp_arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         } else {
-            ctx.result.set_undefined();
+            pat_str = builtin_to_string(heap, regexp_arg);
         }
+        if (pat_str == null) { ctx.result.set_undefined(); return; }
+        HObject* rx = create_regexp_from_string(heap, pat_str.get_data(), 1);
+        if (rx == null) { ctx.result.set_undefined(); return; }
+        invoke_regexp_matchall(ctx, rx, s_hstr);
         return;
-    }
-
-    // Non-RegExp arg: convert to string and create a RegExp with "g" flag
-    HString* search_hstr = builtin_to_string(heap, search_val);
-    if (search_hstr == null) { ctx.result.set_null(); return; }
-    char[] pattern = search_hstr.get_data();
-
-    // Create a RegExp from the pattern string with "g" flag (js_flags = 1)
-    HObject* rx = create_regexp_from_string(heap, pattern, 1);
-    if (rx == null) {
-        ctx.result.set_null();
-        return;
-    }
-
-    // Create and return the RegExpStringIterator
-    HObject*? iter = create_regexp_string_iterator(heap, rx, s_hstr, true);
-    if (try it = iter) {
-        ctx.result.set_object(it);
     } else {
-        ctx.result.set_undefined();
+        // arg is null → pattern "null"; arg is missing/undefined → pattern "".
+        if (regexp_arg != null && regexp_arg.is_null()) {
+            char[] s = "null";
+            pat_len = (int)s.len;
+            libc::memcpy(&pat_buf[0], s.ptr, s.len);
+        }
+        HObject* rx = create_regexp_from_string(heap, pat_buf[:pat_len], 1);
+        if (rx == null) { ctx.result.set_undefined(); return; }
+        invoke_regexp_matchall(ctx, rx, s_hstr);
+        return;
     }
 }
 
@@ -2729,35 +2990,69 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     }
 }
 
-/// String.prototype.search(regexp) — ES5 §15.5.4.12
+/// Helper: invoke @@search on `rx` with string `s_hstr` as argument.
+/// Returns false if no callable @@search found on the prototype chain.
+fn bool invoke_regexp_search(BuiltinContext* ctx, HObject* rx, HString* s_hstr) {
+    HString* search_sym = ensure_search_symbol(ctx.heap);
+    if (search_sym == null) return false;
+    TVal? searcher_opt = rx.get_prop_proto(search_sym);
+    if (try searcher = searcher_opt) {
+        if (searcher.is_lightfunc() ||
+            (searcher.is_object() && searcher.get_heapptr() != null &&
+             ((HObject*)searcher.get_heapptr()).is_callable())) {
+            TVal[1] args;
+            args[0].set_string(s_hstr);
+            TVal this_val; this_val.set_object(rx);
+            TVal res = ctx.heap.call_fn(ctx.vm, searcher, &args[0], 1, this_val);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            if (ctx.should_throw) { ctx.result.set_undefined(); return true; }
+            *ctx.result = res;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// String.prototype.search(regexp) — ES2019 §21.1.3.15
+///
+/// Step 2: If regexp is an object, GetMethod(regexp, @@search); if callable,
+/// invoke and return. (null/undefined @@search treated as "not found" per GetMethod.)
+/// Steps 3-4: Create RegExpCreate(regexp, undefined) and Invoke(rx, @@search, [S]).
 fn void builtin_string_proto_search(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
-    char* input = s_hstr.get_cstr();
-    int input_len = (int)s_hstr.blen;
 
-    if (ctx.argc == 0) {
-        ctx.result.set_fastint(-1);
-        return;
-    }
+    TVal* regexp_arg = (ctx.argc > 0) ? &ctx.regs[ctx.base_reg] : null;
+    bool arg_nullish = (regexp_arg == null)
+        || regexp_arg.is_null() || regexp_arg.is_undefined();
 
-    TVal* regexp_arg = &ctx.regs[ctx.base_reg];
-
-    // ── Check for @@search protocol (ES6 §21.1.3.15 step 2) ──────────────
-    if (!regexp_arg.is_null() && !regexp_arg.is_undefined()) {
-        if (regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
-            HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
-            HString* search_sym = ensure_search_symbol(ctx.heap);
-            if (search_sym != null) {
-                if (try searcher = arg_obj.get_prop_proto(search_sym)) {
+    // Step 2: If regexp is neither undefined nor null, check @@search.
+    if (!arg_nullish && regexp_arg.is_object() && regexp_arg.get_heapptr() != null) {
+        HObject* arg_obj = (HObject*)regexp_arg.get_heapptr();
+        HString* search_sym = ensure_search_symbol(ctx.heap);
+        if (search_sym != null) {
+            TVal? searcher_opt = builtins_generic_get(arg_obj, search_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try searcher = searcher_opt) {
+                // GetMethod: null or undefined → treat as not found, fall through.
+                if (!searcher.is_undefined() && !searcher.is_null()) {
                     if (searcher.is_lightfunc() ||
                         (searcher.is_object() && searcher.get_heapptr() != null &&
                          ((HObject*)searcher.get_heapptr()).is_callable())) {
                         TVal[1] args;
                         args[0].set_string(s_hstr);
-                        TVal this_val = ctx.regs[ctx.base_reg];
+                        TVal this_val = *regexp_arg;
                         TVal res = ctx.heap.call_fn(ctx.vm, searcher, &args[0], 1, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                        }
+                        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                         *ctx.result = res;
                         return;
                     }
@@ -2766,45 +3061,45 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
         }
     }
 
-    // If arg is a RegExp object, use it directly
-    if (is_regexp_object(regexp_arg)) {
-        HObject* rx = (HObject*)regexp_arg.get_heapptr();
-
-        int out_start = 0;
-        int out_end = 0;
-        int out_num_captures = 0;
-        int[re_bindings::RE_MAX_CAPTURES] caps_start;
-        int[re_bindings::RE_MAX_CAPTURES] caps_end;
-        libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-
-        int result = re_bindings::re_exec(
-            (*rx.extra_ptr()).regexp.regexp_data, input, input_len, 0,
-            &out_start, &out_end, &out_num_captures,
-            &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
-        );
-
-        ctx.result.set_fastint((result == re_bindings::RE_MATCH) ? (long)out_start : -1);
+    // Steps 3-4: RegExpCreate(regexp, undefined) then Invoke(rx, @@search, [S]).
+    // For missing/null/undefined arg use empty pattern string (undefined) or "null".
+    char[16] pat_buf;
+    int pat_len = 0;
+    if (!arg_nullish) {
+        if (regexp_arg.is_string()) {
+            HString* ps = (HString*)regexp_arg.get_heapptr();
+            if (ps != null && !ps.is_symbol()) {
+                HObject* rx = create_regexp_from_string(ctx.heap, ps.get_data(), 0);
+                if (rx == null) { ctx.result.set_fastint(-1); return; }
+                if (!invoke_regexp_search(ctx, rx, s_hstr)) { ctx.result.set_fastint(-1); }
+                return;
+            }
+        }
+        // For objects whose @@search is null/undefined, stringify and create RegExp.
+        HString* pat_str;
+        if (regexp_arg.is_object()) {
+            pat_str = builtin_to_string_vm(ctx, regexp_arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        } else {
+            pat_str = builtin_to_string(ctx.heap, regexp_arg);
+        }
+        if (pat_str == null) { ctx.result.set_fastint(-1); return; }
+        HObject* rx = create_regexp_from_string(ctx.heap, pat_str.get_data(), 0);
+        if (rx == null) { ctx.result.set_fastint(-1); return; }
+        if (!invoke_regexp_search(ctx, rx, s_hstr)) { ctx.result.set_fastint(-1); }
+        return;
+    } else {
+        // arg is missing/null/undefined → pattern "" or "null"
+        if (regexp_arg != null && regexp_arg.is_null()) {
+            char[] s = "null";
+            pat_len = s.len;
+            libc::memcpy(&pat_buf[0], s.ptr, s.len);
+        }
+        HObject* rx = create_regexp_from_string(ctx.heap, pat_buf[:pat_len], 0);
+        if (rx == null) { ctx.result.set_fastint(-1); return; }
+        if (!invoke_regexp_search(ctx, rx, s_hstr)) { ctx.result.set_fastint(-1); }
         return;
     }
-
-    // Non-RegExp arg: convert to string and do literal search
-    HString* search_hstr = builtin_to_string(ctx.heap, regexp_arg);
-    if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
-    char* search_data = search_hstr.get_cstr();
-    uint search_len = search_hstr.blen;
-
-    for (uint i = 0; i + search_len <= (uint)input_len; i++) {
-        bool match = true;
-        for (uint j = 0; j < search_len; j++) {
-            if (input[i + j] != search_data[j]) { match = false; break; }
-        }
-        if (match) {
-            ctx.result.set_fastint((long)i);
-            return;
-        }
-    }
-    ctx.result.set_fastint(-1);
 }
 fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Create String.prototype
@@ -2915,6 +3210,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Add String.fromCharCode (ES5 §15.5.3.2)
     if (!register_string_proto_method(str_obj, heap, "fromCharCode", BUILTIN_STRING_FROMCHARCODE)) return false;
     if (!register_string_proto_method(str_obj, heap, "fromCodePoint", BUILTIN_STRING_FROMCODEPOINT)) return false;
+    if (!register_string_proto_method(str_obj, heap, "raw", BUILTIN_STRING_RAW)) return false;
 
     // Register String constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("String");
