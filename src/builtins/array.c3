@@ -136,7 +136,7 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     }
 
     long end_i = (long)len;
-    if (ctx.argc > 2) {
+    if (ctx.argc > 2 && !ctx.regs[ctx.base_reg + 2].is_undefined()) {
         double ed = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 2]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         end_i = (long)ed;
@@ -148,21 +148,43 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     if (count > (long)len - downstream_i) count = (long)len - downstream_i;
     if (count <= 0) { ctx.result.set_object(obj); return; }
 
-    // Forward copy is safe when downstream < start; otherwise copy backwards
+    // Forward copy is safe when downstream < start; otherwise copy backwards.
+    // Spec §23.1.3.3 step 17: for each index k in the range, if HasProperty(from)
+    // set the destination; else delete it (holes must propagate).
     if (downstream_i < start_i) {
         for (long i = 0; i < count; i++) {
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal elem;
-            if (arr_get_elem_vm(obj, (ulong)(start_i + i), ctx.heap, ctx, &elem)) {
+            ulong from_idx = (ulong)(start_i + i);
+            ulong to_idx   = (ulong)(downstream_i + i);
+            if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                array_set_elem_ulong(obj, (ulong)(downstream_i + i), elem, ctx.heap);
+                array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
+            } else if (!ctx.should_throw) {
+                // Source is a hole — delete the destination element.
+                if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
+                    ctx.result.set_undefined(); return;
+                }
+            } else {
+                ctx.result.set_undefined(); return;
             }
         }
     } else {
         for (long i = count - 1; i >= 0; i--) {
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal elem;
-            if (arr_get_elem_vm(obj, (ulong)(start_i + i), ctx.heap, ctx, &elem)) {
+            ulong from_idx = (ulong)(start_i + i);
+            ulong to_idx   = (ulong)(downstream_i + i);
+            if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                array_set_elem_ulong(obj, (ulong)(downstream_i + i), elem, ctx.heap);
+                array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
+            } else if (!ctx.should_throw) {
+                // Source is a hole — delete the destination element.
+                if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
+                    ctx.result.set_undefined(); return;
+                }
+            } else {
+                ctx.result.set_undefined(); return;
             }
         }
     }
@@ -321,20 +343,27 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    // mapFn is required and must be callable (ES2019 §22.1.3.11 step 2-3)
-    if (ctx.argc < 1 || !arr_check_callback(ctx.regs[ctx.base_reg], ctx)) {
+    // mapFn is required and must be callable (ES2019 §22.1.3.11 step 3).
+    // When absent or non-callable, throw TypeError.
+    TVal flatmap_callback;
+    if (ctx.argc >= 1) {
+        flatmap_callback = ctx.regs[ctx.base_reg];
+    } else {
+        flatmap_callback.set_undefined();
+    }
+    if (!arr_check_callback(flatmap_callback, ctx)) {
         return;
     }
 
     // flatMap(mapFn, thisArg): map each element then flatten depth 1
-    TVal callback = ctx.regs[ctx.base_reg];
+    TVal callback = flatmap_callback;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
 
-    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = new_arr) { ctx.result.set_undefined(); return; }
-    HObject* result = new_arr;
-    result.prototype = ctx.heap.array_proto;
+    // ES2019 §22.1.3.11 step 5: ArraySpeciesCreate(O, 0).
+    HObject* result = array_species_create_result(ctx, obj, 0);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    if (result == null) { ctx.result.set_undefined(); return; }
 
     ulong n = 0;
     for (ulong k = 0; k < len; k++) {
@@ -355,13 +384,17 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
                 if (arr_has_prop(mapped_arr, j, ctx.heap)) {
                     TVal elem;
                     if (arr_get_elem_vm(mapped_arr, j, ctx.heap, ctx, &elem)) {
-                        array_set_elem_ulong(result, n, elem, ctx.heap);
+                        if (!array_set_elem_ulong_checked(ctx, result, n, elem)) {
+                            ctx.result.set_undefined(); return;
+                        }
                         n++;
                     }
                 }
             }
         } else {
-            array_set_elem_ulong(result, n, mapped, ctx.heap);
+            if (!array_set_elem_ulong_checked(ctx, result, n, mapped)) {
+                ctx.result.set_undefined(); return;
+            }
             n++;
         }
     }
@@ -705,6 +738,8 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
             // Delete named numeric properties that fall in the dropped range.
             // Walk backwards through the property table; delete_prop compacts the
             // table (shifting higher entries down), so scanning backward is safe.
+            // Per ES5 §15.4.5.1 step 3.l: if a non-configurable element is found,
+            // stop deletion and set the length to one above it (sloppy mode).
             ushort pc = obj.prop_count;
             if (pc > 0) {
                 ushort pi = pc;
@@ -716,6 +751,12 @@ fn void array_set_length(HObject* obj, uint len_val, Heap* heap) {
                         if (pks.is_arridx()) {
                             uint ai = pks.array_index();
                             if (ai >= len_val) {
+                                PropFlags pf = obj.get_prop_flags((uint)pi);
+                                if (!pf.configurable) {
+                                    // Cannot delete — adjust target length to ai+1.
+                                    len_val = ai + 1;
+                                    continue;
+                                }
                                 obj.delete_prop(pk);
                             }
                         }
@@ -1020,12 +1061,14 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
-    // Get separator (default ",")
+    // Get separator — §23.1.3.16 step 3: if undefined (or absent), use ",".
     HString* sep_str = null;
     char[] sep = ",";
-    if (ctx.argc > 0) {
+    if (ctx.argc > 0 && !ctx.regs[ctx.base_reg].is_undefined()) {
         TVal sep_val = ctx.regs[ctx.base_reg];
-        sep_str = builtin_to_string(ctx.heap, &sep_val);
+        // Use full ToString/ToPrimitive so custom valueOf/toString on objects wins.
+        sep_str = builtin_to_string_vm(ctx, &sep_val);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (sep_str != null) {
             ((types::HeapHeader*)sep_str).incref();
             sep = sep_str.get_data();
@@ -1078,7 +1121,14 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
         if (!present || elem.is_undefined() || elem.is_null()) {
             elem_str = (HString*)ctx.heap.strs[heap::BuiltinStr.EMPTY];
         } else {
-            elem_str = builtin_to_string(ctx.heap, &elem);
+            // Use full ToPrimitive so objects with custom valueOf/toString convert correctly.
+            elem_str = builtin_to_string_vm(ctx, &elem);
+            if (ctx.should_throw) {
+                if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
+                for (uint j = 0; j < i; j++) ctx.heap.decref((types::HeapHeader*)elem_strs[j]);
+                if (elem_strs_heap != null) ctx.heap.free_func(ctx.heap.heap_udata, elem_strs_heap);
+                ctx.result.set_undefined(); return;
+            }
             if (elem_str == null) {
                 elem_str = (HString*)ctx.heap.strs[heap::BuiltinStr.EMPTY];
             }
@@ -1092,6 +1142,20 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
     }
 
     // PASS 2: Allocate a single buffer and copy all pieces using memcpy.
+    // When total_len is 0 (all elements are empty strings and separator is ""),
+    // skip the alloc and return "" directly to avoid a null-from-alloc(0) path.
+    if (total_len == 0) {
+        if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
+        for (uint i = 0; i < len; i++) {
+            ctx.heap.decref((types::HeapHeader*)elem_strs[i]);
+        }
+        if (elem_strs_heap != null) ctx.heap.free_func(ctx.heap.heap_udata, elem_strs_heap);
+        HString* empty = (HString*)ctx.heap.strs[heap::BuiltinStr.EMPTY];
+        if (empty == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_string(empty);
+        return;
+    }
+
     char* result_buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total_len);
     if (result_buf == null) {
         if (sep_str != null) ctx.heap.decref((types::HeapHeader*)sep_str);
@@ -1709,7 +1773,10 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
                 return;
             }
         }
-        array_set_length_ulong(obj, new_len, ctx.heap);
+        HString* splice_len_key1 = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        if (!arr_set_length_or_throw(ctx, obj, splice_len_key1, new_len)) {
+            ctx.result.set_undefined(); return;
+        }
     } else if (item_count > actual_delete_count) {
         ulong shift_len = len - actual_start - actual_delete_count;
         for (ulong k = shift_len; k > 0; k--) {
@@ -1727,14 +1794,20 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
                 }
             }
         }
-        array_set_length_ulong(obj, len - actual_delete_count + item_count, ctx.heap);
-    } else if (ctx.argc == 0) {
-        // ES2022 §23.1.3.28 step 19: when nothing was inserted and nothing
-        // was deleted, Set(O, "length", len, true) is still required so that
-        // out-of-range lengths get clamped. Read `len` again to capture the
-        // ToLength-clamped value, since the original `length` property may
-        // have been out of range.
-        array_set_length_ulong(obj, len, ctx.heap);
+        HString* splice_len_key2 = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        ulong new_len2 = len - actual_delete_count + (ulong)item_count;
+        if (!arr_set_length_or_throw(ctx, obj, splice_len_key2, new_len2)) {
+            ctx.result.set_undefined(); return;
+        }
+    } else {
+        // item_count == actual_delete_count: no shift needed, but must still
+        // write length back (spec step 24: Set(O, "length", len-adc+ic, true))
+        // so out-of-range lengths get clamped and accessor setters are invoked.
+        ulong new_len3 = len - actual_delete_count + (ulong)item_count;
+        HString* splice_len_key3 = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+        if (!arr_set_length_or_throw(ctx, obj, splice_len_key3, new_len3)) {
+            ctx.result.set_undefined(); return;
+        }
     }
 
     // Insert new items
@@ -2096,27 +2169,40 @@ fn void builtin_array_proto_unshift(BuiltinContext* ctx) {
             return;
         }
 
-        // Shift existing elements right by arg_count
+        // Shift existing elements right by arg_count using full [[Set]] semantics
+        // (invokes prototype chain setters, checks writable, handles holes).
         for (ulong k = len; k > 0; k--) {
             ulong from = k - 1;
             ulong to = k - 1 + arg_count;
             TVal elem;
-            if (!arr_get_elem_vm(obj, from, ctx.heap, ctx, &elem)) {
+            if (arr_get_elem_vm(obj, from, ctx.heap, ctx, &elem)) {
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                elem.set_undefined();
+                if (!array_set_elem_ulong_set(ctx, obj, to, elem)) {
+                    ctx.result.set_undefined(); return;
+                }
+            } else {
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                // Source is a hole — delete the destination element.
+                if (!array_delete_elem_ulong_checked(ctx, obj, to)) {
+                    ctx.result.set_undefined(); return;
+                }
             }
-            array_set_elem_ulong(obj, to, elem, ctx.heap);
         }
 
-        // Insert new items at the beginning
+        // Insert new items at the beginning using full [[Set]] semantics.
         for (ushort i = 0; i < arg_count; i++) {
             TVal arg = ctx.regs[ctx.base_reg + i];
-            array_set_elem_ulong(obj, (ulong)i, arg, ctx.heap);
+            if (!array_set_elem_ulong_set(ctx, obj, (ulong)i, arg)) {
+                ctx.result.set_undefined(); return;
+            }
         }
     }
 
     ulong new_len = len + (ulong)arg_count;
-    array_set_length_ulong(obj, new_len, ctx.heap);
+    HString* unshift_len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+    if (!arr_set_length_or_throw(ctx, obj, unshift_len_key, new_len)) {
+        ctx.result.set_undefined(); return;
+    }
 
     ctx.result.set_fastint((long)new_len);
 }
@@ -2427,12 +2513,37 @@ fn bool arr_set_length_or_throw(BuiltinContext* ctx, HObject* obj, HString* len_
         len_tv.set_number((double)len_val);
     }
 
-    // Own property "length" that is a data property: fall back to the plain
-    // array-friendly path so ARRAY-class result objects keep their fast
-    // dense-array/length-cache sync behavior in put_prop.
+    // Own property "length" check.
     int own_idx = obj.find_prop_idx(len_key);
-    if (own_idx >= 0 && !obj.get_prop_flags((uint)own_idx).is_accessor) {
-        if (!obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC)) {
+    if (own_idx >= 0) {
+        hobject::PropFlags cur_flags = obj.get_prop_flags((uint)own_idx);
+        if (cur_flags.is_accessor) {
+            // Own accessor: invoke the setter, or throw if getter-only.
+            TVal gs_slot = obj.prop_values()[own_idx];
+            TVal setter_fn = hobject::hobject_access_setter(gs_slot);
+            if (setter_fn.is_undefined() || setter_fn.is_null()) {
+                arr_throw_type_error(ctx, "Cannot set property length, has only a getter");
+                return false;
+            }
+            if (ctx.heap.call_fn == null || ctx.vm == null) return true;
+            TVal this_tv; this_tv.set_object(obj);
+            TVal[1] args = { len_tv };
+            ctx.heap.call_fn(ctx.vm, setter_fn, &args[0], 1, this_tv);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return false;
+            }
+            return true;
+        }
+        // Own data property: reject if non-writable (Set with Throw=true).
+        if (!cur_flags.writable) {
+            arr_throw_type_error(ctx, "Cannot assign to read-only property 'length'");
+            return false;
+        }
+        // Update value, preserving existing flags.
+        if (!obj.put_prop(len_key, len_tv, cur_flags)) {
             arr_throw_type_error(ctx, "Cannot set property length, no space left");
             return false;
         }
@@ -2461,8 +2572,8 @@ fn bool arr_set_length_or_throw(BuiltinContext* ctx, HObject* obj, HString* len_
         return true;
     }
 
-    // No accessor anywhere on the chain (own or inherited data property, or
-    // nothing at all) — define/overwrite as an own data property on obj.
+    // No accessor anywhere on the chain (no own property or inherited data
+    // property) — define as a new own data property on obj.
     if (!obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC)) {
         arr_throw_type_error(ctx, "Cannot set property length, no space left");
         return false;
@@ -3159,25 +3270,37 @@ fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, 
 
 /// Check whether an indexed write would succeed on obj. Returns true if the
 /// write is allowed, otherwise sets ctx.should_throw and returns false.
-/// Handles extensibility and non-writable data properties for array indices.
+/// Implements [[Set]](idx, val, Receiver=obj, Throw=true) for numeric indices.
 fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
-    if (idx <= 0xFFFFFFFFUL
-        && (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-        // Check own named property first (overrides dense array value).
+    // Check own named property for all object types.
+    if (idx <= 0xFFFFFFFFUL) {
         HString* key = ctx.heap.int_to_hstring((long)idx);
         if (key != null) {
             int own_idx = obj.find_prop_idx(key);
             if (own_idx >= 0) {
                 PropFlags pf = obj.get_prop_flags((uint)own_idx);
-                if (!pf.is_accessor && !pf.writable) {
+                if (pf.is_accessor) {
+                    // Accessor: reject if no setter.
+                    TVal gs_slot = obj.prop_values()[own_idx];
+                    TVal setter_fn = hobject::hobject_access_setter(gs_slot);
+                    if (setter_fn.is_undefined() || setter_fn.is_null()) {
+                        arr_throw_type_error(ctx, "Cannot set property, has only a getter");
+                        return false;
+                    }
+                    // Has a setter — allow (caller will invoke it via array_set_elem_ulong).
+                    return true;
+                }
+                if (!pf.writable) {
                     arr_throw_type_error(ctx, "Cannot assign to read-only property");
                     return false;
                 }
                 return true;
             }
         }
-        // Existing dense element is always writable.
-        if (try v = obj.get_array_idx((uint)idx)) { return true; }
+        if (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
+            // Existing dense element is always writable.
+            if (try v = obj.get_array_idx((uint)idx)) { return true; }
+        }
     }
     // New property: object must be extensible.
     if (!obj.is_extensible()) {
@@ -3254,7 +3377,9 @@ fn bool array_set_elem_ulong_set(BuiltinContext* ctx, HObject* obj, ulong idx, T
         if (f.is_accessor) {
             TVal setter = hobject::hobject_access_setter(obj.prop_values()[(uint)own_idx]);
             if (setter.is_undefined() || setter.is_null()) {
-                return true;
+                // Own getter-only accessor — [[Set]] returns false → TypeError.
+                arr_throw_type_error(ctx, "Cannot set property, has only a getter");
+                return false;
             }
             if (ctx.heap.call_fn != null && ctx.vm != null) {
                 TVal this_tv;
@@ -3287,7 +3412,9 @@ fn bool array_set_elem_ulong_set(BuiltinContext* ctx, HObject* obj, ulong idx, T
     if (acc.found) {
         TVal setter = acc.accessor_fn;
         if (setter.is_undefined() || setter.is_null()) {
-            return true;
+            // Inherited getter-only accessor — [[Set]] returns false → TypeError.
+            arr_throw_type_error(ctx, "Cannot set property, has only a getter");
+            return false;
         }
         if (ctx.heap.call_fn != null && ctx.vm != null) {
             TVal this_tv;
@@ -4050,8 +4177,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_array_proto_method(proto, heap, "findLast",      BUILTIN_ARRAY_PROTO_FINDLAST))      return false;
     if (!register_array_proto_method(proto, heap, "findLastIndex", BUILTIN_ARRAY_PROTO_FINDLASTINDEX)) return false;
     if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
-    if (!register_compiled_proto_method(proto, heap, global_env, "flatMap",
-        "(callback,thisArg){if(this==null)throw new TypeError('flatMap called on null or undefined');var O=Object(this);var len=O.length>>>0;if(len>>>0!==len)len=0;var A=[];var k=0;while(k<len){if(k in O){var mapped=callback.call(thisArg,O[k],k,O);if(Array.isArray(mapped)){var j=0;var mLen=mapped.length>>>0;if(mLen>>>0!==mLen)mLen=0;while(j<mLen){if(j in mapped)A.push(mapped[j]);j++}}else{A.push(mapped)}}k++}return A}", 1)) return false;
+    if (!register_array_proto_method(proto, heap, "flatMap",    BUILTIN_ARRAY_PROTO_FLATMAP))   return false;
     if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
     if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
     if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;

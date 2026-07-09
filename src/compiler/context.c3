@@ -161,6 +161,12 @@ struct ArrayBind {
     uint   obj_key_idx;      // constant index of object property key (used when is_obj_nested)
     bool   has_obj_default;  // true if the whole nested object has a default ([{x} = def])
     ushort obj_default_val_reg; // register holding the whole nested object's default value
+    // Member-expression assignment targets in bare for-of/in destructuring:
+    // when true, `reg` is a temp holding the extracted value; PUTPROP is
+    // emitted using member_obj_reg/member_prop_reg instead of emit_var_store.
+    bool   is_member_target;
+    ushort member_obj_reg;
+    ushort member_prop_reg;
 }
 
 /// Tracks a binding in an object destructuring pattern.

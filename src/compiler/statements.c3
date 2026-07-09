@@ -884,6 +884,78 @@ fn void? CompilerContext.for_statement(&self) {
         self.pushback(id_tok);
     }
 
+    // Check for parenthesized identifier LHS: for ((x) of expr) / for ((x) in expr).
+    // Per ES2015 §13.7.5 a parenthesized LeftHandSideExpression is a valid for-of/in
+    // head when the inner expression is an assignment target. The simplest common case
+    // is a parenthesized identifier — detect it via a three-token lookahead:
+    // '(' IDENTIFIER ')' followed by 'of' or 'in'.
+    if (next_tt == TokenType.LPAREN) {
+        uint saved_pos  = self.lexer.pos;
+        uint saved_line = self.lexer.line;
+        uint saved_col  = self.lexer.col;
+        Token saved_cur  = self.lexer.current;
+        Token saved_look = self.lexer.lookahead;
+        bool  saved_hlk  = self.lexer.has_lookahead;
+        Token saved_push = self.lexer.pushed_back;
+        bool  saved_hpb  = self.lexer.has_pushed_back;
+        bool  saved_slt  = self.lexer.seen_line_term;
+        uint  saved_pbc  = self.pushback_count;
+        Token[4] saved_pbs = self.pushback_stack;
+
+        self.advance()!; // consume '('
+        bool paren_is_forof = false;
+        bool paren_is_forin = false;
+        char[] paren_id_name;
+
+        if (self.peek_type() == TokenType.IDENTIFIER) {
+            Token inner_tok = self.advance()!;
+            if (self.match(TokenType.RPAREN)) {
+                if (try pt = self.lexer.peek()) {
+                    if (pt.type == TokenType.IDENTIFIER && str_eq(pt.str_value, "of")) {
+                        paren_is_forof = true;
+                        paren_id_name = inner_tok.str_value;
+                    } else if (pt.type == TokenType.IN) {
+                        paren_is_forin = true;
+                        paren_id_name = inner_tok.str_value;
+                    }
+                }
+            }
+        }
+
+        self.lexer.pos             = saved_pos;
+        self.lexer.line            = saved_line;
+        self.lexer.col             = saved_col;
+        self.lexer.current         = saved_cur;
+        self.lexer.lookahead       = saved_look;
+        self.lexer.has_lookahead   = saved_hlk;
+        self.lexer.pushed_back     = saved_push;
+        self.lexer.has_pushed_back = saved_hpb;
+        self.lexer.seen_line_term  = saved_slt;
+        self.pushback_count        = saved_pbc;
+        self.pushback_stack        = saved_pbs;
+
+        if (paren_is_forof) {
+            self.advance()!; // consume '('
+            self.advance()!; // consume identifier
+            self.advance()!; // consume ')'
+            self.advance()!; // consume 'of'
+            ushort iter_reg = self.assignment_expr()!;
+            self.expect(TokenType.RPAREN)!;
+            self.emit_forof_loop(paren_id_name, iter_reg, saved_scope, saved_reg, false, false, true)!;
+            return;
+        }
+        if (paren_is_forin) {
+            self.advance()!; // consume '('
+            self.advance()!; // consume identifier
+            self.advance()!; // consume ')'
+            self.advance()!; // consume 'in'
+            ushort obj_reg = self.assignment_expr()!;
+            self.expect(TokenType.RPAREN)!;
+            self.emit_bare_forin_loop(paren_id_name, obj_reg, saved_scope, saved_reg)!;
+            return;
+        }
+    }
+
     // Check for bare for-of/for-in with a member-expression LHS:
     // for (obj.prop of expr) / for (obj[key] in expr). Per ES2015
     // §13.7.5.1 the head's AssignmentExpression may be any valid
@@ -1517,6 +1589,34 @@ fn void? CompilerContext.for_statement(&self) {
                     if (!self.check(TokenType.RBRACE)) {
                         for (;;) {
                             if (self.check(TokenType.RBRACE)) break;
+
+                            // Computed property key: { [expr]: binding }
+                            if (self.check(TokenType.LBRACKET)) {
+                                self.advance()!; // consume '['
+                                ushort ck_reg = self.assignment_expr()!;
+                                self.expect(TokenType.RBRACKET)!;
+                                self.expect(TokenType.COLON)!;
+                                Token ck_bind = self.expect(TokenType.IDENTIFIER)!;
+                                if (is_restricted_name(ck_bind.str_value)) return COMPILE_ERROR~;
+                                if (bind_count < 32) {
+                                    ushort reg = self.declare_var(ck_bind.str_value, decl_kind);
+                                    obj_binds[bind_count].reg = reg;
+                                    obj_binds[bind_count].name_idx = self.add_string_constant(ck_bind.str_value);
+                                    obj_binds[bind_count].is_computed_key = true;
+                                    obj_binds[bind_count].key_reg = ck_reg;
+                                    obj_binds[bind_count].has_default = false;
+                                    if (self.match(TokenType.ASSIGN)) {
+                                        obj_binds[bind_count].has_default = true;
+                                        obj_binds[bind_count].default_val_reg =
+                                            self.destructuring_default_expr(ck_bind.str_value)!;
+                                    }
+                                    bind_count++;
+                                }
+                                if (!self.match(TokenType.COMMA)) break;
+                                if (self.check(TokenType.RBRACE)) break;
+                                continue;
+                            }
+
                             Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
                             if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
 
@@ -2428,11 +2528,16 @@ fn void? CompilerContext.for_statement(&self) {
                             self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, is_lexical, is_const);
                             obi++;
                         } else {
-                            // ── Simple: {prop: x} (single GETPROP) ──
-                            ushort key_reg = self.alloc_reg();
-                            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, obj_binds[obi].key_idx));
+                            // ── Simple: {prop: x} or {[expr]: x} (single GETPROP) ──
+                            ushort key_reg;
+                            if (obj_binds[obi].is_computed_key) {
+                                key_reg = obj_binds[obi].key_reg;
+                            } else {
+                                key_reg = self.alloc_reg();
+                                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, obj_binds[obi].key_idx));
+                            }
                             self.emit_abc(Opcode.GETPROP, (uint)obj_binds[obi].reg, (uint)val_reg, (uint)key_reg);
-                            self.free_reg(key_reg);
+                            if (!obj_binds[obi].is_computed_key) self.free_reg(key_reg);
 
                             if (obj_binds[obi].has_default) {
                                 ushort undef_reg = self.alloc_reg();
@@ -2544,6 +2649,35 @@ fn void? CompilerContext.for_statement(&self) {
                     self.advance()!; // consume '{'
                     if (!self.check(TokenType.RBRACE)) {
                         for (;;) {
+                            if (self.check(TokenType.RBRACE)) break;
+
+                            // Computed property key: { [expr]: binding }
+                            if (self.check(TokenType.LBRACKET)) {
+                                self.advance()!; // consume '['
+                                ushort ck_reg = self.assignment_expr()!;
+                                self.expect(TokenType.RBRACKET)!;
+                                self.expect(TokenType.COLON)!;
+                                Token ck_bind = self.expect(TokenType.IDENTIFIER)!;
+                                if (is_restricted_name(ck_bind.str_value)) return COMPILE_ERROR~;
+                                if (fbind_count < 32) {
+                                    ushort reg = self.declare_var(ck_bind.str_value, decl_kind);
+                                    fobj_binds[fbind_count].reg = reg;
+                                    fobj_binds[fbind_count].name_idx = self.add_string_constant(ck_bind.str_value);
+                                    fobj_binds[fbind_count].is_computed_key = true;
+                                    fobj_binds[fbind_count].key_reg = ck_reg;
+                                    fobj_binds[fbind_count].has_default = false;
+                                    if (self.match(TokenType.ASSIGN)) {
+                                        fobj_binds[fbind_count].has_default = true;
+                                        fobj_binds[fbind_count].default_val_reg =
+                                            self.destructuring_default_expr(ck_bind.str_value)!;
+                                    }
+                                    fbind_count++;
+                                }
+                                if (!self.match(TokenType.COMMA)) break;
+                                if (self.check(TokenType.RBRACE)) break;
+                                continue;
+                            }
+
                             Token prop_tok = self.expect(TokenType.IDENTIFIER)!;
                             if (is_restricted_name(prop_tok.str_value)) return COMPILE_ERROR~;
 
@@ -2657,10 +2791,15 @@ fn void? CompilerContext.for_statement(&self) {
                     }
                 } else {
                     for (uint bi = 0; bi < fbind_count; bi++) {
-                        ushort key2_reg = self.alloc_reg();
-                        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key2_reg, fobj_binds[bi].key_idx));
+                        ushort key2_reg;
+                        if (fobj_binds[bi].is_computed_key) {
+                            key2_reg = fobj_binds[bi].key_reg;
+                        } else {
+                            key2_reg = self.alloc_reg();
+                            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key2_reg, fobj_binds[bi].key_idx));
+                        }
                         self.emit_abc(Opcode.GETPROP, (uint)fobj_binds[bi].reg, (uint)key_reg, (uint)key2_reg);
-                        self.free_reg(key2_reg);
+                        if (!fobj_binds[bi].is_computed_key) self.free_reg(key2_reg);
 
                         if (fobj_binds[bi].has_default) {
                             ushort undef_reg = self.alloc_reg();
@@ -3718,22 +3857,40 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                 if (!self.match(TokenType.COMMA)) break;
                 continue;
             } else {
-                // ── Simple identifier binding ──
-                Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
+                // ── Simple assignment-target element: identifier or member expr ──
+                // Bare for-of/in LHS elements are assignment targets, so member
+                // expressions (obj.x, obj[k]) are valid per ES2015 §13.7.5.
+                ushort tgt_obj  = 0xFFFF;
+                ushort tgt_key  = 0xFFFF;
+                uint   tgt_name = 0;
+                bool tgt_is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
                 if (bind_count < 32) {
-                    ushort reg = self.declare_var(name_tok.str_value, VAR);
-                    arr_binds[bind_count].reg = reg;
-                    arr_binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                    arr_binds[bind_count].is_rest = false;
-                    arr_binds[bind_count].is_hole = false;
-                    arr_binds[bind_count].has_default = false;
+                    if (tgt_is_member) {
+                        ushort tmp_reg = self.alloc_reg();
+                        arr_binds[bind_count].reg = tmp_reg;
+                        arr_binds[bind_count].name_idx = 0;
+                        arr_binds[bind_count].is_member_target = true;
+                        arr_binds[bind_count].member_obj_reg   = tgt_obj;
+                        arr_binds[bind_count].member_prop_reg  = tgt_key;
+                        arr_binds[bind_count].is_rest = false;
+                        arr_binds[bind_count].is_hole = false;
+                        arr_binds[bind_count].has_default = false;
+                    } else {
+                        HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                        ushort reg = self.declare_var(hs.get_data(), VAR);
+                        arr_binds[bind_count].reg = reg;
+                        arr_binds[bind_count].name_idx = tgt_name;
+                        arr_binds[bind_count].is_member_target = false;
+                        arr_binds[bind_count].is_rest = false;
+                        arr_binds[bind_count].is_hole = false;
+                        arr_binds[bind_count].has_default = false;
 
-                    if (self.match(TokenType.ASSIGN)) {
-                        arr_binds[bind_count].has_default = true;
-                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
+                        if (self.match(TokenType.ASSIGN)) {
+                            arr_binds[bind_count].has_default = true;
+                            arr_binds[bind_count].default_val_reg =
+                                self.destructuring_default_expr(hs.get_data())!;
+                        }
                     }
-
                     bind_count++;
                 }
 
@@ -3889,20 +4046,28 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                             }
                         }
                     } else {
-                        Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        // Value is an assignment target: identifier or member expr.
+                        ushort tgt_obj  = 0xFFFF;
+                        ushort tgt_key  = 0xFFFF;
+                        uint   tgt_name = 0;
+                        bool tgt_is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
                         if (bind_count < 32) {
-                            ushort reg = self.declare_var(bind_tok.str_value, VAR);
-                            obj_binds[bind_count].reg = reg;
-                            obj_binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
                             obj_binds[bind_count].key_idx = prop_key_idx;
                             obj_binds[bind_count].has_default = false;
-
-                            if (self.match(TokenType.ASSIGN)) {
-                                obj_binds[bind_count].has_default = true;
-                                obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                            if (tgt_is_member) {
+                                ushort tmp_reg = self.alloc_reg();
+                                obj_binds[bind_count].reg = tmp_reg;
+                                obj_binds[bind_count].name_idx = 0;
+                                obj_binds[bind_count].is_member_target = true;
+                                obj_binds[bind_count].member_obj_reg   = tgt_obj;
+                                obj_binds[bind_count].member_prop_reg  = tgt_key;
+                            } else {
+                                HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                                ushort reg = self.declare_var(hs.get_data(), VAR);
+                                obj_binds[bind_count].reg = reg;
+                                obj_binds[bind_count].name_idx = tgt_name;
+                                obj_binds[bind_count].is_member_target = false;
                             }
-
                             bind_count++;
                         }
                     }
@@ -4471,7 +4636,17 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(arr_binds[bi].default_val_reg);
                 }
 
-                self.emit_var_store(arr_binds[bi].reg, arr_binds[bi].name_idx, false, false);
+                if (arr_binds[bi].is_member_target) {
+                    self.emit_abc(Opcode.PUTPROP,
+                        (uint)arr_binds[bi].member_obj_reg,
+                        (uint)arr_binds[bi].member_prop_reg,
+                        (uint)arr_binds[bi].reg);
+                    self.free_reg(arr_binds[bi].member_prop_reg);
+                    self.free_reg(arr_binds[bi].member_obj_reg);
+                    self.free_reg(arr_binds[bi].reg);
+                } else {
+                    self.emit_var_store(arr_binds[bi].reg, arr_binds[bi].name_idx, false, false);
+                }
                 bi++;
             }
         }
@@ -4655,7 +4830,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                 self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, false, false);
                 obi++;
             } else {
-                // Simple GETPROP
+                // Simple GETPROP from the yielded value
                 ushort key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, obj_binds[obi].key_idx));
                 self.emit_abc(Opcode.GETPROP, (uint)obj_binds[obi].reg, (uint)val_reg, (uint)key_reg);
@@ -4674,7 +4849,17 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(obj_binds[obi].default_val_reg);
                 }
 
-                self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, false, false);
+                if (obj_binds[obi].is_member_target) {
+                    self.emit_abc(Opcode.PUTPROP,
+                        (uint)obj_binds[obi].member_obj_reg,
+                        (uint)obj_binds[obi].member_prop_reg,
+                        (uint)obj_binds[obi].reg);
+                    self.free_reg(obj_binds[obi].member_prop_reg);
+                    self.free_reg(obj_binds[obi].member_obj_reg);
+                    self.free_reg(obj_binds[obi].reg);
+                } else {
+                    self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, false, false);
+                }
                 obi++;
             }
         }

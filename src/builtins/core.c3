@@ -1612,8 +1612,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 59: return { "sort", 1 };
         case 60: return { "splice", 2 };
         case 61: return { "unshift", 1 };
-        case 62: return { "indexOf", 2 };
-        case 63: return { "lastIndexOf", 2 };
+        case 62: return { "indexOf", 1 };
+        case 63: return { "lastIndexOf", 1 };
         case 64: return { "concat", 1 };
         case 73: return { "toFixed", 1 };
         case 74: return { "toExponential", 1 };
