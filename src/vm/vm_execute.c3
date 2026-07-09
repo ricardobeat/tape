@@ -551,6 +551,13 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
                 length_tv.set_fastint((long)nargs);
                 args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
             }
+            // Declare `arguments` in the function's var_env so the body can access it.
+            HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+            if (args_name != null) {
+                TVal args_tv;
+                args_tv.set_object(args_obj);
+                env::env_declare(cfn_var_env, args_name, args_tv);
+            }
         }
     }
 
