@@ -3327,13 +3327,19 @@ fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
 /// Returns true on success, false if an error was thrown (ctx.should_throw set).
 fn bool array_set_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong idx, TVal val) {
     if (!array_can_set_index(ctx, obj, idx)) return false;
-    // If a named property exists (possibly with non-WEC flags), use put_prop so
-    // CreateDataPropertyOrThrow fully redefines it (value + WEC flags).
     if (idx <= 0xFFFFFFFFUL) {
         HString* key = ctx.heap.int_to_hstring((long)idx);
-        if (key != null && obj.find_prop_idx(key) >= 0) {
-            obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
-            return true;
+        if (key != null) {
+            // Use put_prop when: (a) a named property exists that may have non-WEC
+            // flags, or (b) the value is undefined — because undefined == hole in
+            // the dense array and would make the slot appear absent.
+            bool has_named = obj.find_prop_idx(key) >= 0;
+            bool is_undef = val.is_undefined();
+            if (has_named || (is_undef && (obj.get_class() == hobject::ObjClass.ARRAY
+                                        || obj.get_class() == hobject::ObjClass.ARGUMENTS))) {
+                obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+                return true;
+            }
         }
     }
     array_set_elem_ulong(obj, idx, val, ctx.heap);
@@ -3692,22 +3698,22 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    // ES5 §15.4.4.19: read LengthOfArrayLike before checking IsCallable.
+    // ES2022 §23.1.3.18 step 2: get LengthOfArrayLike before checking IsCallable.
     ulong len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
-    // Per ES5 §15.4.4.19 step 2: IsCallable(callbackfn) must be true even
-    // when argc < 1. Always check so the TypeError is thrown.
+    // Step 3: IsCallable(callbackfn) check.
     TVal cb_val;
     if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
     if (!arr_check_callback(cb_val, ctx)) return;
     TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
-    HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
-    ulong aj = 0;
+    // Step 5: ArraySpeciesCreate(O, len) — use species constructor if available.
+    HObject* arr = array_species_create_result(ctx, o, len);
+    if (arr == null) { ctx.result.set_undefined(); return; }
+    // Ensure result length is set to source length (ArrayCreate sets it, but
+    // array_species_create_result fallback doesn't for plain arrays).
+    array_set_length_ulong(arr, len, ctx.heap);
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
@@ -3715,20 +3721,15 @@ fn void builtin_array_proto_map(BuiltinContext* ctx) {
             if (!arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
                 v.set_undefined();
             }
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal mapped = arr_call_callback(ctx, callback, thisArg, v, k, o);
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-            HString* akey = ctx.heap.int_to_hstring((long)aj);
-            if (akey != null) {
-                arr.put_prop(akey, mapped, hobject::PROP_FLAGS_WEC);
+            if (!array_set_elem_ulong_checked(ctx, arr, k, mapped)) {
+                ctx.result.set_undefined();
+                return;
             }
-            aj++;
-        } else {
-            aj++;
         }
     }
-    HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
-    TVal len_tv; len_tv.set_fastint((long)aj);
-    arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
     ctx.result.set_object((void*)arr);
 }
 
@@ -3740,7 +3741,7 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    // ES5 §15.4.4.20: read LengthOfArrayLike before checking IsCallable.
+    // ES2022 §23.1.3.12 step 2: get LengthOfArrayLike before checking IsCallable.
     ulong len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     TVal cb_val;
@@ -3749,22 +3750,22 @@ fn void builtin_array_proto_filter(BuiltinContext* ctx) {
     TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_undefined(); ctx.should_throw = true; return; }
-    HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
+    // Step 7: ArraySpeciesCreate(O, 0) — result length is not known in advance.
+    HObject* arr = array_species_create_result(ctx, o, 0);
+    if (arr == null) { ctx.result.set_undefined(); return; }
     ulong aj = 0;
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 TVal sel = arr_call_callback(ctx, callback, thisArg, v, k, o);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (builtin_to_boolean(&sel)) {
-                    HString* akey = ctx.heap.int_to_hstring((long)aj);
-                    if (akey != null) {
-                        arr.put_prop(akey, v, hobject::PROP_FLAGS_WEC);
+                    if (!array_set_elem_ulong_checked(ctx, arr, aj, v)) {
+                        ctx.result.set_undefined();
+                        return;
                     }
                     aj++;
                 }
