@@ -3155,9 +3155,42 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
 // Object.fromEntries — ES2019 §19.1.2.5
 // ============================================================================
 /// Creates a new object from an iterable of [key, value] pairs.
+/// Get(entry, ToString(idx)) for an entry pair: dense array slot, then
+/// String-exotic character access, then accessor-aware named lookup through
+/// the prototype chain. Getter throws land in ctx.should_throw.
+fn TVal from_entries_get_index(BuiltinContext* ctx, HObject* pair, uint idx) {
+    TVal out;
+    out.set_undefined();
+    if (pair.array_part() != null && idx < pair.array_size) {
+        if (try v = pair.get_array_idx(idx)) {
+            if (!v.is_undefined()) return v;
+        }
+    }
+    // String wrapper object: indexed access reads characters from the
+    // primitive value (they are not materialised as own properties).
+    if (pair.flags.exotic_stringobj && (*pair.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*pair.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null && idx < prim.char_length()) {
+            uint cp = prim.char_at(idx);
+            char[4] cbuf;
+            uint clen = hstring::encode_codepoint(cp, cbuf[:4]);
+            HString* ch = builtin_intern_string(ctx.heap, cbuf[:clen]);
+            if (ch != null) { out.set_string(ch); }
+            return out;
+        }
+    }
+    HString* key = ctx.heap.int_to_hstring((long)idx);
+    if (key == null) return out;
+    if (try v2 = builtins_generic_get(pair, key, ctx)) {
+        return v2;
+    }
+    return out;
+}
+
 fn void builtin_object_fromEntries(BuiltinContext* ctx) {
+    // RequireObjectCoercible(iterable) — §20.1.2.7 step 1.
     if (ctx.argc < 1) {
-        ctx.result.set_undefined();
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.fromEntries requires an iterable");
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
@@ -3183,7 +3216,7 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
     bool use_iter = false;
     TVal iterator;
 
-    if (false && iter_sym != null) {
+    if (iter_sym != null) {
         TVal? iter_method_opt = iterable.get_prop_proto(iter_sym);
         if (try iter_method = iter_method_opt) {
             bool callable = false;
@@ -3194,7 +3227,12 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
             }
             if (callable && ctx.heap.call_fn != null && ctx.vm != null) {
                 iterator = ctx.heap.call_fn(ctx.vm, iter_method, null, 0, arg);
-                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    return;
+                }
                 use_iter = true;
             }
         }
@@ -3222,50 +3260,75 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
             } else if (next_method.is_object() && next_method.get_heapptr() != null) {
                 callable = ((HObject*)next_method.get_heapptr()).is_callable();
             }
-            if (!callable) break;
+            // Uncallable next: TypeError, no IteratorClose (§7.4.3 GetIterator).
+            if (!callable) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Object.fromEntries: iterator next is not callable");
+                return;
+            }
 
             TVal result = ctx.heap.call_fn(ctx.vm, next_method, null, 0, iterator);
-            if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
-            if (!result.is_object() || result.get_heapptr() == null) break;
+            // Abrupt completion from next() propagates WITHOUT IteratorClose
+            // (§7.4.11 IteratorStep passes the throw through directly).
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return;
+            }
+            // next() must return an object: TypeError, no IteratorClose (§7.4.5).
+            if (!result.is_object() || result.get_heapptr() == null) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Object.fromEntries: iterator result is not an object");
+                return;
+            }
 
             HObject* result_obj = (HObject*)result.get_heapptr();
-            TVal? done_opt = result_obj.get_prop_proto(done_key);
+            // Get(result, "done") through accessors; abrupt completions
+            // propagate without IteratorClose (§7.4.5 IteratorComplete).
             bool done = false;
-            if (try dv = done_opt) {
+            if (try dv = builtins_generic_get(result_obj, done_key, ctx)) {
                 done = builtin_to_boolean(&dv);
+            } else if (ctx.should_throw) {
+                return;
             }
             if (done) break;
 
-            TVal? value_opt = result_obj.get_prop_proto(value_key);
             TVal entry;
-            if (try vv = value_opt) {
+            if (try vv = builtins_generic_get(result_obj, value_key, ctx)) {
                 entry = vv;
-            } else { break; }
+            } else if (ctx.should_throw) {
+                return;
+            } else {
+                entry.set_undefined();
+            }
 
-            // Extract [key, value] from the entry pair
-            if (!entry.is_object()) continue;
+            // §19.1.2.5 CreateDataPropertyOnObject: a non-object entry is a
+            // TypeError, and the iterator must be closed before throwing.
+            if (!entry.is_object() || entry.get_heapptr() == null) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Object.fromEntries: iterator entry is not an object");
+                return;
+            }
             HObject* pair = (HObject*)entry.get_heapptr();
 
-            // Get key from pair[0]
-            TVal key_idx;
-            key_idx.set_fastint(0);
-            TVal key_val;
-            if (try kv = pair.get_prop(&key_idx)) {
-                key_val = kv;
-            } else {
-                continue;
+            // k = Get(entry, "0"), v = Get(entry, "1"); getter throws close
+            // the iterator, then propagate (§20.1.2.7 step 9 + IfAbruptCloseIterator).
+            TVal key_val = from_entries_get_index(ctx, pair, 0);
+            if (ctx.should_throw) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return;
             }
-            // Get value from pair[1]
-            TVal val_idx;
-            val_idx.set_fastint(1);
-            TVal val_val;
-            if (try vv = pair.get_prop(&val_idx)) {
-                val_val = vv;
-            } else {
-                val_val.set_undefined();
+            TVal val_val = from_entries_get_index(ctx, pair, 1);
+            if (ctx.should_throw) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return;
             }
-            // Convert key to property key (ToPropertyKey)
+
+            // ToPropertyKey(k) — a throwing toString also closes the iterator.
             HString* key_str = builtin_to_property_key(ctx, key_val);
+            if (ctx.should_throw) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return;
+            }
             if (key_str != null) {
                 obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
             }

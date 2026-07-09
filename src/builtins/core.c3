@@ -1890,6 +1890,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 409: return { "toSorted", 1 };
         case 410: return { "toString", 0 };
         case 411: return { "toLocaleString", 0 };
+        case 276: return { "fromEntries", 1 };
         // %TypedArray% intrinsic statics
         case 412: return { "of", 0 };
         case 413: return { "from", 1 };
