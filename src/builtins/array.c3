@@ -4046,13 +4046,8 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
         k++;
     }
     TVal undef_this; undef_this.set_undefined();
-    while (true) {
+    while (k < len) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        // Re-read length each iteration per ES5 §15.4.4.21 step 8/9 — the
-        // callback (or the getter above) may have shrunk the array.
-        ulong cur_len;
-        if (!array_to_length(o, ctx.heap, ctx, &cur_len)) { ctx.result.set_undefined(); return; }
-        if (k >= cur_len) break;
         if (arr_has_prop(o, k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, k, ctx.heap, ctx, &v)) {
@@ -4097,7 +4092,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
         return;
     }
-    int k = (len > 0) ? (int)len - 1 : 0;
+    int k = (len > 0) ? (int)len - 1 : -1;
     TVal acc;
     bool has_acc;
     if (ctx.argc > 1) {
@@ -4115,12 +4110,8 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         k--;
     }
     TVal undef_this; undef_this.set_undefined();
-    while (true) {
+    while (k >= 0) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        // Re-read length per ES5 §15.4.4.22 step 9 — callback may shrink the array.
-        ulong cur_len;
-        if (!array_to_length(o, ctx.heap, ctx, &cur_len)) { ctx.result.set_undefined(); return; }
-        if (k < 0 || (ulong)k >= cur_len) break;
         if (arr_has_prop(o, (ulong)k, ctx.heap)) {
             TVal v;
             if (arr_get_elem_vm(o, (ulong)k, ctx.heap, ctx, &v)) {
