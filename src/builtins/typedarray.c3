@@ -536,6 +536,10 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                 double len_d = builtin_to_integer_vm(ctx, &len_tv);
                 if (ctx.should_throw) return;
                 if (len_d < 0.0) len_d = 0.0;
+                if (len_d > 9007199254740991.0) {
+                    arraybuffer_throw_range_error(ctx, "Invalid typed array length");
+                    return;
+                }
                 uint count = (uint)len_d;
 
                 uint total_bytes = count * elem_size;

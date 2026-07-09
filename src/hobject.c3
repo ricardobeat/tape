@@ -964,7 +964,8 @@ fn void HObject.make_shape_private(&self) {
         self.shape_id = (ushort)slot;
         self.set_shape(ns);
     } else {
-        shape_free(ns, _active_heap);
+        // Keys were copied without incref; pass null so shape_free skips decref.
+        shape_free(ns, null);
     }
 }
 
@@ -1312,7 +1313,8 @@ fn bool HObject.delete_prop(&self, void* key) {
                     self.shape_id = (ushort)slot;
                     self.set_shape(ns);
                 } else {
-                    shape_free(ns, _active_heap);
+                    // Keys were copied without incref; pass null so shape_free skips decref.
+                    shape_free(ns, null);
                     self.set_shape(null);
                 }
             } else {

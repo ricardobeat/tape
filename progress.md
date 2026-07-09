@@ -1,7 +1,64 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 271 — Array.prototype: map/filter ArraySpeciesCreate, reduce/reduceRight loop bounds, iterator keys/entries/values, push error types; Object.defineProperties dense-array sync; array literal INITPROP undefined→named-prop
+**Last Updated:** Session 272 — MEMKILL fixes: shape use-after-free (RegExp property-escapes), TypedArray excessive-length RangeError
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
+
+## Summary (full run, session 272, 2026-07-09)
+
+| Metric | Value |
+|---|---|
+| Pass + Fail + CE (executable) | 30,780 |
+| Total passing | 27,079 |
+| **Overall pass rate** | **88.0%** |
+| Total failing | 3,468 |
+| CE unexpected (parser bugs) | 230 |
+| CE expected (`negative: phase: parse`) | 3 |
+| Skipped | 14,032 |
+
+Up from session 271 (87.9%, 27,047 pass) via two MEMKILL/crash fixes (+32 pass, +0.1pp):
+
+1. **Shape use-after-free (RegExp property-escapes/generated, 44 tests)** — when
+   `make_shape_private` or the delete-property path created a flat shape `ns` by
+   copying key pointers from the existing shape chain (without incref), then
+   `alloc_shape_slot` returned `SHAPE_NONE` (shape table full), the code called
+   `shape_free(ns, heap)` which decremented those key refcounts.  Because the
+   keys were never incref'd for `ns`, this was a spurious decref — on the next
+   property addition the same keys were decremented again from a dead shape,
+   causing a heap-use-after-free.  Fix: pass `null` (not `heap`) to `shape_free`
+   in the failure branch so keys are NOT decremented (they were never owned by `ns`).
+
+2. **TypedArray excessive length (object-arg/length-excessive-throws)** — for
+   array-like objects, `len = Math.pow(2, 53)` was cast to `uint` (32-bit) which
+   wraps to 2,097,152 (2^53 mod 2^32), causing a multi-million element loop that
+   OOM'd or timed out.  Spec requires RangeError when `length > 2^53-1`.  Added
+   guard `if (len_d > 9007199254740991.0)` before the `uint` cast.
+
+Gap to 100% on the current denominator = ~3,701 tests.
+
+## Per-Phase Status (session 272, full run)
+
+| Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected |
+|---|---|---|---|---|---|---|---|
+| 1: Calling Convention & Closures | 426 | 299 | 32 | 90 | 0 | 0 | 5 |
+| 2: Basic Operators | 1969 | 1254 | 111 | 563 | 0 | 0 | 41 |
+| 3: Object System | 7766 | 6368 | 285 | 1095 | 0 | 0 | 18 |
+| 4: Error Handling & References | 402 | 220 | 78 | 103 | 0 | 0 | 1 |
+| 5: Built-in Constructors | 8615 | 7261 | 527 | 827 | 0 | 0 | 0 |
+| 6: Built-in Prototype Methods | 4713 | 3986 | 296 | 431 | 0 | 0 | 0 |
+| 7: Remaining ES5 Features | 1035 | 491 | 49 | 458 | 0 | 0 | 37 |
+| 8: ES5 Built-in Objects | 2747 | 1514 | 709 | 523 | 0 | 0 | 1 |
+| 11: Arrow Functions & Templates | 465 | 269 | 31 | 158 | 0 | 0 | 7 |
+| 12-13: Destructuring & Spread | 19 | 17 | 0 | 2 | 0 | 0 | 0 |
+| 14: for-of | 751 | 387 | 149 | 169 | 0 | 0 | 46 |
+| 15: Classes | 8520 | 1787 | 355 | 6318 | 0 | 0 | 60 |
+| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 1003 | 148 | 463 | 0 | 0 | 0 |
+| 21: Generators | 619 | 416 | 61 | 138 | 0 | 0 | 4 |
+| 22: Buffers | 2966 | 901 | 467 | 1598 | 0 | 0 | 0 |
+
+Session 271 reference: 27,047 pass / 30,780 executable / 87.9%.  Session 272:
++32 pass / ±0 net executable / +0.1pp on the same denominator.
+
+Top gaining areas: MEMKILL elimination — 0 MEMKILL tests remain.
 
 ## Summary (full run, session 271, 2026-07-09)
 
