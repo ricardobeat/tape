@@ -1,25 +1,30 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 269 (plan 049 stages 1-3: ArrayBuffer core with detach + species-aware slice, TypedArray construction with 4 overloads + GETPROP/PUTPROP fast paths for all 9 classes + CanonicalNumericIndexString + accessor getters, DataView with 16 get/set methods + LE/BE endianness). Phase 22 (Buffers) not yet wired into run_test262.py — deferred to plan 049 stage 6.
-Prior: Session 267 (statement destructuring iterator protocol, lexical-closure/eval/capture-analysis scope fixes, catch-binding scope, architecture review — plan 046)
-**Target:** 100% test262 pass rate on the targeted subset (29,444 executable tests; see plan 040 for the subset definition). At 81.6%: ~18.4 points away.
+**Last Updated:** Session 269 (plan 049 stages 1-6 + destructuring merge + 9-jul merge — will be rewritten after full re-baseline)
+**Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
-## Summary (full run, session 267, 2026-07-08)
+## Summary (full run, session 268, 2026-07-08)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 29,444 |
-| Total passing | 24,032 |
-| **Overall pass rate** | **81.6%** |
-| Total failing | 5,399 |
-| CE unexpected (parser bugs) | 447 |
+| Total passing | 24,365 |
+| **Overall pass rate** | **82.8%** |
+| Total failing | 4,792 |
+| CE unexpected (parser bugs) | 284 |
 | CE expected (`negative: phase: parse`) | 3 |
 | Skipped | 12,402 |
 
 Up from the session-265 baseline (79.6%, 23,443 pass, 5,551 fail) after
 implementing iterator-protocol array destructuring for function params
-(+224 Phase 15, +40 Phase 21). Gap to 100% = ~5,849 tests.
+(+224 Phase 15, +40 Phase 21). Gap to 100% = ~5,504 tests.
 Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-percent.md`.
+
+### plan-048 progress so far (session 268 partial)
+- **Bucket D (RequireObjectCoercible for object destructuring sources)** — emit `REQUIRE_OBJ` immediately after evaluating the RHS in `object_destructure` and `object_destructure_assign` so `var {} = null` and `var {a} = null` correctly throw `TypeError` per ES2015 §13.3.3.7 step 1 — applies to the empty pattern too (per ES spec). Wired through `statements.c3`'s call sites of these helpers.
+- **Bucket A (NamedEvaluation for anonymous defaults)** — extended `compile_default_expr` (and added `destructuring_default_expr` for in-line default sites) to thread the binding name through the inferred_name slot. Wired into every destructuring-binding default site in `destructuring.c3` and `statements.c3` (for-of/var/let/const/catch destructuring, plus function- and arrow-parameter defaults) so `var [fn = function () {}] = []` gives `fn.name === "fn"` per ES2015 §13.3.3.7 step 3 / §14.1.20 SetFunctionName.
+
+Phase deltas (vs session-266 baseline): Phase 7 +24, Phase 14 +27, Phase 15 +164, Phase 21 +24. Buckets B/C/E/F remain (CE:unexpected unchanged).
 
 ## Per-Phase Status (session 266, full run)
 

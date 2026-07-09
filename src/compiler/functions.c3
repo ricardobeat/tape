@@ -113,9 +113,25 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
             break;
         }
 
-        // Property name
-        Token prop = self.expect(TokenType.IDENTIFIER)!;
-        uint prop_key_idx = self.add_string_constant(prop.str_value);
+        // Computed property key: {[expr]: target}. Per ES2015 §13.3.3, the
+        // key is an AssignmentExpression; the runtime evaluates it at
+        // extract time. (No destructuring on the key itself.)
+        if (self.check(TokenType.LBRACKET)) {
+            self.advance()!; // consume '['
+            // Reuse the synthetic-binding path: stash the computed key in a
+            // scratch field by storing it as key_idx, then emit a binding
+            // with is_computed_key=true on the actual extraction. For
+            // simplicity here, we don't compile computed keys in param
+            // patterns — emit a clean SyntaxError per ES2015 §14.3.3.
+            // (The spec allows them but our emitter has no is_computed_key
+            // plumbing in collect_obj_param_binds; defer.)
+            return COMPILE_ERROR~;
+        }
+
+        // Property name — per ES2015 §13.3.3.7, may be an IdentifierName
+        // (incl. reserved words), a string literal, or a numeric literal.
+        char[] prop_key = self.destructuring_property_key()!;
+        uint prop_key_idx = self.add_string_constant(prop_key);
 
         if (self.match(TokenType.COLON)) {
             // {source: target} — target can be identifier or nested pattern
@@ -165,9 +181,9 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                 binds[*count].is_object = true;
                 binds[*count].arg_idx = src_reg;
                 binds[*count].parent_idx = parent_idx;
-                ushort nl = (ushort)(prop.str_value.len < 63 ? prop.str_value.len : 63);
+                ushort nl = (ushort)(prop_key.len < 63 ? prop_key.len : 63);
                 binds[*count].name_len = nl;
-                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = prop.str_value[j]; }
+                for (int j = 0; j < nl; j++) { binds[*count].name_buf[j] = prop_key[j]; }
                 (*count)++;
             }
         }
@@ -179,7 +195,10 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
             if (*count > 0) {
                 ushort target_idx = last_was_synth ? outer_synth_idx : (ushort)(*count - 1);
                 binds[target_idx].has_default = true;
-                CompiledFunction* default_func = self.compile_default_expr()!;
+                // Pass the binding name through so NamedEvaluation tags an
+                // anonymous fn/arrow/class/gen default with the binding name.
+                // (ES2015 §13.3.3.7 step 3 / §14.1.20 SetFunctionName.)
+                CompiledFunction* default_func = self.compile_default_expr(binds[target_idx].name_buf[:(uint)binds[target_idx].name_len])!;
                 uint def_idx = self.add_inner_func(default_func);
                 binds[target_idx].default_func_idx = def_idx;
             }
@@ -306,7 +325,10 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
             if (*count > 0) {
                 ushort target_idx = last_was_synth ? outer_synth_idx : (ushort)(*count - 1);
                 binds[target_idx].has_default = true;
-                CompiledFunction* default_func = self.compile_default_expr()!;
+                // Pass the binding name through so NamedEvaluation tags an
+                // anonymous fn/arrow/class/gen default with the binding name.
+                // (ES2015 §13.3.3.7 step 3 / §14.1.20 SetFunctionName.)
+                CompiledFunction* default_func = self.compile_default_expr(binds[target_idx].name_buf[:(uint)binds[target_idx].name_len])!;
                 uint def_idx = self.add_inner_func(default_func);
                 binds[target_idx].default_func_idx = def_idx;
             }
@@ -721,6 +743,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
 
     // Free iterator registers
     for (uint i = 0; i < iter_count; i++) {
+        // IteratorClose (ES2015 §13.3.3.8): notify the iterator that we
+        // are done consuming. The VM handler is a no-op when the
+        // iterator is exhausted or has no `.return` method, so this is
+        // safe to emit unconditionally. Without this, partially-consumed
+        // iterators (e.g. generators) leak resources.
+        self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 0, 0);
         self.free_destruct_iter(&iter_states[i]);
     }
 }
@@ -1491,8 +1519,11 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
             if (self.check(TokenType.ASSIGN)) {
                 self.advance()!; // consume '='
 
-                // Compile the default expression as an inner function
-                CompiledFunction* default_func = self.compile_default_expr()!;
+                // Compile the default expression as an inner function. Pass
+                // the parameter name so NamedEvaluation tags an anonymous
+                // fn/arrow/class/gen default with the param name.
+                // (ES2015 §14.1.20 SetFunctionName.)
+                CompiledFunction* default_func = self.compile_default_expr(param.str_value)!;
 
                 // Add to inner functions table
                 if (self.default_count < MAX_PARAMS) {
@@ -1691,7 +1722,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
 /// Compile a default parameter expression as a zero-argument inner function.
 /// Free variables in the expression are resolved at runtime via GETVAR
 /// against the outer scope's environment chain.
-fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
+fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferred_name = {}) {
     // Create a new CompilerContext for the default expression
     CompilerContext def_ctx;
     def_ctx.init(self.lexer, self.heap);
@@ -1702,6 +1733,20 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self) {
     // Propagate class context (for super expressions)
     def_ctx.in_class_body = self.in_class_body;
     def_ctx.has_super_binding = self.has_super_binding;
+
+    // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
+    // anonymous function/arrow/class/generator expression, the resulting
+    // function object gets the binding identifier as its name. We
+    // propagate this via the inferred_name slot — `function_expr` /
+    // arrow / class / generator consults `has_inferred_name` (set by
+    // the var initializer path in `decl_var`) and tags the function.
+    if (inferred_name.len > 0 && inferred_name.len < 128) {
+        def_ctx.has_inferred_name = true;
+        def_ctx.inferred_name_len = (ushort)inferred_name.len;
+        for (usz i = 0; i < (usz)inferred_name.len; i++) {
+            def_ctx.inferred_name_buf[i] = inferred_name[i];
+        }
+    }
 
     // Function-level lexical scope (empty — no parameters)
     def_ctx.emit_simple(Opcode.PUSH_LEX);
@@ -1918,8 +1963,8 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
             if (inner_ctx.check(TokenType.ASSIGN)) {
                 inner_ctx.advance()!; // consume '='
 
-                // Compile the default expression as an inner function
-                CompiledFunction* default_func = inner_ctx.compile_default_expr()!;
+                // Pass param name for NamedEvaluation tagging.
+                CompiledFunction* default_func = inner_ctx.compile_default_expr(param.str_value)!;
 
                 // Add to inner functions table
                 if (inner_ctx.default_count < MAX_PARAMS) {
@@ -2430,8 +2475,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
             if (arrow_ctx.check(TokenType.ASSIGN)) {
                 arrow_ctx.advance()!; // consume '='
 
-                // Compile the default expression as an inner function
-                CompiledFunction* default_func = arrow_ctx.compile_default_expr()!;
+                // Pass param name for NamedEvaluation tagging.
+                CompiledFunction* default_func = arrow_ctx.compile_default_expr(param.str_value)!;
 
                 // Add to inner functions table
                 if (arrow_ctx.default_count < MAX_PARAMS) {

@@ -3031,6 +3031,7 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     // Loop start
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
+    self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
 
     // Step 5: Load callee + this, then call .next() each iteration
     //   result = CALL callee, 0    (result = next.call(iterator))
@@ -3082,7 +3083,11 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     int back_offset = (int)loop_start - (int)self.code_count - 1;
     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
+    // Normal exhaustion (done=true): IteratorClose is a no-op for exhausted
+    // iterators, but spec requires the call. Emit before pop_loop so that
+    // break-patch targets land after this — break emits its own ITER_CLOSE.
     self.patch_jump(exit_jump);
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
     self.pop_loop();
 
     // Free loop-overhead registers

@@ -466,6 +466,14 @@ enum Opcode : char {
     /// Used for destructuring binding patterns.
     REQUIRE_OBJ,
 
+    /// IteratorClose: if the value in A is an object and has a callable
+    /// `.return` method, call it with this = A and discard the result. Used
+    /// after a pattern walk so destructuring of partially-exhausted
+    /// iterators notifies the iterator (ES2015 §13.3.3.8 IteratorClose).
+    /// A = iterator register. B = scratch register used to fetch the
+    /// .return method (allocated by the VM); B = C on exit.
+    ITER_CLOSE,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -551,6 +559,7 @@ case PUTLEX:     return A_BC;
         case DEC_VAR:    return A_BC;
         case GETPROPC2:  return ABC;
         case REQUIRE_OBJ: return ABC;
+        case ITER_CLOSE: return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;
@@ -993,3 +1002,4 @@ fn uint CompiledFunction.get_line(&self, uint pc) {
 // `OPCODE_NAMES` array from `.rodata` once no reachable code references it.
 // Build the `duktape_c3_debug` target (or pass `-D TRACE_VM`) to wire the
 // dump helpers and `-t` / `-c` / `--format json` CLI features.
+

@@ -169,12 +169,42 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             CompiledFunction* target = (*hobj.extra_ptr()).func.comp_func;
             uint nregs = target.num_regs;
 
+            // Compute the true top of the current activation's register file.
+            // vm.valstack_top is NOT updated for inline JS-to-JS calls (CALL
+            // opcode uses vm_setup_call which skips the update), so it may
+            // point below the current function's full register space, causing
+            // the callee frame to overlap live caller registers.
+            TVal* true_top = vm.valstack_top;
+            if (vm.activation_count > 0) {
+                Activation* cur_act = &vm.activations[vm.activation_count - 1];
+                CompiledFunction* cur_func = (CompiledFunction*)cur_act.func;
+                if (cur_func != null) {
+                    TVal* act_top = cur_act.bottom + cur_func.num_regs;
+                    if (act_top > true_top) true_top = act_top;
+                }
+            }
+
             // Grow the valstack first (while activation_count is still the
             // caller's, so ensure_valstack_grow relocates all live pointers).
-            // The callback frame is placed at the current valstack_top, above
-            // all live caller registers — they are never touched.
-            if (!ensure_valstack(vm, nregs)) {
-                return undef;
+            // The callback frame is placed above all live caller registers.
+            uint true_used = (uint)(true_top - vm.valstack);
+            if (true_top + nregs > vm.valstack_end) {
+                if (!ensure_valstack_grow(vm, true_used + nregs - (uint)(vm.valstack_top - vm.valstack))) {
+                    return undef;
+                }
+                // Recompute true_top after potential realloc
+                if (vm.activation_count > 0) {
+                    Activation* cur_act2 = &vm.activations[vm.activation_count - 1];
+                    CompiledFunction* cur_func2 = (CompiledFunction*)cur_act2.func;
+                    if (cur_func2 != null) {
+                        TVal* act_top2 = cur_act2.bottom + cur_func2.num_regs;
+                        true_top = (act_top2 > vm.valstack_top) ? act_top2 : vm.valstack_top;
+                    } else {
+                        true_top = vm.valstack_top;
+                    }
+                } else {
+                    true_top = vm.valstack_top;
+                }
             }
 
             // Save current VM state (after potential realloc)
@@ -188,7 +218,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             Activation[MAX_CALLS] saved_acts;
             libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
 
-            TVal* frame = vm.valstack_top;
+            TVal* frame = true_top;
 
             // Set up activation[0] for the function
             Activation* act = &vm.activations[0];
@@ -2460,6 +2490,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.PUSH_LEX:
         case Opcode.POP_LEX:
         case Opcode.REQUIRE_OBJ:
+        case Opcode.ITER_CLOSE:
             if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 

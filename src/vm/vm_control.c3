@@ -490,6 +490,51 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             return (TVal){};
         }
 
+        case Opcode.ITER_CLOSE: {
+            // IteratorClose (ES2015 §13.3.3.8): if the value in A is an
+            // object with a callable `.return` method, call it with
+            // this = A. Discards the result; any error from `.return()`
+            // propagates as a normal throw. If A is not an object, or
+            // has no `.return` method, do nothing (per spec).
+            if (!ra.is_object() || ra.get_heapptr() == null) return (TVal){};
+            HObject* iter = (HObject*)ra.get_heapptr();
+            HString* ret_key = intern_string(vm, "return");
+            TVal? ret_opt = iter.get_prop_proto(ret_key);
+            if (catch _e = ret_opt) return (TVal){};
+            TVal ret_method = ret_opt;
+            if (!ret_method.is_object()) return (TVal){};
+            HObject* rm_obj = (HObject*)ret_method.get_heapptr();
+            if (rm_obj == null || !rm_obj.is_callable()) return (TVal){};
+            TVal this_arg; this_arg.set_object(iter);
+            TVal ret_result = vm.heap.call_fn(vm, ret_method, null, 0, this_arg);
+            if (vm.has_error) {
+                TVal thrown = vm.return_val;
+                vm.has_error = false;
+                vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
+            // ES2015 §7.4.6 step 5: IteratorClose result must be an Object
+            if (!ret_result.is_object() || ret_result.get_heapptr() == null) {
+                HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try te = te_raw) {
+                    te.prototype = vm.heap.type_err_proto;
+                    HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* ms = intern_string(vm, "Iterator .return() must return an object");
+                    TVal mv; mv.set_string(ms);
+                    te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+                    TVal tv; tv.set_object(te);
+                    if (!vm_throw_value(vm, tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &tv);
+                    }
+                }
+                return (TVal){};
+            }
+            return (TVal){};
+        }
+
         default:
             return (TVal){};
     }
