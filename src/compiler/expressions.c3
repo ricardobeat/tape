@@ -2969,6 +2969,19 @@ fn ushort? CompilerContext.array_literal(&self) {
 /// evaluated into `iter_reg` and the RParen was consumed.
 /// Uses the ES6 iterator protocol: Symbol.iterator → .next() → {value, done}.
 fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare) {
+    // Per-iteration lexical environments are required when the loop variable is a
+    // let/const binding captured by a closure inside the body (ES2015 §14.7.5.6
+    // CreatePerIterationEnvironment). Each iteration must see its own binding so
+    // closures created in different iterations capture distinct values.
+    //
+    // At non-global scope the capture pre-scan (pre_scan_captures) tells us
+    // whether var_name is actually captured; skip per-iter for loops with no
+    // closure (common hot path). At global scope the pre-scan is not run, so
+    // we conservatively enable per-iter for all global let/const for-of loops
+    // (overhead is negligible compared to the GETPROP-heavy for-of protocol).
+    bool needs_per_iter_env = !is_bare && is_lexical
+        && (self.is_global || self.is_captured_name(var_name));
+
     // Declare loop variable register
     ushort loop_var;
     if (is_bare) {
@@ -3038,6 +3051,13 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     self.push_loop(loop_start, true);
     self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
 
+    // Per-iteration env prologue: each iteration creates a fresh declarative env
+    // so closures in the body capture a distinct binding (spec §14.7.5.6).
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.PUSH_LEX);
+        self.cur_lex_depth++;
+    }
+
     // Step 5: Load callee + this, then call .next() each iteration
     //   result = CALL callee, 0    (result = next.call(iterator))
     self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
@@ -3081,17 +3101,31 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     // Step 9: Body
     self.statement()!;
 
-    // Continue target: jump back to .next() call
+    // Per-iteration env epilogue: pop this iteration's env before the back-jump.
+    // For continue: the continue statement's own POP_LEX unwinds cur_lex_depth back
+    // to saved_lex_depth (the per-iter level is included), so continue lands on the
+    // JUMP below rather than on this POP_LEX (avoids a double-pop).
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+
+    // Continue target points to the JUMP, so a continue from the body (which already
+    // emitted its own POP_LEX back to saved_lex_depth) jumps to the back-edge directly.
     self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
 
     // Jump back to loop start
     int back_offset = (int)loop_start - (int)self.code_count - 1;
     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
-    // Normal exhaustion (done=true): IteratorClose is a no-op for exhausted
-    // iterators, but spec requires the call. Emit before pop_loop so that
-    // break-patch targets land after this — break emits its own ITER_CLOSE.
+    // Exit path (done=true): pop the per-iter env pushed at loop_start,
+    // then emit the exhaustion ITER_CLOSE before pop_loop so break-patch
+    // targets land after this — break emits its own ITER_CLOSE.
     self.patch_jump(exit_jump);
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
     self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
     self.pop_loop();
 
