@@ -620,15 +620,18 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.curr_pc = func.code;  // Points into bytecode
     entry_act.bottom = vm.valstack;
     entry_act.retval = null;
-    // ES5 §10.4.1: at the top level of a script in strict mode, the global `this`
-    // is `undefined` (strict-only engine: always undefined).
     entry_act.flags = 0;
     if (func.has_direct_eval()) {
         entry_act.flags |= ACT_FLAG_DIRECT_EVAL;
     }
 
+    // ES5 §10.4.1: global `this` is the global object for non-strict scripts.
     TVal this_val;
-    this_val.set_undefined();
+    if (vm.global_env != null && vm.global_env.bindings != null) {
+        this_val.set_object(vm.global_env.bindings);
+    } else {
+        this_val.set_undefined();
+    }
     vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
 
     // Allocate value stack slots for the function (nregs = total register count)
@@ -679,7 +682,11 @@ fn TVal? Vm.execute_in_env(Vm* vm, CompiledFunction* func, EnvRecord* env) {
     }
 
     TVal this_val;
-    this_val.set_undefined();
+    if (vm.global_env != null && vm.global_env.bindings != null) {
+        this_val.set_object(vm.global_env.bindings);
+    } else {
+        this_val.set_undefined();
+    }
     vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
 
     uint nregs = func.num_regs;

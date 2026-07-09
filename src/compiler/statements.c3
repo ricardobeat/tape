@@ -253,8 +253,12 @@ fn void? CompilerContext.parse_directives(&self) {
                         break;
                     }
                 }
-                // Strict-only engine: "use strict" directive is parsed and ignored
-                // (no-op for source compatibility).
+                if (is_use_strict) {
+                    self.is_strict = true;
+                    if (self.current_func != null) {
+                        self.current_func.flags.is_strict = true;
+                    }
+                }
             }
         } else {
             self.lexer.pushback(str_tok);

@@ -66,7 +66,7 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     // Emit implicit "return undefined" at end of program
     ctx.emit_simple(Opcode.RETUNDEF);
 
-    return ctx.finish()!;
+    return ctx.finish()!;;
 }
 
 /// Compile source as eval code (Program, returns last expression value).

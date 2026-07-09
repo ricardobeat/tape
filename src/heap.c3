@@ -57,6 +57,10 @@ const uint  GRAY_STACK_INITIAL_CAP  = 64;
 const usz   STRS_CACHE_SIZE         = 256;
 const uint  GC_MAX_ROOTS            = 64;
 const uint  BWD_GC_INTERVAL        = 1024;  /// Backward-jump GC check interval (prevents thrashing)
+/// Strings longer than this are never interned — they can't be property keys
+/// in practice, and interning them wastes memory (they accumulate in the table
+/// until the next GC, causing O(n²) memory growth in loops like `s += chunk`).
+const uint  MAX_INTERN_BYTES        = 256;
 
 // Lightfunc deleted-property bitset sizing.
 // Each builtin index occupies 3 bits (name/length/prototype deleted flags).
@@ -941,6 +945,41 @@ fn void Heap.destroy(&self) {
  * causes allocator fragmentation and RSS bloat.
  */
 fn void Heap.reset(&self) {
+    // Decref all string TVals held by live objects BEFORE entering teardown mode.
+    // This frees non-interned strings (not in str_table, not in heap_allocated)
+    // that were referenced only by object properties — e.g. a global variable
+    // holding a large string built with String.fromCodePoint.  Without this pass,
+    // non-interned strings leak across heap.reset() calls in the batch runner.
+    {
+        HeapHeader* cur = self.heap_allocated;
+        while (cur != null) {
+            if (cur.is_object()) {
+                hobject::HObject* obj = (hobject::HObject*)cur;
+                hobject::PropValue* pvs = obj.prop_values();
+                for (uint i = 0; i < obj.prop_count; i++) {
+                    if (pvs[i].is_string()) { self.decref_tval(&pvs[i]); }
+                }
+                types::TVal* arr = obj.array_part();
+                if (arr != null) {
+                    uint used = obj.array_used;
+                    for (uint i = 0; i < used; i++) {
+                        if (arr[i].is_string()) { self.decref_tval(&arr[i]); }
+                    }
+                }
+            }
+            cur = cur.next;
+        }
+    }
+    // Also decref strings still on the valstack (from an aborted/thrown test).
+    if (self.valstack_base != null && self.valstack_top_ptr != null) {
+        types::TVal* top = *self.valstack_top_ptr;
+        types::TVal* base = self.valstack_base;
+        while (base < top) {
+            if (base.is_string()) { self.decref_tval(base); }
+            base++;
+        }
+    }
+
     // Deactivate the active heap so hobject_free skips the RC decref loop —
     // same teardown-mode guard as in destroy().
     hobject::hobject_clear_active_heap();
@@ -1357,7 +1396,7 @@ fn void Heap.decref(&self, HeapHeader* hdr) {
     if (--hdr.refcount == 0) {
         if (hdr.is_string()) {
             hstring::HString* s = (hstring::HString*)hdr;
-            self.str_table_remove(s);
+            if (s.flags.is_interned) self.str_table_remove(s);
             self.free_string(s);
         } else {
             hdr.unlink(&self.heap_allocated);
@@ -1605,7 +1644,7 @@ fn void Heap.drain_gray(&self) {
 
         // --- Array part ---
         TVal* ap = obj.array_part();
-        if (ap != null) {
+        if (ap != null && obj.array_used > 0) {
             for (uint i = 0; i < obj.array_size; i++) {
                 self.mark_tval(&ap[i]);
             }
@@ -2591,6 +2630,16 @@ fn HString* Heap.str_intern(&self, char[] data) {
 /// may call this directly to skip the astral-scan fast-path check.
 fn HString* Heap.str_intern_normalized(&self, char[] data) {
     uint hash = self.hash_string(data);
+    // Large strings are never used as property keys, symbols, or identifiers.
+    // Interning them accumulates dead strings in the table until the next GC,
+    // causing O(n²) memory growth in string-building loops (e.g. buildString
+    // in the test262 regExpUtils harness).  Return a heap-allocated but
+    // non-interned string instead; it will be freed promptly by refcounting.
+    if (data.len > MAX_INTERN_BYTES) {
+        HString*? new_s = hstring::hstring_alloc(self, data, hash);
+        if (try s = new_s) { return s; }
+        return null;
+    }
     HString* existing = self.str_table_lookup(data, hash);
     if (existing != null) {
         return existing;

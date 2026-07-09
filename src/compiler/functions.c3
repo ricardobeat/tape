@@ -2002,8 +2002,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
 
-    // Strict-only engine: always strict, no propagation needed
     inner_ctx.lexer.set_strict(true);
+
+    // Propagate strict mode: inner functions inherit enclosing strict context.
+    inner_ctx.is_strict = self.is_strict;
 
     // Propagate generator flag: if the caller is compiling a generator,
     // the inner context (which parses the body) needs to know it's in a generator.
@@ -2356,6 +2358,8 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     }
 
     CompiledFunction* func = inner_ctx.finish()!;
+
+    func.flags.is_strict = inner_ctx.is_strict;
 
     // Set function name. The name parameter is a slice into the caller's
     // inferred_name_buf (or a lexer token buffer), which gets reused for

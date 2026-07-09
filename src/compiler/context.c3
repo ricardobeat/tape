@@ -340,6 +340,9 @@ struct CompilerContext {
     // the loop's lex_env before jumping.
     int  cur_lex_depth;
 
+    // Strict mode
+    bool is_strict;             // true when "use strict" directive was found
+
     // arguments tracking
     bool uses_arguments;        // true when 'arguments' is referenced in function body
 
@@ -1353,6 +1356,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.is_generator = self.is_generator;
     func.flags.is_async = self.is_async;
     func.flags.is_arrow = self.is_arrow;
+    func.flags.is_strict = self.is_strict;
     func.flags.uses_arguments = self.uses_arguments;
     // Direct eval must run in the caller's lexical environment: the CALL
     // paths only set ACT_FLAG_DIRECT_EVAL (which builtin_eval checks) when

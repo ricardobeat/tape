@@ -437,8 +437,28 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     if (max_extract > 0) {
         extracted_args = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * max_extract);
     }
+
+    // Fast path for plain Arrays: check the dense array part directly without
+    // interning the numeric key string.  This avoids 10000 intern lookups per
+    // apply(fn, largeArray) call, which would otherwise be O(n²) over many
+    // calls due to GC safepoint work growing with the intern table.
+    bool is_plain_array = arr_obj.get_class() == hobject::ObjClass.ARRAY
+                          && arr_obj.array_part() != null
+                          && arr_obj.prop_count <= 1;  // ≤1 own named prop (just "length")
+
     for (uint i = 0; i < max_extract; i++) {
         TVal elem;
+
+        // Fast path: dense ARRAY with no accessor overrides (most common case).
+        if (is_plain_array && i < arr_obj.array_size) {
+            TVal dv = arr_obj.array_part()[i];
+            if (!dv.is_undefined()) {
+                if (actual_count < max_extract) extracted_args[actual_count++] = dv;
+                continue;
+            }
+            // Slot is undefined — could be a hole; fall through to proto lookup.
+        }
+
         char[20] buf;
         int n = libc::snprintf(&buf, 20, "%d", i);
         if (n <= 0 || n >= 20) break;
@@ -458,7 +478,7 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             }
         } else if (own_idx >= 0) {
             elem = arr_obj.prop_values()[own_idx];
-        } else if (arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null
+        } else if (!is_plain_array && arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null
                    && i < arr_obj.array_size && !arr_obj.array_part()[i].is_undefined()) {
             elem = arr_obj.array_part()[i];
         } else {

@@ -156,9 +156,19 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_act.max_heap_reg = 0;
                     new_act.caller_valstack_top = vm.valstack_top;
                     // Arrow functions use lexical this (inherited from enclosing scope)
-                    // Fast path: skip refcounting when this value is not a heap ref
+                    // ES5 §10.4.3: for non-strict (non-arrow) compiled functions,
+                    // coerce null/undefined thisArg → global object.
                     {
                         TVal* this_src = target_fast.is_arrow() ? &ds.act.this_binding : &saved_this;
+                        TVal coerced_this;
+                        bool used_coerced = false;
+                        if (!target_fast.is_arrow() && !target_fast.is_strict() && (this_src.is_undefined() || this_src.is_null())) {
+                            if (vm.global_env != null && vm.global_env.bindings != null) {
+                                coerced_this.set_object(vm.global_env.bindings);
+                                this_src = &coerced_this;
+                                used_coerced = true;
+                            }
+                        }
                         if (!this_src.is_heap_allocated()) {
                             if (new_act.this_binding.is_heap_allocated()) {
                                 vm.heap.decref_tval(&new_act.this_binding);
@@ -167,6 +177,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         } else {
                             vm.heap.tval_copy_ref(&new_act.this_binding, this_src);
                         }
+                        (void)used_coerced;
                     }
 
                     // Activation fully initialized — now make it visible to GC.
@@ -985,12 +996,14 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 }
             }
             // Arrow functions use lexical this (inherited from enclosing scope).
-            // Strict-only engine: non-arrow functions always use raw `this` (no
-            // sloppy-mode null/undefined→global or primitive→ToObject coercion).
+            // ES5 §10.4.3: for non-arrow compiled functions, coerce null/undefined → global.
             if (target.is_arrow()) {
                 vm.heap.tval_copy_ref(&new_act.this_binding, &ds.act.this_binding);
             } else {
                 TVal raw_this = ds.regs_base[callee_reg + 1];
+                if (!target.is_strict() && (raw_this.is_undefined() || raw_this.is_null()) && vm.global_env != null && vm.global_env.bindings != null) {
+                    raw_this.set_object(vm.global_env.bindings);
+                }
                 vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
             }
 

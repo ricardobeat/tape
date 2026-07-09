@@ -225,7 +225,35 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     // Load per-test `includes:` harness files (testTypedArray.js, detachArrayBuffer.js, etc.)
     load_test_includes(v, hp, src);
 
-    int src_rc = exec_js(v, hp, src);
+    // Detect onlyStrict flag and prepend "use strict";\n to source.
+    bool only_strict = false;
+    {
+        usz scan = src.len < 4096 ? src.len : (usz)4096;
+        for (usz oi = 0; oi + 10 < scan; oi++) {
+            if (src[oi] == 'o' && src[oi+1] == 'n' && src[oi+2] == 'l' && src[oi+3] == 'y'
+                && src[oi+4] == 'S' && src[oi+5] == 't' && src[oi+6] == 'r' && src[oi+7] == 'i'
+                && src[oi+8] == 'c' && src[oi+9] == 't') {
+                only_strict = true;
+                break;
+            }
+        }
+    }
+    char[] exec_src = src;
+    char* strict_buf = null;
+    if (only_strict) {
+        const char[] PREFIX = "\"use strict\";\n";
+        usz total = PREFIX.len + src.len + 1;
+        strict_buf = (char*)libc::malloc(total);
+        if (strict_buf != null) {
+            for (usz k = 0; k < PREFIX.len; k++) { strict_buf[k] = PREFIX[k]; }
+            for (usz k = 0; k < src.len; k++) { strict_buf[PREFIX.len + k] = src[k]; }
+            strict_buf[PREFIX.len + src.len] = 0;
+            exec_src = strict_buf[:PREFIX.len + src.len];
+        }
+    }
+    defer if (strict_buf != null) { libc::free(strict_buf); }
+
+    int src_rc = exec_js(v, hp, exec_src);
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 

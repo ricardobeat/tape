@@ -784,6 +784,8 @@ bitstruct FuncFlags : uint {
     /// `class.prototype = ...` must throw TypeError).  When false, .prototype
     /// uses PROP_FLAGS_WEC (configurable=true).
     bool  is_class_ctor    : 21;
+    /// Function body had a "use strict" directive.
+    bool  is_strict        : 22;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -936,6 +938,11 @@ macro bool CompiledFunction.is_global_fn(&self) {
 }
 macro bool CompiledFunction.needs_lex_bridge(&self) {
     return self.flags.needs_lex_bridge;
+}
+
+/// Returns `true` when the function body had a "use strict" directive.
+macro bool CompiledFunction.is_strict(&self) {
+    return self.flags.is_strict;
 }
 
 /// Returns `true` when the function uses `arguments`.
