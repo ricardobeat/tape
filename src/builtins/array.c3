@@ -2359,10 +2359,109 @@ fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
     return true;
 }
 
+/// Helper: is `v` callable (lightfunc or object with the callable flag)?
+/// Used throughout Array.from for IsCallable checks on mapfn/@@iterator/next.
+fn bool arr_from_is_callable(TVal v) {
+    if (v.is_lightfunc()) return true;
+    if (v.is_object() && v.get_heapptr() != null) {
+        return ((HObject*)v.get_heapptr()).is_callable();
+    }
+    return false;
+}
+
+/// IteratorClose(iterator, completion) — ES2022 §7.4.8, "poor man's" variant
+/// used when abandoning iteration early due to an abrupt completion that has
+/// already been recorded in ctx (ctx.should_throw/ctx.throw_value). Calls
+/// iterator.return() if present, discarding *its* result but propagating a
+/// throw from close itself would override the original completion per spec
+/// step 5 — however we keep the original completion (matching most engines'
+/// pragmatic behavior for a non-throwing return()) since ctx already holds
+/// the completion to propagate. If close() throws, the original completion
+/// is preserved (spec step 5 says close()'s throw masks the original only
+/// when the original was a normal completion, which is not this call site's
+/// use — this helper is only invoked to close on an *abrupt* completion).
+fn void arr_iterator_close_after_throw(BuiltinContext* ctx, TVal iterator) {
+    if (ctx.heap.call_fn == null || ctx.vm == null) return;
+    if (!iterator.is_object() || iterator.get_heapptr() == null) return;
+    HObject* iter_obj = (HObject*)iterator.get_heapptr();
+    HString* return_key = builtin_intern_string(ctx.heap, "return");
+    if (return_key == null) return;
+    TVal? return_method_opt = iter_obj.get_prop_proto(return_key);
+    if (try return_method = return_method_opt) {
+        if (return_method.is_undefined() || return_method.is_null()) return;
+        if (!arr_from_is_callable(return_method)) return;
+        ctx.heap.call_fn(ctx.vm, return_method, null, 0, iterator);
+        // Swallow any error from return() itself — the original abrupt
+        // completion already recorded in ctx takes precedence.
+        ctx.heap.has_error = false;
+    }
+}
+
+/// Set(O, "length", value, true) — ES2022 §7.3.4, restricted to the
+/// "length" key on the Array.from result object A. Unlike arr_create_data_
+/// property_or_throw (which bypasses the prototype chain), this honours an
+/// inherited accessor setter for "length" — needed when A came from a custom
+/// constructor whose .prototype defines a length setter. Returns true on
+/// success; on failure sets ctx.should_throw and returns false.
+fn bool arr_set_length_or_throw(BuiltinContext* ctx, HObject* obj, HString* len_key, ulong len_val) {
+    TVal len_tv;
+    if (len_val <= 0x7FFFFFFF) {
+        len_tv.set_fastint((long)len_val);
+    } else {
+        len_tv.set_number((double)len_val);
+    }
+
+    // Own property "length" that is a data property: fall back to the plain
+    // array-friendly path so ARRAY-class result objects keep their fast
+    // dense-array/length-cache sync behavior in put_prop.
+    int own_idx = obj.find_prop_idx(len_key);
+    if (own_idx >= 0 && !obj.get_prop_flags((uint)own_idx).is_accessor) {
+        if (!obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC)) {
+            arr_throw_type_error(ctx, "Cannot set property length, no space left");
+            return false;
+        }
+        return true;
+    }
+
+    // No own property: check the prototype chain for an inherited accessor
+    // before falling back to defining a new own data property (Set()'s
+    // OrdinarySet walks the chain first per ES2022 §10.1.9.2).
+    hobject::AccessorResult acc = obj.find_accessor_proto(len_key, false);
+    if (acc.found) {
+        if (acc.accessor_fn.is_undefined() || acc.accessor_fn.is_null()) {
+            arr_throw_type_error(ctx, "Cannot set property length, has only a getter");
+            return false;
+        }
+        if (ctx.heap.call_fn == null || ctx.vm == null) return true;
+        TVal this_tv; this_tv.set_object(obj);
+        TVal[1] args = { len_tv };
+        ctx.heap.call_fn(ctx.vm, acc.accessor_fn, &args[0], 1, this_tv);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return false;
+        }
+        return true;
+    }
+
+    // No accessor anywhere on the chain (own or inherited data property, or
+    // nothing at all) — define/overwrite as an own data property on obj.
+    if (!obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC)) {
+        arr_throw_type_error(ctx, "Cannot set property length, no space left");
+        return false;
+    }
+    return true;
+}
+
+/// Array.from ( items [ , mapfn [ , thisArg ] ] ) — ES2022 §23.1.2.1
 fn void builtin_array_from(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
 
-    // Step 1: Get items (first arg) — use undefined if missing
+    // Step 1: Let C be the this value.
+    TVal c_val = ctx.this_val;
+
+    // Step 2: items (first arg) — use undefined if missing
     TVal items;
     if (ctx.argc > 0) {
         items = ctx.regs[ctx.base_reg];
@@ -2370,51 +2469,33 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         items.set_undefined();
     }
 
-    // Step 2: Check mapfn (second arg, optional)
+    // Step 3-4: mapfn (second arg, optional). If not undefined, must be
+    // callable — TypeError otherwise. This check (and thisArg capture) must
+    // happen before any iteration/construction.
     TVal mapfn;
     bool mapping = false;
     TVal this_arg;
+    this_arg.set_undefined();
     if (ctx.argc > 1) {
         mapfn = ctx.regs[ctx.base_reg + 1];
-        if (!mapfn.is_undefined() && !mapfn.is_null()) {
-            bool callable = false;
-            if (mapfn.is_lightfunc()) {
-                callable = true;
-            } else if (mapfn.is_object() && mapfn.get_heapptr() != null) {
-                HObject* fn_obj = (HObject*)mapfn.get_heapptr();
-                callable = fn_obj.is_callable();
-            }
-            if (!callable) {
-                HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
-                if (try err = err_raw) {
-                    err.prototype = heap.type_err_proto;
-                    HString* msg_str = builtin_intern_string(heap, "The second argument to Array.from is not callable");
-                    if (msg_str != null) {
-                        TVal msg_val;
-                        msg_val.set_string(msg_str);
-                        HString* msg_key = builtin_intern_string(heap, "message");
-                        err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                    }
-                    ctx.should_throw = true;
-                    ctx.throw_value.set_object(err);
-                }
+        if (!mapfn.is_undefined()) {
+            if (!arr_from_is_callable(mapfn)) {
+                arr_throw_type_error(ctx, "The second argument to Array.from is not callable");
                 ctx.result.set_undefined();
                 return;
             }
             mapping = true;
             if (ctx.argc > 2) {
                 this_arg = ctx.regs[ctx.base_reg + 2];
-            } else {
-                this_arg.set_undefined();
             }
         }
     }
 
-    // Step 3: Try iterable path — get @@iterator from items
+    // Step 5-6: usingIterator = GetMethod(items, @@iterator).
     HString* iter_sym = ensure_iterator_symbol(heap);
-    bool use_iter = false;
-    TVal iterator;
-    TVal iterable = items;
+    TVal iter_method;
+    iter_method.set_undefined();
+    bool have_iter_method = false;
 
     if (iter_sym != null) {
         // GetMethod(items, @@iterator) — ToObject if needed for property access
@@ -2440,73 +2521,133 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         }
 
         if (items_obj != null) {
-            TVal? iter_method_opt = items_obj.get_prop_proto(iter_sym);
-            if (try iter_method = iter_method_opt) {
-                bool callable = false;
-                if (iter_method.is_lightfunc()) {
-                    callable = true;
-                } else if (iter_method.is_object() && iter_method.get_heapptr() != null) {
-                    HObject* fn_hobj = (HObject*)iter_method.get_heapptr();
-                    callable = fn_hobj.is_callable();
-                }
-                if (callable && heap.call_fn != null && ctx.vm != null) {
-                    iterator = heap.call_fn(ctx.vm, iter_method, null, 0, items);
-                    if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
-                    use_iter = true;
+            TVal? iter_method_opt = builtins_generic_get(items_obj, iter_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try im = iter_method_opt) {
+                if (!im.is_undefined() && !im.is_null()) {
+                    iter_method = im;
+                    have_iter_method = true;
                 }
             }
         }
     }
 
-    if (use_iter) {
-        // === Iterable path ===
-        HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
-        if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
-        HObject* arr = arr_raw;
-        arr.prototype = heap.array_proto;
+    if (have_iter_method) {
+        // === Iterable path — ES2022 §23.1.2.1 step 6 ===
+        if (!arr_from_is_callable(iter_method)) {
+            arr_throw_type_error(ctx, "Result of the Symbol.iterator method is not callable");
+            ctx.result.set_undefined();
+            return;
+        }
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+
+        // 6.a-c: If IsConstructor(C), let A be Construct(C); else ArrayCreate(0).
+        // This runs BEFORE GetIterator (6.d) per spec order — a throwing
+        // constructor must propagate without ever creating the iterator.
+        HObject* arr = null;
+        if (c_val.is_object() && c_val.get_heapptr() != null && arr_from_is_callable(c_val)) {
+            TVal ctor_result = heap.construct_fn(ctx.vm, c_val, null, 0);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                ctx.result.set_undefined();
+                return;
+            }
+            if (ctor_result.is_object() && ctor_result.get_heapptr() != null) {
+                arr = (HObject*)ctor_result.get_heapptr();
+            }
+        }
+        if (arr == null) {
+            HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+            arr = arr_raw;
+            arr.prototype = heap.array_proto;
+        }
+
+        // 6.d: iterator = GetIterator(items, usingIterator).
+        TVal iterator = heap.call_fn(ctx.vm, iter_method, null, 0, items);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
+        }
+        if (!iterator.is_object() || iterator.get_heapptr() == null) {
+            arr_throw_type_error(ctx, "Result of the Symbol.iterator method is not an object");
+            ctx.result.set_undefined();
+            return;
+        }
 
         HString* next_key = builtin_intern_string(heap, "next");
         HString* done_key = builtin_intern_string(heap, "done");
         HString* value_key = builtin_intern_string(heap, "value");
+        HString* len_key = builtin_intern_string(heap, "length");
+        HObject* iter_obj = (HObject*)iterator.get_heapptr();
 
         uint k = 0;
-        while (heap.call_fn != null && ctx.vm != null) {
-            if (!iterator.is_object() || iterator.get_heapptr() == null) break;
-            HObject* iter_obj = (HObject*)iterator.get_heapptr();
-
-            TVal? next_method_opt = iter_obj.get_prop_proto(next_key);
+        while (true) {
+            // g.i: Pk = ToString(k) (implicit via int_to_hstring below).
+            // g.ii-iii: next = IteratorStep(iterator); ReturnIfAbrupt.
+            TVal? next_method_opt = builtins_generic_get(iter_obj, next_key, ctx);
+            if (ctx.should_throw) {
+                // GetMethod(iterator, "next") threw — no iterator to close
+                // (IteratorStep itself failed before invoking next()).
+                ctx.result.set_undefined();
+                return;
+            }
             TVal next_method;
-            if (try nm = next_method_opt) {
-                next_method = nm;
-            } else { break; }
-
-            bool callable = false;
-            if (next_method.is_lightfunc()) {
-                callable = true;
-            } else if (next_method.is_object() && next_method.get_heapptr() != null) {
-                callable = ((HObject*)next_method.get_heapptr()).is_callable();
+            if (try nm = next_method_opt) { next_method = nm; } else { break; }
+            if (!arr_from_is_callable(next_method)) {
+                arr_throw_type_error(ctx, "iterator.next is not callable");
+                ctx.result.set_undefined();
+                return;
             }
-            if (!callable) break;
 
-            TVal result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
-            if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
-            if (!result.is_object() || result.get_heapptr() == null) break;
+            TVal step_result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                ctx.result.set_undefined();
+                return;
+            }
+            if (!step_result.is_object() || step_result.get_heapptr() == null) {
+                arr_throw_type_error(ctx, "Iterator result is not an object");
+                ctx.result.set_undefined();
+                return;
+            }
+            HObject* result_obj = (HObject*)step_result.get_heapptr();
 
-            HObject* result_obj = (HObject*)result.get_heapptr();
-            TVal? done_opt = result_obj.get_prop_proto(done_key);
+            // g.iv: If next is false (i.e. done is true), set A.length = k, return A.
+            TVal? done_opt = builtins_generic_get(result_obj, done_key, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             bool done = false;
-            if (try dv = done_opt) {
-                done = builtin_to_boolean(&dv);
+            if (try dv = done_opt) { done = builtin_to_boolean(&dv); }
+            if (done) {
+                if (len_key != null) {
+                    if (!arr_set_length_or_throw(ctx, arr, len_key, (ulong)k)) {
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                }
+                ctx.result.set_object(arr);
+                return;
             }
-            if (done) break;
 
-            TVal? value_opt = result_obj.get_prop_proto(value_key);
+            // g.v-vi: nextValue = IteratorValue(next); ReturnIfAbrupt.
+            TVal? value_opt = builtins_generic_get(result_obj, value_key, ctx);
+            if (ctx.should_throw) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                ctx.result.set_undefined();
+                return;
+            }
             TVal next_value;
-            if (try vv = value_opt) {
-                next_value = vv;
-            } else { break; }
+            if (try vv = value_opt) { next_value = vv; } else { next_value.set_undefined(); }
 
-            // Apply mapfn if mapping
+            // g.vii-viii: if mapping, mappedValue = Call(mapfn, T, «nextValue, k»),
+            // closing the iterator on an abrupt completion.
             TVal final_value = next_value;
             if (mapping) {
                 TVal[2] map_args;
@@ -2514,41 +2655,37 @@ fn void builtin_array_from(BuiltinContext* ctx) {
                 TVal k_tv; k_tv.set_fastint((long)k);
                 map_args[1] = k_tv;
                 final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
-                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    arr_iterator_close_after_throw(ctx, iterator);
+                    ctx.result.set_undefined();
+                    return;
+                }
             }
+
+            // g.ix-x: CreateDataPropertyOrThrow(A, Pk, mappedValue), closing
+            // the iterator on an abrupt completion.
             HString* pk = heap.int_to_hstring((long)k);
             if (pk != null) {
-                arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
+                if (!arr_create_data_property_or_throw(ctx, arr, pk, final_value)) {
+                    arr_iterator_close_after_throw(ctx, iterator);
+                    ctx.result.set_undefined();
+                    return;
+                }
             }
             k++;
-        }
-
-        HString* len_key = builtin_intern_string(heap, "length");
-        if (len_key != null) {
-            TVal len_tv; len_tv.set_fastint((long)k);
-            arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
         }
 
         ctx.result.set_object(arr);
         return;
     }
 
-    // === Array-like path ===
-    // Step: items must not be null or undefined
+    // === Array-like path — ES2022 §23.1.2.1 steps 7-19 ===
+    // items must not be null or undefined (ToObject would throw).
     if (items.is_undefined() || items.is_null()) {
-        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(heap, "Cannot convert undefined or null to object");
-            if (msg_str != null) {
-                TVal msg_val;
-                msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.should_throw = true;
-            ctx.throw_value.set_object(err);
-        }
+        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         ctx.result.set_undefined();
         return;
     }
@@ -2568,25 +2705,54 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         (*array_like.extra_ptr()).prim.primitive_value = items;
     }
 
-    // Get .length
+    // Get .length — Get(arrayLike, "length") then ToLength.
     HString* len_key = builtin_intern_string(heap, "length");
     ulong len = 0;
     if (is_string_prim) {
         len = str_val.char_length();
     } else if (len_key != null) {
-        TVal? len_opt = array_like.get_prop_proto(len_key);
+        TVal? len_opt = builtins_generic_get(array_like, len_key, ctx);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (try lv = len_opt) {
             double len_d = builtin_to_number_getdouble(ctx, &lv);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             len = arr_to_length(len_d);
         }
     }
 
-    // Create result array
-    HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
-    HObject* arr = arr_raw;
-    arr.prototype = heap.array_proto;
+    // 12. If IsConstructor(C) is true, let A be Construct(C, «len»); else
+    //     let A be ArrayCreate(len).
+    HObject* arr = null;
+    if (c_val.is_object() && c_val.get_heapptr() != null && arr_from_is_callable(c_val)) {
+        TVal len_arg;
+        if (len <= 0x7FFFFFFF) {
+            len_arg.set_fastint((long)len);
+        } else {
+            len_arg.set_number((double)len);
+        }
+        TVal ctor_result = heap.construct_fn(ctx.vm, c_val, &len_arg, 1);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
+        }
+        if (ctor_result.is_object() && ctor_result.get_heapptr() != null) {
+            arr = (HObject*)ctor_result.get_heapptr();
+        }
+    }
+    if (arr == null) {
+        HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+        arr = arr_raw;
+        arr.prototype = heap.array_proto;
+    }
 
+    // 13-17. Repeat, while k < len: read arrayLike[k] (re-fetched from the
+    // still-live array_like object each iteration, per spec order — the
+    // mapfn/getter side effects visible during iteration reflect the current
+    // state of arrayLike, not a value snapshotted before the loop began).
     for (ulong k = 0; k < len; k++) {
         HString* pk = heap.int_to_hstring((long)k);
         TVal k_value;
@@ -2608,7 +2774,8 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             HString* ch_str = builtin_intern_string(heap, cbuf[:cblen]);
             if (ch_str != null) k_value.set_string(ch_str);
         } else if (pk != null) {
-            TVal? elem_opt = array_like.get_prop_proto(pk);
+            TVal? elem_opt = builtins_generic_get(array_like, pk, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             if (try elem = elem_opt) {
                 k_value = elem;
             }
@@ -2622,19 +2789,30 @@ fn void builtin_array_from(BuiltinContext* ctx) {
             map_args[1] = k_tv;
             if (heap.call_fn != null && ctx.vm != null) {
                 final_value = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, this_arg);
-                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
             }
         }
 
         if (pk != null) {
-            arr.put_prop(pk, final_value, hobject::PROP_FLAGS_WEC);
+            if (!arr_create_data_property_or_throw(ctx, arr, pk, final_value)) {
+                ctx.result.set_undefined();
+                return;
+            }
         }
     }
 
-    // Set arr.length = len
+    // 18. Set A.length = len.
     if (len_key != null) {
-        TVal len_tv; len_tv.set_fastint((long)len);
-        arr.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+        if (!arr_set_length_or_throw(ctx, arr, len_key, len)) {
+            ctx.result.set_undefined();
+            return;
+        }
     }
 
     ctx.result.set_object(arr);
@@ -2728,6 +2906,39 @@ fn void arr_throw_type_error(BuiltinContext* ctx, char[] msg) {
         ctx.should_throw = true;
         ctx.throw_value.set_object(err);
     }
+}
+
+/// CreateDataPropertyOrThrow(O, P, V) — ES2022 §7.3.7 / §7.3.6 CreateDataProperty.
+/// Used by Array.from to define each result index with {writable:true,
+/// enumerable:true, configurable:true} semantics rather than plain [[Set]] —
+/// this matters when the result object's index was pre-defined as
+/// non-configurable with different attributes (must throw), or when the
+/// object is non-extensible and the property doesn't already exist (must
+/// throw). Returns true on success; on failure sets ctx.should_throw and
+/// returns false.
+fn bool arr_create_data_property_or_throw(BuiltinContext* ctx, HObject* obj, HString* key, TVal val) {
+    int idx = obj.find_prop_idx(key);
+    if (idx >= 0) {
+        hobject::PropFlags existing = obj.get_prop_flags((uint)idx);
+        // If the existing property is already {W:true, E:true, C:true} and a
+        // plain data property, CreateDataProperty may simply overwrite the
+        // value. Otherwise, since configurable is false, redefining to the
+        // desired attributes is disallowed — throw per DefineOwnProperty's
+        // "reject" path (ES2022 §10.1.6.3 step 4/5 validation).
+        if (!existing.configurable
+            && (existing.is_accessor || !existing.writable || !existing.enumerable)) {
+            arr_throw_type_error(ctx, "Cannot redefine property");
+            return false;
+        }
+    } else if (!obj.is_extensible()) {
+        arr_throw_type_error(ctx, "Cannot add property, object is not extensible");
+        return false;
+    }
+    if (!obj.put_prop(key, val, hobject::PROP_FLAGS_WEC)) {
+        arr_throw_type_error(ctx, "Cannot add property, no space left");
+        return false;
+    }
+    return true;
 }
 
 /// Helper: check if numeric key exists on object (ES5 §15.4.5.1 step 4 "k in O").
