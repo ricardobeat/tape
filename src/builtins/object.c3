@@ -1695,6 +1695,16 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (idx >= 0) {
                 obj.prop_values()[idx] = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
             }
+            // Clear the dense array slot so arr_get_elem_vm falls through to the
+            // named-property accessor rather than returning the getter function object.
+            if (key_hstr.is_arridx()) {
+                uint ai = key_hstr.array_index();
+                TVal* ap = obj.array_part();
+                if (ap != null && ai < obj.array_size) {
+                    TVal undef; undef.set_undefined();
+                    ap[ai] = undef;
+                }
+            }
         } else {
             obj.put_prop(key, desc_vals[0], desc_flags);
         }
@@ -1810,6 +1820,16 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (has_enum_in_desc) cur_flags.enumerable   = desc_flags.enumerable;
             if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
             obj.set_prop_flags((uint)existing_idx, cur_flags);
+            // Clear the dense array slot so arr_get_elem_vm falls through to the
+            // named-property accessor rather than returning a stale data value.
+            if (key_hstr.is_arridx()) {
+                uint ai = key_hstr.array_index();
+                TVal* ap = obj.array_part();
+                if (ap != null && ai < obj.array_size) {
+                    TVal undef; undef.set_undefined();
+                    ap[ai] = undef;
+                }
+            }
         } else {
             // Update data property
             bool has_val_in_desc = false;

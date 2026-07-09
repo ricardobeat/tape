@@ -2138,6 +2138,18 @@ fn bool HObject.es_delete_prop(&self, void* key) {
         if (!self.get_prop_flags((uint)idx).configurable) {
             return false;  // Non-configurable → [[Delete]] returns false.
         }
+        // When deleting a named property that is also an array index,
+        // clear the dense array slot too — put_prop syncs both directions.
+        if (key != null && (self.get_class() == hobject::ObjClass.ARRAY || self.get_class() == hobject::ObjClass.ARGUMENTS)) {
+            HString* hkey2 = (HString*)key;
+            if (hkey2.is_arridx()) {
+                uint ai2 = (uint)hkey2.array_index();
+                if (ai2 < self.array_size) {
+                    TVal undef2; undef2.set_undefined();
+                    self.set_array_idx(ai2, undef2);
+                }
+            }
+        }
         return self.delete_prop(key);
     }
     // ARRAY / ARGUMENTS exotic: numeric indices stored in the dense part are
