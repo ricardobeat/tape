@@ -120,14 +120,16 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    double downstream_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    double downstream_d = (ctx.argc > 0 && !ctx.regs[ctx.base_reg].is_undefined())
+        ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg])
+        : 0.0;
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     long downstream_i = (long)downstream_d;
     if (downstream_i < 0) { downstream_i = (long)len + downstream_i; if (downstream_i < 0) downstream_i = 0; }
     if ((ulong)downstream_i > len) downstream_i = (long)len;
 
     long start_i = 0;
-    if (ctx.argc > 1) {
+    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
         double sd = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         start_i = (long)sd;
@@ -246,8 +248,10 @@ fn void builtin_array_proto_includes(BuiltinContext* ctx) {
 
 /// Helper: flatten source array into downstream array recursively.
 /// Returns the next downstream index after all elements are inserted.
-fn ulong flatten_into(HObject* downstream, HObject* source, ulong source_len, ulong downstream_idx, double depth, Heap* heap) {
+fn ulong flatten_into(HObject* downstream, HObject* source, ulong source_len, ulong downstream_idx, double depth, BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
     for (ulong i = 0; i < source_len; i++) {
+        if (ctx.should_throw) return downstream_idx;
         if (!arr_has_prop(source, i, heap)) {
             continue;
         }
@@ -270,9 +274,11 @@ fn ulong flatten_into(HObject* downstream, HObject* source, ulong source_len, ul
             ((HObject*)elem.get_heapptr()).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
             HObject* inner = (HObject*)elem.get_heapptr();
             ulong inner_len = arr_to_length(array_get_length_raw(inner, heap, null));
-            downstream_idx = flatten_into(downstream, inner, inner_len, downstream_idx, depth - 1, heap);
+            downstream_idx = flatten_into(downstream, inner, inner_len, downstream_idx, depth - 1, ctx);
         } else {
-            array_set_elem_ulong(downstream, downstream_idx, elem, heap);
+            if (!array_set_elem_ulong_checked(ctx, downstream, downstream_idx, elem)) {
+                return downstream_idx;
+            }
             downstream_idx++;
         }
     }
@@ -309,14 +315,14 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
     }
     if (depth_num < 0) depth_num = 0;
 
-    HObject*? new_arr = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = new_arr) {
-        ctx.result.set_undefined(); return;
-    }
-    HObject* result = new_arr;
-    result.prototype = ctx.heap.array_proto;
+    // ES2019 §22.1.2.3 step 5: ArraySpeciesCreate(O, 0). Throws TypeError when
+    // the species constructor is non-callable or returns a non-object.
+    HObject* result = array_species_create_result(ctx, obj, 0);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    if (result == null) { ctx.result.set_undefined(); return; }
 
-    ulong n = flatten_into(result, obj, len, 0, depth_num, ctx.heap);
+    ulong n = flatten_into(result, obj, len, 0, depth_num, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     array_set_length_ulong(result, n, ctx.heap);
 
     ctx.result.set_object(result);
