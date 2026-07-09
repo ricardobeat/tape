@@ -1491,42 +1491,25 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
 
-    // ES5 §15.4.5.1 ArraySetLength: full validation when defining 'length' on an Array.
-    // Per the spec, this must happen BEFORE the general [[DefineOwnProperty]] path.
-    // Array length is always non-configurable and non-writable.
+    // ES5 §15.4.5.1 ArraySetLength: special handling when defining 'length' on an Array.
+    // This path runs before general [[DefineOwnProperty]] and handles the full
+    // ArraySetLength algorithm, including ToUint32, writable transitions, and
+    // element deletion stopping at non-configurable entries.
     bool is_array_length = obj.get_class() == hobject::ObjClass.ARRAY
         && key_hstr.equals("length");
-    uint arr_new_len = 0;
-    bool arr_has_new_len = false;
     if (is_array_length) {
-        // ES5 §15.4.5.1 step 2 / ArraySetLength: If 'value' is present, validate it
-        // via ToNumber/ToUint32 FIRST. Per ES2015 §10.4.2.4 ArraySetLength, this
-        // RangeError check must precede the descriptor-flag (get/set, configurable,
-        // writable, enumerable) TypeError rejections below.
-        HString* val_k = builtin_intern_string(ctx.heap, "value");
-        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
-        if (has_value_in_desc) {
-            TVal new_len_val = desc_vals[0];
-
-            // ES5 §15.4.5.1 step 3.c: ToNumber then ToUint32. Use the VM-aware
-            // helper so object values are converted via ToPrimitive (valueOf/toString).
-            double num = builtin_to_number_vm(ctx, &new_len_val);
-            if (ctx.should_throw) {
-                return;
+        // Determine the current length and its writable flag.
+        uint old_len = array_get_length(obj, ctx.heap);
+        bool len_is_writable = true;
+        HString* len_key_intern = builtin_intern_string(ctx.heap, "length");
+        if (len_key_intern != null) {
+            int len_prop_idx = obj.find_prop_idx(len_key_intern);
+            if (len_prop_idx >= 0) {
+                len_is_writable = obj.get_prop_flags((uint)len_prop_idx).writable;
             }
-
-            // ToUint32: reject NaN, ±∞, negative, non-integer, > 2^32-1
-            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
-                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
-                return;
-            }
-
-            uint new_len = (uint)num;
-            arr_new_len = new_len;
-            arr_has_new_len = true;
         }
 
-        // Check for accessor descriptor on length — reject (length is always data)
+        // Reject accessor descriptor on length (length is always a data property).
         HString* get_k = builtin_intern_string(ctx.heap, "get");
         HString* set_k = builtin_intern_string(ctx.heap, "set");
         bool has_get = (get_k != null) && desc_obj.find_prop_idx(get_k) >= 0;
@@ -1536,7 +1519,7 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             return;
         }
 
-        // ES5 §15.4.5.1 step 3.a: Reject if configurable is explicitly set to true
+        // Reject configurable:true (length is always non-configurable).
         HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
         bool has_conf = (conf_k != null) && desc_obj.find_prop_idx(conf_k) >= 0;
         if (has_conf && desc_flags.configurable) {
@@ -1544,36 +1527,96 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             return;
         }
 
-        // ES5 §15.4.5.1 step 3.b: Reject if writable is explicitly set to false
-        HString* writ_k = builtin_intern_string(ctx.heap, "writable");
-        bool has_wrt = (writ_k != null) && desc_obj.find_prop_idx(writ_k) >= 0;
-        if (has_wrt && !desc_flags.writable) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
-            return;
-        }
-
-        // Array length is non-configurable and non-enumerable; reject attempts
-        // to change its enumerability (e.g. { enumerable: true }).
+        // Reject enumerable:true (length is always non-enumerable).
         HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
         bool has_enum = (enum_k != null) && desc_obj.find_prop_idx(enum_k) >= 0;
         if (has_enum && desc_flags.enumerable) {
             builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
             return;
         }
-    }
-    // Array length: return early. The only valid operation is changing the value.
-    // configurable/writable are rejected above, and enumerable cannot be changed.
-    if (is_array_length) {
-        if (arr_has_new_len) {
-            // ES5 §15.4.5.1 step 3.l: truncate elements when new < old
-            uint old_len = array_get_length(obj, ctx.heap);
-            if (arr_new_len < old_len) {
-                for (uint di = old_len; di > arr_new_len; di--) {
-                    array_delete_elem(obj, di - 1, ctx.heap);
+
+        // ES5 §15.4.5.1 step 3.a.i: reject writable false→true on non-writable length.
+        HString* writ_k = builtin_intern_string(ctx.heap, "writable");
+        bool has_wrt = (writ_k != null) && desc_obj.find_prop_idx(writ_k) >= 0;
+        if (has_wrt && desc_flags.writable && !len_is_writable) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+            return;
+        }
+
+        // If value is present, validate and apply ToUint32 FIRST (step 3.c/3.d).
+        HString* val_k = builtin_intern_string(ctx.heap, "value");
+        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
+        uint arr_new_len = old_len;
+        bool arr_has_new_len = false;
+        if (has_value_in_desc) {
+            TVal new_len_val = desc_vals[0];
+            double num = builtin_to_number_vm(ctx, &new_len_val);
+            if (ctx.should_throw) return;
+            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
+                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
+                return;
+            }
+            arr_new_len = (uint)num;
+            arr_has_new_len = true;
+        }
+
+        // ES5 §15.4.5.1 step 3.f.i: if non-writable, reject value changes.
+        if (arr_has_new_len && !len_is_writable && arr_new_len != old_len) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'length'");
+            return;
+        }
+
+        // Apply the new length value, deleting elements and checking configurable.
+        bool threw_type_error = false;
+        if (arr_has_new_len && arr_new_len < old_len) {
+            // Step 3.l: iterate down from old_len-1, deleting configurable elements.
+            // Stop (and throw TypeError) if a non-configurable element is found.
+            uint di = old_len;
+            while (di > arr_new_len) {
+                di--;
+                HString* idx_key = ctx.heap.int_to_hstring((long)di);
+                bool elem_deleted = true;
+                if (idx_key != null) {
+                    int elem_idx = obj.find_prop_idx(idx_key);
+                    if (elem_idx >= 0 && !obj.get_prop_flags((uint)elem_idx).configurable) {
+                        // Non-configurable element — stop here, set length to di+1.
+                        arr_new_len = di + 1;
+                        threw_type_error = true;
+                        break;
+                    }
+                    if (elem_idx >= 0) {
+                        obj.delete_prop(idx_key);
+                    }
+                }
+                // Also clear the dense-array slot if present.
+                if (di < obj.array_size) {
+                    TVal undef_tv; undef_tv.set_undefined();
+                    obj.array_part()[di] = undef_tv;
+                    if (obj.array_used > 0) obj.array_used--;
                 }
             }
-            array_set_length(obj, arr_new_len, ctx.heap);
         }
+        array_set_length(obj, arr_new_len, ctx.heap);
+
+        // ES5 §15.4.5.1 step 3.i.ii/3.j: apply writable:false AFTER truncation.
+        // (The spec says to set writable last so that the length can be modified
+        // during element deletion even when the descriptor requests non-writable.)
+        if (has_wrt && !desc_flags.writable) {
+            if (len_key_intern != null) {
+                int len_prop_idx = obj.find_prop_idx(len_key_intern);
+                if (len_prop_idx >= 0) {
+                    hobject::PropFlags lf = obj.get_prop_flags((uint)len_prop_idx);
+                    lf.writable = false;
+                    obj.set_prop_flags((uint)len_prop_idx, lf);
+                }
+            }
+        }
+
+        if (threw_type_error) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot delete non-configurable array element");
+            return;
+        }
+
         ctx.result.set_object(obj);
         return;
     }
@@ -1593,6 +1636,25 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (!arr_val.is_undefined()) {
                 obj.put_prop((void*)key, arr_val, hobject::PROP_FLAGS_WEC);
                 existing_idx = obj.find_prop_idx(key);
+            }
+        }
+    }
+
+    // ES5 §15.4.5.1 step 4: For Arrays, if 'name' is a valid array index >= length
+    // and length is non-writable, throw TypeError.
+    if (obj.get_class() == hobject::ObjClass.ARRAY && key_hstr.is_arridx()) {
+        uint arr_idx2 = key_hstr.array_index();
+        uint cur_arr_len = array_get_length(obj, ctx.heap);
+        if (arr_idx2 >= cur_arr_len) {
+            bool arr_len_writable = true;
+            HString* len_key_i2 = builtin_intern_string(ctx.heap, "length");
+            if (len_key_i2 != null) {
+                int li2 = obj.find_prop_idx(len_key_i2);
+                if (li2 >= 0) arr_len_writable = obj.get_prop_flags((uint)li2).writable;
+            }
+            if (!arr_len_writable) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot define array element: length is non-writable");
+                return;
             }
         }
     }
@@ -1797,21 +1859,24 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
     }
     HObject* obj = (HObject*)arg0.get_heapptr();
 
-    // Step 2: If Properties is undefined, return O; if not Object, throw TypeError.
+    // Step 2: ToObject(Properties) — ES5 §15.2.3.7 step 2.
+    // null and undefined throw TypeError; primitives are coerced to wrapper objects.
     if (ctx.argc < 2) {
         ctx.result.set_object(obj);
         return;
     }
     TVal props_val = ctx.regs[ctx.base_reg + 1];
-    if (props_val.is_undefined()) {
-        // ES5 §15.2.3.7 step 1: undefined Properties is a no-op
-        ctx.result.set_object(obj);
+    if (props_val.is_null() || props_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.defineProperties called with null or undefined Properties");
         return;
     }
     if (!props_val.is_object()) {
-        // ES5 §15.2.3.7 step 2: Type(Properties) is not Object → TypeError
-        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.defineProperties called on non-object Properties");
-        return;
+        // Primitive — coerce to wrapper object (Boolean, Number, or String exotic).
+        if (!builtin_to_object(ctx, props_val)) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Object.defineProperties: cannot convert Properties to object");
+            return;
+        }
+        props_val = *ctx.result;
     }
     HObject* props = (HObject*)props_val.get_heapptr();
 
@@ -1828,11 +1893,14 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
 
     for (uint k = 0; k < keys_count; k++) {
         HString* p_key = keys_arr[k];
-        // Get descObj = props.[[GetOwnProperty]](p_key).value
-        PropValue*? prop_entry = props.find_prop(p_key);
-        if (try pe = prop_entry) {
-            TVal desc_obj_val = *pe;
-
+        // Get descObj = props.[[Get]](p_key) — invokes getters with props as receiver.
+        // Per ES5 §15.2.3.7 step 5, we must call [[Get]], not [[GetOwnProperty]].
+        TVal desc_obj_val;
+        if (!desc_get(ctx, props, p_key, &desc_obj_val)) {
+            if (ctx.should_throw) return;
+            continue;
+        }
+        {
             // ToPropertyDescriptor(desc_obj)
             if (!desc_obj_val.is_object()) {
                 // TypeError — property descriptor must be an object
@@ -1862,6 +1930,96 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 if (ctx.should_throw) return;
                 ctx.result.set_undefined();
                 return;
+            }
+
+            // Array-length special path: delegate to ArraySetLength logic (ES5 §15.4.5.1).
+            if (obj.get_class() == hobject::ObjClass.ARRAY && p_key.equals("length")) {
+                uint old_len = array_get_length(obj, ctx.heap);
+                bool len_is_writable = true;
+                HString* len_key_intern = builtin_intern_string(ctx.heap, "length");
+                if (len_key_intern != null) {
+                    int len_prop_idx_inner = obj.find_prop_idx(len_key_intern);
+                    if (len_prop_idx_inner >= 0) {
+                        len_is_writable = obj.get_prop_flags((uint)len_prop_idx_inner).writable;
+                    }
+                }
+                bool has_get_f = has_get_in_desc_helper(ctx.heap, desc_obj);
+                bool has_set_f = has_set_in_desc_helper(ctx.heap, desc_obj);
+                if (has_get_f || has_set_f) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+                    return;
+                }
+                bool has_conf_f = has_configurable_in_desc_helper(ctx.heap, desc_obj);
+                if (has_conf_f && desc_flags.configurable) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+                    return;
+                }
+                bool has_enum_f = has_enumerable_in_desc_helper(ctx.heap, desc_obj);
+                if (has_enum_f && desc_flags.enumerable) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+                    return;
+                }
+                bool has_wrt_f = has_writable_in_desc_helper(ctx.heap, desc_obj);
+                if (has_wrt_f && desc_flags.writable && !len_is_writable) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+                    return;
+                }
+                bool has_val_f = has_value_in_desc_helper(ctx.heap, desc_obj);
+                uint arr_new_len2 = old_len;
+                bool arr_has_new_len2 = false;
+                if (has_val_f) {
+                    TVal new_len_val2 = desc_vals[0];
+                    double num2 = builtin_to_number_vm(ctx, &new_len_val2);
+                    if (ctx.should_throw) return;
+                    if (num2 != num2 || num2 < 0.0 || num2 > 4294967295.0 || num2 != math::floor(num2)) {
+                        builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
+                        return;
+                    }
+                    arr_new_len2 = (uint)num2;
+                    arr_has_new_len2 = true;
+                }
+                if (arr_has_new_len2 && !len_is_writable && arr_new_len2 != old_len) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'length'");
+                    return;
+                }
+                bool threw_type_error2 = false;
+                if (arr_has_new_len2 && arr_new_len2 < old_len) {
+                    uint di2 = old_len;
+                    while (di2 > arr_new_len2) {
+                        di2--;
+                        HString* idx_key2 = ctx.heap.int_to_hstring((long)di2);
+                        if (idx_key2 != null) {
+                            int elem_idx2 = obj.find_prop_idx(idx_key2);
+                            if (elem_idx2 >= 0 && !obj.get_prop_flags((uint)elem_idx2).configurable) {
+                                arr_new_len2 = di2 + 1;
+                                threw_type_error2 = true;
+                                break;
+                            }
+                            if (elem_idx2 >= 0) obj.delete_prop(idx_key2);
+                        }
+                        if (di2 < obj.array_size) {
+                            TVal undef_tv2; undef_tv2.set_undefined();
+                            obj.array_part()[di2] = undef_tv2;
+                            if (obj.array_used > 0) obj.array_used--;
+                        }
+                    }
+                }
+                array_set_length(obj, arr_new_len2, ctx.heap);
+                if (has_wrt_f && !desc_flags.writable) {
+                    if (len_key_intern != null) {
+                        int len_prop_idx2 = obj.find_prop_idx(len_key_intern);
+                        if (len_prop_idx2 >= 0) {
+                            hobject::PropFlags lf2 = obj.get_prop_flags((uint)len_prop_idx2);
+                            lf2.writable = false;
+                            obj.set_prop_flags((uint)len_prop_idx2, lf2);
+                        }
+                    }
+                }
+                if (threw_type_error2) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot delete non-configurable array element");
+                    return;
+                }
+                continue;
             }
 
             // [[DefineOwnProperty]]
@@ -1969,10 +2127,24 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     if (has_configurable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.configurable = desc_flags.configurable;
                     obj.set_prop_flags((uint)existing_idx, cur_flags);
                 } else {
-                    // Basic data property update
+                    // Data descriptor update (or accessor→data conversion).
+                    // A generic descriptor (only enumerable/configurable, no value/writable/get/set)
+                    // must NOT change the property type — only update the generic fields.
+                    bool desc_has_data_fields = has_value_in_desc_helper(ctx.heap, desc_obj) || has_writable_in_desc_helper(ctx.heap, desc_obj);
+                    if (cur_flags.is_accessor && desc_has_data_fields) {
+                        // Accessor → data conversion (ES5 §8.12.9 step 9.a/b): release the
+                        // GetterSetter cell and reset flags so the slot becomes a data slot.
+                        ctx.heap.decref_tval(current);
+                        TVal undef_tv; undef_tv.set_undefined();
+                        *current = undef_tv;
+                        cur_flags.is_accessor = false;
+                        cur_flags.writable     = false;
+                        cur_flags.enumerable   = cur_flags.enumerable;
+                        cur_flags.configurable = cur_flags.configurable;
+                    }
                     if (has_value_in_desc_helper(ctx.heap, desc_obj)) {
-                        // ES5 §8.12.9 step 9: If non-configurable and non-writable, reject only if
-                        // the new value differs from the current value (SameValue check).
+                        // ES5 §8.12.9 step 10.a.ii: reject value change on non-configurable,
+                        // non-writable property (SameValue check).
                         if (!cur_flags.configurable && !cur_flags.writable) {
                             if (!same_value(*current, desc_vals[0])) {
                                 HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);

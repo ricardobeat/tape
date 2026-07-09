@@ -1852,9 +1852,23 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                     // Only update if the value is a valid number (skip if fell through)
                     if (rc.is_fastint() || rc.is_number()) {
-                        // Use the array helper so shrinking length deletes stale
-                        // dense slots and named properties.
-                        builtins::array_set_length(hobj, new_len, vm.heap);
+                        // Check that the length property is writable before modifying it.
+                        // A non-writable array length must silently reject in sloppy mode.
+                        bool len_writable = true;
+                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        if (len_str != null) {
+                            int len_idx = hobj.find_prop_idx(len_str);
+                            if (len_idx >= 0) {
+                                len_writable = hobj.get_prop_flags((uint)len_idx).writable;
+                            }
+                        }
+                        if (len_writable) {
+                            // Use the array helper so shrinking length deletes stale
+                            // dense slots and named properties.
+                            builtins::array_set_length(hobj, new_len, vm.heap);
+                        }
+                        // Non-writable: sloppy mode silently ignores the write.
+                        // Strict mode would throw, but that is handled by the caller.
                     }
                     return (TVal){};
                 }
