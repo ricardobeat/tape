@@ -1648,6 +1648,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 107: return { "isPrototypeOf", 1 };
         case 108: return { "hasOwnProperty", 1 };
         case 109: return { "propertyIsEnumerable", 1 };
+        case 110: return { "toLocaleString", 0 };
         case 112: return { "Map", 0 };
         case 113: return { "set", 2 };
         case 114: return { "get", 1 };

@@ -742,15 +742,30 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
 /// not an object (null or undefined).
 fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
-        // Throw TypeError: Object.getPrototypeOf requires an argument
         builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getPrototypeOf requires a value");
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    if (!arg.is_object()) {
-        // Throw TypeError for null/undefined/primitives
-        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getPrototypeOf called on non-object");
+    // Lightfuncs have Function.prototype as their [[Prototype]]
+    if (arg.is_lightfunc()) {
+        if (ctx.heap.function_proto != null) {
+            ctx.result.set_object(ctx.heap.function_proto);
+        } else {
+            ctx.result.set_null();
+        }
         return;
+    }
+    if (!arg.is_object()) {
+        if (arg.is_null() || arg.is_undefined()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getPrototypeOf called on null or undefined");
+            return;
+        }
+        // ES2015+: ToObject for primitives
+        if (!builtin_to_object(ctx, arg)) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getPrototypeOf: ToObject failed");
+            return;
+        }
+        arg = *ctx.result;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
     HObject* proto = obj.prototype;
@@ -3078,10 +3093,36 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
     }
     // Only set prototype on objects (not primitives)
     if (!obj_val.is_object()) {
-        ctx.result.set_fastint(obj_val.get_fastint());
+        *ctx.result = obj_val;
         return;
     }
     HObject* obj = (HObject*)obj_val.get_heapptr();
+
+    // Immutable-prototype exotic object check (ES2022 §10.4.7.1):
+    // Object.prototype is an immutable-prototype exotic object — its [[Prototype]]
+    // can only be set to the SAME value (null). Any other value throws TypeError.
+    if (obj == ctx.heap.object_proto) {
+        HObject* new_proto = proto_val.is_null() ? null : (HObject*)proto_val.get_heapptr();
+        if (new_proto != obj.prototype) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of immutable prototype object");
+            return;
+        }
+        // Same value — success
+        ctx.result.set_object(obj);
+        return;
+    }
+
+    // Non-extensible object: cannot change prototype (ES2022 §10.1.2.1 step 3)
+    if (!obj.is_extensible()) {
+        HObject* new_proto = proto_val.is_null() ? null : (HObject*)proto_val.get_heapptr();
+        if (new_proto != obj.prototype) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of non-extensible object");
+            return;
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
+
     if (proto_val.is_null()) {
         obj.prototype = null;
     } else {
@@ -3320,9 +3361,8 @@ fn HString* builtin_to_property_key(BuiltinContext* ctx, TVal key_val) {
 
 fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    // ES6 §19.1.3.6 step 2: If Type(O) is not Object, the class name is derived
-    // from the value's type: Undefined → "Undefined", Null → "Null", Boolean → "Boolean",
-    // Number → "Number", String → "String", Symbol → "Symbol", BigInt → "BigInt".
+
+    // ES2022 §20.1.3.6 step 1-2: undefined and null shortcut
     if (this_val.is_undefined()) {
         HString* s = builtin_intern_string(ctx.heap, "[object Undefined]");
         ctx.result.set_string(s);
@@ -3333,29 +3373,145 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         ctx.result.set_string(s);
         return;
     }
-    if (this_val.is_boolean()) {
-        HString* s = builtin_intern_string(ctx.heap, "[object Boolean]");
-        ctx.result.set_string(s);
+
+    // ES2022 §20.1.3.6 step 3: Let O = ToObject(this value)
+    // For object/lightfunc this values, use them directly.
+    // For primitives, wrap them so we can search @@toStringTag via prototype chain.
+
+    char[64] buf;
+    HString* tag_sym = ensure_tostringtag_symbol(ctx.heap);
+
+    // Helper inline: build and return "[object <tag>]" string
+    // (used at end for builtinTag fallback)
+
+    // Handle lightfunc this — [[Call]] → builtinTag = "Function"
+    if (this_val.is_lightfunc()) {
+        char* builtin_tag = "Function";
+        if (tag_sym != null) {
+            // Lightfuncs have Function.prototype as prototype; search it for @@toStringTag
+            HObject* fn_proto = ctx.heap.function_proto;
+            if (fn_proto != null) {
+                TVal? tag_val = builtins_generic_get(fn_proto, tag_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try tv = tag_val) {
+                    if (tv.is_string()) {
+                        HString* tag_str = (HString*)tv.get_heapptr();
+                        if (tag_str != null && !tag_str.is_symbol()) {
+                            char[] tag_bytes = tag_str.get_data();
+                            int tag_len = (int)tag_bytes.len;
+                            if (tag_len > 0 && tag_len < 62) {
+                                buf[0] = '['; buf[1] = 'o'; buf[2] = 'b'; buf[3] = 'j';
+                                buf[4] = 'e'; buf[5] = 'c'; buf[6] = 't'; buf[7] = ' ';
+                                int pos = 8;
+                                for (int i = 0; i < tag_len && pos < 62; i++) { buf[pos++] = tag_bytes[i]; }
+                                buf[pos++] = ']';
+                                ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:pos]));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int len = libc::snprintf(&buf, 64, "[object %s]", builtin_tag);
+        if (len > 0 && len < 64) {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
+        } else {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, "[object Function]"));
+        }
         return;
     }
-    if (this_val.is_number() || this_val.is_fastint()) {
-        HString* s = builtin_intern_string(ctx.heap, "[object Number]");
-        ctx.result.set_string(s);
+
+    // For primitive this values (boolean/number/string/symbol), find their wrapper prototype
+    // so we can check @@toStringTag via the prototype chain (ES2022 §20.1.3.6 steps 3+15).
+    if (this_val.is_boolean() || this_val.is_number() || this_val.is_fastint() ||
+        this_val.is_string() /* includes symbols */) {
+        // Determine builtinTag and which prototype to search for @@toStringTag
+        char* builtin_tag;
+        HObject* prim_proto;
+        if (this_val.is_boolean()) {
+            builtin_tag = "Boolean";
+            prim_proto = ctx.heap.bool_proto;
+        } else if (this_val.is_number() || this_val.is_fastint()) {
+            builtin_tag = "Number";
+            prim_proto = ctx.heap.number_proto;
+        } else if (is_symbol_val(this_val)) {
+            // Symbol wrappers have no special builtinTag in the spec (ES2022 §20.1.3.6);
+            // they get their tag from Symbol.prototype[@@toStringTag] = "Symbol".
+            builtin_tag = "Object";
+            prim_proto = ctx.heap.symbol_proto;
+        } else {
+            // Regular string
+            builtin_tag = "String";
+            prim_proto = ctx.heap.string_proto;
+        }
+        // Check @@toStringTag via the wrapper's prototype chain
+        if (tag_sym != null && prim_proto != null) {
+            // Create a temporary wrapper object to search the prototype chain.
+            // Use get_prop_or_accessor_proto starting from prim_proto directly.
+            hobject::PropLookupResult res = prim_proto.get_prop_or_accessor_proto((void*)tag_sym, true);
+            if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                TVal tv = res.data_val;
+                if (tv.is_string()) {
+                    HString* tag_str = (HString*)tv.get_heapptr();
+                    if (tag_str != null && !tag_str.is_symbol()) {
+                        char[] tag_bytes = tag_str.get_data();
+                        int tag_len = (int)tag_bytes.len;
+                        if (tag_len > 0 && tag_len < 62) {
+                            buf[0] = '['; buf[1] = 'o'; buf[2] = 'b'; buf[3] = 'j';
+                            buf[4] = 'e'; buf[5] = 'c'; buf[6] = 't'; buf[7] = ' ';
+                            int pos = 8;
+                            for (int i = 0; i < tag_len && pos < 62; i++) { buf[pos++] = tag_bytes[i]; }
+                            buf[pos++] = ']';
+                            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:pos]));
+                            return;
+                        }
+                    }
+                }
+            } else if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                // Accessor getter for @@toStringTag on prototype — invoke it with this = primitive wrapper
+                if (ctx.vm != null && ctx.heap.call_fn != null) {
+                    // Build a temp TVal wrapping the primitive as the receiver
+                    TVal prim_wrapper;
+                    prim_wrapper.set_object(prim_proto);
+                    TVal tag_result = ctx.heap.call_fn(ctx.vm, res.acc.accessor_fn, null, 0, prim_wrapper);
+                    if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                    if (tag_result.is_string()) {
+                        HString* tag_str = (HString*)tag_result.get_heapptr();
+                        if (tag_str != null && !tag_str.is_symbol()) {
+                            char[] tag_bytes = tag_str.get_data();
+                            int tag_len = (int)tag_bytes.len;
+                            if (tag_len > 0 && tag_len < 62) {
+                                buf[0] = '['; buf[1] = 'o'; buf[2] = 'b'; buf[3] = 'j';
+                                buf[4] = 'e'; buf[5] = 'c'; buf[6] = 't'; buf[7] = ' ';
+                                int pos = 8;
+                                for (int i = 0; i < tag_len && pos < 62; i++) { buf[pos++] = tag_bytes[i]; }
+                                buf[pos++] = ']';
+                                ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:pos]));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fall back to builtinTag
+        int len = libc::snprintf(&buf, 64, "[object %s]", builtin_tag);
+        if (len > 0 && len < 64) {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
+        } else {
+            ctx.result.set_string(builtin_intern_string(ctx.heap, "[object Object]"));
+        }
         return;
     }
-    if (is_symbol_val(this_val)) {
-        HString* s = builtin_intern_string(ctx.heap, "[object Symbol]");
-        ctx.result.set_string(s);
-        return;
-    }
-    if (this_val.is_string()) {
-        HString* s = builtin_intern_string(ctx.heap, "[object String]");
-        ctx.result.set_string(s);
-        return;
-    }
+
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
-        char[64] buf;
+
+        // ES2022 §20.1.3.6: builtinTag determined by internal slot checks only.
+        // Objects whose class is MAP, SET, WEAKMAP, WEAKSET, SYMBOL, PROMISE,
+        // GENERATOR, JSON, MATH do not appear in the spec's internal-slot list;
+        // they rely on @@toStringTag set on their prototypes.
         char* class_name = "Object";
         switch (obj.get_class()) {
             case hobject::ObjClass.ARRAY:     class_name = "Array"; break;
@@ -3365,22 +3521,16 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             case hobject::ObjClass.NUMBER:    class_name = "Number"; break;
             case hobject::ObjClass.STRING:    class_name = "String"; break;
             case hobject::ObjClass.ERROR:     class_name = "Error"; break;
-            case hobject::ObjClass.JSON:      class_name = "JSON"; break;
-            case hobject::ObjClass.MATH:      class_name = "Math"; break;
             case hobject::ObjClass.DATE:      class_name = "Date"; break;
             case hobject::ObjClass.REGEXP:    class_name = "RegExp"; break;
-            case hobject::ObjClass.MAP:       class_name = "Map"; break;
-            case hobject::ObjClass.SET:       class_name = "Set"; break;
-            case hobject::ObjClass.WEAKMAP:   class_name = "WeakMap"; break;
-            case hobject::ObjClass.WEAKSET:   class_name = "WeakSet"; break;
-            case hobject::ObjClass.SYMBOL:    class_name = "Symbol"; break;
-            case hobject::ObjClass.PROMISE:   class_name = "Promise"; break;
-            case hobject::ObjClass.GENERATOR: class_name = "Generator"; break;
             default:                          class_name = "Object"; break;
         }
+        // Check callable (IsCallable) for non-FUNCTION objects that have [[Call]]
+        if (obj.is_callable() && obj.get_class() != hobject::ObjClass.FUNCTION) {
+            class_name = "Function";
+        }
 
-        // ES6 §19.1.3.6: check @@toStringTag on the object
-        HString* tag_sym = ensure_tostringtag_symbol(ctx.heap);
+        // ES2022 §20.1.3.6 step 15: Get(O, @@toStringTag)
         if (tag_sym != null) {
             TVal? tag_val = builtins_generic_get(obj, tag_sym, ctx);
             if (ctx.should_throw) return;
@@ -3390,25 +3540,13 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
                     if (tag_str != null && !tag_str.is_symbol()) {
                         char[] tag_bytes = tag_str.get_data();
                         int tag_len = (int)tag_bytes.len;
-                        if (tag_len > 0 && tag_len < 64) {
-                            // Build "[object <tag>]"
-                            buf[0] = '[';
-                            buf[1] = 'o';
-                            buf[2] = 'b';
-                            buf[3] = 'j';
-                            buf[4] = 'e';
-                            buf[5] = 'c';
-                            buf[6] = 't';
-                            buf[7] = ' ';
+                        if (tag_len > 0 && tag_len < 62) {
+                            buf[0] = '['; buf[1] = 'o'; buf[2] = 'b'; buf[3] = 'j';
+                            buf[4] = 'e'; buf[5] = 'c'; buf[6] = 't'; buf[7] = ' ';
                             int pos = 8;
-                            for (int i = 0; i < tag_len && pos < 62; i++) {
-                                buf[pos] = tag_bytes[i];
-                                pos++;
-                            }
-                            buf[pos] = ']';
-                            pos++;
-                            HString* s = builtin_intern_string(ctx.heap, buf[:pos]);
-                            ctx.result.set_string(s);
+                            for (int i = 0; i < tag_len && pos < 62; i++) { buf[pos++] = tag_bytes[i]; }
+                            buf[pos++] = ']';
+                            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:pos]));
                             return;
                         }
                     }
@@ -3418,18 +3556,18 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
 
         int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
         if (len > 0 && len < 64) {
-            HString* s = builtin_intern_string(ctx.heap, buf[:len]);
-            ctx.result.set_string(s);
+            ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
             return;
         }
     }
-    HString* s = builtin_intern_string(ctx.heap, "[object Object]");
-    ctx.result.set_string(s);
+    ctx.result.set_string(builtin_intern_string(ctx.heap, "[object Object]"));
 }
 
-/// Object.prototype.hasOwnProperty — ES5 §15.2.4.5
+/// Object.prototype.hasOwnProperty — ES2022 §20.1.3.2
+/// Step 1: Let P = ? ToPropertyKey(V)  (before ToObject)
+/// Step 2: Let O = ? ToObject(this value)
 fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
-    // V = first argument, converted to string key
+    // Step 1: ToPropertyKey(V) — must run BEFORE ToObject(this)
     TVal arg;
     if (ctx.argc > 0) {
         arg = ctx.regs[ctx.base_reg];
@@ -3438,11 +3576,17 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     }
     HString* key = builtin_to_string_vm(ctx, &arg);
     if (key == null) {
+        // Propagate exception if ToPropertyKey threw
+        if (ctx.should_throw) return;
         ctx.result.set_boolean(false);
         return;
     }
-    // O = ToObject(this value)
+    // Step 2: ToObject(this) — throws TypeError for null/undefined
     TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.is_null() || this_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.hasOwnProperty called on null or undefined");
+        return;
+    }
     HObject* obj;
     if (this_val.is_lightfunc()) {
         // Lightfuncs have .name and .length as own properties per ES6 spec.
@@ -3507,11 +3651,16 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     }
     HString* key = builtin_to_string_vm(ctx, &arg);
     if (key == null) {
+        if (ctx.should_throw) return;
         ctx.result.set_boolean(false);
         return;
     }
-    // O = ToObject(this value)
+    // O = ToObject(this value) — throws TypeError for null/undefined
     TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.is_null() || this_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.propertyIsEnumerable called on null or undefined");
+        return;
+    }
     HObject* obj;
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         obj = (HObject*)this_val.get_heapptr();
@@ -3552,26 +3701,32 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     ctx.result.set_boolean(false);
 }
 
-/// Object.prototy*peOf — returns 'this'
+/// Object.prototype.valueOf — ES5 §15.2.4.4
+/// Performs ToObject(this) and returns the resulting object.
+/// Throws TypeError if this is undefined or null (RequireObjectCoercible).
 fn void builtin_object_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    ctx.result.set_fastint(this_val.get_fastint());
-    ctx.result.set_number(this_val.get_number());
-    ctx.result.set_object(this_val.get_heapptr());
+    // RequireObjectCoercible: null and undefined throw TypeError
+    if (this_val.is_null() || this_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.valueOf called on null or undefined");
+        return;
+    }
+    // ToObject: primitives are wrapped in their exotic wrapper objects
+    if (!builtin_to_object(ctx, this_val)) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.valueOf: ToObject failed");
+        return;
+    }
+    // ctx.result was set by builtin_to_object
 }
 
-/// Object.prototype.isPrototypeOf(V) — ES5 §15.2.4.6
-/// Returns true if the object is in the prototype chain of V.
+/// Object.prototype.isPrototypeOf(V) — ES2022 §20.1.3.3
+/// Step 1: If V is not Object, return false.
+/// Step 2: Let O = ? ToObject(this value) — throws TypeError for null/undefined.
+/// Walks the prototype chain of V looking for O.
 fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
     ctx.result.set_boolean(false);
 
-    TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) {
-        return;
-    }
-    HObject* proto = (HObject*)this_val.get_heapptr();
-
-    // Get argument V — must be an object
+    // Step 1: If V is not an Object, return false (no TypeError for null/undefined this)
     if (ctx.argc == 0) {
         return;
     }
@@ -3579,6 +3734,18 @@ fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
     if (!arg.is_object() || arg.get_heapptr() == null) {
         return;
     }
+
+    // Step 2: ToObject(this) — throws TypeError for null/undefined
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.is_null() || this_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.isPrototypeOf called on null or undefined");
+        return;
+    }
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        // Primitive this (not null/undefined) — ToObject would wrap it; it can't be in any chain
+        return;
+    }
+    HObject* proto = (HObject*)this_val.get_heapptr();
     HObject* obj = (HObject*)arg.get_heapptr();
 
     // Walk the prototype chain of obj looking for proto
@@ -3592,40 +3759,93 @@ fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
     }
 }
 
-/// Object.prototype.toLocaleString() — ES5 §15.2.4.3
-/// Calls the toString method and returns the result.
+/// Object.prototype.toLocaleString() — ES2022 §20.1.3.5
+/// Invoke(this, "toString") — gets toString via prototype chain and calls it with this as receiver.
+/// Throws TypeError if this is null or undefined.
 fn void builtin_object_proto_toLocaleString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    if (!this_val.is_object() || this_val.get_heapptr() == null) {
-        ctx.result.set_undefined();
+    // RequireObjectCoercible: null and undefined throw TypeError
+    if (this_val.is_null() || this_val.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.toLocaleString called on null or undefined");
         return;
     }
-    HObject* obj = (HObject*)this_val.get_heapptr();
 
-    // Call toString() on the object
     HString* ts_key = (HString*)ctx.heap.strs[heap::BuiltinStr.TO_STRING];
-    PropValue*? entry = obj.find_prop(ts_key);
-    if (try e = entry) {
-        TVal fn_val = *e;
-        if (fn_val.is_lightfunc()) {
-            // Re-dispatch to toString
-            ctx.needs_re_dispatch = true;
-            ctx.regs[ctx.base_reg - 1] = fn_val;  // replace callee with toString
-            ctx.re_nargs = 0;
-            return;
-        }
-        if (fn_val.is_object() && fn_val.get_heapptr() != null) {
-            HObject* fn_obj = (HObject*)fn_val.get_heapptr();
-            if (fn_obj.is_callable()) {
-                ctx.needs_re_dispatch = true;
-                ctx.regs[ctx.base_reg - 1] = fn_val;
-                ctx.re_nargs = 0;
+
+    // Resolve the starting object for the [[Get]] prototype walk.
+    // For object this, start from the object itself.
+    // For primitives, start from their prototype (so they inherit toString).
+    HObject* search_start = null;
+    if (this_val.is_object() && this_val.get_heapptr() != null) {
+        search_start = (HObject*)this_val.get_heapptr();
+    } else if (this_val.is_boolean()) {
+        search_start = ctx.heap.bool_proto;
+    } else if (this_val.is_number() || this_val.is_fastint()) {
+        search_start = ctx.heap.number_proto;
+    } else if (is_symbol_val(this_val)) {
+        search_start = ctx.heap.symbol_proto;
+    } else if (this_val.is_string()) {
+        search_start = ctx.heap.string_proto;
+    }
+
+    if (search_start == null) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.toLocaleString: cannot resolve this");
+        return;
+    }
+
+    // Get toString via prototype chain using get_prop_or_accessor_proto, which
+    // properly handles both data properties and accessor (getter) properties.
+    TVal fn_val;
+    bool found = false;
+    hobject::PropLookupResult res = search_start.get_prop_or_accessor_proto((void*)ts_key, true);
+    if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        fn_val = res.data_val;
+        found = true;
+    } else if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        // Accessor getter for toString — invoke it with this_val as receiver
+        if (ctx.vm != null && ctx.heap.call_fn != null) {
+            TVal getter_result = ctx.heap.call_fn(ctx.vm, res.acc.accessor_fn, null, 0, this_val);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
                 return;
             }
+            fn_val = getter_result;
+            found = true;
         }
     }
 
-    ctx.result.set_undefined();
+    if (!found) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.toLocaleString: toString is not a function");
+        return;
+    }
+
+    bool callable = fn_val.is_lightfunc() ||
+        (fn_val.is_object() && fn_val.get_heapptr() != null &&
+         ((HObject*)fn_val.get_heapptr()).is_callable());
+    if (!callable) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.prototype.toLocaleString: toString is not a function");
+        return;
+    }
+
+    // Invoke toString with this_val as receiver.
+    // Use call_fn when a VM context is available (handles both lightfunc and object callees).
+    if (ctx.vm != null && ctx.heap.call_fn != null) {
+        TVal result = ctx.heap.call_fn(ctx.vm, fn_val, null, 0, this_val);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
+        *ctx.result = result;
+        return;
+    }
+    // Fallback: re-dispatch (only works for HObject callees in vm_calls context)
+    ctx.regs[ctx.base_reg - 2] = fn_val;
+    ctx.needs_re_dispatch = true;
+    ctx.re_nargs = 0;
 }
 fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Object.prototype — the root of all prototype chains

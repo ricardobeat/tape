@@ -621,9 +621,25 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
             HString* second_key = use_string_first
                 ? (HString*)h.strs[heap::BuiltinStr.VALUE_OF]
                 : (HString*)h.strs[heap::BuiltinStr.TO_STRING];
+            // Helper to resolve and call a toString/valueOf method, handling both
+            // data properties and accessor (getter) properties in the prototype chain.
+            // Uses get_prop_or_accessor_proto so that accessor getters are invoked first
+            // (needed for ToPrimitive on objects with getter-defined toString/valueOf).
             if (first_key != null) {
-                TVal? first_val = obj.get_prop_proto(first_key);
-                if (try first_fn = first_val) {
+                TVal first_fn;
+                bool first_found = false;
+                hobject::PropLookupResult first_res = obj.get_prop_or_accessor_proto((void*)first_key, true);
+                if (first_res.kind == hobject::PropLookupKind.PROP_DATA) {
+                    first_fn = first_res.data_val;
+                    first_found = true;
+                } else if (first_res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal getter_this;
+                    getter_this.set_object(first_res.acc.this_obj);
+                    first_fn = h.call_fn(vm, first_res.acc.accessor_fn, null, 0, getter_this);
+                    if (vm_check_call_fn_error(vm)) return *val;
+                    first_found = true;
+                }
+                if (first_found) {
                     if (first_fn.is_lightfunc() || (first_fn.is_object() && first_fn.get_heapptr() != null && ((HObject*)first_fn.get_heapptr()).is_callable())) {
                         TVal prim = h.call_fn(vm, first_fn, null, 0, *val);
                         if (vm_check_call_fn_error(vm)) return *val;
@@ -632,8 +648,20 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
                 }
             }
             if (second_key != null) {
-                TVal? second_val = obj.get_prop_proto(second_key);
-                if (try second_fn = second_val) {
+                TVal second_fn;
+                bool second_found = false;
+                hobject::PropLookupResult second_res = obj.get_prop_or_accessor_proto((void*)second_key, true);
+                if (second_res.kind == hobject::PropLookupKind.PROP_DATA) {
+                    second_fn = second_res.data_val;
+                    second_found = true;
+                } else if (second_res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal getter_this;
+                    getter_this.set_object(second_res.acc.this_obj);
+                    second_fn = h.call_fn(vm, second_res.acc.accessor_fn, null, 0, getter_this);
+                    if (vm_check_call_fn_error(vm)) return *val;
+                    second_found = true;
+                }
+                if (second_found) {
                     if (second_fn.is_lightfunc() || (second_fn.is_object() && second_fn.get_heapptr() != null && ((HObject*)second_fn.get_heapptr()).is_callable())) {
                         TVal prim = h.call_fn(vm, second_fn, null, 0, *val);
                         if (vm_check_call_fn_error(vm)) return *val;
