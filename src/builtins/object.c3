@@ -1324,17 +1324,31 @@ fn bool obj_assign_set(BuiltinContext* ctx, HObject* obj, hstring::HString* key,
     return true;
 }
 
+/// Field-presence flags returned by `to_property_descriptor` so callers can
+/// distinguish a descriptor that omits a field from one that sets it to undefined
+/// (e.g. when the value is inherited via an accessor with no getter). Per ES5
+/// §8.10.5, even an `undefined` field is "present" in the descriptor.
+struct DescFields {
+    bool has_enumerable;
+    bool has_configurable;
+    bool has_value;
+    bool has_writable;
+    bool has_get;
+    bool has_set;
+}
+
 /// ToPropertyDescriptor — ES5 §8.10.5
 ///
 /// Parses a descriptor object into PropFlags + value (or getter/setter).
 /// `out_flags` receives the flags to use for a newly created property.
 /// `out_value` receives the data value (or getter/setter).
 /// `is_accessor_out` is set true when the descriptor is an accessor descriptor.
-/// Returns true on success, sets ctx.should_throw on error.
+/// `out_fields` (optional) receives which fields were present on the descriptor
+/// (counts inherited accessor results that returned undefined as present).
 fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
                                hobject::PropFlags* out_flags,
                                TVal* out_value, bool* is_accessor_out,
-                               bool* is_generic_out, bool* has_any_out) {
+                               DescFields* out_fields) {
     // Check the five possible descriptor fields.
     HString* enum_key   = builtin_intern_string(ctx.heap, "enumerable");
     HString* conf_key   = builtin_intern_string(ctx.heap, "configurable");
@@ -1449,11 +1463,13 @@ fn bool to_property_descriptor(BuiltinContext* ctx, HObject* desc_obj,
 
     out_flags[0] = flags;
     is_accessor_out[0] = is_accessor;
-    if (is_generic_out != null) {
-        is_generic_out[0] = !is_accessor && !has_value && !has_writable;
-    }
-    if (has_any_out != null) {
-        has_any_out[0] = has_enumerable || has_configurable || has_value || has_writable || has_get || has_set;
+    if (out_fields != null) {
+        out_fields.has_enumerable   = has_enumerable;
+        out_fields.has_configurable = has_configurable;
+        out_fields.has_value        = has_value;
+        out_fields.has_writable     = has_writable;
+        out_fields.has_get          = has_get;
+        out_fields.has_set          = has_set;
     }
     return true;
 }
@@ -1498,13 +1514,16 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     hobject::PropFlags desc_flags;
     TVal[2] desc_vals;  // [0]=value/getter, [1]=setter (unused for data)
     bool is_accessor;
-    bool is_generic = false;
-    bool has_any_field = false;
-    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, &is_generic, &has_any_field)) {
+    DescFields desc_fields;
+    if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, &desc_fields)) {
         if (ctx.should_throw) return;
         ctx.result.set_undefined();
         return;
     }
+    bool is_generic = !is_accessor && !desc_fields.has_value && !desc_fields.has_writable;
+    bool has_any_field = desc_fields.has_enumerable || desc_fields.has_configurable
+                      || desc_fields.has_value || desc_fields.has_writable
+                      || desc_fields.has_get || desc_fields.has_set;
 
     // ES5 §15.4.5.1 ArraySetLength: special handling when defining 'length' on an Array.
     // This path runs before general [[DefineOwnProperty]] and handles the full
@@ -1757,10 +1776,8 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         if (is_generic) {
             // ES5 §8.12.9: Generic descriptor — only update enumerable/configurable.
             // Do NOT change value, writable, is_accessor, getter, or setter.
-            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
-            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
-            bool has_enum_in_desc = (enum_k != null) && desc_obj.find_prop_idx(enum_k) >= 0;
-            bool has_conf_in_desc = (conf_k != null) && desc_obj.find_prop_idx(conf_k) >= 0;
+            bool has_enum_in_desc = desc_fields.has_enumerable;
+            bool has_conf_in_desc = desc_fields.has_configurable;
             // ES5 §8.12.9 step 7: non-configurable property — reject if descriptor
             // tries to set configurable:true, or changes enumerable.
             if (!cur_flags.configurable) {
@@ -1777,20 +1794,12 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             if (has_conf_in_desc) cur_flags.configurable = desc_flags.configurable;
             obj.set_prop_flags((uint)existing_idx, cur_flags);
         } else if (is_accessor) {
-            // Update accessor fields
-            bool has_get_in_desc = false;
-            bool has_set_in_desc = false;
-            bool has_enum_in_desc = false;
-            bool has_conf_in_desc = false;
-            // Re-check which fields were in the descriptor
-            HString* get_k = builtin_intern_string(ctx.heap, "get");
-            HString* set_k = builtin_intern_string(ctx.heap, "set");
-            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
-            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
-            if (get_k != null) has_get_in_desc = desc_obj.find_prop_idx(get_k) >= 0;
-            if (set_k != null) has_set_in_desc = desc_obj.find_prop_idx(set_k) >= 0;
-            if (enum_k != null) has_enum_in_desc = desc_obj.find_prop_idx(enum_k) >= 0;
-            if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
+            // Update accessor fields. Use to_property_descriptor's has_* flags
+            // (which include inherited accessor lookups that returned undefined).
+            bool has_get_in_desc = desc_fields.has_get;
+            bool has_set_in_desc = desc_fields.has_set;
+            bool has_enum_in_desc = desc_fields.has_enumerable;
+            bool has_conf_in_desc = desc_fields.has_configurable;
 
             // ES5 §8.12.9 step 11: non-configurable accessor — reject if get/set changes
             // Only valid when the existing property is already an accessor.
@@ -1835,19 +1844,14 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                 }
             }
         } else {
-            // Update data property
-            bool has_val_in_desc = false;
-            bool has_wrt_in_desc = false;
-            bool has_enum_in_desc = false;
-            bool has_conf_in_desc = false;
-            HString* val_k  = builtin_intern_string(ctx.heap, "value");
-            HString* writ_k = builtin_intern_string(ctx.heap, "writable");
-            HString* enum_k = builtin_intern_string(ctx.heap, "enumerable");
-            HString* conf_k = builtin_intern_string(ctx.heap, "configurable");
-            if (val_k  != null) has_val_in_desc  = desc_obj.find_prop_idx(val_k)  >= 0;
-            if (writ_k != null) has_wrt_in_desc  = desc_obj.find_prop_idx(writ_k) >= 0;
-            if (enum_k != null) has_enum_in_desc = desc_obj.find_prop_idx(enum_k) >= 0;
-            if (conf_k != null) has_conf_in_desc = desc_obj.find_prop_idx(conf_k) >= 0;
+            // Update data property.
+            // Use the has_* flags from to_property_descriptor (which include
+            // inherited accessor lookups that returned undefined) instead of
+            // own-prop checks on desc_obj, which would miss inherited fields.
+            bool has_val_in_desc = desc_fields.has_value;
+            bool has_wrt_in_desc = desc_fields.has_writable;
+            bool has_enum_in_desc = desc_fields.has_enumerable;
+            bool has_conf_in_desc = desc_fields.has_configurable;
 
             // Check writable → non-writable transition when non-configurable
             if (!cur_flags.configurable && !cur_flags.writable && has_wrt_in_desc && desc_flags.writable) {
@@ -1965,7 +1969,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             hobject::PropFlags desc_flags;
             TVal[2] desc_vals;
             bool is_accessor;
-            if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null, null)) {
+            if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_accessor, null)) {
                 if (ctx.should_throw) return;
                 ctx.result.set_undefined();
                 return;
@@ -2451,7 +2455,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                 hobject::PropFlags desc_flags;
                 TVal[2] desc_vals;
                 bool is_acc;
-                if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_acc, null, null)) {
+                if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_acc, null)) {
                     if (ctx.should_throw) return;
                     ctx.result.set_undefined();
                     return;
@@ -2503,7 +2507,7 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                 hobject::PropFlags desc_flags;
                 TVal[2] desc_vals;
                 bool is_acc;
-                if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_acc, null, null)) {
+                if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_acc, null)) {
                     if (ctx.should_throw) return;
                     ctx.result.set_undefined();
                     return;

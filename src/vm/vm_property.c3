@@ -2021,7 +2021,33 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 }
                             }
                         } else {
-                            // No accessor: insert new property
+                            // ES5 §8.12.5 [[Set]] step 4 / ES2024 §10.1.9.2 OrdinarySet
+                            // step 3: if no accessor on the chain, walk the chain for a
+                            // data property. If found and not writable, return false
+                            // (silent in sloppy, TypeError in strict). We're strict-only
+                            // so always throw.
+                            HObject* data_cur = hobj.prototype;
+                            uint data_depth = 0;
+                            bool proto_nonwritable = false;
+                            while (data_cur != null && data_depth < hobject::MAX_PROTO_DEPTH) {
+                                int d_idx = data_cur.find_prop_idx(key);
+                                if (d_idx >= 0) {
+                                    hobject::PropFlags d_flags = data_cur.get_prop_flags((uint)d_idx);
+                                    if (!d_flags.is_accessor && !d_flags.writable) {
+                                        proto_nonwritable = true;
+                                    }
+                                    break;  // found a property (data or accessor) — stop
+                                }
+                                data_cur = data_cur.prototype;
+                                data_depth++;
+                            }
+                            if (proto_nonwritable) {
+                                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot assign to read only property", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                                return (TVal){};
+                            }
+                            // No accessor, no non-writable data on chain: insert new property
                             if (hobj.flags.extensible) {
                                 hobj.put_prop(key, put_val, hobject::PROP_FLAGS_WEC);
                             } else {
