@@ -195,6 +195,158 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
     ctx.result.set_string(result_str);
 }
 
+/// String.raw(template, ...substitutions) — ES2015 §22.1.2.4
+///
+/// Reads template.raw as an array-like, interleaves its string-coerced
+/// elements with the substitution arguments, and returns the concatenation.
+/// ToObject/Get/LengthOfArrayLike follow the spec exactly so getter
+/// side-effects and abrupt completions propagate correctly.
+fn void builtin_string_raw(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    if (ctx.argc == 0) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw requires a template argument");
+        return;
+    }
+
+    // Step 1-3: Let cooked = ToObject(template).
+    TVal template_val = ctx.regs[ctx.base_reg];
+    HObject* cooked = arr_to_object(template_val, heap);
+    if (cooked == null) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw: template is not an object");
+        return;
+    }
+
+    // Step 4: Let raw = ToObject(Get(cooked, "raw")).
+    HString* raw_key = builtin_intern_string(heap, "raw");
+    if (raw_key == null) { ctx.result.set_undefined(); return; }
+    TVal? raw_tv_opt = builtins_generic_get(cooked, raw_key, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal raw_tv;
+    if (try rv = raw_tv_opt) {
+        raw_tv = rv;
+    } else {
+        raw_tv.set_undefined();
+    }
+    HObject* raw_obj = arr_to_object(raw_tv, heap);
+    if (raw_obj == null) {
+        builtin_throw(ctx, heap.type_err_proto, "String.raw: template.raw is not an object");
+        return;
+    }
+
+    // Step 5: Let literalSegments = LengthOfArrayLike(raw).
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    if (len_key == null) { ctx.result.set_undefined(); return; }
+    TVal? len_opt = builtins_generic_get(raw_obj, len_key, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    long literal_segments = 0;
+    if (try lv = len_opt) {
+        double ld;
+        if (lv.is_fastint()) {
+            ld = (double)lv.get_fastint();
+        } else if (lv.is_number()) {
+            ld = lv.get_number();
+        } else if (lv.is_undefined() || lv.is_null()) {
+            ld = 0.0;
+        } else if (is_symbol_val(lv)) {
+            builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a number");
+            return;
+        } else {
+            ld = builtin_to_number_getdouble(ctx, &lv);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
+        if (math::is_nan(ld) || math::is_inf(ld) || ld < 0) {
+            ld = 0.0;
+        }
+        if (ld > (double)0x7FFFFFFF) ld = (double)0x7FFFFFFF;
+        literal_segments = (long)ld;
+    }
+
+    // Step 6: If literalSegments ≤ 0, return "".
+    if (literal_segments <= 0) {
+        HString* empty = builtin_intern_string(heap, "");
+        ctx.result.set_string(empty);
+        return;
+    }
+
+    // Step 12+: Accumulate in a heap-allocated growable buffer.
+    usz buf_cap = 256;
+    usz buf_len = 0;
+    char* buf = (char*)heap.alloc_func(heap.heap_udata, buf_cap);
+    if (buf == null) { ctx.result.set_undefined(); return; }
+
+    // Helper macro-like inline: append bytes to buf, growing as needed.
+    // Returns false and sets result to undefined on allocation failure.
+    for (long next_index = 0; next_index < literal_segments; next_index++) {
+        // Step 12.b: nextSeg = ToString(Get(raw, nextKey)).
+        HString* idx_key = heap.int_to_hstring(next_index);
+        if (idx_key == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        TVal? seg_opt = builtins_generic_get(raw_obj, idx_key, ctx);
+        if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        TVal seg_tv;
+        if (try sv = seg_opt) {
+            seg_tv = sv;
+        } else {
+            seg_tv.set_undefined();
+        }
+        if (is_symbol_val(seg_tv)) {
+            heap.free_func(heap.heap_udata, buf);
+            builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a string");
+            return;
+        }
+        HString* seg_str = builtin_to_string_vm(ctx, &seg_tv);
+        if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+        if (seg_str != null && seg_str.blen > 0) {
+            usz need = buf_len + (usz)seg_str.blen;
+            if (need > buf_cap) {
+                usz new_cap = buf_cap * 2;
+                if (new_cap < need) new_cap = need + 64;
+                char* new_buf = (char*)libc::realloc(buf, new_cap);
+                if (new_buf == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+                buf = new_buf;
+                buf_cap = new_cap;
+            }
+            libc::memcpy(&buf[buf_len], seg_str.get_cstr(), seg_str.blen);
+            buf_len += (usz)seg_str.blen;
+        }
+
+        // Step 12.e: If nextIndex + 1 = literalSegments, finished — exit loop.
+        if (next_index + 1 == literal_segments) break;
+
+        // Step 12.f: Append substitutions[nextIndex] (if present).
+        // Substitution args start at base_reg + 1; ctx.argc includes the template arg.
+        long sub_argc = (long)ctx.argc - 1;
+        if (next_index < sub_argc) {
+            TVal sub_tv = ctx.regs[ctx.base_reg + 1 + (uint)next_index];
+            if (is_symbol_val(sub_tv)) {
+                heap.free_func(heap.heap_udata, buf);
+                builtin_throw(ctx, heap.type_err_proto, "Cannot convert a Symbol value to a string");
+                return;
+            }
+            HString* sub_str = builtin_to_string_vm(ctx, &sub_tv);
+            if (ctx.should_throw) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+            if (sub_str != null && sub_str.blen > 0) {
+                usz need = buf_len + (usz)sub_str.blen;
+                if (need > buf_cap) {
+                    usz new_cap = buf_cap * 2;
+                    if (new_cap < need) new_cap = need + 64;
+                    char* new_buf = (char*)libc::realloc(buf, new_cap);
+                    if (new_buf == null) { heap.free_func(heap.heap_udata, buf); ctx.result.set_undefined(); return; }
+                    buf = new_buf;
+                    buf_cap = new_cap;
+                }
+                libc::memcpy(&buf[buf_len], sub_str.get_cstr(), sub_str.blen);
+                buf_len += (usz)sub_str.blen;
+            }
+        }
+    }
+
+    HString* result = heap.str_intern(buf[:buf_len]);
+    heap.free_func(heap.heap_udata, buf);
+    if (result == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_string(result);
+}
+
 /// String.prototype.toString — returns the wrapped string value
 fn void builtin_string_proto_toString(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -2904,6 +3056,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Add String.fromCharCode (ES5 §15.5.3.2)
     if (!register_string_proto_method(str_obj, heap, "fromCharCode", BUILTIN_STRING_FROMCHARCODE)) return false;
     if (!register_string_proto_method(str_obj, heap, "fromCodePoint", BUILTIN_STRING_FROMCODEPOINT)) return false;
+    if (!register_string_proto_method(str_obj, heap, "raw", BUILTIN_STRING_RAW)) return false;
 
     // Register String constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("String");
