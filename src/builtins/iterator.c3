@@ -320,27 +320,30 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
 
     if (!done) {
         (*iter.extra_ptr()).iter.index = idx + 1;
-    }
 
-    // Adjust value based on iterator kind
-    uint kind = (*iter.extra_ptr()).iter.kind;
-    if (kind == 1) {
-        // keys() iterator: value = index
-        value.set_fastint((long)idx);
-    } else if (kind == 2) {
-        // entries() iterator: value = [index, value]
-        HObject*? pair_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
-        if (try pair = pair_raw) {
-            pair.prototype = heap.array_proto;
-            TVal idx_tv;
-            idx_tv.set_fastint((long)idx);
-            pair.set_array_idx(0, idx_tv);
-            pair.set_array_idx(1, value);
-            pair.array_used = 2;
-            value.set_object(pair);
+        // Adjust value based on iterator kind (only when not done)
+        uint kind = (*iter.extra_ptr()).iter.kind;
+        if (kind == 1) {
+            // keys() iterator: value = index
+            value.set_fastint((long)idx);
+        } else if (kind == 2) {
+            // entries() iterator: value = [index, value]
+            HObject*? pair_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (try pair = pair_raw) {
+                pair.prototype = heap.array_proto;
+                TVal idx_tv;
+                idx_tv.set_fastint((long)idx);
+                pair.set_array_idx(0, idx_tv);
+                pair.set_array_idx(1, value);
+                pair.array_used = 2;
+                *pair.array_len_ptr() = 2;
+                value.set_object(pair);
+            }
         }
+        // kind==0: value stays as-is (default/@@iterator)
+    } else {
+        value.set_undefined();
     }
-    // kind==0: value stays as-is (default/@@iterator)
 
     // Create result object: {value, done}
     HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);

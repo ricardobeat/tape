@@ -1821,6 +1821,9 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 270: return { "next", 0 };
         case 271: return { "[Symbol.iterator]", 0 };
         case 272: return { "[Symbol.iterator]", 0 };
+        case 273: return { "keys", 0 };
+        case 274: return { "values", 0 };
+        case 275: return { "entries", 0 };
         case 285: return { "from", 1 };
         case 291: return { "forEach", 1 };
         case 292: return { "map", 1 };
