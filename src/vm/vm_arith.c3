@@ -185,51 +185,14 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     TVal old_val = cur.bindings.prop_values()[idx];
                     if (env::is_tdz_sentinel(&old_val)) {
                         HString* name_hstr = (HString*)key;
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.ref_err_proto;
-                            char[types::ERROR_MSG_BUF] ebuf;
-                            int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
-                                                      "%s is not defined", name_hstr.get_cstr());
-                            if (elen > 0 && elen < types::ERROR_MSG_BUF) {
-                                HString* emsg = intern_string(vm, ebuf[:elen]);
-                                TVal emsg_val;
-                                emsg_val.set_string(emsg);
-                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "%s is not defined", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         return (TVal){};
                     }
                     if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                         HString* name_hstr = (HString*)key;
-                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                        if (try err = err_raw) {
-                            err.prototype = vm.heap.type_err_proto;
-                            char[types::ERROR_MSG_BUF] ebuf;
-                            int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
-                                                      "Assignment to constant variable '%s'",
-                                                      name_hstr.get_cstr());
-                            if (elen > 0 && elen < types::ERROR_MSG_BUF) {
-                                HString* emsg = intern_string(vm, ebuf[:elen]);
-                                TVal emsg_val;
-                                emsg_val.set_string(emsg);
-                                HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                                err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                            }
-                            TVal err_val;
-                            err_val.set_object(err);
-                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return vm_uncaught_error(vm, &err_val);
-                            }
-                        } else {
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Assignment to constant variable '%s'", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
                         return (TVal){};
@@ -285,25 +248,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 if (!found) {
                     // ReferenceError
                     HString* name_hstr = (HString*)key;
-                    HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
-                    if (try err = err_raw) {
-                        err.prototype = vm.heap.ref_err_proto;
-                        char[types::ERROR_MSG_BUF] ebuf;
-                        int elen = libc::snprintf(&ebuf, types::ERROR_MSG_BUF,
-                                                  "%s is not defined", name_hstr.get_cstr());
-                        if (elen > 0 && elen < types::ERROR_MSG_BUF) {
-                            HString* emsg = intern_string(vm, ebuf[:elen]);
-                            TVal emsg_val;
-                            emsg_val.set_string(emsg);
-                            HString* ekey = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
-                            err.put_prop(ekey, emsg_val, hobject::PROP_FLAGS_WEC);
-                        }
-                        TVal err_val;
-                        err_val.set_object(err);
-                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return vm_uncaught_error(vm, &err_val);
-                        }
-                    } else {
+                    if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "%s is not defined", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return VM_ERROR~;
                     }
                 }

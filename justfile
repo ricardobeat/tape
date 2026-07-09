@@ -45,6 +45,12 @@ build t="duktape_c3":
 build-debug t="duktape_c3":
     c3c -O0 build "{{t}}"
 
+# Build the C3 Duktape CLI with `-D TRACE_VM` so `-c`/`--format json`/`-t`
+# (`--trace-vm`) dump bytecode, dump JSON, and trace every instruction
+# respectively. Output: `out/duktape_c3_debug`.
+build-trace:
+    c3c build duktape_c3_debug
+
 # Build with heap verification enabled (`-D HEAP_VERIFY`) — validates GC roots at yield/resume
 build-verify t="test_vm":
     c3c -D HEAP_VERIFY -O0 build "{{t}}"

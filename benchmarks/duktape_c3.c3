@@ -181,6 +181,18 @@ fn int main(String[] args) {
     }
     if (debug) io::printfn("  compile:     %d us", (int)(time::now() - t3));
 
+$if $feature(TRACE_VM):
+    // TRACE_VM enabled — disassemble and trace flags work fully. Nothing to do.
+$else
+    // When -c/-t/--format is requested on a release build, the disassemble
+    // bodies and vm trace helpers are no-ops. Notify the user once instead
+    // of silently producing empty output.
+    if (compile_only || trace_vm || json_format) {
+        io::eprintfn("note: -c/-t/--format produce full output only in the trace-enabled CLI.");
+        io::eprintfn("      Run `just build-trace` to build `out/duktape_c3_debug` and use that.");
+    }
+$endif
+
     if (compile_only && !json_format) {
         io::printn("--- Bytecode ---");
         dump_function(*func);
@@ -243,6 +255,7 @@ fn int main(String[] args) {
 // ============================================================================
 
 fn void dump_function(bytecode::CompiledFunction f) {
+$if $feature(TRACE_VM):
     char[200] line_buf;
     for (uint i = 0; i < f.code_count; i++) {
         usz written = f.code[i].disassemble(line_buf[..]);
@@ -250,6 +263,12 @@ fn void dump_function(bytecode::CompiledFunction f) {
         String instr = (String)line_buf[0:end];
         io::printfn("[%3d] %s", i, instr);
     }
+$else
+    // release build: disassemble is stubbed (returns 0), so we just emit
+    // the bare instruction index. The CLI main() prints a one-shot notice
+    // telling the user to rebuild with TRACE_VM for opcodes.
+    (void)f;
+$endif
 }
 
 // ============================================================================
@@ -257,6 +276,7 @@ fn void dump_function(bytecode::CompiledFunction f) {
 // ============================================================================
 
 fn void dump_function_json(bytecode::CompiledFunction f, uint idx) {
+$if $feature(TRACE_VM):
     char[200] line_buf;
     for (uint i = 0; i < f.code_count; i++) {
         bytecode::Instruction ins = f.code[i];
@@ -270,6 +290,11 @@ fn void dump_function_json(bytecode::CompiledFunction f, uint idx) {
                     i + 1 < f.code_count ? "," : "");
     }
     io::printfn("  ],");
+$else
+    // release build: emit empty `instructions` array. The CLI main() prints
+    // a notice telling the user to rebuild with TRACE_VM.
+    (void)f; (void)idx;
+$endif
 }
 
 // ============================================================================
@@ -335,10 +360,16 @@ fn void dump_vm_state(Vm* v) {
             // Dump current instruction
             if (pc != null && pc >= f.code && pc < f.code + f.code_count) {
                 char[200] buf;
+$if $feature(TRACE_VM):
                 usz written = pc.disassemble(buf[..]);
                 uint end = written < (usz)buf.len ? (uint)written : buf.len;
                 io::eprintf("  instruction: [0x%04X] %s\n",
                             pc_offset, (String)buf[0:end]);
+$else
+                // release build: disassemble is a no-op stub.
+                io::eprintf("  instruction: [0x%04X] (op=%d)\n",
+                            pc_offset, pc.op.ordinal);
+$endif
             }
 
             // Dump register file

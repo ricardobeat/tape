@@ -8,10 +8,18 @@ import std::io;
 
 // ============================================================================
 // VM trace helpers (for --trace-vm)
+//
+// All bodies are gated on $feature(TRACE_VM). The CLI's `-t`/`--trace-vm`
+// flag is recognised in the release build but does nothing (the
+// runtime check `if (@unlikely(vm.trace))` in vm_execute.c3 is also
+// gated), so users hitting `-t` on a release build silently get no
+// trace output. Build `duktape_c3_debug` (`just build-trace`) for the
+// full instruction trace.
 // ============================================================================
 
 /// Print a TVal to stderr (for --trace-vm debugging).
 fn void trace_print_tval(TVal* v) {
+$if $feature(TRACE_VM):
     switch (v.get_tag()) {
         case types::TValTag.UNDEFINED:  io::eprintf("undef");    break;
         case types::TValTag.NULL_VAL:   io::eprintf("null");     break;
@@ -36,6 +44,10 @@ fn void trace_print_tval(TVal* v) {
         }
         default: io::eprintf("<?>"); break;
     }
+$else
+    // Stub for non-TRACE_VM builds. Keep callers in vm_execute.c3 linkable.
+    (void)v;
+$endif
 }
 
 /// Trace a single instruction before dispatch (for --trace-vm).
@@ -43,6 +55,7 @@ fn void trace_print_tval(TVal* v) {
 fn void trace_instruction(Vm* vm, Instruction* ip, uint offset,
                           TVal* ra, TVal* rb, TVal* rc,
                           TVal* regs_base, Activation* act) {
+$if $feature(TRACE_VM):
     char[160] line_buf;
     usz written = ip.disassemble(line_buf[..]);
     uint end = written < (usz)line_buf.len ? (uint)written : line_buf.len;
@@ -58,4 +71,9 @@ fn void trace_instruction(Vm* vm, Instruction* ip, uint offset,
         io::eprintf(" r%d=", c); trace_print_tval(rc);
     }
     io::eprintf("\n");
+$else
+    // Stub for non-TRACE_VM builds. Call in vm_execute.c3 is similarly
+    // gated, so this body is unreachable in release builds.
+    (void)vm; (void)ip; (void)offset; (void)ra; (void)rb; (void)rc; (void)regs_base; (void)act;
+$endif
 }
