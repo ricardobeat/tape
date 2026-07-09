@@ -1466,6 +1466,14 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
 /// comparefn and default string comparison. Sets ctx.should_throw on
 /// comparator error and returns 0 in that case.
 fn int array_sort_compare(BuiltinContext* ctx, TVal comparefn, bool has_comparefn, TVal a, TVal b) {
+    // ES2022 §23.1.3.30 SortCompare step 3-4: undefined always sorts last,
+    // regardless of the comparefn (comparefn is never called with undefined).
+    bool a_undef = a.is_undefined();
+    bool b_undef = b.is_undefined();
+    if (a_undef && b_undef) return 0;
+    if (a_undef) return 1;
+    if (b_undef) return -1;
+
     int cmp = 0;
     if (has_comparefn && ctx.heap.call_fn != null && ctx.vm != null) {
         TVal[2] args;
@@ -3315,10 +3323,19 @@ fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
     return true;
 }
 
-/// Set an array element, throwing TypeError if the write is not allowed.
+/// Set an array element using CreateDataPropertyOrThrow semantics.
 /// Returns true on success, false if an error was thrown (ctx.should_throw set).
 fn bool array_set_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong idx, TVal val) {
     if (!array_can_set_index(ctx, obj, idx)) return false;
+    // If a named property exists (possibly with non-WEC flags), use put_prop so
+    // CreateDataPropertyOrThrow fully redefines it (value + WEC flags).
+    if (idx <= 0xFFFFFFFFUL) {
+        HString* key = ctx.heap.int_to_hstring((long)idx);
+        if (key != null && obj.find_prop_idx(key) >= 0) {
+            obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
+            return true;
+        }
+    }
     array_set_elem_ulong(obj, idx, val, ctx.heap);
     return true;
 }
