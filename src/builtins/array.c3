@@ -1254,26 +1254,38 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
 // Array.prototype.push (ES5 §15.4.4.7)
 // ============================================================================
 fn void builtin_array_proto_push(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+    // ES2022 §23.1.3.23 step 1-2: ToObject — throw for null/undefined, box primitives.
+    if (this_val.is_null() || this_val.is_undefined()) {
+        arr_throw_type_error(ctx, "Array.prototype.push called on null or undefined");
+        return;
+    }
     HObject* obj = array_proto_get_this(ctx);
     if (obj == null) { ctx.result.set_undefined(); return; }
 
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    // ES2022 §23.1.3.23 step 4: throw before any element is written.
+    // ES2022 §23.1.3.23 step 4: throw if result length would exceed 2^53-1.
     if (len + (ulong)ctx.argc > (ulong)types::DUK_MAX_SAFE_INT) {
         arr_throw_type_error(ctx, "Pushing would exceed the maximum array length (2^53-1)");
         ctx.result.set_undefined();
         return;
     }
 
+    // Step 5: write each element (spec uses Set, which walks proto chain).
     for (ushort i = 0; i < ctx.argc; i++) {
         TVal arg = ctx.regs[ctx.base_reg + i];
         array_set_elem_ulong(obj, len + i, arg, ctx.heap);
     }
 
+    // Step 6: Set(O, "length", new_len, true) — throws if length is not writable.
     ulong new_len = len + (ulong)ctx.argc;
-    array_set_length_ulong(obj, new_len, ctx.heap);
+    HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+    if (!arr_set_length_or_throw(ctx, obj, len_key, new_len)) {
+        ctx.result.set_undefined();
+        return;
+    }
 
     ctx.result.set_fastint((long)new_len);
 }
@@ -2522,6 +2534,12 @@ fn void arr_iterator_close_after_throw(BuiltinContext* ctx, TVal iterator) {
 /// constructor whose .prototype defines a length setter. Returns true on
 /// success; on failure sets ctx.should_throw and returns false.
 fn bool arr_set_length_or_throw(BuiltinContext* ctx, HObject* obj, HString* len_key, ulong len_val) {
+    // ES2022 §10.4.2.4 ArraySetLength: ToUint32(len_val) must equal len_val.
+    if (obj.get_class() == hobject::ObjClass.ARRAY && len_val > 0xFFFFFFFFUL) {
+        arr_throw_range_error(ctx, "Invalid array length");
+        return false;
+    }
+
     TVal len_tv;
     if (len_val <= 0x7FFFFFFF) {
         len_tv.set_fastint((long)len_val);
