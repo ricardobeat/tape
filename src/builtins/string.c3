@@ -114,11 +114,14 @@ fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
         ctx.result.set_string(empty);
         return;
     }
-    // Build string from code units (max ~256 args, cap at 512 bytes)
-    char[512] buf;
+    // Build string from code units. Worst case 3 bytes per unit, so size the
+    // buffer off argc — apply() can pass thousands of arguments.
+    usz cc_cap = (usz)ctx.argc * 3;
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, cc_cap);
+    if (buf == null) { ctx.result.set_undefined(); return; }
     usz offset = 0;
-    ushort max_args = (ushort)(ctx.argc < 256 ? ctx.argc : 256);
-    for (ushort i = 0; i < max_args && offset < 510; i++) {
+    ushort max_args = ctx.argc;
+    for (ushort i = 0; i < max_args; i++) {
         uint cu = to_uint16(&ctx.regs[ctx.base_reg + i]);
         if (cu < 128) {
             buf[offset++] = (char)cu;
@@ -132,6 +135,7 @@ fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
         }
     }
     HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
     ctx.result.set_string(result);
 }
 
@@ -142,11 +146,16 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         ctx.result.set_string(empty);
         return;
     }
-    // Build string from code points (supporting supplementary plane via UTF-8)
-    char[1024] buf;
+    // Build string from code points (supporting supplementary plane via UTF-8).
+    // Worst case 6 bytes per argument (supplementary plane surrogate pair in
+    // CESU-8), so size the buffer off argc — callers like
+    // String.fromCodePoint.apply(null, hugeArray) pass thousands of args.
+    usz buf_cap = (usz)ctx.argc * 6;
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, buf_cap);
+    if (buf == null) { ctx.result.set_undefined(); return; }
     usz offset = 0;
-    ushort max_args = (ushort)(ctx.argc < 256 ? ctx.argc : 256);
-    for (ushort i = 0; i < max_args && offset < 1020; i++) {
+    ushort max_args = ctx.argc;
+    for (ushort i = 0; i < max_args; i++) {
         TVal* arg = &ctx.regs[ctx.base_reg + i];
         double d;
         if (arg.is_fastint()) {
@@ -163,6 +172,7 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         // Check: must be integral Number in [0, 0x10FFFF]
         if (math::is_nan(d) || math::is_inf(d) || d != math::trunc(d) || d < 0 || d > 0x10FFFF) {
             // Throw RangeError
+            ctx.heap.free_func(ctx.heap.heap_udata, buf);
             builtin_throw_no_result_change(ctx, ctx.heap.range_err_proto, "Invalid code point value");
             return;
         }
@@ -192,6 +202,7 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         }
     }
     HString* result_str = builtin_intern_string(ctx.heap, buf[:offset]);
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
     ctx.result.set_string(result_str);
 }
 

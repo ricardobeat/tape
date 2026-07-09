@@ -9,6 +9,7 @@ import duktape::env;
 
 import duktape::heap;
 import duktape::hobject;
+import duktape::vm;
 import duktape::compiler;
 import duktape::lexer;
 
@@ -409,10 +410,28 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     if (raw_len > 4294967295.0) raw_len = 4294967295.0;
     uint len = (uint)raw_len;
 
+    // The dispatch plumbing carries argc as ushort, so that is the hard limit
+    // on how many arguments a single call can receive.
+    if (len > 65535) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_len = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.range_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.apply: too many arguments");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
+
     // CreateListFromArrayLike steps 4-6: for each index 0..len-1, let indexName
     // be ! ToString(index), then next be ? Get(obj, indexName) — invoking any
     // accessor getter and propagating an abrupt completion immediately.
-    uint max_extract = len < 1024 ? len : 1024;
+    uint max_extract = len;
     uint actual_count = 0;
     TVal* extracted_args = null;
     if (max_extract > 0) {
@@ -457,6 +476,26 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             }
         }
         if (actual_count < max_extract) extracted_args[actual_count++] = elem;
+    }
+
+    // Grow the valstack so the arg writes at base_reg..base_reg+count land in
+    // allocated, GC-visible memory (the caller's frame is usually far smaller
+    // than an arbitrary array-like). ctx.regs / ctx.result are raw pointers
+    // into the valstack — re-derive them if the realloc moved it.
+    {
+        Vm* vm = (Vm*)ctx.vm;
+        TVal* old_vs = vm.valstack;
+        if (!vm::ensure_valstack(vm, (uint)ctx.base_reg + actual_count + 8)) {
+            if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
+            ctx.result.set_undefined();
+            return;
+        }
+        if (vm.valstack != old_vs) {
+            ctx.result = vm.valstack + (ctx.result - old_vs);
+            ctx.regs = vm.valstack;
+        }
+        TVal* extended_top = vm.valstack + ctx.base_reg + actual_count + 8;
+        if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
     }
 
     if (downstream.is_lightfunc()) {

@@ -302,6 +302,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 ctx.callee_obj = null;
 
                 builtins::dispatch_builtin(fn_idx, &ctx);
+                // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                ds.regs_base = ds.act.bottom;
 
                 if (ctx.should_throw) {
                     if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
@@ -374,6 +376,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.should_throw = false;
                     ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+                    // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                    ds.regs_base = ds.act.bottom;
 
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
@@ -403,6 +407,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             inner.should_throw = false;
                             inner.callee_obj = null;
                             builtins::dispatch_builtin(lf_idx, &inner);
+                            // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                            ds.regs_base = ds.act.bottom;
                             if (inner.should_throw) {
                                 if (!vm_throw_value(vm, inner.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return vm_uncaught_error(vm, &inner.throw_value);
@@ -510,6 +516,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             inner.should_throw = false;
                             inner.callee_obj = null;
                             builtins::dispatch_builtin(lf_idx, &inner);
+                            // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                            ds.regs_base = ds.act.bottom;
                             if (inner.should_throw) {
                                 if (!vm_throw_value(vm, inner.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return vm_uncaught_error(vm, &inner.throw_value);
@@ -1406,6 +1414,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 ctx.global_env = vm.global_env;
                 ctx.should_throw = false;
                 builtins::dispatch_builtin(fn_idx, &ctx);
+                // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                ds.regs_base = ds.act.bottom;
                 if (ctx.should_throw) {
                     if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return vm_uncaught_error(vm, &ctx.throw_value);
@@ -1468,6 +1478,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.should_throw = false;
                     ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+                    // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                    ds.regs_base = ds.act.bottom;
 
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
