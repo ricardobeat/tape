@@ -1,7 +1,34 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 272 — MEMKILL fixes: shape use-after-free (RegExp property-escapes), TypedArray excessive-length RangeError
+**Last Updated:** Session 273 — String proto ToPrimitive coercion (`builtin_to_string_vm`), isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift throw, Function.prototype[Symbol.hasInstance]
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
+
+## Session 273 (2026-07-10) — Phase 6 built-in prototype methods
+
+Phase 6 (Built-in Prototype Methods): **3986 (s272) → 4077 / 4713 pass** (fail 205),
+measured via `run_test262.py --phase 6`. Changes (all committed):
+
+1. **String.prototype ToString(object) coercion** — `indexOf`/`includes`/
+   `startsWith`/`endsWith`/`lastIndexOf`/`concat`/`replace`/`normalize`/
+   `localeCompare` argument coercion switched from `builtin_to_string` (which
+   hardcoded `"[object Object]"`) to `builtin_to_string_vm`, which invokes
+   `ToPrimitive(obj,"string")` → the object's `.toString()`. So `"foo".indexOf([])`
+   is now `0`. `concat`'s stale 512-byte output cap removed (malloc full size).
+2. **`.length` of indexOf/lastIndexOf/includes/startsWith/endsWith** corrected
+   2→1 (single formal param per spec).
+3. **`String.prototype.isWellFormed`/`toWellFormed`** (ES2024) implemented via
+   CESU-8 code-unit scan detecting/replacing lone surrogates with U+FFFD.
+4. **`Function.prototype.bind`** — `.name` read via full Get (invokes accessor
+   getter, propagates throw; Symbol name → ""); `.length` computed in `double`
+   so values up to `Number.MAX_SAFE_INTEGER` and `+Infinity` survive.
+5. **`Array.prototype.pop`/`shift`** now Set(length) via `arr_set_length_or_throw`
+   → frozen / non-writable-length receiver throws TypeError (matched `push`).
+6. **`Function.prototype[Symbol.hasInstance]`** implemented as a real callable
+   (OrdinaryHasInstance): unwraps bound targets, invokes prototype getter,
+   TypeError on non-object prototype. Property desc NW/NE/NC, name/length correct.
+
+No regressions across Phase 6 between fixes.
+
 
 ## Summary (full run, session 272, 2026-07-09)
 
