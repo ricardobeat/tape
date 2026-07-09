@@ -1933,6 +1933,18 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             keys_count++;
         }
     }
+    // String exotic char indices: lazy enumerable own properties on a wrapped
+    // string primitive. The named-prop table is empty for these, so enumerate
+    // 0..char_length-1 explicitly per ES5 §15.5.5.1.
+    if (props.flags.exotic_stringobj && (*props.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*props.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            for (uint i = 0; i < prim.char_length() && keys_count < 256; i++) {
+                HString* pk = ctx.heap.int_to_hstring((long)i);
+                if (pk != null) keys_arr[keys_count++] = pk;
+            }
+        }
+    }
 
     for (uint k = 0; k < keys_count; k++) {
         HString* p_key = keys_arr[k];
@@ -2520,6 +2532,51 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                 desc_acc_set[desc_count] = desc_vals[1];
                 desc_is_acc[desc_count] = is_acc;
                 desc_count++;
+            }
+
+            // Phase 1.5: String exotic character indices (e.g. new String("hi")
+            // or Object.create({}, "hi")). Per ES5 §15.5.5.1 the integer
+            // indices 0..char_length-1 are own enumerable properties served
+            // lazily from the wrapped primitive. The named-prop table and
+            // array part are both empty for these, so they must be enumerated
+            // explicitly here. ObjectDefineProperties calls [[GetOwnProperty]]
+            // on each, which yields a String-exotic char as the descriptor
+            // value — and ToPropertyDescriptor on a non-object throws.
+            if (props.flags.exotic_stringobj && (*props.extra_ptr()).prim.primitive_value.is_string()) {
+                HString* prim = (HString*)(*props.extra_ptr()).prim.primitive_value.get_heapptr();
+                if (prim != null) {
+                    uint clen = prim.char_length();
+                    char[] pdata = prim.get_data();
+                    for (uint i = 0; i < clen && desc_count < 256; i++) {
+                        HString* pk_key = ctx.heap.int_to_hstring((long)i);
+                        if (pk_key == null) continue;
+                        char[2] ch_buf;
+                        ch_buf[0] = pdata[i];
+                        ch_buf[1] = 0;
+                        HString* ch_hstr = builtin_intern_string(ctx.heap, ch_buf[:1]);
+                        if (ch_hstr == null) continue;
+                        TVal ch_val;
+                        ch_val.set_string(ch_hstr);
+                        if (!ch_val.is_object()) {
+                            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+                            if (catch err_str = err_raw) { ctx.result.set_undefined(); return; }
+                            HObject* err = err_raw;
+                            err.prototype = ctx.heap.type_err_proto;
+                            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+                            char[128] msg_buf;
+                            int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object",
+                                                         pk_key.get_data());
+                            HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
+                            if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+                            TVal msg_tv;
+                            msg_tv.set_string(msg_str);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+                            ctx.should_throw = true;
+                            ctx.throw_value.set_object(err);
+                            return;
+                        }
+                    }
+                }
             }
 
             // Phase 2: Apply all collected descriptors atomically
