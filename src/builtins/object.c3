@@ -1524,6 +1524,27 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             }
         }
 
+        // ES2024 ArraySetLength step 3: validate the new length FIRST so that
+        // an out-of-range value (negative, NaN, >2^32-1) throws RangeError
+        // before descriptor-field validation can throw TypeError. The
+        // describe-own-prop-length-error.js and
+        // define-own-prop-length-overflow-order.js tests rely on this ordering.
+        HString* val_k = builtin_intern_string(ctx.heap, "value");
+        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
+        uint arr_new_len = old_len;
+        bool arr_has_new_len = false;
+        if (has_value_in_desc) {
+            TVal new_len_val = desc_vals[0];
+            double num = builtin_to_number_vm(ctx, &new_len_val);
+            if (ctx.should_throw) return;
+            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
+                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
+                return;
+            }
+            arr_new_len = (uint)num;
+            arr_has_new_len = true;
+        }
+
         // Reject accessor descriptor on length (length is always a data property).
         HString* get_k = builtin_intern_string(ctx.heap, "get");
         HString* set_k = builtin_intern_string(ctx.heap, "set");
@@ -1556,23 +1577,6 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         if (has_wrt && desc_flags.writable && !len_is_writable) {
             builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
             return;
-        }
-
-        // If value is present, validate and apply ToUint32 FIRST (step 3.c/3.d).
-        HString* val_k = builtin_intern_string(ctx.heap, "value");
-        bool has_value_in_desc = (val_k != null) && desc_obj.find_prop_idx(val_k) >= 0;
-        uint arr_new_len = old_len;
-        bool arr_has_new_len = false;
-        if (has_value_in_desc) {
-            TVal new_len_val = desc_vals[0];
-            double num = builtin_to_number_vm(ctx, &new_len_val);
-            if (ctx.should_throw) return;
-            if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
-                builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
-                return;
-            }
-            arr_new_len = (uint)num;
-            arr_has_new_len = true;
         }
 
         // ES5 §15.4.5.1 step 3.f.i: if non-writable, reject value changes.
