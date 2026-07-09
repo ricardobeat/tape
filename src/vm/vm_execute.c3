@@ -382,15 +382,32 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     if (ctor == null || !ctor.flags.callable) return undef;
 
     // Allocate a fresh plain object as `this`.
+    // GetPrototypeFromConstructor(ctor, "%Object.prototype%") — ES2022
+    // §9.1.14: read ctor.prototype; if it isn't an object, fall back to the
+    // default intrinsic (heap.object_proto) rather than always using it.
     HObject*? new_this_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err_t = new_this_raw) return undef;
     HObject* new_this = new_this_raw;
     new_this.prototype = heap.object_proto;
+    HString* ctor_proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+    if (ctor_proto_key != null) {
+        if (try proto_tv = ctor.get_prop_proto(ctor_proto_key)) {
+            if (proto_tv.is_object() && proto_tv.get_heapptr() != null) {
+                new_this.prototype = (HObject*)proto_tv.get_heapptr();
+            }
+        }
+    }
     TVal this_tv;
     this_tv.set_object(new_this);
 
     CompiledFunction* target = (*ctor.extra_ptr()).func.comp_func;
-    if (target == null || target.num_regs == 0) {
+    // Note: target == null is the correct signal for "not a compiled
+    // function" (e.g. a built-in). A compiled function with num_regs == 0
+    // (empty body, no locals/params referenced) is still a real constructor
+    // and must run through the compiled-function activation path below —
+    // routing it into the builtin-dispatch branch here would silently no-op
+    // any user constructor with an empty or trivial body.
+    if (target == null) {
         // Built-in constructor — dispatch directly.
         if (ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
             int builtin_idx = (*ctor.extra_ptr()).func.builtin_fn_index;
