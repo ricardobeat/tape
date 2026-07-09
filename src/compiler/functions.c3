@@ -55,6 +55,10 @@ struct DestructBind {
     bool is_synthetic;   // true = intermediate extraction point (not a user variable)
     uint   default_func_idx;  // index into inner_funcs for default thunk (0xFFFFFFFF if none)
     ushort parent_idx;     // index of the binding whose value is the source for this one (0xFFFF = direct from arg)
+    // Assignment-pattern member-expression targets: [obj.x] = v, [...obj.rest] = v
+    bool   is_member_target;  // target is a member expression, not a simple identifier
+    ushort member_obj_reg;    // register holding the evaluated object (for PUTPROP)
+    ushort member_prop_reg;   // register holding the evaluated property key (for PUTPROP)
 }
 
 /// Check if a candidate param name already exists in the seen-params table.
@@ -712,7 +716,18 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 case DECLARE:
                     self.emit_var_store(bind_reg, ni, is_lexical, is_const);
                 case ASSIGN_TARGET:
-                    if (!self.is_local_var_reg(bind_reg)) {
+                    // Member-expression targets (e.g. [obj.x] = v) use PUTPROP
+                    // rather than PUTVAR. The object and key registers were
+                    // captured during pattern parsing (before the RHS iterator
+                    // was set up) to preserve lref-before-GetValue order.
+                    if (binds[di].is_member_target) {
+                        self.emit_abc(Opcode.PUTPROP,
+                            (uint)binds[di].member_obj_reg,
+                            (uint)binds[di].member_prop_reg,
+                            (uint)bind_reg);
+                        self.free_reg(binds[di].member_prop_reg);
+                        self.free_reg(binds[di].member_obj_reg);
+                    } else if (!self.is_local_var_reg(bind_reg)) {
                         self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
                     }
             }
