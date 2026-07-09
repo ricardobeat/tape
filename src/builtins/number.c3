@@ -15,27 +15,29 @@ import std::io;
 // Number constructor builtins
 // ============================================================================
 
-/// Helper: extract the double value from 'this' for Number.prototype methods.
-/// Returns NaN on incompatible 'this' (caller checks via isnan).
-fn double number_proto_get_this(BuiltinContext* ctx) {
+/// thisNumberValue(this value) per ES2022 §21.1.3: returns the Number value
+/// if `this` is a number primitive or a Number-wrapper object, else false.
+/// Callers must check the returned bool before using `out` — a false return
+/// means the caller must throw a TypeError (this value is not a number).
+fn bool this_number_value(BuiltinContext* ctx, double* out) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
+    if (this_val.is_number()) {
+        *out = this_val.get_number();
+        return true;
+    }
+    if (this_val.is_fastint()) {
+        *out = (double)this_val.get_fastint();
+        return true;
+    }
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.NUMBER &&
             ((*obj.extra_ptr()).prim.primitive_value.is_number() || (*obj.extra_ptr()).prim.primitive_value.is_fastint())) {
-            return (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+            *out = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
+            return true;
         }
-    } else if (this_val.is_number()) {
-        return this_val.get_number();
-    } else if (this_val.is_fastint()) {
-        return (double)this_val.get_fastint();
     }
-    return double::nan;
-}
-
-/// Helper: check if a double is -0.
-fn bool is_neg_zero(double d) {
-    return d == 0.0 && math::signbit(d);
+    return false;
 }
 
 /// Helper: convert a positive integer to a string in the given radix (2-36).
@@ -122,26 +124,25 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
         return;
     }
 
-    // Determine radix
+    // Determine radix — ToIntegerOrInfinity(radix) via the VM so that a
+    // radix object's valueOf/toString is invoked and abrupt completions
+    // (thrown errors) propagate before the range check.
     int radix = 10;
-    if (ctx.argc > 0) {
-        TVal* rad_arg = &ctx.regs[ctx.base_reg];
-        if (rad_arg.is_fastint()) {
-            radix = (int)rad_arg.get_fastint();
-        } else if (rad_arg.is_number()) {
-            radix = (int)(long)rad_arg.get_number();
-        } else {
-            radix = 10;
-        }
-        if (radix < 2 || radix > 36) {
+    bool radix_undefined = ctx.argc == 0 ||
+        ctx.regs[ctx.base_reg].get_tag() == types::TValTag.UNDEFINED;
+    if (!radix_undefined) {
+        double radix_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (radix_d < 2 || radix_d > 36) {
             // RangeError per ES5 §15.7.4.2
             builtin_throw(ctx, ctx.heap.range_err_proto, "radix must be an integer between 2 and 36");
             return;
         }
+        radix = (int)(long)radix_d;
     }
 
     // Handle special values
-    if (math::is_nan(d) && !is_neg_zero(d)) {
+    if (math::is_nan(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
         ctx.result.set_string(s);
         return;
@@ -215,34 +216,48 @@ fn void builtin_number_proto_toString(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
-/// Number.prototype.toFixed(fractionDigits) — ES5 §15.7.4.5
+/// Number.prototype.toFixed(fractionDigits) — ES2022 §21.1.3.3
+/// Step order: ToIntegerOrInfinity(fractionDigits) and its range check happen
+/// before thisNumberValue is checked, but thisNumberValue itself must throw
+/// TypeError first if `this` is not a number (implementations commonly check
+/// fractionDigits first since it can throw independently of `this`).
 fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
-    double d = number_proto_get_this(ctx);
+    // 1. Let f be ? ToIntegerOrInfinity(fractionDigits).
+    int f = 0;
+    if (ctx.argc > 0) {
+        double f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        // 2. If f is not finite, throw a RangeError exception.
+        // 3. If f < 0 or f > 100, throw a RangeError exception.
+        if (math::is_inf(f_d) || f_d < 0 || f_d > 100) {
+            builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
+            return;
+        }
+        f = (int)(long)f_d;
+    }
+
+    // 4. Let x be ? thisNumberValue(this value).
+    double d;
+    if (!this_number_value(ctx, &d)) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.toFixed called on incompatible value");
+        ctx.result.set_undefined();
+        return;
+    }
 
     // Normalize -0 to +0
     if (d == 0.0) d = 0.0;
 
+    // 5. If x is NaN, return the String "NaN".
     if (math::is_nan(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
         ctx.result.set_string(s);
         return;
     }
+    // 6. If x < 0, ... 7. If x >= 10^21 ...  (both handled below via Infinity check + flag)
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
         ctx.result.set_string(s);
         return;
-    }
-
-    int f = 0;
-    if (ctx.argc > 0) {
-        double f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (f_d < 0 || f_d > 20) {
-            // ES5 §15.7.4.5: throw RangeError
-            builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
-            return;
-        }
-        f = (int)(long)f_d;
     }
 
     int flags = dtoa_bindings::JS_DTOA_FORMAT_FRAC;
@@ -258,39 +273,58 @@ fn void builtin_number_proto_toFixed(BuiltinContext* ctx) {
     ctx.result.set_string(s);
 }
 
-/// Number.prototype.toExponential(fractionDigits) — ES5 §15.7.4.6
+/// Number.prototype.toExponential(fractionDigits) — ES2022 §21.1.3.2
+/// Step order: 1. Let x be ? thisNumberValue(this value). 2. Let f be
+/// ? ToIntegerOrInfinity(fractionDigits) — this may call user code (valueOf/
+/// toString) so it must run even when fractionDigits is undefined behaves
+/// as a no-op (ToIntegerOrInfinity(undefined) = 0, but the "undefined" case
+/// is distinguished later to select free-format output).
 fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
-    double d = number_proto_get_this(ctx);
+    // 1. Let x be ? thisNumberValue(this value).
+    double d;
+    if (!this_number_value(ctx, &d)) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.toExponential called on incompatible value");
+        ctx.result.set_undefined();
+        return;
+    }
 
     // Normalize -0 to +0
     if (d == 0.0) d = 0.0;
 
+    bool fraction_digits_undefined = ctx.argc == 0 ||
+        ctx.regs[ctx.base_reg].get_tag() == types::TValTag.UNDEFINED;
+
+    // 2. Let f be ? ToIntegerOrInfinity(fractionDigits).
+    double f_d = 0.0;
+    if (!fraction_digits_undefined) {
+        f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    }
+
+    // 4. If x is NaN, return the String "NaN".
     if (math::is_nan(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
         ctx.result.set_string(s);
         return;
     }
+    // 7. If x = +/-Infinity, return the signed "Infinity" string.
+    // (the fractionDigits range check does not apply to Infinity `this`)
     if (math::is_inf(d)) {
         HString* s = builtin_intern_string(ctx.heap, d > 0 ? "Infinity" : "-Infinity");
         ctx.result.set_string(s);
         return;
     }
 
-    int f = 0;
-    if (ctx.argc > 0) {
-        double f_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (f_d < 0 || f_d > 20) {
-            // ES5 §15.7.4.6: throw RangeError
-            builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
-            return;
-        }
-        f = (int)(long)f_d;
+    // 8. If f < 0 or f > 100, throw a RangeError exception.
+    if (!fraction_digits_undefined && (f_d < 0 || f_d > 100)) {
+        builtin_throw(ctx, ctx.heap.range_err_proto, "fractionDigits out of range");
+        return;
     }
+    int f = (int)(long)f_d;
 
     int flags = dtoa_bindings::JS_DTOA_FORMAT_FIXED | dtoa_bindings::JS_DTOA_EXP_ENABLED;
     int n_digits = f + 1;
-    if (ctx.argc == 0) {
+    if (fraction_digits_undefined) {
         flags = dtoa_bindings::JS_DTOA_FORMAT_FREE | dtoa_bindings::JS_DTOA_EXP_ENABLED;
         n_digits = 0;
     }
@@ -305,13 +339,39 @@ fn void builtin_number_proto_toExponential(BuiltinContext* ctx) {
     ctx.result.set_string(s);
 }
 
-/// Number.prototype.toPrecision(precision) — ES5 §15.7.4.7
+/// Number.prototype.toPrecision(precision) — ES2022 §21.1.3.5
+/// Step order: 1. Let x be ? thisNumberValue(this value). 2. If precision is
+/// undefined, return ! ToString(x). 3. Let p be ? ToInteger(precision).
+/// 4. If x is NaN, return "NaN" (checked AFTER ToInteger(precision), so a
+/// poisoned precision object still has its valueOf/toString invoked).
 fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
-    double d = number_proto_get_this(ctx);
+    // 1. Let x be ? thisNumberValue(this value).
+    double d;
+    if (!this_number_value(ctx, &d)) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.toPrecision called on incompatible value");
+        ctx.result.set_undefined();
+        return;
+    }
 
     // Normalize -0 to +0
     if (d == 0.0) d = 0.0;
 
+    bool precision_undefined = ctx.argc == 0 ||
+        ctx.regs[ctx.base_reg].get_tag() == types::TValTag.UNDEFINED;
+
+    // 2. If precision is undefined, return ! ToString(x).
+    if (precision_undefined) {
+        HString* s = builtin_number_to_hstring(ctx.heap, d);
+        if (s == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_string(s);
+        return;
+    }
+
+    // 3. Let p be ? ToInteger(precision).
+    double p_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+    // 4. If x is NaN, return the String "NaN".
     if (math::is_nan(d)) {
         HString* s = builtin_intern_string(ctx.heap, "NaN");
         ctx.result.set_string(s);
@@ -323,18 +383,8 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
         return;
     }
 
-    if (ctx.argc == 0) {
-        // No arg: return ToString(x)
-        HString* s = builtin_number_to_hstring(ctx.heap, d);
-        if (s == null) { ctx.result.set_undefined(); return; }
-        ctx.result.set_string(s);
-        return;
-    }
-
-    double p_d = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]);
-    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    if (p_d < 1 || p_d > 21) {
-        // ES5 §15.7.4.7: throw RangeError
+    // 8. If p < 1 or p > 100, throw a RangeError exception.
+    if (p_d < 1 || p_d > 100) {
         builtin_throw(ctx, ctx.heap.range_err_proto, "precision out of range");
         return;
     }
@@ -352,7 +402,9 @@ fn void builtin_number_proto_toPrecision(BuiltinContext* ctx) {
     ctx.result.set_string(s);
 }
 
-/// Number.prototype.data.valueOf — returns the wrapped number primitive
+/// Number.prototype.valueOf() — ES2022 §21.1.3.7
+/// 1. Return ? thisNumberValue(this value). Throws TypeError if `this` is
+/// not a number primitive or Number-wrapper object.
 fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_object() && this_val.get_heapptr() != null) {
@@ -373,6 +425,7 @@ fn void builtin_number_proto_valueOf(BuiltinContext* ctx) {
         ctx.result.set_fastint(this_val.get_fastint());
         return;
     }
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Number.prototype.valueOf called on incompatible value");
     ctx.result.set_undefined();
 }
 
@@ -471,10 +524,30 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     proto.prototype = null;  // Will be Object.prototype in later phases
     heap.number_proto = proto;
 
-    // Add .toString() method
+    // Add .toString() method — registered as a proper function object (not
+    // LIGHTFUNC) so its .length (1, per ES2022 §21.1.3.6) can differ from
+    // Number.prototype.toLocaleString's .length (0), even though both share
+    // the same builtin_fn_index and would otherwise read identical metadata.
+    HObject*? tostring_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = tostring_raw) return false;
+    HObject* tostring_obj = tostring_raw;
+    (*tostring_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_NUMBER_PROTO_TOSTRING;
+    tostring_obj.flags.callable = true;
+    tostring_obj.prototype = heap.function_proto;
+    HString* tostring_name_key = builtin_intern_string(heap, "name");
+    HString* tostring_name_val = builtin_intern_string(heap, "toString");
+    if (tostring_name_key != null && tostring_name_val != null) {
+        TVal name_tv; name_tv.set_string(tostring_name_val);
+        tostring_obj.put_prop(tostring_name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+    HString* tostring_length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    if (tostring_length_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        tostring_obj.put_prop(tostring_length_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
     HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
-    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_TOSTRING);
+    tostring_tv.set_object(tostring_obj);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
