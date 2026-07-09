@@ -5035,6 +5035,17 @@ fn void? CompilerContext.do_while_statement(&self) {
 }
 
 /// Parse return statement.
+/// Emit ITER_CLOSE for every enclosing for-of loop, innermost first.
+/// A return exits all loops in the function, so each loop's iterator must be
+/// closed (§14.7.5.7 — abrupt loop completions call IteratorClose).
+fn void CompilerContext.emit_return_iter_closes(&self) {
+    for (int li = (int)self.loop_depth - 1; li >= 0; li--) {
+        if (self.loop_stack[li].iter_close_reg >= 0) {
+            self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[li].iter_close_reg, 0, 0);
+        }
+    }
+}
+
 fn void? CompilerContext.return_statement(&self) {
     self.expect(TokenType.RETURN)!;
 
@@ -5043,9 +5054,13 @@ fn void? CompilerContext.return_statement(&self) {
     TokenType next = self.peek_type();
     if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
         next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
+        self.emit_return_iter_closes();
         self.emit_simple((self.is_generator && !self.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
+        // IteratorClose runs after the return value is evaluated but before
+        // the frame unwinds (§14.7.5.7 loop completion propagation).
+        self.emit_return_iter_closes();
         self.emit_abc((self.is_generator && !self.is_async) ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
         // Note: do NOT free_reg(val_reg) here.  The return value register may
         // be a live local variable (e.g. `return i` inside a for-loop body).
