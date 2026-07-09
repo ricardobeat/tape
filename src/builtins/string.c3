@@ -522,7 +522,8 @@ fn void builtin_string_proto_indexOf(BuiltinContext* ctx) {
     // Get search string
     HString* search_hstr;
     if (ctx.argc > 0) {
-        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -849,7 +850,8 @@ fn void builtin_string_proto_localeCompare(BuiltinContext* ctx) {
     }
     HString* that_hstr;
     if (ctx.argc > 0) {
-        that_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        that_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         that_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -1239,40 +1241,34 @@ fn void builtin_string_proto_concat(BuiltinContext* ctx) {
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
 
-    // Concatenate all into a buffer
-    // First, compute total length
-    uint total_len = len;
+    // Concatenate all into a buffer. First, coerce and collect all argument strings.
     usz max_args = ctx.argc < 256 ? (usz)ctx.argc : 256;
+    HString*[256] arg_strs;
+    uint total_len = len;
     for (usz i = 0; i < max_args; i++) {
-        HString* arg_str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + i]);
-        if (arg_str == null) continue;
-        total_len += arg_str.blen;
+        HString* arg_str = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + i]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        arg_strs[i] = arg_str;
+        if (arg_str != null) total_len += arg_str.blen;
     }
 
-    if (total_len > 512) total_len = 512;  // cap buffer size
+    // Allocate output buffer and copy.
+    char* out_buf = (char*)libc::malloc((usz)total_len + 1);
+    if (out_buf == null) { ctx.result.set_string(s_hstr); return; }
+    defer libc::free(out_buf);
 
-    char[512] buf;
     usz offset = 0;
-
-    // Copy original string
-    usz orig_copy = (usz)(len < 512 ? len : 512);
-    for (usz i = 0; i < orig_copy; i++) {
-        buf[offset++] = data[i];
-    }
-
-    // Copy each arg
-    for (usz i = 0; i < max_args && offset < 512; i++) {
-        HString* arg_str = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + i]);
+    for (usz i = 0; i < (usz)len; i++) out_buf[offset++] = data[i];
+    for (usz i = 0; i < max_args; i++) {
+        HString* arg_str = arg_strs[i];
         if (arg_str == null) continue;
         char* arg_data = arg_str.get_cstr();
         uint arg_len = arg_str.blen;
-        usz copy = (usz)(arg_len < (512 - offset) ? arg_len : (512 - offset));
-        for (usz j = 0; j < copy; j++) {
-            buf[offset++] = arg_data[j];
-        }
+        for (usz j = 0; j < (usz)arg_len; j++) out_buf[offset++] = arg_data[j];
     }
+    out_buf[offset] = 0;
 
-    HString* result = builtin_intern_string(ctx.heap, buf[:offset]);
+    HString* result = builtin_intern_string(ctx.heap, out_buf[:offset]);
     ctx.result.set_string(result);
 }
 
@@ -1466,12 +1462,14 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                 TVal this_val; this_val.set_undefined();
                 TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
                 if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                replace_str = builtin_to_string(ctx.heap, &res);
+                replace_str = builtin_to_string_vm(ctx, &res);
+                if (ctx.should_throw) return;
                 if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
             } else {
                 HString* raw_replace = ctx.argc > 1
-                    ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                    ? builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1])
                     : builtin_intern_string(ctx.heap, "undefined");
+                if (ctx.should_throw) return;
                 if (raw_replace == null) { ctx.result.set_string(s_hstr); return; }
                 replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
                     input, input_len, out_start, out_end,
@@ -1544,12 +1542,14 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                     TVal this_val; this_val.set_undefined();
                     TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
                     if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                    replace_str = builtin_to_string(ctx.heap, &res);
+                    replace_str = builtin_to_string_vm(ctx, &res);
+                    if (ctx.should_throw) return;
                     if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
                 } else {
                     HString* raw_replace = ctx.argc > 1
-                        ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
+                        ? builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1])
                         : builtin_intern_string(ctx.heap, "undefined");
+                    if (ctx.should_throw) return;
                     if (raw_replace == null) break;
                     replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
                         input, input_len, out_start, out_end,
@@ -1633,12 +1633,14 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         TVal fn_val = ctx.regs[ctx.base_reg + 1];
         TVal res = ctx.heap.call_fn(ctx.vm, fn_val, &fn_args[0], 3, this_val);
         if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-        replace_str = builtin_to_string(ctx.heap, &res);
+        replace_str = builtin_to_string_vm(ctx, &res);
+        if (ctx.should_throw) return;
         if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
     } else {
         HString* replace_hstr;
         if (ctx.argc > 1) {
-            replace_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1]);
+            replace_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+            if (ctx.should_throw) return;
         } else {
             replace_hstr = builtin_intern_string(ctx.heap, "undefined");
         }
@@ -1907,7 +1909,8 @@ fn void builtin_string_proto_includes(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
-        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -1954,7 +1957,8 @@ fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
-        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -1995,7 +1999,8 @@ fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
-        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -2299,7 +2304,8 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
-        search_hstr = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
         search_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
@@ -2863,7 +2869,8 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
     // Process form argument (ES6 §21.1.3.12 steps 3-5)
     // If form is not provided or is undefined, default to NFC.
     if (ctx.argc > 0 && !ctx.regs[ctx.base_reg].is_undefined()) {
-        HString* form = builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg]);
+        HString* form = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (form != null) {
             char* f = form.get_cstr();
             uint flen = form.blen;
@@ -2985,6 +2992,133 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
 
     if (result_hstr != null) {
         ctx.result.set_string(result_hstr);
+    } else {
+        ctx.result.set_string(s_hstr);
+    }
+}
+
+// ============================================================================
+// String.prototype.isWellFormed / toWellFormed  (ES2024 §21.1.3.7 / §21.1.3.27)
+// ============================================================================
+//
+// Both methods operate on the UTF-16 code-unit view of the string.  Because
+// internal storage is CESU-8, every code unit (including surrogate halves) is
+// represented as an independent 1-3 byte UTF-8-shaped sequence.  We scan by
+// decoding each sequence; a lone surrogate is:
+//   - a high surrogate (0xD800-0xDBFF) NOT immediately followed by a low
+//     surrogate (0xDC00-0xDFFF), OR
+//   - a low surrogate that is not the second unit of such a pair.
+//
+// isWellFormed: O(n) scan, returns boolean, no allocation.
+// toWellFormed: O(n) scan + allocation of worst-case same byte length (every
+// non-surrogate code unit is already well-formed; lone surrogates are replaced
+// by U+FFFD which encodes to exactly 3 bytes — same as the surrogate itself).
+
+/// String.prototype.isWellFormed() — ES2024 §21.1.3.7
+/// Returns true iff the string's UTF-16 code-unit sequence contains no lone
+/// (unpaired) surrogate code units.
+fn void builtin_string_proto_isWellFormed(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    char[] data = s_hstr.get_data();
+    uint len = (uint)data.len;
+    uint i = 0;
+    while (i < len) {
+        uint seq_len = hstring::utf8_seq_len(data[i]);
+        uint cp = hstring::decode_codepoint(data, i);
+        if (hstring::is_high_surrogate(cp)) {
+            // Must be paired with an immediately following low surrogate.
+            uint next_off = i + seq_len;
+            if (next_off >= len) {
+                // High surrogate at end-of-string — lone.
+                ctx.result.set_boolean(false);
+                return;
+            }
+            uint next_cp = hstring::decode_codepoint(data, next_off);
+            if (!hstring::is_low_surrogate(next_cp)) {
+                // High surrogate followed by something that is not a low
+                // surrogate — lone.
+                ctx.result.set_boolean(false);
+                return;
+            }
+            // Valid surrogate pair: skip both code units.
+            uint low_len = hstring::utf8_seq_len(data[next_off]);
+            i = next_off + low_len;
+        } else if (hstring::is_low_surrogate(cp)) {
+            // Low surrogate without a preceding high surrogate — lone.
+            ctx.result.set_boolean(false);
+            return;
+        } else {
+            i += seq_len;
+        }
+    }
+    ctx.result.set_boolean(true);
+}
+
+/// String.prototype.toWellFormed() — ES2024 §21.1.3.27
+/// Returns a copy of the string with every lone surrogate code unit replaced
+/// by U+FFFD (REPLACEMENT CHARACTER, UTF-8: 0xEF 0xBF 0xBD).
+fn void builtin_string_proto_toWellFormed(BuiltinContext* ctx) {
+    HString* s_hstr = string_proto_get_this(ctx);
+    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+
+    char[] data = s_hstr.get_data();
+    uint len = (uint)data.len;
+
+    // Fast path: empty string.
+    if (len == 0) {
+        ctx.result.set_string(s_hstr);
+        return;
+    }
+
+    // Allocate output buffer.  Lone surrogates encode as 3 bytes in CESU-8
+    // and U+FFFD also encodes as 3 bytes, so the output length is at most
+    // the input length.  We use the same heap allocator as other methods.
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)len);
+    if (buf == null) { ctx.result.set_string(s_hstr); return; }
+
+    uint i = 0;
+    uint o = 0;
+    while (i < len) {
+        uint seq_len = hstring::utf8_seq_len(data[i]);
+        uint cp = hstring::decode_codepoint(data, i);
+
+        if (hstring::is_high_surrogate(cp)) {
+            uint next_off = i + seq_len;
+            if (next_off < len) {
+                uint next_cp = hstring::decode_codepoint(data, next_off);
+                if (hstring::is_low_surrogate(next_cp)) {
+                    // Valid surrogate pair: copy both code units verbatim.
+                    uint low_len = hstring::utf8_seq_len(data[next_off]);
+                    for (uint k = 0; k < seq_len; k++) buf[o++] = data[i + k];
+                    for (uint k = 0; k < low_len; k++) buf[o++] = data[next_off + k];
+                    i = next_off + low_len;
+                    continue;
+                }
+            }
+            // Lone high surrogate — emit U+FFFD (3 bytes: EF BF BD).
+            buf[o++] = (char)0xEF;
+            buf[o++] = (char)0xBF;
+            buf[o++] = (char)0xBD;
+            i += seq_len;
+        } else if (hstring::is_low_surrogate(cp)) {
+            // Lone low surrogate — emit U+FFFD.
+            buf[o++] = (char)0xEF;
+            buf[o++] = (char)0xBF;
+            buf[o++] = (char)0xBD;
+            i += seq_len;
+        } else {
+            // Non-surrogate code unit: copy bytes verbatim.
+            for (uint k = 0; k < seq_len; k++) buf[o++] = data[i + k];
+            i += seq_len;
+        }
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:o]);
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
+    if (result != null) {
+        ctx.result.set_string(result);
     } else {
         ctx.result.set_string(s_hstr);
     }
@@ -3152,7 +3286,9 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "toLocaleLowerCase", BUILTIN_STRING_PROTO_TOLOCALELOWERCASE)) return false;
     if (!register_string_proto_method(proto, heap, "toLocaleUpperCase", BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE)) return false;
     if (!register_string_proto_method(proto, heap, "localeCompare", BUILTIN_STRING_PROTO_LOCALECOMPARE)) return false;
-    if (!register_string_proto_method(proto, heap, "normalize",    BUILTIN_STRING_PROTO_NORMALIZE))    return false;
+    if (!register_string_proto_method(proto, heap, "normalize",      BUILTIN_STRING_PROTO_NORMALIZE))      return false;
+    if (!register_string_proto_method(proto, heap, "isWellFormed",   BUILTIN_STRING_PROTO_ISWELLFORMED))   return false;
+    if (!register_string_proto_method(proto, heap, "toWellFormed",   BUILTIN_STRING_PROTO_TOWELLFORMED))   return false;
 
     // Register String.prototype[@@iterator] (ES6 §21.1.3.30)
     {

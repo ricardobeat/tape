@@ -1213,8 +1213,10 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
 
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
+    HString* len_key_pop = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
     if (len == 0) {
-        array_set_length_ulong(obj, 0, ctx.heap);
+        // ES2022 §23.1.3.20 step 3.a: Set(O, "length", 0, true) — throws if non-writable.
+        if (!arr_set_length_or_throw(ctx, obj, len_key_pop, 0)) { ctx.result.set_undefined(); return; }
         ctx.result.set_undefined();
         return;
     }
@@ -1244,7 +1246,8 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
         obj.set_array_idx((uint)idx, undef);
     }
 
-    array_set_length_ulong(obj, idx, ctx.heap);
+    // ES2022 §23.1.3.20 step 6: Set(O, "length", idx, true) — throws if non-writable.
+    if (!arr_set_length_or_throw(ctx, obj, len_key_pop, idx)) { ctx.result.set_undefined(); return; }
 
     // Return the popped element
     *ctx.result = elem;
@@ -1337,9 +1340,10 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    // Step 3: empty array
+    HString* len_key_shift = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];
+    // Step 3: empty array — Set(O, "length", 0, true) throws if non-writable.
     if (len == 0) {
-        array_set_length_ulong(obj, 0, ctx.heap);
+        if (!arr_set_length_or_throw(ctx, obj, len_key_shift, 0)) { ctx.result.set_undefined(); return; }
         ctx.result.set_undefined();
         return;
     }
@@ -1391,8 +1395,8 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
         obj.set_array_idx((uint)(len - 1), undef);
     }
 
-    // Step 8: set length to len - 1
-    array_set_length_ulong(obj, len - 1, ctx.heap);
+    // Step 8: Set(O, "length", len - 1, true) — throws if non-writable.
+    if (!arr_set_length_or_throw(ctx, obj, len_key_shift, len - 1)) { ctx.result.set_undefined(); return; }
 
     // Step 9: return first
     *ctx.result = first;

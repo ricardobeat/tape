@@ -696,6 +696,8 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.put_prop(key_args, args_tv, internal_flags);
 
     // ── Set .name: "bound " + targetName (ES6 §19.2.3.3) ──────────────
+    // Per spec: Get(target, "name") — must invoke accessor getters and
+    // propagate any abrupt completion (throw) before creating the bound fn.
     HString* name_key = builtin_intern_string(ctx.heap, "name");
     char[128] name_buf;
     int name_pos = 0;
@@ -706,17 +708,26 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     if (downstream.is_object()) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null) {
-            TVal? target_name_val = tobj.get_prop_proto(name_key);
+            // Use full Get semantics: invokes getter, propagates throw.
+            TVal? target_name_val = builtins_generic_get(tobj, name_key, ctx);
+            if (ctx.should_throw) {
+                // Getter threw — propagate. bound_args_arr already freed above.
+                return;
+            }
             if (try tn = target_name_val) {
                 if (tn.is_string() && tn.get_heapptr() != null) {
                     HString* tn_str = (HString*)tn.get_heapptr();
-                    char* tn_data = tn_str.get_cstr();
-                    uint tn_len = tn_str.blen;
-                    for (usz i = 0; i < tn_len && name_pos < 126; i++) {
-                        name_buf[name_pos++] = tn_data[i];
+                    // Symbols are stored as HString with is_symbol flag;
+                    // per spec Type(targetName) must be String (not Symbol).
+                    if (!tn_str.is_symbol()) {
+                        char* tn_data = tn_str.get_cstr();
+                        uint tn_len = tn_str.blen;
+                        for (usz i = 0; i < tn_len && name_pos < 126; i++) {
+                            name_buf[name_pos++] = tn_data[i];
+                        }
                     }
                 }
-                // Non-string targetName → use "" (nothing after "bound ")
+                // Non-string targetName (or Symbol) → use "" (nothing after "bound ")
             }
         }
     }
@@ -727,7 +738,10 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     }
 
     // ── Set .length (ES6 §19.2.3.3 SetFunctionLength) ────────────────
-    int bound_len = 0;
+    // Use double throughout so values up to Number.MAX_SAFE_INTEGER (2^53-1)
+    // and +Infinity are preserved exactly (spec: ToIntegerOrInfinity then
+    // max(0, targetLen - boundArgc)).
+    double bound_len_d = 0.0;
     if (downstream.is_object()) {
         HObject* tobj = (HObject*)downstream.get_heapptr();
         if (tobj != null) {
@@ -736,25 +750,29 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
             int own_idx = tobj.find_prop_idx(tlen_key);
             if (own_idx >= 0) {
                 TVal tlen_val = tobj.prop_values()[own_idx];
+                double target_len_d = 0.0;
+                bool has_numeric = false;
                 if (tlen_val.is_number()) {
-                    double target_len_d = tlen_val.get_number();
-                    if (math::is_nan(target_len_d)) {
-                        bound_len = 0;
-                    } else if (target_len_d == 0.0) {
-                        bound_len = 0;
-                    } else if (target_len_d == double::inf) {
-                        bound_len = 0x7FFFFFFF;
-                    } else if (target_len_d == -double::inf) {
-                        bound_len = 0;
-                    } else {
-                        int target_len_int = (int)math::trunc(target_len_d);
-                        bound_len = target_len_int - (int)bound_argc;
-                        if (bound_len < 0) bound_len = 0;
-                    }
+                    target_len_d = tlen_val.get_number();
+                    has_numeric = true;
                 } else if (tlen_val.is_fastint()) {
-                    int target_len_int = (int)tlen_val.get_fastint();
-                    bound_len = target_len_int - (int)bound_argc;
-                    if (bound_len < 0) bound_len = 0;
+                    target_len_d = (double)tlen_val.get_fastint();
+                    has_numeric = true;
+                }
+                if (has_numeric) {
+                    // ToIntegerOrInfinity: NaN → 0, -Inf → 0, +Inf stays
+                    if (math::is_nan(target_len_d) || target_len_d == -double::inf) {
+                        target_len_d = 0.0;
+                    } else if (target_len_d != double::inf) {
+                        target_len_d = math::trunc(target_len_d);
+                    }
+                    // L = max(0, targetLen - boundArgc)
+                    if (target_len_d == double::inf) {
+                        bound_len_d = double::inf;
+                    } else {
+                        bound_len_d = target_len_d - (double)bound_argc;
+                        if (bound_len_d < 0.0) bound_len_d = 0.0;
+                    }
                 }
                 // Non-number length → L = 0
             }
@@ -763,10 +781,12 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
 
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
-    if (bound_len == 0x7FFFFFFF) {
-        len_tv.set_number(double::inf);
+    // Store as fastint when the value fits (0..2^31-2), otherwise as double.
+    // This matches how native function length properties are set elsewhere.
+    if (bound_len_d == double::inf || bound_len_d > (double)0x7FFFFFFE) {
+        len_tv.set_number(bound_len_d);
     } else {
-        len_tv.set_fastint((long)bound_len);
+        len_tv.set_fastint((long)bound_len_d);
     }
     PropFlags len_flags;
     len_flags.writable = false;

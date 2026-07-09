@@ -482,6 +482,8 @@ const uint BUILTIN_DATE_PROTO_TOTIMESTRING   = 302;
 const uint BUILTIN_STRING_PROTO_REPLACEALL    = 303;
 const uint BUILTIN_STRING_PROTO_MATCHALL      = 304;
 const uint BUILTIN_STRING_PROTO_NORMALIZE     = 305;
+const uint BUILTIN_STRING_PROTO_ISWELLFORMED  = 309;
+const uint BUILTIN_STRING_PROTO_TOWELLFORMED  = 344;
 const uint BUILTIN_REFLECT_OWNKEYS            = 310;
 const uint BUILTIN_ERROR_CAPTURE_STACK_TRACE    = 311;
 const uint BUILTIN_STRING_RAW                  = 313;
@@ -1638,7 +1640,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 39: return { "random", 0 };
         case 40: return { "charAt", 1 };
         case 41: return { "charCodeAt", 1 };
-        case 42: return { "indexOf", 2 };
+        case 42: return { "indexOf", 1 };
         case 43: return { "slice", 2 };
         case 44: return { "substring", 2 };
         case 45: return { "substr", 2 };
@@ -1754,9 +1756,9 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 167: return { "freeze", 1 };
         case 168: return { "isSealed", 1 };
         case 169: return { "isFrozen", 1 };
-        case 170: return { "includes", 2 };
-        case 171: return { "startsWith", 2 };
-        case 172: return { "endsWith", 2 };
+        case 170: return { "includes", 1 };
+        case 171: return { "startsWith", 1 };
+        case 172: return { "endsWith", 1 };
         case 173: return { "repeat", 1 };
         case 174: return { "trimStart", 0 };
         case 175: return { "trimEnd", 0 };
@@ -1764,7 +1766,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 177: return { "at", 1 };
         case 178: return { "padStart", 2 };
         case 179: return { "padEnd", 2 };
-        case 180: return { "lastIndexOf", 2 };
+        case 180: return { "lastIndexOf", 1 };
         case 181: return { "of", 0 };
         case 182: return { "fill", 1 };
         case 183: return { "find", 1 };
@@ -1854,6 +1856,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 303: return { "replaceAll", 2 };
         case 304: return { "matchAll", 1 };
         case 305: return { "normalize", 0 };
+        case 309: return { "isWellFormed", 0 };
+        case 344: return { "toWellFormed", 0 };
         case 306: return { "getOwnPropertySymbols", 1 };
         case 307: return { "findLast", 1 };
         case 308: return { "findLastIndex", 1 };
@@ -2547,7 +2551,9 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_STRING_PROTO_LASTINDEXOF] = &builtin_string_proto_lastIndexOf,
     [BUILTIN_STRING_PROTO_MATCH] = &builtin_string_proto_match,
     [BUILTIN_STRING_PROTO_MATCHALL] = &builtin_string_proto_matchAll,
-    [BUILTIN_STRING_PROTO_NORMALIZE] = &builtin_string_proto_normalize,
+    [BUILTIN_STRING_PROTO_NORMALIZE]    = &builtin_string_proto_normalize,
+    [BUILTIN_STRING_PROTO_ISWELLFORMED] = &builtin_string_proto_isWellFormed,
+    [BUILTIN_STRING_PROTO_TOWELLFORMED] = &builtin_string_proto_toWellFormed,
     [BUILTIN_STRING_PROTO_PADEND] = &builtin_string_proto_padEnd,
     [BUILTIN_STRING_PROTO_PADSTART] = &builtin_string_proto_padStart,
     [BUILTIN_STRING_PROTO_REPEAT] = &builtin_string_proto_repeat,
