@@ -20,6 +20,9 @@ fn ushort? CompilerContext.expression(&self) {
     // Handle comma operator: evaluate each, keep last
     // Comma discards References — clear call_prop_obj_reg after each operand,
     // including the rightmost one (comma always returns a value, not a Reference).
+    // Per ES2015 §12.2.1.3 NamedEvaluation, only direct `= expr` assignments
+    // receive inferred names — a comma-expression result does not. Clear the flag
+    // so the rightmost operand of `(a, function(){})` never gets the outer name.
     while (self.match(TokenType.COMMA)) {
         self.free_reg(result);
         // Discard left operand's reference
@@ -27,6 +30,8 @@ fn ushort? CompilerContext.expression(&self) {
             self.free_reg(self.call_prop_obj_reg);
             self.call_prop_obj_reg = MAX_REGISTERS;
         }
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
         result = self.assignment_expr()!;
         // Discard rightmost operand's reference too
         if (self.call_prop_obj_reg != MAX_REGISTERS) {

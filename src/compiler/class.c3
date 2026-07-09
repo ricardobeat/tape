@@ -192,6 +192,19 @@ fn ushort? CompilerContext.class_expression(&self) {
         name_reg = self.declare_var(name, LET);
         class_name_idx = self.add_string_constant(name);
         has_name = true;
+        // Explicit name overrides any inferred name (clear the flag so a
+        // following anonymous class does not inherit it stale).
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
+    } else if (self.has_inferred_name) {
+        // ES2015 §14.5.14 SetFunctionName / NamedEvaluation: an anonymous
+        // class expression picks up the inferred name from an enclosing
+        // `var f = class {}` or `{ p: class {} }` assignment context.
+        // The name is display-only — it does NOT create a scope binding —
+        // so we set `name` but leave `has_name` false.
+        name = self.inferred_name_buf[:(uint)self.inferred_name_len];
+        self.has_inferred_name = false;
+        self.inferred_name_len = 0;
     }
 
     // Push classScope only when we have a class name — the immutable binding
