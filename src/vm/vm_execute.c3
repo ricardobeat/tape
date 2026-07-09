@@ -718,7 +718,7 @@ fn TVal? Vm.run(Vm* vm) {
                 CompiledFunction* caller_func = (CompiledFunction*)caller_act.func;
 
                 ds.act = caller_act;
-                vm.valstack_top = caller_act.caller_valstack_top;
+                vm.valstack_top = callee_act.caller_valstack_top;
                 if (caller_func != vm.current_func) {
                     vm.current_func = caller_func;
                     ds.code_base = caller_func.code;
@@ -1797,6 +1797,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.NEW_OBJ_S:
         case Opcode.TAILCALL:
             if (catch err = dispatch_calls(&ds, op, ra, rb, rc, insn)) { return err~; }
+            // Refresh regs_base after builtin calls that may have triggered valstack
+            // reallocation via heap.call_fn (compiled-function paths set needs_restart
+            // and reload via the outer loop; builtin paths return without setting it).
+            if (!ds.needs_restart) { ds.regs_base = ds.act.bottom; }
             continue;
 
         // === GENERATORS ===
@@ -1903,7 +1907,7 @@ fn TVal? Vm.run(Vm* vm) {
             // Restore caller state inline — skip outer loop restart.
             ds.act = &vm.activations[vm.activation_count - 1];
             vm.valstack_bottom = ds.act.bottom;
-            vm.valstack_top = ds.act.caller_valstack_top;
+            vm.valstack_top = callee_act.caller_valstack_top;
             CompiledFunction* caller_func = (CompiledFunction*)ds.act.func;
             if (caller_func != vm.current_func) {
                 vm.current_func = caller_func;

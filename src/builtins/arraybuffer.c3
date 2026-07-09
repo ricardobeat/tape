@@ -159,7 +159,7 @@ fn void builtin_arraybuffer_proto_bytelength_get(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.byteLength called on incompatible receiver");
         return;
     }
-    if ((*obj.extra_ptr()).ab.data == null) {
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         ctx.result.set_fastint(0);
         return;
     }
@@ -182,7 +182,7 @@ fn void builtin_arraybuffer_proto_detached_get(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.detached called on incompatible receiver");
         return;
     }
-    ctx.result.set_boolean((*obj.extra_ptr()).ab.data == null);
+    ctx.result.set_boolean(((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu));
 }
 
 // ============================================================================
@@ -198,6 +198,10 @@ fn void builtin_arraybuffer_proto_slice(BuiltinContext* ctx) {
     HObject* obj = (HObject*)this_val.get_heapptr();
     if (!is_arraybuffer_obj(obj)) {
         arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.slice called on incompatible receiver");
+        return;
+    }
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.slice: buffer is detached");
         return;
     }
 
@@ -327,12 +331,13 @@ fn void builtin_arraybuffer_proto_slice(BuiltinContext* ctx) {
         }
         (*new_buf.extra_ptr()).ab.data = new_data;
         (*new_buf.extra_ptr()).ab.byte_length = (uint)new_len;
+        
         (*new_buf.extra_ptr()).ab.views_head = null;
     }
 
     // Re-check detach AFTER any user-observable species construction (the
     // species constructor is arbitrary user code that may detach `obj`).
-    if ((*obj.extra_ptr()).ab.data == null) {
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.slice: source buffer detached during species construction");
         return;
     }
@@ -387,7 +392,7 @@ fn void builtin_detach_arraybuffer(BuiltinContext* ctx) {
         ctx.heap.free_func(ctx.heap.heap_udata, (*obj.extra_ptr()).ab.data);
         (*obj.extra_ptr()).ab.data = null;
     }
-    (*obj.extra_ptr()).ab.byte_length = 0;
+    (*obj.extra_ptr()).ab.byte_length = 0xFFFFFFFFu;
     ctx.result.set_undefined();
 }
 

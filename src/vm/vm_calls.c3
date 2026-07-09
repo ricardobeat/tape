@@ -294,6 +294,11 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (func_val.is_lightfunc()) {
                 uint fn_idx = (uint)(usz)func_val.get_heapptr();
 
+                {
+                    TVal* lf_extended_top = ds.act.bottom + ds.nregs + 4;
+                    if (lf_extended_top > vm.valstack_top) { vm.valstack_top = lf_extended_top; }
+                }
+
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
@@ -388,6 +393,21 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
                 if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                    // Pre-grow the valstack so that bound_call's arg-prepend write
+                    // (which extends past the current nargs into the frame's tail)
+                    // lands in valid, GC-visible memory.  We must also advance
+                    // vm.valstack_top past ds.nregs so the extra slots are within
+                    // the allocated+visible range (even if no realloc is needed).
+                    {
+                        uint bound_margin = (uint)(ds.act.bottom - vm.valstack) + ds.nregs + 4;
+                        if (!ensure_valstack(vm, bound_margin)) {
+                            ds.regs_base[result_reg].set_undefined();
+                            return (TVal){};
+                        }
+                        ds.regs_base = ds.act.bottom;
+                        TVal* extended_top = ds.act.bottom + ds.nregs + 4;
+                        if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
+                    }
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -454,12 +474,15 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                    // Use a local result slot so that heap.call_fn-triggered valstack
+                    // reallocations inside the builtin don't leave a stale ctx.result ptr.
+                    TVal builtin_result; builtin_result.set_undefined();
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
                     ctx.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
-                    ctx.result = ds.regs_base + result_reg;
+                    ctx.result = &builtin_result;
                     ctx.heap = vm.heap;
                     ctx.this_val = ds.regs_base[callee_reg + 1];
                     ctx.is_constructor = false;
@@ -470,11 +493,19 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
 
+                    // Refresh ds.regs_base: valstack may have been reallocated if the
+                    // builtin called heap.call_fn (e.g. TypedArray ctor with iterable arg).
+                    ds.regs_base = ds.act.bottom;
+
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         return (TVal){};
+                    }
+
+                    if (!ctx.needs_re_dispatch) {
+                        vm.heap.tval_copy_ref(ds.regs_base + result_reg, &builtin_result);
                     }
 
                     if (ctx.needs_re_dispatch) {
@@ -1433,6 +1464,21 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             if (hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
                 if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                    // Pre-grow the valstack so that bound_call's arg-prepend write
+                    // (which extends past the current nargs into the frame's tail)
+                    // lands in valid, GC-visible memory.  We must also advance
+                    // vm.valstack_top past ds.nregs so the extra slots are within
+                    // the allocated+visible range (even if no realloc is needed).
+                    {
+                        uint bound_margin = (uint)(ds.act.bottom - vm.valstack) + ds.nregs + 4;
+                        if (!ensure_valstack(vm, bound_margin)) {
+                            ds.regs_base[result_reg].set_undefined();
+                            return (TVal){};
+                        }
+                        ds.regs_base = ds.act.bottom;
+                        TVal* extended_top = ds.act.bottom + ds.nregs + 4;
+                        if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
+                    }
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
@@ -1470,12 +1516,14 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                    // Local result to avoid stale ptr if heap.call_fn triggers valstack realloc.
+                    TVal ctor_result; ctor_result.set_undefined();
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
                     ctx.base_reg = (ushort)((uint)(ds.act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
-                    ctx.result = ds.regs_base + result_reg;
+                    ctx.result = &ctor_result;
                     ctx.heap = vm.heap;
                     ctx.this_val = ds.regs_base[callee_reg + 1];
                     ctx.is_constructor = true;
@@ -1485,12 +1533,15 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.should_throw = false;
                     ctx.callee_obj = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+                    // Refresh ds.regs_base after possible valstack realloc inside builtin.
+                    ds.regs_base = ds.act.bottom;
                     if (ctx.should_throw) {
                         if (!vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return vm_uncaught_error(vm, &ctx.throw_value);
                         }
                         return (TVal){};
                     }
+                    vm.heap.tval_copy_ref(ds.regs_base + result_reg, &ctor_result);
                     return (TVal){};
                 }
                 // Object claims to be callable but has no compiled function

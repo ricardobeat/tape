@@ -353,7 +353,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                 return;
             }
             uint buf_len = (*arg_obj.extra_ptr()).ab.byte_length;
-            if ((*arg_obj.extra_ptr()).ab.data == null) {
+            if (((*arg_obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
                 arraybuffer_throw_type_error(ctx, "Cannot construct TypedArray on a detached ArrayBuffer");
                 return;
             }
@@ -398,7 +398,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             // --- Overload 4: from another TypedArray ---
             hobject::ObjClass src_cls = arg_obj.flags.obj_class;
             HObject* src_buf = (*arg_obj.extra_ptr()).view.buffer;
-            if (src_buf == null || (*src_buf.extra_ptr()).ab.data == null) {
+            if (src_buf == null || ((*src_buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
                 // Detached source: treat as zero-length.
                 buf = typedarray_alloc_buffer(ctx, 0);
                 if (buf == null) { ctx.result.set_undefined(); return; }
@@ -631,7 +631,7 @@ fn void builtin_typedarray_proto_length_get(BuiltinContext* ctx) {
         return;
     }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || (*buf.extra_ptr()).ab.data == null) {
+    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         ctx.result.set_fastint(0);
         return;
     }
@@ -646,7 +646,7 @@ fn void builtin_typedarray_proto_bytelength_get(BuiltinContext* ctx) {
         return;
     }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || (*buf.extra_ptr()).ab.data == null) {
+    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         ctx.result.set_fastint(0);
         return;
     }
@@ -660,7 +660,7 @@ fn void builtin_typedarray_proto_byteoffset_get(BuiltinContext* ctx) {
         return;
     }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || (*buf.extra_ptr()).ab.data == null) {
+    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         ctx.result.set_fastint(0);
         return;
     }
@@ -703,8 +703,6 @@ fn void builtin_typedarray_proto_tostringtag_get(BuiltinContext* ctx) {
 
 /// Validate that ctx.this_val is a live (non-detached) TypedArray.
 /// Returns the object on success, null + sets should_throw on failure.
-/// A zero-length buffer has data==null but byte_length==0 — that is valid.
-/// Actual detach sets data=null while byte_length remains > 0.
 fn HObject* ta_validate(BuiltinContext* ctx) {
     HObject* obj = ta_this_receiver(ctx);
     if (obj == null) {
@@ -712,12 +710,7 @@ fn HObject* ta_validate(BuiltinContext* ctx) {
         return null;
     }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null) {
-        arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
-        return null;
-    }
-    // data==null with byte_length>0 means detached. data==null with byte_length==0 is valid.
-    if ((*buf.extra_ptr()).ab.data == null && (*buf.extra_ptr()).ab.byte_length > 0) {
+    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
         return null;
     }
@@ -725,11 +718,10 @@ fn HObject* ta_validate(BuiltinContext* ctx) {
 }
 
 /// Check detach status without throwing — inline guard after user-code calls.
-/// Zero-length buffers (data==null, byte_length==0) are valid, not detached.
 fn bool ta_is_detached(HObject* obj) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     if (buf == null) return true;
-    return (*buf.extra_ptr()).ab.data == null && (*buf.extra_ptr()).ab.byte_length > 0;
+    return ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu);
 }
 
 /// Normalize a relative index (ES2022 §23.2.4.1 ToIntegerOrInfinity + clamp).
@@ -808,7 +800,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
             // TypedArray source path
             hobject::ObjClass src_cls = src_obj.flags.obj_class;
             HObject* src_buf = (*src_obj.extra_ptr()).view.buffer;
-            if (src_buf == null || (*src_buf.extra_ptr()).ab.data == null) {
+            if (src_buf == null || ((*src_buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
                 arraybuffer_throw_type_error(ctx, "TypedArray.set: source buffer is detached");
                 return;
             }

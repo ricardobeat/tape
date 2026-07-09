@@ -71,7 +71,7 @@ fn void builtin_dataview(BuiltinContext* ctx) {
     // Buffer may have been detached before we get here only via a prior
     // statement; ToIndex above cannot itself detach (no valueOf on a plain
     // offset arg is required to reach the buffer), but re-check regardless.
-    if ((*buf.extra_ptr()).ab.data == null) {
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "DataView constructor: buffer is detached");
         return;
     }
@@ -90,7 +90,7 @@ fn void builtin_dataview(BuiltinContext* ctx) {
         view_len = buf_len - byte_offset;
     } else {
         if (!arraybuffer_to_index(ctx, &len_arg, &view_len)) return;
-        if ((*buf.extra_ptr()).ab.data == null) {
+        if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
             arraybuffer_throw_type_error(ctx, "DataView constructor: buffer is detached");
             return;
         }
@@ -138,11 +138,8 @@ fn void builtin_dataview_proto_bytelength_get(BuiltinContext* ctx) {
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if ((*buf.extra_ptr()).ab.data == null) {
-        // Spec (§25.3.4.1) throws TypeError on a detached buffer here; we
-        // return 0 instead to match this engine's existing TypedArray choice
-        // (see typedarray.c3 byteLength getter) — flagged as a deviation.
-        ctx.result.set_fastint(0);
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteLength: buffer is detached");
         return;
     }
     ctx.result.set_fastint((long)(*obj.extra_ptr()).view.byte_length);
@@ -156,8 +153,8 @@ fn void builtin_dataview_proto_byteoffset_get(BuiltinContext* ctx) {
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if ((*buf.extra_ptr()).ab.data == null) {
-        ctx.result.set_fastint(0);
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteOffset: buffer is detached");
         return;
     }
     ctx.result.set_fastint((long)(*obj.extra_ptr()).view.byte_offset);
@@ -203,7 +200,7 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if ((*buf.extra_ptr()).ab.data == null) {
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "DataView getter: buffer is detached");
         return;
     }
@@ -228,7 +225,7 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     // Re-check detach: ToIndex(pos)/ToBoolean above cannot run user code that
     // detaches, but keep the check for defense-in-depth and future symmetry
     // with the setter path below.
-    if ((*buf.extra_ptr()).ab.data == null) {
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "DataView getter: buffer is detached");
         return;
     }
@@ -348,7 +345,7 @@ fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     // already ran (§24.2.1.2 steps 1-10 recheck ViewedArrayBuffer/bounds
     // after ToNumber/ToBigInt) — unlike TypedArray element writes, which
     // silently no-op on a post-conversion OOB/detach.
-    if ((*buf.extra_ptr()).ab.data == null) {
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
         arraybuffer_throw_type_error(ctx, "DataView setter: buffer is detached");
         return;
     }

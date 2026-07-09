@@ -481,9 +481,11 @@ struct HObjectGetterSetter {
 }
 
 /// ArrayBuffer backing store. Active when obj_class == ARRAYBUFFER.
+/// Detach sentinel: byte_length == 0xFFFFFFFF (UINT32_MAX) marks a detached buffer.
+/// A live zero-length buffer has data==null and byte_length==0.
 struct HObjectArrayBuffer {
-    char*    data;          // heap.alloc_func'd, zeroed; null when detached
-    uint     byte_length;   // 0 when detached
+    char*    data;          // heap.alloc_func'd, zeroed; null when detached or zero-length
+    uint     byte_length;   // byte length; set to 0xFFFFFFFF on detach
     HObject* views_head;    // intrusive list of views (via HObjectBufferView.next_view)
 }
 
