@@ -92,6 +92,7 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
     bool  saved_slt   = self.lexer.seen_line_term;
 
     uint brace_depth = 0;        // `{`/`}` nesting within the scanned span
+    uint template_depth = 0;     // open template substitution levels (TEMPLATE_HEAD opens, TEMPLATE_TAIL closes)
     int  combined_depth = 0;     // parens + brackets + braces (expression extents)
     int  region_depth = -1;      // brace_depth where the outermost callable body began
     int  expr_region_depth = -1; // combined_depth of an expression-bodied arrow
@@ -131,8 +132,22 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
             if (!expr_mode && !started && brace_depth == 0) started = true;
             brace_depth++;
             combined_depth++;
+        } else if (tt == TokenType.TEMPLATE_HEAD) {
+            // The lexer consumed `...${; the expression tokens follow, then a
+            // RBRACE that belongs to the template substitution, not any JS block.
+            template_depth++;
         } else if (tt == TokenType.RBRACE) {
-            if (brace_depth == 0) {
+            if (template_depth > 0) {
+                // This RBRACE closes a template substitution, not a JS block.
+                Token? part_opt = self.lexer.scan_template_after_expr();
+                if (catch _err2 = part_opt) break;
+                if (part_opt.type == TokenType.TEMPLATE_MIDDLE) {
+                    // Another substitution follows; template_depth stays the same.
+                } else {
+                    // TEMPLATE_TAIL: this template literal is complete.
+                    template_depth--;
+                }
+            } else if (brace_depth == 0) {
                 done = true;  // underflow: end of expr-mode span or malformed input
             } else {
                 brace_depth--;
