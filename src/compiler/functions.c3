@@ -415,6 +415,17 @@ fn void CompilerContext.emit_destruct_iter_setup(&self, ushort src_reg, Destruct
 /// Advance the iterator by calling .next(), extract .value into dest_reg.
 /// Must be preceded by emit_destruct_iter_setup for the same iterator state.
 fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state, ushort dest_reg) {
+    // IteratorBindingInitialization §13.3.3: once the iterator has reported
+    // done:true, [[done]] is latched — later elements bind undefined without
+    // calling .next() again, and the trailing IteratorClose must be skipped.
+    // We encode [[done]] by clearing method_reg to undefined (ITER_CLOSE
+    // no-ops on non-objects), so first test it before calling .next().
+    ushort exh_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDUNDEF, (uint)exh_reg, 0, 0);
+    self.emit_abc(Opcode.SEQ, (uint)exh_reg, (uint)state.method_reg, (uint)exh_reg);
+    uint exhausted_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)exh_reg);
+    self.free_reg(exh_reg);
+
     // Reload callee/this each call (generators may overwrite)
     self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
     self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
@@ -427,8 +438,24 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     ushort val_key_reg = self.alloc_reg();
     self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)dest_reg, (uint)result_reg, (uint)val_key_reg);
+
+    // If result.done, latch [[done]] by clearing method_reg.
+    ushort done_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("done"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)val_key_reg);
+    uint mark_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+    self.free_reg(done_reg);
     self.free_reg(val_key_reg);
     self.free_reg(result_reg);
+    uint end_jump = self.emit_jump(Opcode.JUMP);
+
+    // Exhausted: bind undefined (mark target also clears method_reg, which is
+    // already undefined on this path — harmless).
+    self.patch_jump(exhausted_jump);
+    self.emit_abc(Opcode.LDUNDEF, (uint)dest_reg, 0, 0);
+    self.patch_jump(mark_jump);
+    self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
+    self.patch_jump(end_jump);
 }
 
 /// Free registers held by an iterator state.
@@ -600,6 +627,9 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 int back_offset = (int)collect_start - (int)self.code_count - 1;
                 self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
                 self.patch_jump(done_jump);
+                // Rest consumed the iterator to done:true — latch [[done]] so
+                // the trailing IteratorClose is skipped (§13.3.3.8 step 4.b).
+                self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
 
                 self.free_reg(done_key_reg);
                 self.free_reg(done_reg);
