@@ -53,6 +53,7 @@ struct DestructBind {
     bool is_object;      // true = object pattern, false = array pattern
     bool has_default;    // has a default value expression
     bool is_synthetic;   // true = intermediate extraction point (not a user variable)
+    bool is_hole;        // true = elision placeholder (iterator must advance, no binding produced)
     uint   default_func_idx;  // index into inner_funcs for default thunk (0xFFFFFFFF if none)
     ushort parent_idx;     // index of the binding whose value is the source for this one (0xFFFF = direct from arg)
 }
@@ -229,6 +230,18 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
         bool last_was_synth = false;
 
         if (self.match(TokenType.COMMA)) {
+            // Elision: record a hole so emit_destruct_bindings advances the
+            // iterator at this position per IteratorBindingInitialization §13.3.3.
+            if (*count < binds.len) {
+                binds[*count].key_idx = 0;
+                binds[*count].index = elem_idx;
+                binds[*count].is_object = false;
+                binds[*count].arg_idx = src_reg;
+                binds[*count].parent_idx = parent_idx;
+                binds[*count].is_synthetic = true;
+                binds[*count].is_hole = true;
+                (*count)++;
+            }
             elem_idx++;
             continue;
         }
@@ -493,6 +506,24 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         if (!binds[di].is_object && binds[di].key_idx != 0xFFFF) {
             if (expected_idx[src_reg] == 0xFFFF) expected_idx[src_reg] = 0;
             expected_idx[src_reg] = (ushort)(binds[di].index + 1);
+        }
+
+        // Hole / elision entry: advance iterator once and continue.
+        // Per IteratorBindingInitialization §13.3.3, each elision must call
+        // IteratorStep and propagate abrupt completions.
+        if (binds[di].is_hole) {
+            ushort iter_idx = find_destruct_iter(src_reg, iter_states[..], &iter_count);
+            if (iter_idx == 0xFFFF) {
+                iter_idx = (ushort)iter_count;
+                iter_count++;
+                self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
+            }
+            ushort hole_reg = self.alloc_reg();
+            self.emit_destruct_iter_next(&iter_states[iter_idx], hole_reg);
+            self.free_reg(hole_reg);
+            if (expected_idx[src_reg] == 0xFFFF) expected_idx[src_reg] = 0;
+            expected_idx[src_reg] = (ushort)(binds[di].index + 1);
+            continue;
         }
 
         if (binds[di].is_synthetic) {
