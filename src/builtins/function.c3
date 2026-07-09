@@ -399,51 +399,59 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
 
     HObject* arr_obj = (HObject*)arg_array.get_heapptr();
 
-    // Get length via property lookup (arrays store length as a named property)
-    uint len = 0;
-    HString* length_key = builtin_intern_string(ctx.heap, "length");
-    TVal? len_val = arr_obj.get_prop_proto(length_key);
-    if (try lv = len_val) {
-        if (lv.is_number() || lv.is_fastint()) {
-            double d = lv.is_fastint() ? (double)lv.get_fastint() : lv.get_number();
-            if (d < 0) d = 0;
-            if (math::is_nan(d)) d = 0;
-            if (d > 4294967295.0) d = 4294967295.0;
-            len = (uint)d;
-        }
-    }
+    // CreateListFromArrayLike step 3: Let len be ? ToLength(? Get(obj, "length")).
+    // array_get_length_raw performs Get (invoking a length getter if present,
+    // propagating any abrupt completion via ctx) and applies ToNumber; finish
+    // the ToLength conversion (NaN/negative -> 0, clamp to a safe integer).
+    double raw_len = array_get_length_raw(arr_obj, ctx.heap, ctx);
+    if (ctx.should_throw) { return; }
+    if (math::is_nan(raw_len) || raw_len < 0) raw_len = 0;
+    if (raw_len > 4294967295.0) raw_len = 4294967295.0;
+    uint len = (uint)raw_len;
 
-    // Extract elements from argArray — use heap allocation
+    // CreateListFromArrayLike steps 4-6: for each index 0..len-1, let indexName
+    // be ! ToString(index), then next be ? Get(obj, indexName) — invoking any
+    // accessor getter and propagating an abrupt completion immediately.
     uint max_extract = len < 1024 ? len : 1024;
     uint actual_count = 0;
     TVal* extracted_args = null;
     if (max_extract > 0) {
         extracted_args = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * max_extract);
     }
-    bool is_dense_array = (arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null);
     for (uint i = 0; i < max_extract; i++) {
         TVal elem;
-        if (is_dense_array && i < arr_obj.array_size) {
-            elem = arr_obj.array_part()[i];
-            if (elem.is_undefined()) {
-                char[20] buf;
-                int n = libc::snprintf(&buf, 20, "%d", i);
-                if (n <= 0 || n >= 20) break;
-                HString* key_hstr = builtin_intern_string(ctx.heap, buf[:n]);
-                TVal? prop = arr_obj.get_prop_proto(key_hstr);
-                if (try p = prop) {
-                    elem = p;
-                }
+        char[20] buf;
+        int n = libc::snprintf(&buf, 20, "%d", i);
+        if (n <= 0 || n >= 20) break;
+        HString* key_hstr = builtin_intern_string(ctx.heap, buf[:n]);
+        if (key_hstr == null) { break; }
+
+        // Own accessor property at this index takes precedence over any
+        // dense array storage (mirrors arr_get_elem's ordering).
+        int own_idx = arr_obj.find_prop_idx(key_hstr);
+        if (own_idx >= 0 && arr_obj.get_prop_flags((uint)own_idx).is_accessor) {
+            TVal gs_slot = arr_obj.prop_values()[own_idx];
+            TVal getter_fn = hobject::hobject_access_getter(gs_slot);
+            elem = arr_invoke_getter_ctx(arr_obj, getter_fn, ctx.heap, ctx);
+            if (ctx.should_throw) {
+                if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
+                return;
             }
+        } else if (own_idx >= 0) {
+            elem = arr_obj.prop_values()[own_idx];
+        } else if (arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null
+                   && i < arr_obj.array_size && !arr_obj.array_part()[i].is_undefined()) {
+            elem = arr_obj.array_part()[i];
         } else {
-            char[20] buf;
-            int n = libc::snprintf(&buf, 20, "%d", i);
-            if (n <= 0 || n >= 20) break;
-            HString* key_hstr = builtin_intern_string(ctx.heap, buf[:n]);
-            if (key_hstr == null) { break; }
-            TVal? prop = arr_obj.get_prop_proto(key_hstr);
-            if (try p = prop) {
-                elem = p;
+            hobject::PropLookupResult res = arr_obj.get_prop_or_accessor_proto(key_hstr, true);
+            if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                elem = arr_invoke_getter_ctx(arr_obj, res.acc.accessor_fn, ctx.heap, ctx);
+                if (ctx.should_throw) {
+                    if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
+                    return;
+                }
+            } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                elem = res.data_val;
             } else {
                 elem.set_undefined();
             }
