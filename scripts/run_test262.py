@@ -100,6 +100,7 @@ SKIP_DIRS = {
     "built-ins/WeakRef",               # 29    — GC-dependent
     "built-ins/FinalizationRegistry",  # 47    — GC-dependent
     "built-ins/BigInt",                # 77    — defer
+    "built-ins/Reflect",               # 153   — Reflect API excluded from scope
     "language/statements/with",        # sloppy-mode only, not supported
     "language/statements/labeled",     # not supported
 }
@@ -142,7 +143,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"class-static-block|"
     # Other unimplemented ES features
     r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
-    r"|Reflect\.construct"
+    r"|Reflect"
     r")\b"
 )
 
