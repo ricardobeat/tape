@@ -631,7 +631,12 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     }
                     // Don't break — fall through to non-generator path below
                 } else {
-                // Initial call: create generator object, don't execute body
+                // Initial call: run parameter initialization eagerly, then
+                // suspend at the GEN_START opcode and return the generator object.
+                // This ensures FunctionDeclarationInstantiation side-effects
+                // (throwing defaults, destructuring errors) happen at call time
+                // per ES2022 §27.5.3.2.
+
                 // Calculate register layout
                 uint frame_start = callee_reg + 2;
                 TVal* new_bottom = ds.regs_base + frame_start;
@@ -646,6 +651,26 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 // Recompute new_bottom after realloc (ds.act.bottom may have moved)
                 new_bottom = ds.regs_base + frame_start;
 
+                if (vm.activation_count >= MAX_CALLS) {
+                    {
+                        HObject*? err_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                        if (try err = err_raw) {
+                            err.prototype = vm.heap.range_err_proto;
+                            HString* msg_key = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                            HString* msg_val = intern_string(vm, "Maximum call stack size exceeded");
+                            TVal msg_tv; msg_tv.set_string(msg_val);
+                            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WEC);
+                            TVal err_val; err_val.set_object(err);
+                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val);
+                            }
+                        } else {
+                            return VM_ERROR~;
+                        }
+                    }
+                    return (TVal){};
+                }
+
                 // Allocate GeneratorState
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
                 if (gs_raw == null) {
@@ -655,15 +680,10 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 GeneratorState* gs = (GeneratorState*)gs_raw;
                 libc::memset(gs_raw, 0, GeneratorState::size);
 
-                gs.state = GEN_SUSPENDED_START;
                 gs.func = target;
                 gs.num_regs = target.num_regs;
-                gs.saved_pc = target.code;
-                gs.var_env = (*hobj.extra_ptr()).func.var_env;
-                gs.lex_env = (*hobj.extra_ptr()).func.lex_env;
-                vm.heap.tval_copy_ref(&gs.this_binding, &ds.regs_base[callee_reg + 1]);
 
-                // Allocate and copy saved registers
+                // Allocate saved register storage
                 usz regs_bytes = (usz)target.num_regs * TVal::size;
                 void* regs_raw;
                 if (regs_bytes > 0) {
@@ -679,51 +699,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 }
                 gs.saved_regs = (TVal*)regs_raw;
 
-                // Initialize registers with args (rest = undefined for extra slots)
-                TVal* base = new_bottom;
-                TVal* old_args = ds.regs_base + callee_reg + 2;
-                uint copy_count = target.has_rest() ? (uint)target.num_formals : nargs;
-                if (copy_count > target.num_regs) copy_count = target.num_regs;
-                for (uint i = 0; i < copy_count; i++) {
-                    vm.heap.tval_copy_ref(&base[i], &old_args[i]);
-                }
-                for (uint i = 0; i < copy_count && target.num_regs > 0; i++) {
-                    vm.heap.tval_copy_ref(&gs.saved_regs[i], &old_args[i]);
-                }
-                for (uint i = copy_count; i < target.num_regs; i++) {
-                    base[i].set_undefined();
-                }
-                for (uint i = copy_count; i < target.num_regs; i++) {
-                    if (gs.saved_regs != null) {
-                        gs.saved_regs[i].set_undefined();
-                    }
-                }
-
-                // Handle rest parameter: build rest array and store in saved_regs
-                if (target.has_rest() && nargs > (uint)target.num_formals) {
-                    uint rest_idx = (uint)target.num_formals;
-                    uint overflow = nargs - (uint)target.num_formals;
-
-                    HObject*? arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
-                    if (try a = arr_raw) {
-                        a.prototype = vm.heap.array_proto;
-                        for (uint i = 0; i < overflow; i++) {
-                            HString* key = vm.heap.int_to_hstring((long)i);
-                            if (key != null) {
-                                a.put_prop(key, old_args[(uint)target.num_formals + i], hobject::PROP_FLAGS_WEC);
-                            }
-                        }
-                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                        TVal len_val;
-                        len_val.set_fastint((long)overflow);
-                        a.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
-
-                        base[rest_idx].set_object(a);
-                        gs.saved_regs[rest_idx].set_object(a);
-                    }
-                }
-
-                // Create Generator HObject
+                // Create Generator HObject before pushing the activation so the
+                // GC can see it while param-init code runs.
                 HObject*? gen_obj_raw = vm.heap.alloc_object(hobject::ObjClass.GENERATOR);
                 HObject* gen_obj;
                 if (try go = gen_obj_raw) {
@@ -737,9 +714,144 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 gen_obj.prototype = vm.heap.generator_proto;
                 (*gen_obj.extra_ptr()).gen.generator_data = gs;
 
-                // Return generator object as the call result
-                TVal* result_slot = ds.regs_base + result_reg;
-                result_slot.set_object(gen_obj);
+                // Stash the pending initial-call state so GEN_START can find it.
+                vm.heap.gen_initial_gs = gs;
+                vm.heap.gen_initial_obj = gen_obj;
+                vm.heap.gen_initial_retval = ds.regs_base + result_reg;
+
+                // Build a fresh var_env for the generator's param scope
+                EnvRecord* gen_var_env = (*hobj.extra_ptr()).func.var_env;
+                if (target.needs_env()) {
+                    if (try fv_g = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) {
+                        gen_var_env = fv_g;
+                    }
+                }
+
+                // Push activation frame (same pattern as non-generator compiled calls)
+                Activation* new_act_g = &vm.activations[vm.activation_count];
+                vm.activation_count++;
+                new_act_g.max_heap_reg = 0;
+                new_act_g.caller_valstack_top = vm.valstack_top;
+                new_act_g.parent = ds.act;
+                new_act_g.func = target;
+                new_act_g.var_env = gen_var_env;
+                new_act_g.lex_env = resolve_call_lex_env(vm, hobj, target, gen_var_env);
+                if (target.needs_lex_bridge()) {
+                    EnvRecord* cap_lex_g = (*hobj.extra_ptr()).func.lex_env;
+                    if (cap_lex_g != null && cap_lex_g != gen_var_env) {
+                        EnvRecord*? bridge_g = env::env_create_declarative(vm.heap, cap_lex_g);
+                        if (try b_g = bridge_g) {
+                            new_act_g.lex_env = b_g;
+                        }
+                    }
+                }
+                new_act_g.cat = null;
+                new_act_g.curr_pc = target.code;
+                new_act_g.bottom = new_bottom;
+                new_act_g.retval = ds.regs_base + result_reg;
+                new_act_g.flags = 0;
+                if (target.has_direct_eval()) {
+                    new_act_g.flags |= ACT_FLAG_DIRECT_EVAL;
+                }
+                new_act_g.async_promise = null;
+                new_act_g.async_gen_state = null;
+                {
+                    TVal raw_this_g = ds.regs_base[callee_reg + 1];
+                    vm.heap.tval_copy_ref(&new_act_g.this_binding, &raw_this_g);
+                }
+
+                // Initialize the valstack registers for the new activation.
+                // Arguments are already in position at new_bottom via the
+                // sliding-window layout: new_bottom == old_args start.
+                TVal* new_regs_g = new_act_g.bottom;
+                uint new_nregs_g = target.num_regs;
+
+                if (target.has_rest()) {
+                    uint copy_count_g = (uint)target.num_formals;
+                    TVal* old_args_g = ds.regs_base + callee_reg + 2;
+                    for (uint i = nargs; i < copy_count_g; i++) {
+                        new_regs_g[i].set_undefined();
+                    }
+                    uint rest_idx_g = copy_count_g;
+                    uint overflow_g = (nargs > copy_count_g) ? (nargs - copy_count_g) : 0;
+                    HObject*? arr_raw_g = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
+                    if (try a_g = arr_raw_g) {
+                        a_g.prototype = vm.heap.array_proto;
+                        for (uint i = 0; i < overflow_g; i++) {
+                            HString* key = vm.heap.int_to_hstring((long)i);
+                            if (key != null) {
+                                a_g.put_prop(key, old_args_g[copy_count_g + i], hobject::PROP_FLAGS_WEC);
+                            }
+                        }
+                        HString* len_str_g = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        TVal len_val_g;
+                        len_val_g.set_fastint((long)overflow_g);
+                        a_g.put_prop(len_str_g, len_val_g, hobject::PROP_FLAGS_WEC);
+                        new_regs_g[rest_idx_g].set_object(a_g);
+                    } else {
+                        new_regs_g[rest_idx_g].set_undefined();
+                    }
+                    if (rest_idx_g + 1 < new_nregs_g) {
+                        zero_regs_undefined(new_regs_g, rest_idx_g + 1, new_nregs_g);
+                    }
+                } else {
+                    uint formals_g = (uint)target.num_formals;
+                    uint undef_lim_g = formals_g < new_nregs_g ? formals_g : new_nregs_g;
+                    if (nargs < undef_lim_g) {
+                        zero_regs_undefined(new_regs_g, nargs, undef_lim_g);
+                    }
+                    uint zero_start_g = undef_lim_g > nargs ? undef_lim_g : nargs;
+                    if (zero_start_g < new_nregs_g) {
+                        zero_regs_undefined(new_regs_g, zero_start_g, new_nregs_g);
+                    }
+                }
+
+                // arguments object for generators that reference it
+                if (target.uses_arguments()) {
+                    HObject*? args_obj_raw_g = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
+                    if (try args_obj_g = args_obj_raw_g) {
+                        for (uint ai = 0; ai < nargs; ai++) {
+                            args_obj_g.set_array_idx(ai, new_regs_g[ai]);
+                        }
+                        args_obj_g.prototype = vm.heap.object_proto;
+                        HString* callee_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+                        if (callee_key_g != null) {
+                            TVal callee_tv_g;
+                            callee_tv_g.set_object(hobj);
+                            args_obj_g.put_prop(callee_key_g, callee_tv_g, hobject::PROP_FLAGS_WC);
+                        }
+                        HString* length_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        if (length_key_g != null) {
+                            TVal length_tv_g;
+                            length_tv_g.set_fastint((long)nargs);
+                            args_obj_g.put_prop(length_key_g, length_tv_g, hobject::PROP_FLAGS_WC);
+                        }
+                        HString* args_name_g = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
+                        if (args_name_g != null) {
+                            TVal args_tv_g;
+                            args_tv_g.set_object(args_obj_g);
+                            env::env_declare(new_act_g.var_env, args_name_g, args_tv_g);
+                        }
+                    }
+                }
+
+                vm.valstack_top = new_regs_g + new_nregs_g;
+                vm.valstack_bottom = new_act_g.bottom;
+
+                // Save caller resume point and switch into the new activation.
+                // The run loop will execute param-init code and stop at GEN_START.
+                ds.act.curr_pc = ds.curr_pc;
+                ds.act = new_act_g;
+                vm.current_func = target;
+                ds.code_base = target.code;
+                ds.code_count = target.code_count;
+                ds.code_end = ds.code_base + ds.code_count;
+                ds.ic_base = (hobject::ICEntry*)target.ic_entries;
+                ds.var_ic_base = (hobject::VarICEntry*)target.var_ic_entries;
+                ds.constants = target.constants;
+                ds.nregs = target.num_regs;
+                ds.curr_pc = ds.act.curr_pc;
+                ds.regs_base = ds.act.bottom;
                 return (TVal){};
                 } // end else (non-async generator initial call)
             }

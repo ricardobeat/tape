@@ -1805,6 +1805,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.AWAIT:
         case Opcode.YIELD:
         case Opcode.YIELD_STAR:
+        case Opcode.GEN_START:
             if (catch err = dispatch_generators(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 
