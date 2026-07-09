@@ -1960,6 +1960,18 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             vm.heap.tval_copy_ref(entry, &put_val);
                         }
                     } else {
+                        // ARRAY exotic: element may live in the dense array part even when
+                        // absent from the named-property table (string key "0" on an array
+                        // that only has a dense slot at 0). Treat dense elements as own
+                        // writable data properties (§10.1.9.2 — own property found → update).
+                        TVal dense_existing;
+                        if (hobj.dense_arridx_lookup(key, &dense_existing)) {
+                            HString* dense_key = (HString*)key;
+                            uint dense_ai = (uint)dense_key.array_index();
+                            vm.heap.tval_copy_ref(&hobj.array_part()[dense_ai], &put_val);
+                            return (TVal){};
+                        }
+
                         // Property doesn't exist: check prototype for accessors
                         hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
                         if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {

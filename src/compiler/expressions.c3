@@ -2918,17 +2918,19 @@ fn ushort? CompilerContext.array_literal(&self) {
                 ushort elem_reg = self.assignment_expr()!;
 
                 if (has_spread) {
-                    // Dynamic index: store at current idx_reg, then increment
-                    self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_reg, (uint)elem_reg);
+                    // Dynamic index: store at current idx_reg, then increment.
+                    // Use INITPROP (DefinePropertyOrThrow) not PUTPROP ([[Set]]) so
+                    // a non-writable prototype index doesn't block literal initialisation.
+                    self.emit_abc(Opcode.INITPROP, (uint)arr_reg, (uint)idx_reg, (uint)elem_reg);
                     ushort one = self.alloc_reg();
                     self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)one, 1));
                     self.emit_abc(Opcode.ADD, (uint)idx_reg, (uint)idx_reg, (uint)one);
                     self.free_reg(one);
                 } else {
-                    // Compile-time index
+                    // Compile-time index — use INITPROP (DefinePropertyOrThrow).
                     ushort idx_const = self.alloc_reg();
                     self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_const, (int)index));
-                    self.emit_abc(Opcode.PUTPROP, (uint)arr_reg, (uint)idx_const, (uint)elem_reg);
+                    self.emit_abc(Opcode.INITPROP, (uint)arr_reg, (uint)idx_const, (uint)elem_reg);
                     self.free_reg(idx_const);
                     index++;
                 }

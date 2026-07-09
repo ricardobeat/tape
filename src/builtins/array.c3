@@ -2449,7 +2449,8 @@ fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
             if (arr_has_prop(item_obj, i, ctx.heap)) {
                 TVal elem;
                 if (arr_get_elem_vm(item_obj, i, ctx.heap, ctx, &elem)) {
-                    array_set_elem_ulong(result, n, elem, ctx.heap);
+                    // ES2022 §23.1.3.1 step 5.c.iv.3.b: CreateDataPropertyOrThrow
+                    if (!array_set_elem_ulong_checked(ctx, result, n, elem)) return false;
                 }
             }
             n++;
@@ -2459,7 +2460,8 @@ fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
             arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
             return false;
         }
-        array_set_elem_ulong(result, n, item, ctx.heap);
+        // ES2022 §23.1.3.1 step 5.d.ii: CreateDataPropertyOrThrow
+        if (!array_set_elem_ulong_checked(ctx, result, n, item)) return false;
         n++;
     }
 
@@ -3274,9 +3276,9 @@ fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, 
     return fallback;
 }
 
-/// Check whether an indexed write would succeed on obj. Returns true if the
-/// write is allowed, otherwise sets ctx.should_throw and returns false.
-/// Implements [[Set]](idx, val, Receiver=obj, Throw=true) for numeric indices.
+/// Check whether CreateDataPropertyOrThrow(obj, idx, val) would succeed.
+/// Returns true if allowed, otherwise sets ctx.should_throw and returns false.
+/// Implements CreateDataProperty semantics (always requests writable+enum+config=true).
 fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
     // Check own named property for all object types.
     if (idx <= 0xFFFFFFFFUL) {
@@ -3286,25 +3288,22 @@ fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
             if (own_idx >= 0) {
                 PropFlags pf = obj.get_prop_flags((uint)own_idx);
                 if (pf.is_accessor) {
-                    // Accessor: reject if no setter.
-                    TVal gs_slot = obj.prop_values()[own_idx];
-                    TVal setter_fn = hobject::hobject_access_setter(gs_slot);
-                    if (setter_fn.is_undefined() || setter_fn.is_null()) {
-                        arr_throw_type_error(ctx, "Cannot set property, has only a getter");
-                        return false;
-                    }
-                    // Has a setter — allow (caller will invoke it via array_set_elem_ulong).
-                    return true;
+                    arr_throw_type_error(ctx, "Cannot redefine accessor as data property");
+                    return false;
                 }
-                if (!pf.writable) {
-                    arr_throw_type_error(ctx, "Cannot assign to read-only property");
+                // CreateDataProperty always requests {configurable:true, enumerable:true}.
+                // ValidateAndApplyPropertyDescriptor rejects if the existing prop is
+                // non-configurable (because configurable/enumerable would change).
+                // Non-writable but configurable is fine — defineProperty can change it.
+                if (!pf.configurable) {
+                    arr_throw_type_error(ctx, "Cannot redefine non-configurable property");
                     return false;
                 }
                 return true;
             }
         }
         if (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS) {
-            // Existing dense element is always writable.
+            // Dense array elements are own writable+enumerable+configurable data properties.
             if (try v = obj.get_array_idx((uint)idx)) { return true; }
         }
     }

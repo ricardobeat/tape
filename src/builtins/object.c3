@@ -2078,6 +2078,20 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             }
 
             // [[DefineOwnProperty]]
+            // ES5 §15.4.5.1: ARRAY exotic — dense elements are own data properties
+            // with {writable:true, enumerable:true, configurable:true}. Promote a
+            // dense element to a named property before the descriptor-validation so
+            // the existing-property path applies with the correct implicit flags.
+            if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
+                && obj.find_prop_idx(p_key) < 0 && p_key.is_arridx()) {
+                uint p_ai = (uint)((HString*)p_key).array_index();
+                if (p_ai < obj.array_size) {
+                    TVal dense_elem = obj.array_part()[p_ai];
+                    if (!dense_elem.is_undefined()) {
+                        obj.put_prop(p_key, dense_elem, hobject::PROP_FLAGS_WEC);
+                    }
+                }
+            }
             int existing_idx = obj.find_prop_idx(p_key);
             if (existing_idx < 0) {
                 if (!obj.flags.extensible) {
@@ -2218,6 +2232,13 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                             }
                         }
                         *current = desc_vals[0];
+                        // Sync value change back to dense array slot for ARRAY exotic.
+                        if (obj.get_class() == hobject::ObjClass.ARRAY && p_key.is_arridx()) {
+                            uint sync_ai = ((HString*)p_key).array_index();
+                            if (sync_ai < obj.array_size) {
+                                obj.array_part()[sync_ai] = desc_vals[0];
+                            }
+                        }
                     }
                     if (has_writable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.writable = desc_flags.writable;
                     if (has_enumerable_in_desc_helper(ctx.heap, desc_obj)) cur_flags.enumerable = desc_flags.enumerable;

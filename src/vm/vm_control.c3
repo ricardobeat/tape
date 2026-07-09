@@ -456,22 +456,35 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             // A=object, B=key, C=value
             // Define a data property with WEC flags using DefinePropertyOrThrow
             // semantics: if the property already exists and is configurable, it
-            // is replaced. This matches class static method installation per
-            // ES2015 §14.5.13 (DefinePropertyOrThrow) and allows static methods
-            // to override auto-set non-writable properties (e.g. the .name
-            // property the runtime sets on the constructor).
+            // is replaced. Used for array literals and class static methods.
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
+
+                // Fast path for ARRAY/ARGUMENTS with integer keys: write directly
+                // to the dense part (always WEC, no proto-chain check needed).
+                // Skip for undefined values: undefined == hole in dense arrays,
+                // so explicit `undefined` elements need a named property instead.
+                if (!rc.is_undefined()
+                    && (hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS)
+                    && (rb.is_fastint() || rb.is_number())) {
+                    long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
+                    if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
+                        uint idx = (uint)idx_long;
+                        if (hobj.set_array_idx(idx, *rc)) {
+                            if (hobj.get_class() == hobject::ObjClass.ARRAY && idx >= *hobj.array_len_ptr()) {
+                                *hobj.array_len_ptr() = idx + 1;
+                            }
+                            return (TVal){};
+                        }
+                        // Dense write failed (capacity cap) — fall through to named-prop.
+                    }
+                }
+
                 void* key = get_prop_key(vm, rb);
                 if (key != null && hobj != null) {
                     int idx = hobj.find_prop_idx(key);
                     if (idx >= 0) {
-                        // Existing property — if configurable, replace it. If
-                        // non-configurable, leave the existing descriptor alone
-                        // (DefinePropertyOrThrow would throw here, but in our
-                        // engine we silently keep the existing value to avoid
-                        // breaking class static methods that legitimately
-                        // override auto-set descriptors).
+                        // Existing property — if configurable, replace it.
                         hobject::PropFlags ef = hobj.get_prop_flags((uint)idx);
                         if (ef.configurable) {
                             TVal put_val = *rc;
