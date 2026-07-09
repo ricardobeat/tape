@@ -387,10 +387,21 @@ fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
 
 /// Helper: extract the string data and length from `this`, handling both
 /// primitive strings and String wrapper objects. Returns null on failure.
+///
+/// Implements RequireObjectCoercible + ToString(this) with full ToPrimitive
+/// support (Symbol.toPrimitive, toString, valueOf) for object receivers.
+/// Symbols as `this` throw TypeError per §7.1.17.
 fn HString* string_proto_get_this(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_string()) {
-        return (HString*)this_val.get_heapptr();
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — ToString(Symbol) throws TypeError.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return null;
+        }
+        return hs;
     }
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
@@ -399,29 +410,39 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
             return (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         }
     }
-    // ES5 §15.5.4: CheckObjectCoercible (throws for undefined/null),
-    // then ToString (works for any other value).
+    // RequireObjectCoercible: throw for undefined/null.
     if (this_val.is_undefined() || this_val.is_null()) {
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "String.prototype method called on incompatible value");
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+            "String.prototype method called on incompatible value");
         return null;
     }
-    // ES5 §9.8 ToString for objects: use ToPrimitive with hint "string" (toString first,
-    // then valueOf), then convert the primitive to string. This ensures custom toString()
-    // and Date.prototype.toString() work correctly per ES5 §9.1.
+    // ToString for objects: ToPrimitive(hint "string") then ToString.
+    // The VM-aware path runs user-defined Symbol.toPrimitive/toString/valueOf
+    // and propagates abrupt completions (including accessor get errors).
     if (this_val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, &this_val, true);  // hint "string"
         if (vm_ptr.throw_pending) {
+            // Propagate the pending throw value so the caller's
+            // `ctx.should_throw` path surfaces the original exception.
             ctx.should_throw = true;
+            ctx.throw_value = vm_ptr.throw_value;
             return null;
         }
-        // Convert the primitive to string
+        // ToString the resulting primitive.
         if (prim.is_string()) {
-            return (HString*)prim.get_heapptr();
+            HString* ps = (HString*)prim.get_heapptr();
+            if (ps != null && ps.is_symbol()) {
+                builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                    "Cannot convert a Symbol value to a string");
+                return null;
+            }
+            return ps;
         }
         if (prim.is_object()) {
-            // ToPrimitive returned an object — error
-            ctx.should_throw = true;
+            // ToPrimitive returned an object — throw TypeError per §7.1.1.
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                "Cannot convert object to primitive value");
             return null;
         }
         return builtin_to_string(ctx.heap, &prim);
