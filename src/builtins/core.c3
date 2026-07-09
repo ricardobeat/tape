@@ -307,8 +307,9 @@ const uint BUILTIN_TA_PROTO_TO_LOCALE_STRING   = 411;
 const uint BUILTIN_TA_OF                       = 412;
 const uint BUILTIN_TA_FROM                     = 413;
 const uint BUILTIN_TYPEDARRAY_INTRINSIC        = 414;
+const uint BUILTIN_FUNCTION_PROTO_HASINSTANCE  = 415;
 
-const uint BUILTIN_COUNT                       = 415;
+const uint BUILTIN_COUNT                       = 416;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1948,6 +1949,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 412: return { "of", 0 };
         case 413: return { "from", 1 };
         case 414: return { "TypedArray", 0 };
+        case 415: return { "[Symbol.hasInstance]", 1 };
         default: return { "", -1 };
     }
 }
@@ -2677,6 +2679,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_TA_OF]                    = &builtin_ta_of,
     [BUILTIN_TA_FROM]                  = &builtin_ta_from,
     [BUILTIN_TYPEDARRAY_INTRINSIC]     = &builtin_typedarray_intrinsic,
+    [BUILTIN_FUNCTION_PROTO_HASINSTANCE] = &builtin_function_proto_hasInstance,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

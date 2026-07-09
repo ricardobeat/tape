@@ -924,6 +924,82 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
     }
 }
 
+/// Function.prototype[Symbol.hasInstance](V) — ES6 §19.2.3.6
+/// Implements OrdinaryHasInstance(this, V): returns true iff V is an object
+/// whose prototype chain contains this.prototype. `this` (the constructor C)
+/// must be callable; if C is a bound function, its [[BoundTargetFunction]] is
+/// used instead. Non-callable `this` or non-object V → false (no throw for V).
+fn void builtin_function_proto_hasInstance(BuiltinContext* ctx) {
+    TVal c_val = ctx.regs[ctx.base_reg - 1];  // this = constructor C
+
+    // ES6 §7.3.19 step 1: If IsCallable(C) is false, return false.
+    bool callable = false;
+    if (c_val.is_lightfunc()) {
+        callable = true;
+    } else if (c_val.is_object() && c_val.get_heapptr() != null) {
+        callable = ((HObject*)c_val.get_heapptr()).is_callable();
+    }
+    if (!callable) { ctx.result.set_boolean(false); return; }
+
+    // Step 2: If C has a [[BoundTargetFunction]] slot, recurse on the target.
+    if (c_val.is_object() && c_val.get_heapptr() != null) {
+        HObject* c_obj = (HObject*)c_val.get_heapptr();
+        if (c_obj.flags.is_bound) {
+            HString* key_target = builtin_intern_string(ctx.heap,
+                { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+            if (key_target != null) {
+                int ti = c_obj.find_prop_idx(key_target);
+                if (ti >= 0) c_val = c_obj.prop_values()[ti];
+            }
+        }
+    }
+
+    // Step 3: If Type(V) is not Object, return false.
+    TVal v_val = (ctx.argc > 0) ? builtin_arg(ctx, 0) : (TVal){};
+    if (ctx.argc == 0 || !v_val.is_object() || v_val.get_heapptr() == null) {
+        ctx.result.set_boolean(false);
+        return;
+    }
+
+    // Step 4: Let P be Get(C, "prototype"). Invoke a getter if present so a
+    // poisoned/throwing prototype accessor propagates the abrupt completion.
+    HString* proto_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
+    TVal proto_val;
+    if (c_val.is_object() && c_val.get_heapptr() != null) {
+        HObject* c_obj = (HObject*)c_val.get_heapptr();
+        hobject::AccessorResult acc = c_obj.find_accessor_proto(proto_key, true);
+        if (acc.found) {
+            if (ctx.heap.call_fn == null || ctx.vm == null) { ctx.result.set_boolean(false); return; }
+            TVal this_for_getter; this_for_getter.set_object(c_obj);
+            proto_val = ctx.heap.call_fn(ctx.vm, acc.accessor_fn, null, 0, this_for_getter);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return;
+            }
+        } else {
+            TVal? pv = c_obj.get_prop_proto(proto_key);
+            if (try p = pv) { proto_val = p; } else { proto_val.set_undefined(); }
+        }
+    } else if (c_val.is_lightfunc()) {
+        // LIGHTFUNC constructors expose their prototype via lightfunc metadata;
+        // ordinary builtins used as C here are rare — fall through to TypeError.
+        proto_val.set_undefined();
+    }
+
+    // Step 5: If Type(P) is not Object, throw a TypeError.
+    if (!proto_val.is_object() || proto_val.get_heapptr() == null) {
+        arr_throw_type_error(ctx, "Function has non-object prototype in instanceof check");
+        return;
+    }
+
+    // Step 6: walk V's prototype chain looking for P.
+    HObject* p_obj = (HObject*)proto_val.get_heapptr();
+    HObject* v_obj = (HObject*)v_val.get_heapptr();
+    ctx.result.set_boolean(v_obj.is_prototype_of(p_obj));
+}
+
 /// Function.prototype[@@species] getter — ES6 §19.2.4.7
 /// Returns the this value.
 fn void builtin_function_proto_species_getter(BuiltinContext* ctx) {
@@ -1137,6 +1213,20 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     TVal tostring_tv;
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_TOSTRING);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
+
+    // Add [Symbol.hasInstance] method (ES6 §19.2.3.6).
+    // Property descriptor: writable:false, enumerable:false, configurable:false.
+    HString* hasinst_sym = ensure_hasinstance_symbol(heap);
+    if (hasinst_sym != null) {
+        TVal hasinst_tv;
+        hasinst_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_HASINSTANCE);
+        PropFlags hi_flags;
+        hi_flags.writable = false;
+        hi_flags.enumerable = false;
+        hi_flags.configurable = false;
+        hi_flags.is_accessor = false;
+        proto.put_prop(hasinst_sym, hasinst_tv, hi_flags);
+    }
 
     // Add @@species accessor (ES6 §19.2.4.7): getter returns this.
     HString* species_sym = ensure_species_symbol(heap);
