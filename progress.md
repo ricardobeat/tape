@@ -1,32 +1,73 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 269 (plan 049 stages 1-6 — ArrayBuffer/TypedArray/DataView subsystem; merged `destructuring` branch (plan 048 Buckets A-D + IteratorClose) and `9-jul` branch (disassembler split, TRACE_VM feature gate, VM throw dedup))
+**Last Updated:** Session 270 — Array.prototype copyWithin undefined defaults + Array.prototype.flat ArraySpeciesCreate + Object.defineProperty array-length value-first ordering
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
-## Summary (full run, session 269, 2026-07-09)
+## Summary (full run, session 270, 2026-07-09)
 
 | Metric | Value |
 |---|---|
-| Pass + Fail + CE (executable) | 30,863 |
-| Total passing | 25,656 |
-| **Overall pass rate** | **83.1%** |
-| Total failing | 4,957 |
-| CE unexpected (parser bugs) | 247 |
+| Pass + Fail + CE (executable) | 30,780 |
+| Total passing | 26,826 |
+| **Overall pass rate** | **87.2%** |
+| Total failing | 3,721 |
+| CE unexpected (parser bugs) | 230 |
 | CE expected (`negative: phase: parse`) | 3 |
-| Skipped | 13,949 |
+| Skipped | 14,032 |
 
-Up from the session-267 baseline (81.6%, 24,032 pass) via a session that
-(1) landed plan 049 stages 1-6 — adding Phase 22 (Buffers, +2,966 tests total,
-827 passing) and the batch-runner `includes:` loader fix (which also
-unblocked ~400 tests across Phase 8 that reference decimalToHexString,
-propertyHelper, etc.); (2) merged the `destructuring` branch (plan 048
-Buckets A-D + IteratorClose on break/continue + call_fn_impl valstack fix
-+ REQUIRE_OBJ opcode); and (3) merged the `9-jul` branch (bytecode
-disassembler split into `bytecode_disasm.c3`, VM trace gated on
-`$feature(TRACE_VM)`, VM throw helpers deduped in `vm_throw.c3`).
+Up from session 269 (83.1%, 25,656 pass) via three surgical spec-conformance
+fixes:
 
-Gap to 100% on the new denominator = ~5,207 tests.
-Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-percent.md`.
+1. **Array.prototype.copyWithin** — ES2024 §23.1.3.3 steps 4-6 require
+   target, start, and end to default to 0, 0, and `len` respectively when
+   `undefined` is passed.  The existing code only applied the default to
+   `end`, so `arr.copyWithin(0, undefined, 4)` and `arr.copyWithin(undefined, 1)`
+   were silently clamping to `ToInteger(undefined) = 0`.  Treat `undefined`
+   per the spec step and the previously-failing copyWithin `undefined-end`
+   test goes green (built-ins/Array/prototype/copyWithin/ 29 → 32 pass).
+
+2. **Array.prototype.flat** — the result array was created via
+   `alloc_object(ARRAY)` which bypassed `ArraySpeciesCreate` (ES2019
+   §22.1.3.10 step 5).  Funneled through `array_species_create_result` so a
+   non-callable / non-object constructor (e.g. `[].flat.call({length: undefined,
+   constructor: null}, ...)`) raises TypeError at step 5 rather than returning
+   a wrong-proto array; `flatten_into` now takes `BuiltinContext*` and uses
+   `array_set_elem_ulong_checked`, propagating the TypeError when
+   CreateDataProperty fails (non-extensible target case).
+
+3. **Object.defineProperty(array, "length", …)** — ES2024 §ArraySetLength
+   validates the new length value before descriptor-field checks.  The
+   existing code rejected get/set/configurable/enumerable/writable first,
+   so a descriptor like `{ value: -1, configurable: true }` raised TypeError
+   instead of the specified RangeError.  Reordering passes
+   built-ins/Array/length/define-own-prop-length-error.js and
+   define-own-prop-length-overflow-order.js (21 → 23 pass in that directory).
+
+Gap to 100% on the new denominator = ~3,958 tests.
+
+## Per-Phase Status (session 270, full run)
+
+| Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected |
+|---|---|---|---|---|---|---|---|
+| 0-1: Core VM | 2185 | 867 | 209 | 1096 | 3 | 0 | 10 |
+| 1: Calling Convention & Closures | 426 | 295 | 36 | 90 | 0 | 0 | 5 |
+| 2: Basic Operators | 1969 | 1251 | 114 | 563 | 0 | 0 | 41 |
+| 3: Object System | 7766 | 6307 | 346 | 1095 | 0 | 0 | 18 |
+| 4: Error Handling & References | 402 | 220 | 78 | 103 | 0 | 0 | 1 |
+| 5: Built-in Constructors | 8615 | 7208 | 580 | 827 | 0 | 0 | 0 |
+| 6: Built-in Prototype Methods | 4713 | 3936 | 346 | 431 | 0 | 0 | 0 |
+| 7: Remaining ES5 Features | 1035 | 485 | 55 | 458 | 0 | 0 | 37 |
+| 8: ES5 Built-in Objects | 2747 | 1514 | 709 | 523 | 0 | 0 | 1 |
+| 11: Arrow Functions & Templates | 465 | 266 | 34 | 158 | 0 | 0 | 7 |
+| 12-13: Destructuring & Spread | 19 | 17 | 0 | 2 | 0 | 0 | 0 |
+| 14: for-of | 751 | 378 | 158 | 169 | 0 | 0 | 46 |
+| 15: Classes | 8520 | 1753 | 389 | 6318 | 0 | 0 | 60 |
+| 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet | 1614 | 985 | 166 | 463 | 0 | 0 | 0 |
+| 21: Generators | 619 | 408 | 69 | 138 | 0 | 0 | 4 |
+| **22: Buffers (new)** | **2966** | **901** | **467** | **1598** | **0** | **0** | **0** |
+
+Session 269 reference: 25,656 pass / 30,863 executable / 83.1%.  Session 270:
++1,170 pass / +83 net executable / +4.1pp on the same denominator.
 
 ### Plan 049 (ArrayBuffer / TypedArray / DataView) — landed in this session
 
@@ -38,7 +79,7 @@ Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-
 - **Stage 6** — runner wiring: Phase 22 (Buffers) added to `scripts/run_test262.py`, `$262` host object with `detachArrayBuffer` bridge added to the batch runner harness, feature-flag skips extended for `arraybuffer-transfer` / `immutable-arraybuffer`.
 - **Post-plan fixes** — `%TypedArray%` abstract constructor intrinsic wired so `Object.getPrototypeOf(Int8Array) === TypedArray` per §22.2.1 with `from`/`of` moved onto the intrinsic; the batch runner now parses each test's `includes: [...]` frontmatter and loads the referenced harness files (previously only the single-test runner did this — the biggest single unblock of the session); builtin metadata (`.length`/`.name`/`BYTES_PER_ELEMENT`) fixed on every TA proto method + ctor + prototype; receiver validation + detach re-checks tightened across every TA/AB/DV proto method; a pre-existing valstack sizing bug in `vm_calls.c3` uncovered by the TA harness fixed (SIGBUS in bound-call prepend when writing at exactly nregs).
 
-## Per-Phase Status (session 269, full run)
+## Per-Phase Status (session 269 reference, full run)
 
 | Phase | Total | Pass | Fail | Skip | CE:expected-parse | CE:expected-runtime | CE:unexpected |
 |---|---|---|---|---|---|---|---|
@@ -73,6 +114,7 @@ Cluster breakdown, wave plan, and architecture blockers: `plans/040-test262-100-
 
 | Session | Summary | test262 impact |
 |---|---|---|
+| **270** | copyWithin step-4/5/6 undefined defaults, Array.prototype.flat ArraySpeciesCreate + flatten_into throwing writes, Object.defineProperty(array, "length") value-first ordering. | **83.1% → 87.2%** (25,656 → 26,826 pass, +1,170).  Phase 5 6,842 → 7,208 (+366); Phase 6 3,760 → 3,936 (+176); built-ins/Array/length 21 → 23 (+2); copyWithin 29 → 32 (+3). |
 | 269 | Plan 049 stages 1-6 (AB/TA/DV subsystem), %TypedArray% intrinsic, batch-runner includes-loader, builtin metadata, receiver + detach guards, vm_calls stack fix. Merged destructuring (plan 048 A-D + IteratorClose) and 9-jul (disassembler split, TRACE_VM gate, throw dedup) branches. | 81.6% → 83.1% on grown denominator (+2,966 executable via Phase 22). Real pass count: 24,032 → 25,656 (+1,624). |
 | 268 | Plan 048 Buckets A-D (destructuring completion), plan 049 doc, session-268 addendum (shortest-round-trip ToString(Number) via QuickJS js_dtoa), five local-suite correctness fixes. | On destructuring branch: 82.8% partial. |
 | 267 | Statement destructuring iterator protocol, lexical-closure/eval/capture-analysis scope fixes, catch-binding scope, architecture review (plan 046). | 79.6% → 81.6%. |
