@@ -412,6 +412,35 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         }
                         if (func_val.is_object()) {
                             hobj = (HObject*)func_val.get_heapptr();
+                            // If re-dispatch target is a builtin function, dispatch it directly.
+                            if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN && (*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                                uint inner_fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                                TVal bound_inner_result; bound_inner_result.set_undefined();
+                                builtins::BuiltinContext inner2;
+                                inner2.vm = vm;
+                                inner2.regs = vm.valstack;
+                                inner2.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
+                                inner2.argc = (ushort)nargs;
+                                inner2.result = &bound_inner_result;
+                                inner2.heap = vm.heap;
+                                inner2.this_val = ds.regs_base[callee_reg + 1];
+                                inner2.is_constructor = false;
+                                inner2.needs_re_dispatch = false;
+                                inner2.re_nargs = 0;
+                                inner2.global_env = vm.global_env;
+                                inner2.should_throw = false;
+                                inner2.callee_obj = hobj;
+                                builtins::dispatch_builtin(inner_fn_idx, &inner2);
+                                ds.regs_base = ds.act.bottom;
+                                if (inner2.should_throw) {
+                                    if (!vm_throw_value(vm, inner2.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        return vm_uncaught_error(vm, &inner2.throw_value);
+                                    }
+                                    return (TVal){};
+                                }
+                                vm.heap.tval_copy_ref(ds.regs_base + result_reg, &bound_inner_result);
+                                return (TVal){};
+                            }
                             // Fall through to compiled function handling below
                         } else {
                             return (TVal){};
@@ -490,6 +519,35 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         }
                         if (func_val.is_object()) {
                             hobj = (HObject*)func_val.get_heapptr();
+                            // If re-dispatch target is a builtin function, dispatch it directly.
+                            if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN && (*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                                uint inner_fn_idx2 = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                                TVal bfn_inner_result; bfn_inner_result.set_undefined();
+                                builtins::BuiltinContext bfn_inner;
+                                bfn_inner.vm = vm;
+                                bfn_inner.regs = vm.valstack;
+                                bfn_inner.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
+                                bfn_inner.argc = (ushort)nargs;
+                                bfn_inner.result = &bfn_inner_result;
+                                bfn_inner.heap = vm.heap;
+                                bfn_inner.this_val = ds.regs_base[callee_reg + 1];
+                                bfn_inner.is_constructor = false;
+                                bfn_inner.needs_re_dispatch = false;
+                                bfn_inner.re_nargs = 0;
+                                bfn_inner.global_env = vm.global_env;
+                                bfn_inner.should_throw = false;
+                                bfn_inner.callee_obj = hobj;
+                                builtins::dispatch_builtin(inner_fn_idx2, &bfn_inner);
+                                ds.regs_base = ds.act.bottom;
+                                if (bfn_inner.should_throw) {
+                                    if (!vm_throw_value(vm, bfn_inner.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        return vm_uncaught_error(vm, &bfn_inner.throw_value);
+                                    }
+                                    return (TVal){};
+                                }
+                                vm.heap.tval_copy_ref(ds.regs_base + result_reg, &bfn_inner_result);
+                                return (TVal){};
+                            }
                             if ((*hobj.extra_ptr()).func.comp_func != null) {
                                 // Continue to compiled function handling below (skip error)
                             } else {

@@ -940,14 +940,79 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     uint new_byte_off = byte_off + (begin_idx << shift);
     uint new_byte_len = new_len << shift;
 
-    HObject*? raw = heap.alloc_object(cls);
-    if (catch err = raw) { ctx.result.set_undefined(); return; }
-    HObject* sub = raw;
-    sub.prototype = heap.typedarray_proto;
-    (*sub.extra_ptr()).view.byte_offset = new_byte_off;
-    (*sub.extra_ptr()).view.byte_length = new_byte_len;
-    typedarray_link_view(buf, sub);
-    ctx.result.set_object(sub);
+    // TypedArraySpeciesCreate(O, « buf, beginByteOffset, newLength »)
+    // §23.2.3.27 step 13: look up constructor and @@species on O.
+    HString* ctor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal ctor_val;
+    if (try c = builtins_generic_get(obj, ctor_key, ctx)) {
+        ctor_val = c;
+        if (ctx.should_throw) return;
+    } else {
+        return;
+    }
+
+    HObject* species_ctor = null;
+    if (!ctor_val.is_undefined()) {
+        if (!ctor_val.is_object() || ctor_val.get_heapptr() == null) {
+            arraybuffer_throw_type_error(ctx, "TypedArray.subarray: constructor is not an object");
+            return;
+        }
+        HObject* c_obj = (HObject*)ctor_val.get_heapptr();
+        HString* species_sym = ensure_species_symbol(heap);
+        if (species_sym != null) {
+            TVal species_val;
+            if (try s = builtins_generic_get(c_obj, species_sym, ctx)) {
+                species_val = s;
+                if (ctx.should_throw) return;
+            } else {
+                return;
+            }
+            if (!species_val.is_null() && !species_val.is_undefined()) {
+                if (!species_val.is_object() || species_val.get_heapptr() == null ||
+                    !((HObject*)species_val.get_heapptr()).is_callable()) {
+                    arraybuffer_throw_type_error(ctx, "TypedArray.subarray: @@species is not a constructor");
+                    return;
+                }
+                species_ctor = (HObject*)species_val.get_heapptr();
+            }
+        }
+    }
+
+    if (species_ctor != null) {
+        // Call species_ctor(buf, beginByteOffset, newLength).
+        TVal[3] args;
+        args[0].set_object(buf);
+        args[1].set_fastint((long)new_byte_off);
+        args[2].set_fastint((long)new_len);
+        TVal species_tv; species_tv.set_object(species_ctor);
+        TVal result_tv = heap.construct_fn(ctx.vm, species_tv, &args[0], 3);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+        if (!result_tv.is_object() || result_tv.get_heapptr() == null) {
+            arraybuffer_throw_type_error(ctx, "TypedArray.subarray: species constructor did not return an object");
+            return;
+        }
+        HObject* result_obj = (HObject*)result_tv.get_heapptr();
+        if (!is_typed_array_class(result_obj.flags.obj_class)) {
+            arraybuffer_throw_type_error(ctx, "TypedArray.subarray: species constructor did not return a TypedArray");
+            return;
+        }
+        ctx.result.set_object(result_obj);
+    } else {
+        // Default: allocate same-class view sharing the same buffer.
+        HObject*? raw = heap.alloc_object(cls);
+        if (catch err = raw) { ctx.result.set_undefined(); return; }
+        HObject* sub = raw;
+        sub.prototype = obj.prototype != null ? obj.prototype : heap.typedarray_proto;
+        (*sub.extra_ptr()).view.byte_offset = new_byte_off;
+        (*sub.extra_ptr()).view.byte_length = new_byte_len;
+        typedarray_link_view(buf, sub);
+        ctx.result.set_object(sub);
+    }
 }
 
 // ---- fill ----
@@ -1103,27 +1168,38 @@ fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
     uint final_k = ta_norm_index(end_d, len);
     uint count = final_k > k ? final_k - k : 0;
 
-    // Fresh buffer of count<<shift bytes.
-    uint new_bytes = count << shift;
-    HObject* new_buf = typedarray_alloc_buffer(ctx, new_bytes);
-    if (new_buf == null) {
-        arraybuffer_throw_range_error(ctx, "TypedArray.slice: out of memory");
+    // TypedArraySpeciesCreate to get the result TA (may invoke user code).
+    HObject* result = ta_species_create(ctx, obj, count);
+    if (result == null) return;
+
+    // Re-check source detach after species construction (user code may detach).
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.slice: source buffer detached during species construction");
         return;
     }
 
     if (count > 0) {
+        hobject::ObjClass result_cls = result.flags.obj_class;
+        HObject* result_buf = (*result.extra_ptr()).view.buffer;
+        uint result_byte_off = (*result.extra_ptr()).view.byte_offset;
         char* src_data = (*src_buf.extra_ptr()).ab.data + byte_off + (k << shift);
-        char* dst_data = (*new_buf.extra_ptr()).ab.data;
-        libc::memcpy(dst_data, src_data, (usz)new_bytes);
+        char* dst_data = (*result_buf.extra_ptr()).ab.data + result_byte_off;
+
+        if (result_cls == cls) {
+            // Same element type: bulk copy.
+            libc::memcpy(dst_data, src_data, (usz)(count << shift));
+        } else {
+            // Different element types: element-by-element conversion.
+            uint result_shift = ta_elem_shift(result_cls);
+            for (uint i = 0; i < count; i++) {
+                TVal v = ta_load_element(src_data, cls, i);
+                char* dp = dst_data + (i << result_shift);
+                ta_write_element(dp, result_cls, &v, ctx);
+                if (ctx.should_throw) return;
+            }
+        }
     }
 
-    HObject*? raw = heap.alloc_object(cls);
-    if (catch err = raw) { ctx.result.set_undefined(); return; }
-    HObject* result = raw;
-    result.prototype = heap.typedarray_proto;
-    (*result.extra_ptr()).view.byte_offset = 0;
-    (*result.extra_ptr()).view.byte_length = new_bytes;
-    typedarray_link_view(new_buf, result);
     ctx.result.set_object(result);
 }
 
@@ -1154,6 +1230,105 @@ fn TVal ta_call_callback(BuiltinContext* ctx, TVal callback, TVal thisArg, TVal 
         ctx.heap.has_error = false;
     }
     return res;
+}
+
+/// TypedArraySpeciesCreate (ES §22.2.4.7): allocate a TypedArray for use as
+/// the result of slice/map/filter/subarray, honouring `constructor[@@species]`
+/// if present. Falls back to same-class allocation when species is absent.
+/// Returns null and sets ctx.should_throw on error.
+fn HObject* ta_species_create(BuiltinContext* ctx, HObject* exemplar, uint count) {
+    hobject::ObjClass cls = exemplar.flags.obj_class;
+    Heap* heap = ctx.heap;
+
+    // Step 1: Get exemplar.constructor.
+    HString* ctor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal ctor_val;
+    if (try c = builtins_generic_get(exemplar, ctor_key, ctx)) {
+        ctor_val = c;
+        if (ctx.should_throw) return null;
+    } else {
+        return null;
+    }
+
+    // Step 2: If constructor is undefined, use the default (same-class) path.
+    if (ctor_val.is_undefined()) {
+        return ta_alloc_same_class_from(ctx, exemplar, count);
+    }
+
+    // Step 3: constructor must be an Object.
+    if (!ctor_val.is_object() || ctor_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: constructor is not an object");
+        return null;
+    }
+    HObject* c_obj = (HObject*)ctor_val.get_heapptr();
+
+    // Step 4: Get constructor[@@species].
+    HString* species_sym = ensure_species_symbol(heap);
+    if (species_sym == null) {
+        // No Symbol.species interned: fall back to same-class.
+        return ta_alloc_same_class_from(ctx, exemplar, count);
+    }
+
+    TVal species_val;
+    if (try s = builtins_generic_get(c_obj, species_sym, ctx)) {
+        species_val = s;
+        if (ctx.should_throw) return null;
+    } else {
+        return null;
+    }
+
+    // Step 5: If species is null or undefined, use default.
+    if (species_val.is_null() || species_val.is_undefined()) {
+        return ta_alloc_same_class_from(ctx, exemplar, count);
+    }
+
+    // Step 6: species must be a constructor (callable object).
+    if (!species_val.is_object() || species_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: @@species is not a constructor");
+        return null;
+    }
+    HObject* species_obj = (HObject*)species_val.get_heapptr();
+    if (!species_obj.is_callable()) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: @@species is not a constructor");
+        return null;
+    }
+
+    // Step 7: Call species constructor with count argument.
+    TVal count_arg; count_arg.set_fastint((long)count);
+    TVal result_tv = heap.construct_fn(ctx.vm, species_val, &count_arg, 1);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return null;
+    }
+
+    // Step 8: Result must be a TypedArray object.
+    if (!result_tv.is_object() || result_tv.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: constructor did not return an object");
+        return null;
+    }
+    HObject* result_obj = (HObject*)result_tv.get_heapptr();
+    if (!is_typed_array_class(result_obj.flags.obj_class)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: constructor did not return a TypedArray");
+        return null;
+    }
+
+    // Step 9: Result must have at least count elements and a live buffer.
+    HObject* result_buf = (*result_obj.extra_ptr()).view.buffer;
+    if (result_buf == null || ((*result_buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: result buffer is detached");
+        return null;
+    }
+    hobject::ObjClass result_cls = result_obj.flags.obj_class;
+    uint result_shift = ta_elem_shift(result_cls);
+    uint result_len = (*result_obj.extra_ptr()).view.byte_length >> result_shift;
+    if (result_len < count) {
+        arraybuffer_throw_type_error(ctx, "TypedArray species: result TypedArray is too small");
+        return null;
+    }
+
+    return result_obj;
 }
 
 /// Allocate a new same-class TA of `length` elements (fresh zeroed buffer).
@@ -1627,19 +1802,22 @@ fn void builtin_ta_proto_map(BuiltinContext* ctx) {
     TVal this_arg; this_arg.set_undefined();
     if (ctx.argc >= 2) this_arg = ctx.regs[ctx.base_reg + 1];
 
-    HObject* result = ta_alloc_same_class_from(ctx, obj, len);
+    HObject* result = ta_species_create(ctx, obj, len);
     if (result == null) return;
 
+    hobject::ObjClass result_cls = result.flags.obj_class;
+    uint result_shift = ta_elem_shift(result_cls);
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
-    char* res_base = (*res_buf.extra_ptr()).ab.data;
+    uint res_byte_off = (*result.extra_ptr()).view.byte_offset;
+    char* res_base = (*res_buf.extra_ptr()).ab.data + res_byte_off;
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem = ta_load_element(base, cls, i);
         TVal mapped = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        char* dp = res_base + (i << shift);
-        ta_write_element(dp, cls, &mapped, ctx);
+        char* dp = res_base + (i << result_shift);
+        ta_write_element(dp, result_cls, &mapped, ctx);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (ta_is_detached(obj)) break;
     }
@@ -1693,18 +1871,21 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
         if (ta_is_detached(obj)) break;
     }
 
-    HObject* result = ta_alloc_same_class_from(ctx, obj, count);
+    HObject* result = ta_species_create(ctx, obj, count);
     if (result == null) {
         if (scratch != null) heap.free_func(heap.heap_udata, scratch);
         return;
     }
 
+    hobject::ObjClass result_cls = result.flags.obj_class;
+    uint result_shift = ta_elem_shift(result_cls);
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
-    char* res_base = (*res_buf.extra_ptr()).ab.data;
+    uint res_byte_off = (*result.extra_ptr()).view.byte_offset;
+    char* res_base = (*res_buf.extra_ptr()).ab.data + res_byte_off;
 
     for (uint i = 0; i < count; i++) {
-        char* dp = res_base + (i << shift);
-        ta_write_element(dp, cls, &scratch[i], ctx);
+        char* dp = res_base + (i << result_shift);
+        ta_write_element(dp, result_cls, &scratch[i], ctx);
         if (ctx.should_throw) {
             heap.free_func(heap.heap_udata, scratch);
             ctx.result.set_undefined();

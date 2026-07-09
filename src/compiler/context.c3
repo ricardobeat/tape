@@ -178,6 +178,10 @@ struct ObjBind {
     uint   arr_nested_idx;   // index within the nested array (used when is_array_nested)
     bool   is_computed_key;  // true when the key is `[expr]` (runtime computed)
     bool   is_rest;          // true for the trailing `...rest` binding
+    // Assignment-pattern member-expression targets: { p: obj.x } = v
+    bool   is_member_target;   // target is a member expression, not a simple identifier
+    ushort member_obj_reg;     // register holding the object (for PUTPROP)
+    ushort member_prop_reg;    // register holding the property key (for PUTPROP)
 }
 
 // ============================================================================

@@ -711,33 +711,321 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 // Destructuring ASSIGNMENT (without let/const/var)
 // ============================================================================
 
+/// Parse a DestructuringAssignmentTarget — any LeftHandSideExpression valid
+/// as an assignment target (§13.15.5). Returns true when the target is a
+/// member expression (`a.b`, `a[i]`, `{}[f()]`, etc.); false when it is a
+/// plain identifier.
+///
+/// For member targets, emits code to evaluate the object and key into fresh
+/// registers (`*out_obj_reg` / `*out_key_reg`) for a later PUTPROP.
+/// For identifier targets, `*out_name_idx` receives the constant-pool index
+/// of the name; no code is emitted.
+///
+/// When the next token is an IDENTIFIER not followed by `.`, `[`, or `(`,
+/// we consume it cheaply without emitting a GETVAR — assignment patterns
+/// only write to the target, never read from it.  For anything more complex
+/// (member chains starting with any primary, `new`, etc.) we call
+/// `postfix_expr` in lhs_mode and NOP the trailing GETPROP.
+fn bool? CompilerContext.parse_assign_target_lhs(&self,
+    ushort* out_obj_reg, ushort* out_key_reg, uint* out_name_idx)
+{
+    // Fast path: plain identifier target — no code emission needed.
+    // We only commit to the fast path when the very next token after the
+    // identifier is NOT a property/call/index accessor, ensuring that
+    // `a.b`, `a[i]`, `a()` etc. fall through to the full expression path.
+    if (self.peek_type() == TokenType.IDENTIFIER) {
+        // Peek at the token after the identifier without consuming it.
+        // Lexer state snapshot so we can look one token ahead.
+        uint   snap_pos  = self.lexer.pos;
+        uint   snap_line = self.lexer.line;
+        uint   snap_col  = self.lexer.col;
+        Token  snap_cur  = self.lexer.current;
+        Token  snap_lk   = self.lexer.lookahead;
+        bool   snap_hlk  = self.lexer.has_lookahead;
+        Token  snap_pb   = self.lexer.pushed_back;
+        bool   snap_hpb  = self.lexer.has_pushed_back;
+        bool   snap_slt  = self.lexer.seen_line_term;
+        uint   snap_pbc  = self.pushback_count;
+        Token[4] snap_pbs = self.pushback_stack;
+
+        Token ident_tok = self.advance()!;  // consume identifier
+
+        // Read the next token to check for member/call accessors.
+        Token? next_opt = self.lexer.next_token();
+        TokenType next_tt = TokenType.EOF_TOKEN;
+        if (try next = next_opt) { next_tt = next.type; }
+
+        bool is_accessor = (next_tt == TokenType.DOT
+            || next_tt == TokenType.LBRACKET
+            || next_tt == TokenType.LPAREN
+            || next_tt == TokenType.OPT_CHAIN);
+
+        // Restore lexer state (put everything back).
+        self.lexer.pos  = snap_pos;  self.lexer.line = snap_line;
+        self.lexer.col  = snap_col;  self.lexer.current = snap_cur;
+        self.lexer.lookahead = snap_lk; self.lexer.has_lookahead = snap_hlk;
+        self.lexer.pushed_back = snap_pb; self.lexer.has_pushed_back = snap_hpb;
+        self.lexer.seen_line_term = snap_slt;
+        self.pushback_count = snap_pbc; self.pushback_stack = snap_pbs;
+
+        if (!is_accessor) {
+            // True simple identifier: consume the token and return the name.
+            Token id = self.advance()!;
+            *out_name_idx = self.add_string_constant(id.str_value);
+            return false;
+        }
+        // Falls through to the full expression path below.
+    }
+
+    // General path: parse the full LHS expression (member chain, new, etc.)
+    // using lhs_mode so member_expr keeps obj/key registers live.
+    // member_expr always emits a trailing GETPROP; we NOP it immediately to
+    // avoid invoking a property getter on the assignment target.
+    bool saved_lhs = self.lhs_mode;
+    self.lhs_mode = true;
+    self.last_was_member = false;
+    self.last_was_getvar  = false;
+
+    ushort lhs_result = self.postfix_expr()!;
+
+    self.lhs_mode = saved_lhs;
+
+    if (self.last_was_member) {
+        // NOP the trailing GETPROP so we do not invoke a getter.
+        if (self.code_count > 0) {
+            uint last = self.code_count - 1;
+            if (self.code[last].op == Opcode.GETPROP) {
+                self.code[last] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+            }
+        }
+        self.free_reg(lhs_result);
+        *out_obj_reg  = self.last_member_obj_reg;
+        *out_key_reg  = self.last_member_prop_reg;
+        self.last_was_member   = false;
+        self.call_prop_obj_reg = MAX_REGISTERS;
+        return true;
+    }
+
+    if (self.last_was_getvar) {
+        // Identifier that was reached through a complex path (e.g. after
+        // `new` or other non-member primaries that still set last_was_getvar).
+        *out_name_idx = self.last_getvar_name_idx;
+        self.free_reg(lhs_result);
+        self.last_was_getvar = false;
+        return false;
+    }
+
+    // Not a valid assignment target.
+    return self.fail("invalid assignment target in destructuring pattern")~;
+}
+
 /// Parse array destructuring assignment: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
 /// Returns the RHS register (destructuring assignment evaluates to RHS value).
 ///
-/// Uses the ES2015 §13.3.3 iterator protocol via the shared, recursive
-/// `emit_destruct_bindings` emitter — works for any iterable at arbitrary
-/// nesting depth. Targets are identifiers (resolved or assigned by name via
-/// PUTVAR). See plan 044.
+/// Targets may be identifiers or member expressions (§13.15.5
+/// DestructuringAssignmentTarget = LeftHandSideExpression). Member targets are
+/// parsed eagerly to capture the object/key registers before the RHS iterator
+/// is set up; the emission machinery stores PUTPROP instead of PUTVAR.
 fn ushort? CompilerContext.array_destructure_assign(&self) {
     DestructBind[MAX_DESTRUCT_BINDS] binds;
     uint count = 0;
 
-    // Parse the pattern into the recursive DestructBind model.
-    self.collect_arr_param_binds(binds[..], &count, 0, 0xFFFF)!;
+    // Parse the array assignment pattern. Each element may be:
+    //   - a plain identifier (`a`)
+    //   - a member-expression target (`obj.x`, `arr[i]`, `{}[f()]`)
+    //   - a nested array or object assignment pattern (`[a]`, `{a}`)
+    //   - a rest element with any of the above targets (`...a`, `...obj.x`)
+    //   - a hole (elision: leading or interior commas)
+    //
+    // For member-expression targets, `parse_assign_target_lhs` emits code
+    // to evaluate the object and key into fresh registers NOW (before the
+    // RHS iterator is set up). The resulting registers are stored in
+    // `binds[i].member_obj_reg` / `member_prop_reg`; `emit_destruct_bindings`
+    // will emit PUTPROP instead of PUTVAR for these entries.
+    //
+    // Nested patterns are handled by delegating back to the shared
+    // `collect_arr_param_binds` / `collect_obj_param_binds` machinery (which
+    // only accepts identifier leaf targets within the nested sub-pattern).
+    // Top-level and rest targets accept the full LHS grammar.
+
+    ushort elem_idx = 0;
+    bool in_rest = false;
+
+    for (;;) {
+        if (self.check(TokenType.RBRACKET)) break;
+
+        // Elision / hole: `, ,` skips an iterator position.
+        if (self.match(TokenType.COMMA)) {
+            if (count < (uint)MAX_DESTRUCT_BINDS) {
+                // Record a synthetic hole so emit_destruct_bindings advances the
+                // iterator past this element.
+                binds[count].key_idx  = (uint)elem_idx;  // use key_idx as index
+                binds[count].index    = elem_idx;
+                binds[count].is_object = false;
+                binds[count].arg_idx  = 0xFFFF;          // patched to rhs_reg later
+                binds[count].parent_idx = 0xFFFF;
+                binds[count].is_synthetic = true;         // hole = synthetic with no children
+                // Mark as a pure hole: key_idx=0 (not 0xFFFF which means rest).
+                // Actually emit_destruct_bindings treats is_synthetic+not-object+key_idx!=0xFFFF
+                // as an array element fetch. For a pure hole we just advance index
+                // without recording — use the existing `collect_arr_param_binds` hole
+                // convention: omit the bind entirely but increment elem_idx.
+                // Re-use the approach from collect_arr_param_binds: don't record the
+                // hole in binds (elem_idx already advanced). Just bump elem_idx.
+            }
+            elem_idx++;
+            continue;
+        }
+
+        // Rest element: `...target`
+        if (self.match(TokenType.ELLIPSIS)) {
+            in_rest = true;
+
+            // Nested rest pattern: `...[a, b]` or `...{a}`
+            if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                bool is_obj = self.check(TokenType.LBRACE);
+                if (count < (uint)MAX_DESTRUCT_BINDS) {
+                    binds[count].key_idx    = 0xFFFF;  // rest synthetic
+                    binds[count].index      = elem_idx;
+                    binds[count].is_object  = false;
+                    binds[count].arg_idx    = 0xFFFF;
+                    binds[count].parent_idx = 0xFFFF;
+                    binds[count].is_synthetic = true;
+                    count++;
+                }
+                ushort synth_idx = (ushort)(count - 1);
+                self.advance()!;  // consume '{' or '['
+                if (is_obj) {
+                    self.collect_obj_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                } else {
+                    self.collect_arr_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                }
+            } else {
+                // Leaf rest target: identifier or member expression.
+                ushort tgt_obj  = 0xFFFF;
+                ushort tgt_key  = 0xFFFF;
+                uint   tgt_name = 0xFFFFFFFF;
+                bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+
+                if (count < (uint)MAX_DESTRUCT_BINDS) {
+                    binds[count].name_idx   = tgt_name;
+                    binds[count].key_idx    = 0xFFFF;   // 0xFFFF = rest sentinel
+                    binds[count].index      = elem_idx;
+                    binds[count].is_object  = false;
+                    binds[count].arg_idx    = 0xFFFF;
+                    binds[count].parent_idx = 0xFFFF;
+                    binds[count].is_member_target  = is_member;
+                    binds[count].member_obj_reg    = tgt_obj;
+                    binds[count].member_prop_reg   = tgt_key;
+                    if (!is_member) {
+                        // Copy name into name_buf for declare_var-style lookup.
+                        // (Not needed for assignment — name_idx is enough for PUTVAR.)
+                        binds[count].name_len = 0;
+                    }
+                    count++;
+                }
+            }
+
+            // Optional default for rest is not valid ES syntax; stop here.
+            while (self.match(TokenType.COMMA)) {}
+            break;
+        }
+
+        // Nested pattern: `[pattern]` or `{pattern}`
+        if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+            bool is_obj = self.check(TokenType.LBRACE);
+            if (count < (uint)MAX_DESTRUCT_BINDS) {
+                binds[count].key_idx    = (uint)elem_idx;  // array index
+                binds[count].index      = elem_idx;
+                binds[count].is_object  = false;
+                binds[count].arg_idx    = 0xFFFF;
+                binds[count].parent_idx = 0xFFFF;
+                binds[count].is_synthetic = true;
+                count++;
+            }
+            ushort synth_idx = (ushort)(count - 1);
+            self.advance()!;  // consume '{' or '['
+            if (is_obj) {
+                self.collect_obj_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+            } else {
+                self.collect_arr_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+            }
+
+            // Default for the nested pattern: `[a] = default`
+            if (self.match(TokenType.ASSIGN)) {
+                if (count > 0) {
+                    binds[synth_idx].has_default = true;
+                    CompiledFunction* default_func = self.compile_default_expr()!;
+                    uint def_idx = self.add_inner_func(default_func);
+                    binds[synth_idx].default_func_idx = def_idx;
+                }
+            }
+        } else {
+            // Leaf assignment target: identifier or member expression.
+            ushort tgt_obj  = 0xFFFF;
+            ushort tgt_key  = 0xFFFF;
+            uint   tgt_name = 0xFFFFFFFF;
+            bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+
+            if (count < (uint)MAX_DESTRUCT_BINDS) {
+                binds[count].name_idx          = tgt_name;
+                binds[count].key_idx           = (uint)elem_idx;  // array index
+                binds[count].index             = elem_idx;
+                binds[count].is_object         = false;
+                binds[count].arg_idx           = 0xFFFF;
+                binds[count].parent_idx        = 0xFFFF;
+                binds[count].is_member_target  = is_member;
+                binds[count].member_obj_reg    = tgt_obj;
+                binds[count].member_prop_reg   = tgt_key;
+                binds[count].name_len          = 0;
+                count++;
+            }
+
+            // Default: `[a = expr]`
+            if (self.match(TokenType.ASSIGN)) {
+                if (count > 0) {
+                    binds[count - 1].has_default = true;
+                    CompiledFunction* default_func = self.compile_default_expr()!;
+                    uint def_idx = self.add_inner_func(default_func);
+                    binds[count - 1].default_func_idx = def_idx;
+                }
+            }
+        }
+
+        elem_idx++;
+        if (!self.match(TokenType.COMMA)) break;
+    }
+
+    self.expect(TokenType.RBRACKET)!;
 
     ushort[MAX_DESTRUCT_BINDS] group_regs;
     ushort[MAX_DESTRUCT_BINDS] binding_regs;
     for (uint i = 0; i < count; i++) { group_regs[i] = 0xFFFF; binding_regs[i] = 0xFFFF; }
 
-    // Each leaf target is an existing variable. Resolve it to its register if
-    // it lives in the local register cache, else allocate a temp that the
-    // emitter's PUTVAR (by name) will write back to the environment binding.
-    // At global scope all reads/writes go through the environment (resolve_var
-    // is skipped there, matching identifier assignment), so always use a temp.
+    // Allocate binding registers for each leaf target.
+    // For member-expression targets, allocate a fresh temp to hold the
+    // extracted value (PUTPROP is emitted by emit_destruct_bindings).
+    // For identifier targets, resolve to the local register if possible.
     for (uint i = 0; i < count; i++) {
         if (binds[i].is_synthetic) continue;
-        char[] name = binds[i].name_buf[:binds[i].name_len];
+        if (binds[i].is_member_target) {
+            // Member target: always use a fresh temp (no local var to resolve).
+            binding_regs[i] = self.alloc_reg();
+            continue;
+        }
+        // Build a char[] slice into name_buf for resolve_var.
+        // For assignment targets parsed via parse_assign_target_lhs, the name
+        // is stored only as name_idx (constant-pool entry). Reconstruct the
+        // slice from the constant pool so resolve_var can match it.
+        char[] name;
+        if (binds[i].name_len > 0) {
+            name = binds[i].name_buf[:binds[i].name_len];
+        } else {
+            // Use the constant-pool string directly.
+            HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
+            name = hs.get_data();
+        }
         if (!self.is_global) {
             if (try existing = self.resolve_var(name)) {
                 binding_regs[i] = existing;
@@ -756,7 +1044,9 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     }
 
     // Assignment (not declaration): register-resident targets are written
-    // directly by the extraction; env-resident targets get a bare PUTVAR.
+    // directly by the extraction; env-resident targets get a bare PUTVAR;
+    // member-expression targets get PUTPROP (handled in emit_destruct_bindings
+    // via is_member_target).
     self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
                                 DestructStoreMode.ASSIGN_TARGET);
 
@@ -786,21 +1076,27 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             // `__proto__` is also excluded even if listed — the
             // semantics change made in ES2018).
             if (self.match(TokenType.ELLIPSIS)) {
-                Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
+                // Rest target may be an identifier (`...rest`) or a member
+                // expression (`...obj.x`, `...obj['key']`).
+                ushort tgt_obj  = 0xFFFF;
+                ushort tgt_key  = 0xFFFF;
+                uint   tgt_name = 0xFFFFFFFF;
+                bool rest_is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+
+                if (!rest_is_member) {
+                    HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                    if (is_restricted_name(hs.get_data())) return COMPILE_ERROR~;
+                }
                 if (bind_count < 32) {
-                    ushort reg;
-                    if (try existing = self.resolve_var(rest_tok.str_value)) {
-                        reg = existing;
-                        binds[bind_count].is_resolved = false;
-                    } else {
-                        reg = self.alloc_reg();
-                        binds[bind_count].is_resolved = false;
-                    }
+                    ushort reg = self.alloc_reg();
                     binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
+                    binds[bind_count].name_idx = tgt_name;
                     binds[bind_count].is_rest = true;
                     binds[bind_count].has_default = false;
+                    binds[bind_count].is_resolved = false;
+                    binds[bind_count].is_member_target = rest_is_member;
+                    binds[bind_count].member_obj_reg  = tgt_obj;
+                    binds[bind_count].member_prop_reg = tgt_key;
                     bind_count++;
                 }
                 break;  // rest must be the last property
@@ -812,25 +1108,36 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                 ushort key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;
                 self.expect(TokenType.COLON)!;
-                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                // Value target may be an identifier or a member expression.
+                ushort tgt_obj  = 0xFFFF;
+                ushort tgt_key  = 0xFFFF;
+                uint   tgt_name = 0xFFFFFFFF;
+                bool ck_is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+                if (!ck_is_member) {
+                    HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                    if (is_restricted_name(hs.get_data())) return COMPILE_ERROR~;
+                }
                 if (bind_count < 32) {
-                    ushort reg;
-                    if (try existing = self.resolve_var(bind_tok.str_value)) {
-                        reg = existing;
-                        binds[bind_count].is_resolved = false;
-                    } else {
-                        reg = self.alloc_reg();
-                        binds[bind_count].is_resolved = false;
-                    }
+                    ushort reg = self.alloc_reg();
                     binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                    binds[bind_count].name_idx = tgt_name;
                     binds[bind_count].is_computed_key = true;
                     binds[bind_count].key_reg = key_reg;
                     binds[bind_count].has_default = false;
+                    binds[bind_count].is_resolved = false;
+                    binds[bind_count].is_member_target = ck_is_member;
+                    binds[bind_count].member_obj_reg  = tgt_obj;
+                    binds[bind_count].member_prop_reg = tgt_key;
                     if (self.match(TokenType.ASSIGN)) {
                         binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                        // NamedEvaluation applies only to identifier targets;
+                        // member targets get no inferred name.
+                        char[] ck_dflt_name = "";
+                        if (!ck_is_member) {
+                            HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                            ck_dflt_name = hs.get_data();
+                        }
+                        binds[bind_count].default_val_reg = self.destructuring_default_expr(ck_dflt_name)!;
                     }
                     bind_count++;
                 }
@@ -1175,26 +1482,49 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
                         }
                         self.expect(TokenType.RBRACKET)!;
                     } else {
-                        // Simple key: value
-                        Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+                        // Simple key: value — target may be an identifier or
+                        // a member expression (e.g. `{ p: obj.x } = v`).
+                        ushort tgt_obj  = 0xFFFF;
+                        ushort tgt_key  = 0xFFFF;
+                        uint   tgt_name = 0xFFFFFFFF;
+                        bool sk_is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+                        if (!sk_is_member) {
+                            HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                            if (is_restricted_name(hs.get_data())) return COMPILE_ERROR~;
+                        }
                         if (bind_count < 32) {
                             ushort reg;
-                            if (try existing = self.resolve_var(bind_tok.str_value)) {
-                                reg = existing;
-                                binds[bind_count].is_resolved = false;
+                            if (!sk_is_member && !self.is_global) {
+                                HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                                if (try existing = self.resolve_var(hs.get_data())) {
+                                    reg = existing;
+                                    binds[bind_count].is_resolved = false;
+                                } else {
+                                    reg = self.alloc_reg();
+                                    binds[bind_count].is_resolved = false;
+                                }
                             } else {
                                 reg = self.alloc_reg();
                                 binds[bind_count].is_resolved = false;
                             }
                             binds[bind_count].reg = reg;
-                            binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
+                            binds[bind_count].name_idx = tgt_name;
                             binds[bind_count].key_idx = self.add_string_constant(prop_key);
                             binds[bind_count].has_default = false;
+                            binds[bind_count].is_member_target = sk_is_member;
+                            binds[bind_count].member_obj_reg  = tgt_obj;
+                            binds[bind_count].member_prop_reg = tgt_key;
 
                             if (self.match(TokenType.ASSIGN)) {
                                 binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                                // NamedEvaluation applies only to identifier targets;
+                                // member targets get no inferred name.
+                                char[] dflt_name = "";
+                                if (!sk_is_member) {
+                                    HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
+                                    dflt_name = hs.get_data();
+                                }
+                                binds[bind_count].default_val_reg = self.destructuring_default_expr(dflt_name)!;
                             }
 
                             bind_count++;
@@ -1302,8 +1632,18 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             self.free_reg(binds[i].default_val_reg);
         }
 
-        // For assignment: if variable wasn't resolved locally, emit PUTVAR
-        if (!binds[i].is_resolved) {
+        // Store the extracted value into the assignment target.
+        // Member-expression targets (e.g. `{ p: obj.x }`) use PUTPROP;
+        // env-resident identifier targets use PUTVAR.
+        if (binds[i].is_member_target) {
+            self.emit_abc(Opcode.PUTPROP,
+                (uint)binds[i].member_obj_reg,
+                (uint)binds[i].member_prop_reg,
+                (uint)binds[i].reg);
+            self.free_reg(binds[i].member_prop_reg);
+            self.free_reg(binds[i].member_obj_reg);
+            self.free_reg(binds[i].reg);
+        } else if (!binds[i].is_resolved) {
             ushort tmp = self.alloc_reg();
             self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)binds[i].reg, 0);
             self.emit_a_bc(Opcode.PUTVAR, (uint)binds[i].reg, binds[i].name_idx);
@@ -1360,8 +1700,17 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
             self.free_reg(del_result_reg);
         }
 
-        // Store the rest object into the binding.
-        if (!binds[i].is_resolved) {
+        // Store the rest object into the assignment target.
+        if (binds[i].is_member_target) {
+            // Member-expression rest target (e.g. `{...obj.x} = v`).
+            self.emit_abc(Opcode.PUTPROP,
+                (uint)binds[i].member_obj_reg,
+                (uint)binds[i].member_prop_reg,
+                (uint)rest_reg);
+            self.free_reg(binds[i].member_prop_reg);
+            self.free_reg(binds[i].member_obj_reg);
+            self.free_reg(rest_reg);
+        } else if (!binds[i].is_resolved) {
             ushort tmp = self.alloc_reg();
             self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)rest_reg, 0);
             self.emit_a_bc(Opcode.PUTVAR, (uint)rest_reg, binds[i].name_idx);
