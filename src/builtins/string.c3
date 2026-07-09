@@ -1475,287 +1475,237 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
 }
 
-/// String.prototype.replaceAll(searchValue, replaceValue) — ES2021 §21.1.3.18
+/// String.prototype.replaceAll(searchValue, replaceValue) — ES2021 §22.1.3.18
 fn void builtin_string_proto_replaceAll(BuiltinContext* ctx) {
-    // ES2021 §21.1.3.18: RequireObjectCoercible(this) — but we don't ToString
-    // the receiver until after the searchValue regex flags check has run, so
-    // a poisoned `this` whose toString throws won't fire prematurely.
+    // Step 1: RequireObjectCoercible(this). We don't ToString the receiver
+    // yet — step 2's searchValue checks (IsRegExp, flags, @@replace) must
+    // run and can throw or delegate *before* `this` is ever stringified.
     TVal this_tv = ctx.regs[ctx.base_reg - 1];
     if (this_tv.is_undefined() || this_tv.is_null()) {
         builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "String.prototype method called on incompatible value");
         return;
     }
 
-    if (ctx.argc < 1) {
-        // No searchValue: ToString O(this) and return it unchanged.
-        HString* s_hstr = string_proto_get_this(ctx);
-        if (s_hstr == null) { ctx.result.set_undefined(); return; }
-        ctx.result.set_string(s_hstr);
-        return;
+    TVal search_val;
+    if (ctx.argc >= 1) {
+        search_val = ctx.regs[ctx.base_reg];
+    } else {
+        search_val.set_undefined();
     }
 
-    TVal search_val = ctx.regs[ctx.base_reg];
+    TVal replace_val;
+    if (ctx.argc > 1) {
+        replace_val = ctx.regs[ctx.base_reg + 1];
+    } else {
+        replace_val.set_undefined();
+    }
 
-    // Spec step 2.b: if searchValue is a regex, Get(flags) + ToString +
-    // must contain "g" — using generic Get so user code that
-    // Object.defineProperty(rx, "flags", {value: "G"}) to force the
-    // non-global branch (or installs an accessor getter) is honored.
-    // ES2022 §22.1.3.18 step 2.a IsRegExp: true iff value is a RegExp
-    // object OR value has a truthy @@match property. We check both
-    // because a plain object with `[Symbol.match]: true` and a
-    // `flags` getter (no [[RegExpMatcher]] slot) is still "RegExp-like".
-    bool is_regexp_like = is_regexp_object(&search_val);
-    if (!is_regexp_like && search_val.is_object() && search_val.get_heapptr() != null) {
-        HString* match_sym = ensure_match_symbol(ctx.heap);
-        if (match_sym != null) {
-            TVal? match_tv_opt = builtins_generic_get((HObject*)search_val.get_heapptr(), match_sym, ctx);
-            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-            if (try mtv = match_tv_opt) {
-                if (mtv.is_object()) {
-                    is_regexp_like = true;
-                } else if (mtv.is_boolean()) {
-                    is_regexp_like = mtv.get_boolean();
-                } else if (!mtv.is_undefined() && !mtv.is_null()) {
-                    is_regexp_like = builtin_to_boolean(&mtv);
+    // Step 2: if searchValue is neither undefined nor null, run the
+    // IsRegExp / flags / @@replace-delegation checks before anything else.
+    if (!search_val.is_undefined() && !search_val.is_null()) {
+        // Step 2.a IsRegExp(searchValue): true iff searchValue is an Object
+        // and either has a truthy @@match property, or (when @@match is
+        // undefined) has a [[RegExpMatcher]] internal slot.
+        bool is_regexp_like = false;
+        if (search_val.is_object() && search_val.get_heapptr() != null) {
+            HObject* sv_obj = (HObject*)search_val.get_heapptr();
+            HString* match_sym = ensure_match_symbol(ctx.heap);
+            bool match_seen = false;
+            if (match_sym != null) {
+                TVal? match_tv_opt = builtins_generic_get(sv_obj, match_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try mtv = match_tv_opt) {
+                    if (!mtv.is_undefined()) {
+                        match_seen = true;
+                        is_regexp_like = builtin_to_boolean(&mtv);
+                    }
+                }
+            }
+            if (!match_seen) {
+                is_regexp_like = is_regexp_object(&search_val);
+            }
+        }
+
+        if (is_regexp_like) {
+            HObject* rx = (HObject*)search_val.get_heapptr();
+            // Step 2.b.i: Get(searchValue, "flags").
+            TVal? flags_tv_opt = builtins_generic_get(rx, builtin_intern_string(ctx.heap, "flags"), ctx);
+            if (ctx.should_throw) return;
+            HString* flags_hstr = null;
+            if (try fv = flags_tv_opt) {
+                // Step 2.b.ii: RequireObjectCoercible(flags).
+                if (fv.is_undefined() || fv.is_null()) {
+                    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                        "String.prototype.replaceAll: flags is null/undefined");
+                    return;
+                }
+                if (is_symbol_val(fv)) {
+                    arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+                    return;
+                }
+                TVal* fv_ptr = &fv;
+                HString* tostr_hstr = builtin_to_string_vm(ctx, fv_ptr);
+                if (ctx.should_throw) return;
+                if (tostr_hstr == null) {
+                    arr_throw_type_error(ctx, "Cannot convert flags to string");
+                    return;
+                }
+                flags_hstr = tostr_hstr;
+            } else {
+                builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                    "String.prototype.replaceAll: missing flags");
+                return;
+            }
+            // Step 2.b.iii: flags must contain "g".
+            bool has_g = false;
+            char* flags_cstr = flags_hstr.get_cstr();
+            usz flags_len = flags_hstr.blen;
+            for (usz i = 0; i < flags_len; i++) {
+                if (flags_cstr[i] == 'g') { has_g = true; break; }
+            }
+            if (!has_g) {
+                arr_throw_type_error(ctx, "String.prototype.replaceAll called with a non-global regular expression");
+                return;
+            }
+        }
+
+        // Step 2.c: replacer = GetMethod(searchValue, @@replace).
+        // Step 2.d: if replacer is not undefined, delegate to it entirely —
+        // this happens BEFORE ToString(this) / ToString(searchValue), so a
+        // poisoned `this` or searchValue whose toString throws never fires.
+        if (search_val.is_object() && search_val.get_heapptr() != null) {
+            HObject* sv_obj = (HObject*)search_val.get_heapptr();
+            HString* replace_sym = ensure_replace_symbol(ctx.heap);
+            if (replace_sym != null) {
+                TVal? replacer_opt = builtins_generic_get(sv_obj, replace_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try replacer = replacer_opt) {
+                    if (!replacer.is_undefined() && !replacer.is_null()) {
+                        bool replacer_callable = replacer.is_lightfunc() ||
+                            (replacer.is_object() && replacer.get_heapptr() != null &&
+                             ((HObject*)replacer.get_heapptr()).is_callable());
+                        if (!replacer_callable) {
+                            arr_throw_type_error(ctx, "Symbol.replace method is not callable");
+                            return;
+                        }
+                        TVal[2] fn_args;
+                        fn_args[0] = this_tv;         // O — NOT yet ToString'd
+                        fn_args[1] = replace_val;     // replaceValue as-is
+                        TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, search_val);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            return;
+                        }
+                        *ctx.result = res;
+                        return;
+                    }
                 }
             }
         }
     }
-    if (is_regexp_like) {
-        HObject* rx = (HObject*)search_val.get_heapptr();
-        TVal? flags_tv_opt = builtins_generic_get(rx, builtin_intern_string(ctx.heap, "flags"), ctx);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        HString* flags_hstr = null;
-        if (try fv = flags_tv_opt) {
-            if (fv.is_undefined() || fv.is_null()) {
-                arr_throw_type_error(ctx, "String.prototype.replaceAll: flags is null/undefined");
-                return;
-            }
-            if (is_symbol_val(fv)) {
-                arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
-                return;
-            }
-            TVal* fv_ptr = &fv;
-            HString* tostr_hstr = builtin_to_string(ctx.heap, fv_ptr);
-            if (tostr_hstr == null) {
-                arr_throw_type_error(ctx, "Cannot convert flags to string");
-                return;
-            }
-            flags_hstr = tostr_hstr;
-        } else {
-            arr_throw_type_error(ctx, "String.prototype.replaceAll: missing flags");
-            return;
-        }
-        bool has_g = false;
-        char* flags_cstr = flags_hstr.get_cstr();
-        usz flags_len = flags_hstr.blen;
-        for (usz i = 0; i < flags_len; i++) {
-            if (flags_cstr[i] == 'g') { has_g = true; break; }
-        }
-        if (!has_g) {
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.type_err_proto;
-                HString* msg_str = builtin_intern_string(ctx.heap, "String.prototype.replaceAll called with a non-global regular expression");
-                if (msg_str != null) {
-                    TVal msg_val;
-                    msg_val.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-                }
-                TVal err_tv;
-                err_tv.set_object(err);
-                ctx.throw_value = err_tv;
-            }
-            ctx.result.set_undefined();
-            ctx.should_throw = true;
-            return;
-        }
-    }
 
-    // Now resolve `this` to a string (lazy ToString).
-    HString* s_hstr = string_proto_get_this(ctx);
-    if (s_hstr == null) { ctx.result.set_undefined(); return; }
+    // Step 3: string = ToString(O).
+    HString* s_hstr = builtin_to_string_vm(ctx, &this_tv);
+    if (ctx.should_throw) return;
+    if (s_hstr == null) return;
     char* input = s_hstr.get_cstr();
     uint input_len = s_hstr.blen;
 
-    // ... (the rest of the function)
-
-    // Direct global regex replace-all implementation
-    if (is_regexp_object(&search_val)) {
-        HObject* rx = (HObject*)search_val.get_heapptr();
-        bool replace_is_fn = false;
-        TVal replace_val;
-        replace_val.set_undefined();
-        if (ctx.argc > 1) {
-            replace_val = ctx.regs[ctx.base_reg + 1];
-            if (replace_val.is_object() && replace_val.get_heapptr() != null &&
-                ((HObject*)replace_val.get_heapptr()).is_callable()) {
-                replace_is_fn = true;
-            }
-        }
-
-        HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
-        TVal zero_tv; zero_tv.set_fastint(0);
-        rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
-
-        char[8192] buf;
-        usz bOff = 0;
-        int search_pos = 0;
-        int ilen = (int)input_len;
-
-        while (search_pos <= ilen) {
-            int out_start = 0;
-            int out_end = 0;
-            int out_num_captures = 0;
-            int[re_bindings::RE_MAX_CAPTURES] caps_start;
-            int[re_bindings::RE_MAX_CAPTURES] caps_end;
-            libc::memset(&caps_start, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-            libc::memset(&caps_end, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-
-            int result = re_bindings::re_exec(
-                (*rx.extra_ptr()).regexp.regexp_data, input, ilen, search_pos,
-                &out_start, &out_end, &out_num_captures,
-                &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
-            );
-            if (result != re_bindings::RE_MATCH) break;
-
-            for (usz i = (usz)search_pos; i < (usz)out_start && bOff < 8192; i++) buf[bOff++] = input[i];
-
-            HString* replace_str;
-            if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
-                int num_caps = out_num_captures;
-                if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
-                TVal[36] fn_args;
-                int arg_count = 0;
-                usz m_len = (usz)(out_end - out_start);
-                fn_args[arg_count].set_string(
-                    m_len == 0 ? builtin_intern_string(ctx.heap, "")
-                               : builtin_intern_string(ctx.heap, input[out_start : m_len]));
-                arg_count++;
-                for (int i = 0; i < num_caps; i++) {
-                    if (caps_start[i] >= 0 && caps_end[i] >= 0) {
-                        usz cap_len = (usz)(caps_end[i] - caps_start[i]);
-                        fn_args[arg_count].set_string(
-                            cap_len == 0 ? builtin_intern_string(ctx.heap, "")
-                                         : builtin_intern_string(ctx.heap, input[caps_start[i] : cap_len]));
-                    } else {
-                        fn_args[arg_count].set_undefined();
-                    }
-                    arg_count++;
-                }
-                TVal offset_tv; offset_tv.set_fastint((long)out_start);
-                fn_args[arg_count++] = offset_tv;
-                fn_args[arg_count++].set_string(s_hstr);
-                TVal this_val; this_val.set_undefined();
-                TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
-                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                replace_str = builtin_to_string(ctx.heap, &res);
-                if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
-            } else {
-                HString* raw_replace = ctx.argc > 1
-                    ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
-                    : builtin_intern_string(ctx.heap, "undefined");
-                if (raw_replace == null) break;
-                replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
-                    input, ilen, out_start, out_end,
-                    &caps_start, &caps_end, out_num_captures);
-                if (replace_str == null) replace_str = raw_replace;
-            }
-
-            char* rData = replace_str.get_cstr();
-            uint rLen = replace_str.blen;
-            for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
-
-            if (out_end == search_pos) {
-                bool unicode_flag = ((*rx.extra_ptr()).regexp.flags & (16 | 128)) != 0;
-                int next_pos = out_end + (int)hstring::advance_string_index_byte_len(
-                    input[:ilen], (uint)out_end, unicode_flag);
-                for (usz i = (usz)out_end; i < (usz)next_pos && bOff < 8192; i++) buf[bOff++] = input[i];
-                search_pos = next_pos;
-                if (search_pos > ilen) break;
-            } else {
-                search_pos = out_end;
-            }
-        }
-
-        for (usz i = (usz)search_pos; i < (usz)ilen && bOff < 8192; i++) buf[bOff++] = input[i];
-        ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
+    // Step 4: searchString = ToString(searchValue).
+    if (is_symbol_val(search_val)) {
+        arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
         return;
     }
-
-    // String searchValue path
-    HString* search_hstr = builtin_to_string(ctx.heap, &search_val);
-    if (search_hstr == null) { ctx.result.set_string(s_hstr); return; }
-
+    HString* search_hstr = builtin_to_string_vm(ctx, &search_val);
+    if (ctx.should_throw) return;
+    if (search_hstr == null) return;
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
-    // If search string is empty, return the original string
-    if (search_len == 0) {
-        ctx.result.set_string(s_hstr);
-        return;
-    }
-
-    bool replace_is_fn = false;
-    TVal replace_val;
-    replace_val.set_undefined();
-    if (ctx.argc > 1) {
-        replace_val = ctx.regs[ctx.base_reg + 1];
-        if (replace_val.is_object() && replace_val.get_heapptr() != null &&
-            ((HObject*)replace_val.get_heapptr()).is_callable()) {
-            replace_is_fn = true;
+    // Step 5/6: functionalReplace = IsCallable(replaceValue); otherwise
+    // ToString(replaceValue).
+    bool functional_replace = replace_val.is_lightfunc() ||
+        (replace_val.is_object() && replace_val.get_heapptr() != null &&
+         ((HObject*)replace_val.get_heapptr()).is_callable());
+    HString* replace_hstr = null;
+    if (!functional_replace) {
+        if (is_symbol_val(replace_val)) {
+            arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+            return;
         }
+        replace_hstr = builtin_to_string_vm(ctx, &replace_val);
+        if (ctx.should_throw) return;
+        if (replace_hstr == null) return;
     }
 
+    // Step 7: advanceBy = max(1, searchString length) — code-unit length,
+    // but since matches can't straddle CESU-8 byte boundaries, byte length
+    // is equivalent here.
+    uint advance_by = search_len == 0 ? 1 : search_len;
+
+    // Steps 8-11: find all match positions via a (byte-based) StringIndexOf
+    // loop, matching left-to-right, non-overlapping, advancing by
+    // advanceBy on every step (including empty-string matches).
     char[8192] buf;
     usz bOff = 0;
     int pos = 0;
+    int last_end = 0;
+    int ilen = (int)input_len;
 
-    while (pos <= (int)(input_len - search_len)) {
+    while (pos <= ilen - (int)search_len) {
         bool match = true;
         for (uint j = 0; j < search_len; j++) {
             if (input[(uint)pos + j] != search_data[j]) { match = false; break; }
         }
-        if (!match) {
-            if (bOff < 8192) buf[bOff++] = input[(uint)pos];
-            pos++;
-            continue;
-        }
+        if (!match) { pos++; continue; }
 
-        // Found a match at pos
-        HString* replace_str;
-        if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
+        // Copy the unmatched prefix since the previous match.
+        for (usz i = (usz)last_end; i < (usz)pos && bOff < 8192; i++) buf[bOff++] = input[i];
+
+        // Step 14: compute replacement for this match position.
+        HString* replacement_str;
+        if (functional_replace) {
             TVal[3] fn_args;
             fn_args[0].set_string(search_hstr);
             fn_args[1].set_fastint((long)pos);
             fn_args[2].set_string(s_hstr);
             TVal this_val; this_val.set_undefined();
             TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], 3, this_val);
-            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-            replace_str = builtin_to_string(ctx.heap, &res);
-            if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return;
+            }
+            if (is_symbol_val(res)) {
+                arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+                return;
+            }
+            replacement_str = builtin_to_string_vm(ctx, &res);
+            if (ctx.should_throw) return;
+            if (replacement_str == null) return;
         } else {
-            HString* raw_replace = ctx.argc > 1
-                ? builtin_to_string(ctx.heap, &ctx.regs[ctx.base_reg + 1])
-                : builtin_intern_string(ctx.heap, "undefined");
-            if (raw_replace == null) break;
-            // Handle $-substitution patterns ($$, $&, $`, $', $1, etc.)
-            replace_str = builtin_replace_substitute(ctx.heap, raw_replace,
-                input, (int)input_len, pos, pos + (int)search_len,
+            // GetSubstitution with an always-empty captures list: only
+            // $$, $&, $`, and $' are recognized; $N/$NN/$<...> stay literal
+            // since there are no captures (num_caps == 0).
+            replacement_str = builtin_replace_substitute(ctx.heap, replace_hstr,
+                input, ilen, pos, pos + (int)search_len,
                 null, null, 0);
-            if (replace_str == null) replace_str = raw_replace;
+            if (replacement_str == null) replacement_str = replace_hstr;
         }
 
-        char* rData = replace_str.get_cstr();
-        uint rLen = replace_str.blen;
+        char* rData = replacement_str.get_cstr();
+        uint rLen = replacement_str.blen;
         for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
 
-        pos += (int)search_len;
+        last_end = pos + (int)search_len;
+        pos += (int)advance_by;
     }
 
-    // Copy remaining characters
-    for (usz i = (usz)pos; i < (usz)input_len && bOff < 8192; i++) buf[bOff++] = input[i];
+    // Copy remaining characters after the last match.
+    for (usz i = (usz)last_end; i < (usz)ilen && bOff < 8192; i++) buf[bOff++] = input[i];
 
     ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:bOff]));
 }
