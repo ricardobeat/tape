@@ -1088,6 +1088,23 @@ fn bool HObject.is_prop_writable(&self, void* key) {
     return self.get_prop_flags((uint)idx).writable;
 }
 
+/// Decide whether an array-index write should grow the dense array part.
+///
+/// The dense part is a contiguous TVal backing, so growing it to a large
+/// sparse index (e.g. `a[2**31] = x`) would allocate billions of empty slots
+/// and exhaust memory. Sparse writes must instead go to the named-property
+/// table. We route to the dense part only when the index stays reasonably
+/// contiguous with the existing array: within a slack window past the current
+/// dense size, or below a small absolute floor so fresh/small arrays still
+/// grow densely. Beyond that, treat it as sparse.
+const uint DENSE_GROW_FLOOR = 1024;        // always dense below this index
+const uint DENSE_GROW_SLACK = 1u << 16;    // allow this much jump past array_size
+fn bool dense_index_ok(uint cur_size, uint idx) {
+    if (idx < DENSE_GROW_FLOOR) return true;
+    // idx must not overshoot the current dense size by more than the slack.
+    return idx <= cur_size + DENSE_GROW_SLACK;
+}
+
 /// Set (create or update) a named property.
 ///
 /// If the property already exists its value and flags are updated.
@@ -1154,7 +1171,8 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         // to the named-property table, which records genuine presence.
         if (ks.is_arridx() && !val.is_undefined()
             && pflags.writable && pflags.enumerable && pflags.configurable
-            && !pflags.is_accessor) {
+            && !pflags.is_accessor
+            && dense_index_ok(self.array_size, ks.array_index())) {
             uint ks_idx = ks.array_index();
             if (self.set_array_idx(ks_idx, val)) {
                 if (ks_idx >= *self.array_len_ptr()) {
