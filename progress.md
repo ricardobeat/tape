@@ -1,7 +1,20 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 273 — dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0
+**Last Updated:** Session 273 — **90.6% reached** (27,879 pass / 30,780 executable, up from 88.0%). Dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0 + reviver/text coercion, RegExp exec/@@split/@@replace lastIndex+result coercion, for-of destructuring lazy defaults.
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
+
+## Summary (full run, session 273, 2026-07-10)
+
+| Metric | Value |
+|---|---|
+| Pass + Fail + CE (executable) | 30,780 |
+| Total passing | 27,879 |
+| **Overall pass rate** | **90.6%** |
+| Total failing | 2,668 |
+| CE unexpected (parser bugs) | 230 |
+| Skipped | 14,032 |
+
+Up from session 272 (88.0%, 27,079 pass): **+800 pass** this session.
 
 ## Test Infrastructure
 
@@ -23,4 +36,4 @@
 | 270 | copyWithin step-4/5/6 undefined defaults, Array.prototype.flat ArraySpeciesCreate + flatten_into throwing writes, Object.defineProperty(array, "length") value-first ordering. | **83.1% → 87.2%** (25,656 → 26,826 pass, +1,170).  Phase 5 6,842 → 7,208 (+366); Phase 6 3,760 → 3,936 (+176). |
 | 271 | Array literal INITPROP undefined→named-prop; map/filter ArraySpeciesCreate; array_set_elem_ulong_checked undefined+redefine; reduce/reduceRight loop-bound snapshot; sort undefined-last; iterator keys/entries/values done-value leak + entries pair length; Object.defineProperties dense-array sync; push TypeError/RangeError. | **87.2% → 87.9%** (26,826 → 27,047 pass, +221).  Phase 3 +56; Phase 5 +48; Phase 6 +45; Phase 0-1 +39; Phase 15 +35. |
 | 272 | Two MEMKILL/crash fixes: shape use-after-free in RegExp property-escapes/generated (44 tests), plus a second crash fix. | **87.9% → 88.0%** (27,047 → 27,079 pass, +32). |
-| 273 | Dense array >65535 fix (array_size/array_used ushort→uint, put_prop dense routing); String.prototype ToPrimitive("string") coercion for indexOf/includes/etc.; isWellFormed/toWellFormed; Function.prototype.bind name/length; frozen-array pop/shift TypeError; Function.prototype[Symbol.hasInstance]; RegExp @@replace spec-conformant match coercion. | **~+700 pass.** Phase 5 7,261 → 7,392 (+131); Phase 6 3,986 → 4,077 (+91); Phase 8 1,514 → ~1,986 (+472); Phase 3 6,368 → 6,390 (+22). |
+| 273 | Dense array >65535 fix (array_size/array_used ushort→uint, put_prop dense routing); String.prototype ToPrimitive("string") coercion; isWellFormed/toWellFormed; bind name/length; frozen-array pop/shift TypeError; Function.prototype[Symbol.hasInstance]; Date[Symbol.toPrimitive]; JSON.parse -0. Then 3 parallel agents: RegExp exec/@@split/@@replace lastIndex ToLength + result coercion; for-of destructuring lazy defaults + REQUIRE_OBJ + bare-LHS PUTVAR; JSON.parse text ToString + spec reviver walk. | **88.0% → 90.6%** (27,079 → 27,879 pass, **+800**). Phase 8 1,514 → 2,030 (+516); Phase 6 +91; Phase 5 +122; Phase 14 387 → 419 (+32); Phase 3 6,368 → 6,410 (+42). |
