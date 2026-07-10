@@ -1,7 +1,22 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 273 — String proto ToPrimitive coercion (`builtin_to_string_vm`), isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift throw, Function.prototype[Symbol.hasInstance]
+**Last Updated:** Session 273 — dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
+
+## Session 273 (2026-07-10) — per-phase gains
+
+Net ~+700 pass vs session 272, confirmed via per-phase `run_test262.py` runs:
+
+| Phase | s272 | s273 | Δ |
+|---|---|---|---|
+| 3: Object System | 6368 | 6390 | +22 |
+| 5: Built-in Constructors | 7261 | 7392 | +131 |
+| 6: Built-in Prototype Methods | 3986 | 4077 | +91 |
+| 8: ES5 Built-in Objects | 1514 | ~1968 | +454 |
+
+The dominant win is the dense-array >65535 fix (below). Phase-8 numbers vary
+±few between runs due to RegExp property-escapes concurrency memory pressure
+(those tests build million-element arrays; they pass standalone).
 
 ## Session 273 (2026-07-10) — Phase 6 built-in prototype methods
 
