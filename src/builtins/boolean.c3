@@ -37,23 +37,33 @@ fn void builtin_boolean(BuiltinContext* ctx) {
 }
 
 /// Boolean.prototype.toString — returns "true" or "false"
+/// ES2015 §15.6.4.2: throws TypeError if `this` is not a Boolean or Boolean wrapper.
 fn void builtin_boolean_proto_toString(BuiltinContext* ctx) {
     // 'this' is at base_reg - 1
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     bool b = false;
+    bool found = false;
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.get_class() == hobject::ObjClass.BOOLEAN &&
             (*obj.extra_ptr()).prim.primitive_value.is_boolean()) {
             b = (*obj.extra_ptr()).prim.primitive_value.get_boolean();
+            found = true;
         }
     } else if (this_val.is_boolean()) {
         b = this_val.get_boolean();
+        found = true;
+    }
+    if (!found) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Boolean.prototype.toString called on incompatible value");
+        return;
     }
     HString* s = builtin_intern_string(ctx.heap, b ? "true" : "false");
     ctx.result.set_string(s);
 }
 
+/// Boolean.prototype.valueOf — ES2015 §15.6.4.3: throws TypeError if `this`
+/// is not a Boolean or Boolean wrapper object.
 fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
     if (this_val.is_object() && this_val.get_heapptr() != null) {
@@ -67,7 +77,7 @@ fn void builtin_boolean_proto_valueOf(BuiltinContext* ctx) {
         ctx.result.set_boolean(this_val.get_boolean());
         return;
     }
-    ctx.result.set_undefined();
+    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Boolean.prototype.valueOf called on incompatible value");
 }
 fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Boolean.prototype
