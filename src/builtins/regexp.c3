@@ -901,38 +901,47 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
         }
         HObject* m = (HObject*)match.get_heapptr();
 
-        // Get index via Get so user-overridable
+        // Step 14.b: matched = ToString(Get(result, "0")).
+        HString* zero_key = builtin_intern_string(ctx.heap, "0");
+        TVal? z_opt = builtins_generic_get(m, zero_key, ctx);
+        if (ctx.should_throw) return;
+        TVal z_raw; z_raw.set_undefined();
+        if (try zv = z_opt) { z_raw = zv; }
+        HString* matched_hstr = builtin_to_string_vm(ctx, &z_raw);
+        if (ctx.should_throw) return;
+        if (matched_hstr == null) matched_hstr = builtin_intern_string(ctx.heap, "undefined");
+        TVal z_tv; z_tv.set_string(matched_hstr);
+        usz m_len = matched_hstr.blen;
+
+        // Step 14.c-d: position = ToInteger(Get(result, "index")), clamped to
+        // [0, length(S)].
         HString* idx_key = builtin_intern_string(ctx.heap, "index");
         TVal? idx_opt = builtins_generic_get(m, idx_key, ctx);
         if (ctx.should_throw) return;
         int out_start = 0;
         if (try iv = idx_opt) {
-            if (iv.is_fastint()) { out_start = (int)iv.get_fastint(); }
-            else if (iv.is_number()) { out_start = (int)iv.get_number(); }
-        }
-        // Get "0" via Get for matched string
-        HString* zero_key = builtin_intern_string(ctx.heap, "0");
-        TVal? z_opt = builtins_generic_get(m, zero_key, ctx);
-        if (ctx.should_throw) return;
-        TVal z_tv; z_tv.set_undefined();
-        if (try zv = z_opt) { z_tv = zv; }
-        usz m_len = 0;
-        if (z_tv.is_string() && z_tv.get_heapptr() != null) {
-            HString* zs = (HString*)z_tv.get_heapptr();
-            m_len = zs.blen;
+            double idx_d = builtin_to_integer_vm(ctx, &iv);
+            if (ctx.should_throw) return;
+            if (idx_d < 0.0) { idx_d = 0.0; }
+            else if (idx_d > (double)input_len) { idx_d = (double)input_len; }
+            out_start = (int)idx_d;
         }
         int out_end = out_start + (int)m_len;
 
         HString* replace_str;
         if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
             // Get num_caps from length - 1
+            // Step 14.a: nCaptures = max(ToLength(Get(result,"length")) - 1, 0).
             HString* len_key = builtin_intern_string(ctx.heap, "length");
             TVal? len_opt = builtins_generic_get(m, len_key, ctx);
             if (ctx.should_throw) return;
             int num_caps = 0;
             if (try lv = len_opt) {
-                if (lv.is_fastint()) { num_caps = (int)lv.get_fastint() - 1; }
-                else if (lv.is_number()) { num_caps = (int)lv.get_number() - 1; }
+                // ToLength: ToInteger then clamp to [0, 2^53-1].
+                double len_d = builtin_to_integer_vm(ctx, &lv);
+                if (ctx.should_throw) return;
+                if (len_d < 0.0) len_d = 0.0;
+                num_caps = (int)len_d - 1;
             }
             if (num_caps < 0) num_caps = 0;
             if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
@@ -940,12 +949,19 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
             TVal[36] fn_args;
             int arg_count = 0;
             fn_args[arg_count++] = z_tv;
+            // Step 14.g: each capture is ToString(cap) unless undefined.
             for (int i = 0; i < num_caps; i++) {
                 HString* cap_key = ctx.heap.int_to_hstring((long)(i + 1));
                 TVal? cap_opt = builtins_generic_get(m, cap_key, ctx);
                 if (ctx.should_throw) return;
                 TVal cap_tv; cap_tv.set_undefined();
-                if (try cv = cap_opt) { cap_tv = cv; }
+                if (try cv = cap_opt) {
+                    if (!cv.is_undefined()) {
+                        HString* cap_hstr = builtin_to_string_vm(ctx, &cv);
+                        if (ctx.should_throw) return;
+                        if (cap_hstr != null) cap_tv.set_string(cap_hstr);
+                    }
+                }
                 fn_args[arg_count++] = cap_tv;
             }
             TVal offset_tv; offset_tv.set_fastint((long)out_start);
