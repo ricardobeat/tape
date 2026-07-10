@@ -8,11 +8,19 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,387 |
-| **Overall pass rate** | **92.2%** |
-| Total failing | 2,164 |
-| CE unexpected (parser bugs) | 229 |
+| Total passing | 28,457 |
+| **Overall pass rate** | **92.5%** |
+| Total failing | 2,093 |
+| CE unexpected (parser bugs) | 230 |
 | Skipped | 14,032 |
+
+Session 274 second batch (self + 3 parallel worktree agents, reconciled):
+Function.prototype.toString object-method source retention (cluster 62→70);
+ToNumber 0b/0o literals; defineProperties/defineProperty dense-promotion +
+for-in enumerable + RegExp lastIndex non-enumerable (Phase 3 +33, Phase 5 +33);
+super method this-binding + rest params in call_fn + Symbol.replace brand check
+(Phase 6 +5, Phase 15 +2). 92.2% → 92.5%. Cumulative session: 91.2% → 92.5%
+(+373 pass).
 
 Session 274 landed four fixes: (1) bound-function re-dispatch refcount
 (+258, Phase 22 857→1119); (2) for-of destructuring RequireObjectCoercible
