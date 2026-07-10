@@ -32,7 +32,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     hobject::ICEntry* ic = ds.ic_base + pc_off;
                     void* lookup_key = null;
                     if (rc.is_string()) lookup_key = rc.get_heapptr();
-                    if (lookup_key != null && ic.key == lookup_key && ic.shape_id == hobj.shape_id) {
+                    // Check shape_id first: most likely to differ on polymorphic sites.
+                    if (lookup_key != null && ic.shape_id == hobj.shape_id && ic.key == lookup_key) {
                         HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
                         if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                             // Ultra-fast path: when the IC value is not a heap
@@ -52,7 +53,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                 // Fast path: dense array indexed access (a[i] where i is a non-negative integer)
                 // Also handles ARGUMENTS exotic objects for arguments[i] access
-                if ((hobj.get_class() == hobject::ObjClass.ARRAY || hobj.get_class() == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
+                hobject::ObjClass hobj_cls = hobj.get_class();
+                if ((hobj_cls == hobject::ObjClass.ARRAY || hobj_cls == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
@@ -66,7 +68,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
 
                 // ARRAY exotic: .length fast path — return array_length directly
-                if (hobj.get_class() == hobject::ObjClass.ARRAY && rc.is_string() && rc.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
+                if (hobj_cls == hobject::ObjClass.ARRAY && rc.is_string() && rc.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
                     ra.set_fastint((long)*hobj.array_len_ptr());
                     return (TVal){};
                 }
@@ -74,8 +76,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // TypedArray element access: ta[i] where i is a numeric index.
                 // OOB/detached is spec undefined (not a hole) — never falls
                 // through to the prototype chain.
-                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
-                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                if (hobj_cls >= hobject::ObjClass.INT8ARRAY
+                    && hobj_cls <= hobject::ObjClass.FLOAT64ARRAY
                     && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
@@ -101,8 +103,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // ("1.5", "-0", "NaN", "Infinity") never resolve through the
                 // ordinary property path — reads always yield undefined.
                 if (key != null
-                    && hobj.get_class() >= hobject::ObjClass.INT8ARRAY
-                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+                    && hobj_cls >= hobject::ObjClass.INT8ARRAY
+                    && hobj_cls <= hobject::ObjClass.FLOAT64ARRAY) {
                     HString* key_hstr = (HString*)key;
                     if (!key_hstr.is_symbol() && !key_hstr.is_arridx()) {
                         double cni_d;
@@ -116,7 +118,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (key != null) {
                     // ES5 strict mode: arguments.callee throws TypeError.
                     // Strict-only engine: always throws.
-                    if (hobj.get_class() == hobject::ObjClass.ARGUMENTS
+                    if (hobj_cls == hobject::ObjClass.ARGUMENTS
                         && key == (void*)vm.heap.strs[heap::BuiltinStr.CALLEE]) {
                         if (!vm_throw_error(vm, vm.heap.type_err_proto, "'callee', 'arguments', and 'arguments.caller' may not be accessed in strict mode", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
@@ -124,7 +126,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         return (TVal){};
                     }
                     // ES5 strict mode: function.caller and function.arguments throw TypeError
-                    if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION) {
+                    if (hobj.is_callable() && hobj_cls == hobject::ObjClass.FUNCTION) {
                         HString* key_hstr = (HString*)key;
                         if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
@@ -530,27 +532,35 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             vm.heap.tval_copy_ref(ra, &res.data_val);
                             track_heap_store(ds.act, ra, (uint)insn.a);
                             // Populate IC for this site.
-                            // Only cache OWN property lookups (see GETPROP comment).
-                            if (res.owner == hobj && res.owner != null && ds.ic_base != null) {
-                                uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
-                                hobject::ICEntry* ic = ds.ic_base + pc_off;
-                                int owner_idx = res.owner.find_prop_idx(key);
-                                if (owner_idx >= 0) {
-                                    ic.shape_id = hobj.shape_id;
-                                    ic.proto = null;  // own property
-                                    ic.prop_idx = (ushort)owner_idx;
-                                    ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
-                                    if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
-                                    ic.key = key;
-                                    if (key != null) { ((types::HeapHeader*)key).incref(); }
-                                    ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
-                                    ic.cached_prop_alloc = (void*)res.owner.prop_values();
-                                    // Upgrade to cached variant now that IC is populated
-                                    // Keep A, B, C operands the same, just change the opcode
-                                    ds.curr_pc[-1] = bytecode::make_abc(bytecode::Opcode.GETPROPC_CACHED,
-                                                                      (uint)insn.a, (uint)insn.b, (uint)insn.c);
-                                    // Also populate megamorphic cache for cross-site benefit
-                                    hobject::mega_cache_store(vm.heap, hobj, key, res.owner, owner_idx);
+                            // Cache own-property lookups and single-level prototype lookups.
+                            // For proto: ic.proto stores the owning prototype; the IC hit path
+                            // validates hobj.prototype == ic.proto to guard setPrototypeOf.
+                            if (res.owner != null && ds.ic_base != null) {
+                                bool is_own = res.owner == hobj;
+                                bool is_direct_proto = !is_own && hobj.prototype == res.owner;
+                                if (is_own || is_direct_proto) {
+                                    uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                                    hobject::ICEntry* ic = ds.ic_base + pc_off;
+                                    int owner_idx = res.owner.find_prop_idx(key);
+                                    if (owner_idx >= 0) {
+                                        ic.shape_id = hobj.shape_id;
+                                        ic.proto = is_own ? null : (void*)res.owner;
+                                        ic.prop_idx = (ushort)owner_idx;
+                                        ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
+                                        if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
+                                        ic.key = key;
+                                        if (key != null) { ((types::HeapHeader*)key).incref(); }
+                                        ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
+                                        ic.cached_prop_alloc = (void*)res.owner.prop_values();
+                                        // Upgrade to cached variant now that IC is populated
+                                        // Keep A, B, C operands the same, just change the opcode
+                                        ds.curr_pc[-1] = bytecode::make_abc(bytecode::Opcode.GETPROPC_CACHED,
+                                                                          (uint)insn.a, (uint)insn.b, (uint)insn.c);
+                                        // Also populate megamorphic cache for cross-site benefit
+                                        if (is_own) {
+                                            hobject::mega_cache_store(vm.heap, hobj, key, res.owner, owner_idx);
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -724,15 +734,21 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
         case Opcode.GETPROPC_CACHED: {
             // Specialized GETPROPC: IC is known warm. Only checks shape_id + prop_alloc.
             // Falls back to GETPROPC if the check fails (shape changed or props reallocated).
-            TVal key_tval = ds.constants[(uint)insn.c];
-            HString* key_hstr = (HString*)key_tval.get_heapptr();
+            // key_tval/key_hstr are only needed on miss; defer them to avoid wasted loads on hit.
             if (rb.is_object() && ds.ic_base != null) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
                 uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
                 hobject::ICEntry* ic = ds.ic_base + pc_off;
                 if (ic.shape_id == hobj.shape_id) {
-                    HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
-                    if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
+                    HObject* ic_owner;
+                    if (ic.proto == null) {
+                        ic_owner = hobj;
+                    } else if (hobj.prototype == (HObject*)ic.proto) {
+                        ic_owner = (HObject*)ic.proto;
+                    } else {
+                        ic_owner = null;
+                    }
+                    if (ic_owner != null && ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                         TVal ic_val = *ic.prop_value_ptr;
                         if (!ic_val.is_heap_allocated()) {
                             *ra = ic_val;

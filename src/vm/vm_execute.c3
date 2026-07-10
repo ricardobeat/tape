@@ -1782,15 +1782,24 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.GETPROPC_CACHED: {
             // Specialized GETPROPC: IC is known warm. Only checks shape_id + prop_alloc.
             // Falls back to GETPROPC if the check fails (shape changed or props reallocated).
-            TVal key_tval = ds.constants[(uint)insn.c];
-            HString* key_hstr = (HString*)key_tval.get_heapptr();
+            // key_tval/key_hstr are only needed on miss; defer them to avoid wasted loads on hit.
             if (rb.is_object() && ds.ic_base != null) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
                 uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
                 hobject::ICEntry* ic = ds.ic_base + pc_off;
                 if (ic.shape_id == hobj.shape_id) {
-                    HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
-                    if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
+                    HObject* ic_owner;
+                    if (ic.proto == null) {
+                        // Own-property IC: owner is the receiver itself.
+                        ic_owner = hobj;
+                    } else if (hobj.prototype == (HObject*)ic.proto) {
+                        // Proto IC: receiver's prototype still points to the cached owner.
+                        // setPrototypeOf does not change shape_id, so we check explicitly.
+                        ic_owner = (HObject*)ic.proto;
+                    } else {
+                        ic_owner = null;
+                    }
+                    if (ic_owner != null && ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                         TVal ic_val = *ic.prop_value_ptr;
                         if (!ic_val.is_heap_allocated()) {
                             *ra = ic_val;
