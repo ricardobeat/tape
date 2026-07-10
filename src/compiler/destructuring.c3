@@ -175,542 +175,63 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
 /// Parse object destructuring pattern: {a, b: c, x = default} = rhs
 /// The '{' has already been consumed.
 fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
-    ObjBind[32] binds;
-    uint bind_count = 0;
+    // Collect the pattern into the shared DestructBind model, then declare each
+    // leaf and emit via the single emit_destruct_bindings — the same machinery
+    // used by array_destructure, function parameters, and for-of. The '{' has
+    // already been consumed; collect_obj_param_binds consumes its own '}'.
+    DestructBind[MAX_DESTRUCT_BINDS] binds;
+    uint count = 0;
+    self.collect_obj_param_binds(binds[..], &count, 0, 0xFFFF)!;
 
-    if (!self.check(TokenType.RBRACE)) {
-        for (;;) {
-            // Rest binding (must be last): `...rest`. Per ES2018
-            // §13.3.3, the rest property collects all remaining
-            // own-enumerable properties of the source into a fresh
-            // object (excluding the explicitly destructured keys;
-            // `__proto__` is also excluded even if listed — the
-            // semantics change made in ES2018).
-            if (self.match(TokenType.ELLIPSIS)) {
-                Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(rest_tok.str_value)) return COMPILE_ERROR~;
-                if (bind_count < 32) {
-                    ushort reg = self.declare_var(rest_tok.str_value, kind);
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(rest_tok.str_value);
-                    binds[bind_count].is_rest = true;
-                    binds[bind_count].has_default = false;
-                    bind_count++;
-                }
-                break;  // rest must be the last property
-            }
-            // Computed property key: {[expr]: binding}.
-            // Per ES2015 §13.3.3, the key is an AssignmentExpression.
-            if (self.check(TokenType.LBRACKET)) {
-                self.advance()!; // consume '['
-                ushort key_reg = self.assignment_expr()!;
-                self.expect(TokenType.RBRACKET)!;
-                self.expect(TokenType.COLON)!;
-                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                if (bind_count < 32) {
-                    ushort reg = self.declare_var(bind_tok.str_value, kind);
-                    binds[bind_count].reg = reg;
-                    binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                    binds[bind_count].is_computed_key = true;
-                    binds[bind_count].key_reg = key_reg;
-                    binds[bind_count].has_default = false;
-                    if (self.match(TokenType.ASSIGN)) {
-                        binds[bind_count].has_default = true;
-                        binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
-                    }
-                    bind_count++;
-                }
-                // Trailing comma: `, }` is allowed by ES2015
-                if (!self.match(TokenType.COMMA)) break;
-                if (self.check(TokenType.RBRACE)) break;
-                continue;
-            }
-            // Check for nested patterns first
-            if (self.check(TokenType.LBRACE)) {
-                // Nested object pattern: {a: {x, y}} = rhs
-                self.advance()!; // consume '{'
-                // Parse the nested binding name
-                Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
+    ushort[MAX_DESTRUCT_BINDS] group_regs;
+    ushort[MAX_DESTRUCT_BINDS] binding_regs;
+    for (uint i = 0; i < count; i++) { group_regs[i] = 0xFFFF; binding_regs[i] = 0xFFFF; }
 
-                // Check for colon (key: pattern) or just shorthand
-                if (self.match(TokenType.COLON)) {
-                    // Check if nested value is a pattern or simple identifier
-                    if (self.check(TokenType.LBRACE)) {
-                        self.advance()!; // consume '{'
-                        // Parse nested object pattern
-                        Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
-                        if (bind_count < 32) {
-                            ushort reg = self.declare_var(nested_name.str_value, kind);
-                            binds[bind_count].reg = reg;
-                            binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].has_default = false;
-                            binds[bind_count].is_nested = true;
-                            binds[bind_count].nested_key_idx = self.add_string_constant(nested_name.str_value);
-                            bind_count++;
-                        }
-                        // Parse remaining nested properties
-                        while (self.match(TokenType.COMMA)) {
-                            if (self.check(TokenType.RBRACE)) break;
-                            Token nested_prop = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(nested_prop.str_value)) return COMPILE_ERROR~;
-                            if (self.match(TokenType.COLON)) {
-                                Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                                if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
-                                if (bind_count < 32) {
-                                    ushort reg = self.declare_var(nested_bind.str_value, kind);
-                                    binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                                    binds[bind_count].has_default = false;
-                                    binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
-                                    bind_count++;
-                                }
-                            } else {
-                                if (bind_count < 32) {
-                                    ushort reg = self.declare_var(nested_prop.str_value, kind);
-                                    binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                                    binds[bind_count].has_default = false;
-                                    binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop.str_value);
-                                    bind_count++;
-                                }
-                            }
-                        }
-                        self.expect(TokenType.RBRACE)!;
-                    } else if (self.check(TokenType.LBRACKET)) {
-                        self.advance()!; // consume '['
-                        Token nested_name = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(nested_name.str_value)) return COMPILE_ERROR~;
-                        if (bind_count < 32) {
-                            ushort reg = self.declare_var(nested_name.str_value, kind);
-                            binds[bind_count].reg = reg;
-                            binds[bind_count].name_idx = self.add_string_constant(nested_name.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].has_default = false;
-                            bind_count++;
-                        }
-                        // Parse remaining array elements
-                        while (self.match(TokenType.COMMA)) {
-                            if (self.check(TokenType.RBRACKET)) break;
-                            Token nested_el = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(nested_el.str_value)) return COMPILE_ERROR~;
-                            if (bind_count < 32) {
-                                ushort reg = self.declare_var(nested_el.str_value, kind);
-                                binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(nested_el.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(nested_el.str_value);
-                                binds[bind_count].has_default = false;
-                                bind_count++;
-                            }
-                        }
-                        self.expect(TokenType.RBRACKET)!;
-                    } else {
-                        // Simple key: value
-                        Token val_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(val_tok.str_value)) return COMPILE_ERROR~;
-                        if (bind_count < 32) {
-                            ushort reg = self.declare_var(val_tok.str_value, kind);
-                            binds[bind_count].reg = reg;
-                            binds[bind_count].name_idx = self.add_string_constant(val_tok.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].has_default = false;
-
-                            // Check for default
-                            if (self.match(TokenType.ASSIGN)) {
-                                binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.destructuring_default_expr(val_tok.str_value)!;
-                            }
-
-                            bind_count++;
-                        }
-                    }
-                } else {
-                    // Shorthand: {name}  →  key="name", binding=name
-                    if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(bind_tok.str_value, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(bind_tok.str_value);
-                        binds[bind_count].has_default = false;
-                        bind_count++;
-                    }
-                }
-
-                // Close nested braces
-                self.expect(TokenType.RBRACE)!;
-            } else if (self.check(TokenType.LBRACKET)) {
-                // Nested array pattern: {a: [x, y]} = rhs
-                self.advance()!; // consume '['
-                Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(name_tok.str_value)) return COMPILE_ERROR~;
-                self.expect(TokenType.RBRACKET)!;
-
-                // Check for colon (key: pattern)
-                if (self.match(TokenType.COLON)) {
-                    // Parse array pattern
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(name_tok.str_value, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].has_default = false;
-                        bind_count++;
-                    }
-                } else {
-                    // Shorthand: {[name]}  →  key="name", binding=name
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(name_tok.str_value, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].key_idx = self.add_string_constant(name_tok.str_value);
-                        binds[bind_count].has_default = false;
-                        bind_count++;
-                    }
-                }
-            } else {
-                // Property key: per ES2015 §13.3.3.7, the key may be an
-                // IdentifierName (incl. reserved words), a string literal, or a
-                // numeric literal. Use the helper that accepts all of those;
-                // `destructuring_default_expr` below takes the binding name
-                // which is the NEXT identifier after `:`.
-                char[] prop_key = self.destructuring_property_key()!;
-
-                if (self.match(TokenType.COLON)) {
-                    // Keyed: {key: binding_name} or {key: pattern}
-                    // Check if the value is a nested pattern
-                    if (self.check(TokenType.LBRACE)) {
-                        // Nested object pattern: {a: {x, y}}
-                        self.advance()!; // consume '{'
-                        // Parse first property of nested object — key may be
-                        // an identifier, string, number, or reserved word.
-                        char[] nested_key = self.destructuring_property_key()!;
-                        if (is_restricted_name(nested_key)) return COMPILE_ERROR~;
-
-                        if (self.match(TokenType.COLON)) {
-                            // {a: {x: y}} - keyed
-                            Token nested_bind = self.expect(TokenType.IDENTIFIER)!;
-                            if (is_restricted_name(nested_bind.str_value)) return COMPILE_ERROR~;
-                            if (bind_count < 32) {
-                                ushort reg = self.declare_var(nested_bind.str_value, kind);
-                                binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(nested_bind.str_value);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                                binds[bind_count].has_default = false;
-                                binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
-
-                                // Check for default
-                                if (self.match(TokenType.ASSIGN)) {
-                                    binds[bind_count].has_default = true;
-                                    binds[bind_count].default_val_reg = self.destructuring_default_expr(nested_bind.str_value)!;
-                                }
-
-                                bind_count++;
-                            }
-                        } else {
-                            // {a: {x}} - shorthand inside nested — `nested_key` is the binding name
-                            if (is_restricted_name(nested_key)) return COMPILE_ERROR~;
-                            if (bind_count < 32) {
-                                ushort reg = self.declare_var(nested_key, kind);
-                                binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(nested_key);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                                binds[bind_count].has_default = false;
-                                binds[bind_count].is_nested = true;
-                                binds[bind_count].nested_key_idx = self.add_string_constant(nested_key);
-                                bind_count++;
-                            }
-                        }
-
-                        // Parse remaining properties in nested object
-                        while (self.match(TokenType.COMMA)) {
-                            if (self.check(TokenType.RBRACE)) break;
-                            char[] nested_prop = self.destructuring_property_key()!;
-                            if (is_restricted_name(nested_prop)) return COMPILE_ERROR~;
-                            if (self.match(TokenType.COLON)) {
-                                Token nested_bind2 = self.expect(TokenType.IDENTIFIER)!;
-                                if (is_restricted_name(nested_bind2.str_value)) return COMPILE_ERROR~;
-                                if (bind_count < 32) {
-                                    ushort reg = self.declare_var(nested_bind2.str_value, kind);
-                                    binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_bind2.str_value);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                                    binds[bind_count].has_default = false;
-                                    binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
-                                    bind_count++;
-                                }
-                            } else {
-                                if (bind_count < 32) {
-                                    ushort reg = self.declare_var(nested_prop, kind);
-                                    binds[bind_count].reg = reg;
-                                    binds[bind_count].name_idx = self.add_string_constant(nested_prop);
-                                    binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                                    binds[bind_count].has_default = false;
-                                    binds[bind_count].is_nested = true;
-                                    binds[bind_count].nested_key_idx = self.add_string_constant(nested_prop);
-                                    bind_count++;
-                                }
-                            }
-                        }
-                        self.expect(TokenType.RBRACE)!;
-                    } else if (self.check(TokenType.LBRACKET)) {
-                        // Nested array pattern: {a: [x, y]}
-                        self.advance()!; // consume '['
-                        uint arr_idx = 0;
-
-                        for (;;) {
-                            if (self.check(TokenType.RBRACKET)) break;
-
-                            if (self.check(TokenType.COMMA)) {
-                                self.advance()!;
-                                arr_idx++;
-                                continue;
-                            }
-
-                            char[] arr_el = self.destructuring_property_key()!;
-                            if (is_restricted_name(arr_el)) return COMPILE_ERROR~;
-                            if (bind_count < 32) {
-                                ushort reg = self.declare_var(arr_el, kind);
-                                binds[bind_count].reg = reg;
-                                binds[bind_count].name_idx = self.add_string_constant(arr_el);
-                                binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                                binds[bind_count].has_default = false;
-                                binds[bind_count].is_array_nested = true;
-                                binds[bind_count].arr_nested_idx = arr_idx;
-                                bind_count++;
-                            }
-                            arr_idx++;
-
-                            if (!self.match(TokenType.COMMA)) break;
-                        }
-                        self.expect(TokenType.RBRACKET)!;
-                    } else {
-                        // Simple key: value
-                        Token bind_tok = self.expect(TokenType.IDENTIFIER)!;
-                        if (is_restricted_name(bind_tok.str_value)) return COMPILE_ERROR~;
-                        if (bind_count < 32) {
-                            ushort reg = self.declare_var(bind_tok.str_value, kind);
-                            binds[bind_count].reg = reg;
-                            binds[bind_count].name_idx = self.add_string_constant(bind_tok.str_value);
-                            binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                            binds[bind_count].has_default = false;
-
-                            // Check for default
-                            if (self.match(TokenType.ASSIGN)) {
-                                binds[bind_count].has_default = true;
-                                binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
-                            }
-
-                            bind_count++;
-                        }
-                    }
-                } else {
-                    // Shorthand: {name}  →  key="name", binding=name
-                    if (is_restricted_name(prop_key)) return COMPILE_ERROR~;
-                    if (bind_count < 32) {
-                        ushort reg = self.declare_var(prop_key, kind);
-                        binds[bind_count].reg = reg;
-                        binds[bind_count].name_idx = self.add_string_constant(prop_key);
-                        binds[bind_count].key_idx = self.add_string_constant(prop_key);
-                        binds[bind_count].has_default = false;
-
-                        // Check for default
-                        if (self.match(TokenType.ASSIGN)) {
-                            binds[bind_count].has_default = true;
-                            binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_key)!;
-                        }
-
-                        bind_count++;
-                    }
-                }
-            }
-
-            if (!self.match(TokenType.COMMA)) break;
-            // Trailing comma: `, }` is allowed by ES2015
-            if (self.check(TokenType.RBRACE)) break;
-        }
+    // Declare each non-synthetic leaf binding in the requested scope. The name
+    // slice must outlive the enclosing body, so use the interned constant-pool
+    // bytes rather than the stack-local binds array.
+    ushort pre_decl_next = self.next_reg;
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].is_synthetic) continue;
+        HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
+        ushort dreg = self.declare_var(hs.get_data(), kind);
+        binding_regs[i] = dreg;
     }
 
-    self.expect(TokenType.RBRACE)!;
-
-    // Default to undefined if no initializer
+    // No initializer (`var {a};` — only valid via for-in/of heads, but keep the
+    // path): bind everything to undefined. RequireObjectCoercible does not apply
+    // without a source value.
     if (!self.match(TokenType.ASSIGN)) {
-        for (uint i = 0; i < bind_count; i++) {
-            self.emit_abc(Opcode.LDUNDEF, (uint)binds[i].reg, 0, 0);
-            self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+        for (uint i = 0; i < count; i++) {
+            if (binds[i].is_synthetic) continue;
+            self.emit_abc(Opcode.LDUNDEF, (uint)binding_regs[i], 0, 0);
+            self.emit_var_store(binding_regs[i], binds[i].name_idx, is_lexical, is_const);
         }
         return;
     }
 
-    // Evaluate RHS
+    ushort saved_next = self.next_reg;
     ushort rhs_reg = self.assignment_expr()!;
 
-    // Per ES2015 §13.3.3.7 step 1 / §13.3.3.5, RequireObjectCoercible throws
-    // TypeError for null/undefined sources before any property read. Applies
-    // to the empty pattern too (the source must be Object-coercible even when
-    // no key is read). Emitted once after RHS eval, so `var {} = null` throws.
+    // RequireObjectCoercible: an object pattern rejects null/undefined even when
+    // empty (§13.3.3.6).
     self.emit_abc(Opcode.REQUIRE_OBJ, (uint)rhs_reg, 0, 0);
 
-    // Emit GETPROP for each property: rhs[key] → bind_reg
-    for (uint i = 0; i < bind_count; i++) {
-        if (binds[i].is_array_nested) {
-            // Array nested in object: {a: [x, y]}
-            // First: GETPROP parent = rhs[key_idx] (get the array)
-            // Then: GETPROP result = parent[arr_nested_idx] (get element from array)
-            ushort parent_key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key_reg, binds[i].key_idx));
-            ushort parent_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)rhs_reg, (uint)parent_key_reg);
-            self.free_reg(parent_key_reg);
-
-            ushort arr_idx_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)arr_idx_reg, (int)binds[i].arr_nested_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)parent_reg, (uint)arr_idx_reg);
-            self.free_reg(arr_idx_reg);
-            self.free_reg(parent_reg);
-        } else if (binds[i].is_nested) {
-            // Nested binding: GETPROP parent = rhs[outer_key], then GETPROP bind = parent[inner_key]
-            ushort parent_key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)parent_key_reg, binds[i].key_idx));
-            ushort parent_reg = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)parent_reg, (uint)rhs_reg, (uint)parent_key_reg);
-            self.free_reg(parent_key_reg);
-
-            ushort inner_key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)inner_key_reg, binds[i].nested_key_idx));
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)parent_reg, (uint)inner_key_reg);
-            self.free_reg(inner_key_reg);
-            self.free_reg(parent_reg);
-        } else {
-            // Computed key: key already compiled into a register; plain key:
-            // LDCONST the constant-pool index into a fresh register.
-            ushort key_reg;
-            if (binds[i].is_computed_key) {
-                key_reg = binds[i].key_reg;  // already in a register
-            } else {
-                key_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, binds[i].key_idx));
-            }
-            self.emit_abc(Opcode.GETPROP, (uint)binds[i].reg, (uint)rhs_reg, (uint)key_reg);
-            if (!binds[i].is_computed_key) self.free_reg(key_reg);
-        }
-
-        // Apply default if present: if value is undefined, use default
-        if (binds[i].has_default) {
-            // Check if value is undefined
-            ushort undef_check_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDUNDEF, (uint)undef_check_reg, 0, 0);
-            ushort is_undef_reg = self.alloc_reg();
-            self.emit_abc(Opcode.SEQ, (uint)is_undef_reg, (uint)binds[i].reg, (uint)undef_check_reg);
-            self.free_reg(undef_check_reg);
-
-            // If not undefined, jump over default
-            uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
-            self.free_reg(is_undef_reg);
-
-            // Load default value
-            self.emit_abc(Opcode.LDREG, (uint)binds[i].reg, (uint)binds[i].default_val_reg, 0);
-
-            // Patch jump
-            self.patch_jump(skip_default);
-
-            // Free the default value register
-            self.free_reg(binds[i].default_val_reg);
-        }
-
-        self.emit_var_store(binds[i].reg, binds[i].name_idx, is_lexical, is_const);
+    for (uint i = 0; i < count; i++) {
+        if (binds[i].parent_idx == 0xFFFF) binds[i].arg_idx = rhs_reg;
     }
 
-    // Build the rest object by copying from rhs and deleting every
-    // explicit binding's key (and `__proto__`, per ES2018 §13.3.3.7).
-    for (uint i = 0; i < bind_count; i++) {
-        if (!binds[i].is_rest) continue;
+    self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
+                                DestructStoreMode.DECLARE, is_lexical, is_const);
 
-        // 1) rest_reg = Object.assign({}, rhs_reg)   — copy every own prop
-        ushort rest_reg = binds[i].reg;
-        // Use CONTIGUOUS call area: callee, this, arg1 must be in
-        // adjacent registers per the CALL convention (callee+1 = this,
-        // callee+2 = arg1).  Hand-pick register numbers to keep them
-        // packed — the auto allocator would skip a slot after a
-        // free, leaving a gap and breaking the layout.
-        ushort assign_callee_reg = self.alloc_reg();
-        // CALL below is emitted with nargs=2, so the VM reads arg slots at
-        // callee+2 and callee+3 and overlays the callee frame from callee+2.
-        // Reserve both arg slots so neither can be handed to live state.
-        self.reserve_call_frame(assign_callee_reg, 2);
-        ushort assign_this_reg = assign_callee_reg + 1;
-        ushort rhs_arg_reg = assign_callee_reg + 2;
-        // Empty object literal: {}
-        ushort empty_obj_reg = self.alloc_reg();
-        self.emit_abc(Opcode.NEWOBJ, (uint)empty_obj_reg, 0, 0);
-        // Fetch Object.assign
-        ushort obj_var_reg = self.alloc_reg();
-        self.emit_a_bc(Opcode.GETVAR, (uint)obj_var_reg, self.add_string_constant("Object"));
-        ushort assign_key_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)assign_key_reg, self.add_string_constant("assign")));
-        ushort assign_method_reg = self.alloc_reg();
-        self.emit_abc(Opcode.GETPROP, (uint)assign_method_reg, (uint)obj_var_reg, (uint)assign_key_reg);
-        self.free_reg(assign_key_reg);
-        self.free_reg(obj_var_reg);
-        // Move method to callee slot
-        self.emit_abc(Opcode.LDREG, (uint)assign_callee_reg, (uint)assign_method_reg, 0);
-        self.free_reg(assign_method_reg);
-        // this = empty_obj
-        self.emit_abc(Opcode.LDREG, (uint)assign_this_reg, (uint)empty_obj_reg, 0);
-        // rhs argument
-        self.emit_abc(Opcode.LDREG, (uint)rhs_arg_reg, (uint)rhs_reg, 0);
-        // Object.assign({}, rhs) → rest_reg
-        self.emit_abc(Opcode.CALL, (uint)assign_callee_reg, (uint)assign_callee_reg, 2);
-        self.emit_abc(Opcode.LDREG, (uint)rest_reg, (uint)assign_callee_reg, 0);
-        self.free_reg(assign_callee_reg);
-        self.free_reg(empty_obj_reg);
+    self.free_regs_to(saved_next);
 
-        // 2) For each explicit (non-rest) binding, delete its key from rest_reg.
-        //    `__proto__` is excluded from rest per ES2018.
-        for (uint j = 0; j < bind_count; j++) {
-            if (binds[j].is_rest) continue;
-            // Skip `__proto__` (special key, excluded from rest per ES2018)
-            const usz PROTO_KEY_IDX = 0xFFFFFFFF;  // sentinel
-            uint key_idx;
-            if (binds[j].is_computed_key) {
-                // Computed key: delete by runtime key.  Skip — test262
-                // doesn't test rest with computed keys (the result is
-                // undefined since we can't statically know which keys to
-                // delete).  We could do a runtime iteration; for now
-                // bail out and accept the slight over-rest semantics.
-                continue;
-            } else {
-                key_idx = binds[j].key_idx;
-            }
-            // Build the key string and compare against the constant
-            // "__proto__" — if equal, skip the delete.
-            uint proto_name_idx = self.add_string_constant("__proto__");
-            if (key_idx == proto_name_idx) continue;
-
-            ushort del_key_reg = self.alloc_reg();
-            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)del_key_reg, key_idx));
-            // DELPROP's A is the boolean result (per ES5 §11.4.1) — must
-            // be a fresh register or r2 (the rest object) gets clobbered
-            // with `true` and subsequent deletes fail.
-            ushort del_result_reg = self.alloc_reg();
-            self.emit_abc(Opcode.DELPROP, (uint)del_result_reg, (uint)rest_reg, (uint)del_key_reg);
-            self.free_reg(del_key_reg);
-            self.free_reg(del_result_reg);
-        }
-
-        self.emit_var_store(rest_reg, binds[i].name_idx, is_lexical, is_const);
+    // At global scope, var bindings are env-resident; free their registers to
+    // prevent drift (matching array_destructure).
+    if (self.is_global && !is_lexical) {
+        self.free_regs_to(pre_decl_next);
     }
-
-    self.free_reg(rhs_reg);
+    return;
 }
 
 // ============================================================================

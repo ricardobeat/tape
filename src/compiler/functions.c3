@@ -534,7 +534,12 @@ fn void CompilerContext.emit_object_rest(&self,
 {
     ushort parent = binds[rest_di].parent_idx;
 
-    // dest = Object.assign({}, src)
+    // dest = Object.assign({}, src). Call convention: callee, this (=target),
+    // then args. This engine's Object.assign uses `this` as the target object,
+    // so we pass the fresh {} as `this` and `src` as the single source arg.
+    // reserve_call_frame reserves callee+1 (this) and callee+2 (arg0) so no
+    // live register leaks into an argument slot (a stale iterator result in an
+    // unreserved arg slot would otherwise be merged into the rest object).
     ushort empty_obj_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWOBJ, (uint)empty_obj_reg, 0, 0);
 
@@ -548,12 +553,14 @@ fn void CompilerContext.emit_object_rest(&self,
     self.free_reg(obj_var_reg);
 
     ushort callee_reg = self.alloc_reg();
-    if (self.next_reg < callee_reg + 3) { self.next_reg = callee_reg + 3; }
+    self.reserve_call_frame(callee_reg, 1);
+    ushort this_reg = callee_reg + 1;
+    ushort src_arg_reg = callee_reg + 2;
     self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)assign_method_reg, 0);
     self.free_reg(assign_method_reg);
-    self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)empty_obj_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 2), (uint)src_reg, 0);
-    self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 2);
+    self.emit_abc(Opcode.LDREG, (uint)this_reg, (uint)empty_obj_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)src_arg_reg, (uint)src_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 1);
     self.emit_abc(Opcode.LDREG, (uint)dest_reg, (uint)callee_reg, 0);
     self.free_reg(callee_reg);
     self.free_reg(empty_obj_reg);
