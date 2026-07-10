@@ -8,11 +8,14 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,006 |
-| **Overall pass rate** | **91.0%** |
-| Total failing | 2,541 |
+| Total passing | 28,084 |
+| **Overall pass rate** | **91.2%** |
+| Total failing | 2,463 |
 | CE unexpected (parser bugs) | 230 |
 | Skipped | 14,032 |
+
+Promise combinators (all/any/race/allSettled) + Promise.prototype.then custom
+constructor / Promise[Symbol.species]: Phase 17-20 1004 → 1083 (+79). 91.0% → 91.2%.
 
 Up from session 272 (88.0%, 27,079 pass): **+927 pass** this session.
 
