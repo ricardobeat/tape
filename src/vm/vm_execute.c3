@@ -811,7 +811,7 @@ fn TVal? Vm.run(Vm* vm) {
         }
         $endif
 
-        switch (op) {
+        switch (op) @jump {
 
         // === LOAD / STORE ===
         case Opcode.LDREG:
