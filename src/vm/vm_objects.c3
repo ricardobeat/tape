@@ -234,7 +234,14 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
             // Call @@iterator() with this = source
             TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
-            if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+            if (vm.has_error) {
+                TVal err_itr = vm.return_val;
+                vm.has_error = false;
+                if (!vm_throw_value(vm, err_itr, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &err_itr);
+                }
+                return (TVal){};
+            }
             if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
 
             // Loop: next() → {value, done}
@@ -253,20 +260,80 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                 if (!callable) { break; }
 
                 TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
-                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                if (vm.has_error) {
+                    TVal err_nxt = vm.return_val;
+                    vm.has_error = false;
+                    rb.set_fastint(idx + (long)k);
+                    if (!vm_throw_value(vm, err_nxt, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_nxt);
+                    }
+                    return (TVal){};
+                }
                 if (!result.is_object() || result.get_heapptr() == null) { break; }
 
                 HObject* result_obj = (HObject*)result.get_heapptr();
-                TVal? done_opt = result_obj.get_prop_proto(done_key);
-                bool done = false;
-                if (try dv = done_opt) { done = builtins::builtin_to_boolean(&dv); }
+
+                // ES IteratorComplete: Get(result, "done") — may invoke a getter that throws
+                hobject::PropLookupResult done_res = result_obj.get_prop_or_accessor_proto(done_key, true);
+                TVal done_val;
+                if (done_res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal acc_fn = done_res.acc.accessor_fn;
+                    if (!acc_fn.is_undefined() && !acc_fn.is_null() && vm.heap.call_fn != null) {
+                        TVal done_this;
+                        done_this.set_object(result_obj);
+                        done_val = vm.heap.call_fn(vm, acc_fn, null, 0, done_this);
+                        if (vm.has_error) {
+                            TVal err_done = vm.return_val;
+                            vm.has_error = false;
+                            rb.set_fastint(idx + (long)k);
+                            if (!vm_throw_value(vm, err_done, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_done);
+                            }
+                            return (TVal){};
+                        }
+                    } else {
+                        done_val.set_undefined();
+                    }
+                } else if (done_res.kind == hobject::PropLookupKind.PROP_DATA) {
+                    done_val = done_res.data_val;
+                } else {
+                    done_val.set_undefined();
+                }
+                bool done = builtins::builtin_to_boolean(&done_val);
                 if (done) { break; }
 
-                TVal? value_opt = result_obj.get_prop_proto(value_key);
-                if (try vv = value_opt) {
+                // ES IteratorValue: Get(result, "value") — may invoke a getter that throws
+                hobject::PropLookupResult value_res = result_obj.get_prop_or_accessor_proto(value_key, true);
+                TVal value_val;
+                bool value_found = true;
+                if (value_res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal acc_fn = value_res.acc.accessor_fn;
+                    if (!acc_fn.is_undefined() && !acc_fn.is_null() && vm.heap.call_fn != null) {
+                        TVal value_this;
+                        value_this.set_object(result_obj);
+                        value_val = vm.heap.call_fn(vm, acc_fn, null, 0, value_this);
+                        if (vm.has_error) {
+                            TVal err_val = vm.return_val;
+                            vm.has_error = false;
+                            rb.set_fastint(idx + (long)k);
+                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val);
+                            }
+                            return (TVal){};
+                        }
+                    } else {
+                        value_val.set_undefined();
+                    }
+                } else if (value_res.kind == hobject::PropLookupKind.PROP_DATA) {
+                    value_val = value_res.data_val;
+                } else {
+                    value_val.set_undefined();
+                    value_found = false;
+                }
+                if (value_found) {
                     HString* pk = vm.heap.int_to_hstring(idx + (long)k);
                     if (pk != null) {
-                        target.put_prop(pk, vv, hobject::PROP_FLAGS_WEC);
+                        target.put_prop(pk, value_val, hobject::PROP_FLAGS_WEC);
                     }
                     k++;
                 } else { break; }
@@ -409,7 +476,14 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
             // Call @@iterator() with this = source
             TVal iterator = vm.heap.call_fn(vm, iter_method, null, 0, src_tv);
-            if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+            if (vm.has_error) {
+                TVal err_itr2 = vm.return_val;
+                vm.has_error = false;
+                if (!vm_throw_value(vm, err_itr2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &err_itr2);
+                }
+                return (TVal){};
+            }
             if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
 
             uint dest_start = insn.a;
@@ -431,19 +505,82 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                 if (!callable) { break; }
 
                 TVal result = vm.heap.call_fn(vm, next_method, null, 0, iterator);
-                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                if (vm.has_error) {
+                    TVal err_nxt2 = vm.return_val;
+                    vm.has_error = false;
+                    TVal* count_slot2 = ds.regs_base + count_reg;
+                    count_slot2.set_fastint((long)k);
+                    if (!vm_throw_value(vm, err_nxt2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &err_nxt2);
+                    }
+                    return (TVal){};
+                }
                 if (!result.is_object() || result.get_heapptr() == null) { break; }
 
                 HObject* result_obj = (HObject*)result.get_heapptr();
-                TVal? done_opt = result_obj.get_prop_proto(done_key);
-                bool done = false;
-                if (try dv = done_opt) { done = builtins::builtin_to_boolean(&dv); }
+
+                // ES IteratorComplete: Get(result, "done") — may invoke a getter that throws
+                hobject::PropLookupResult done_res2 = result_obj.get_prop_or_accessor_proto(done_key, true);
+                TVal done_val2;
+                if (done_res2.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal acc_fn2 = done_res2.acc.accessor_fn;
+                    if (!acc_fn2.is_undefined() && !acc_fn2.is_null() && vm.heap.call_fn != null) {
+                        TVal done_this2;
+                        done_this2.set_object(result_obj);
+                        done_val2 = vm.heap.call_fn(vm, acc_fn2, null, 0, done_this2);
+                        if (vm.has_error) {
+                            TVal err_done2 = vm.return_val;
+                            vm.has_error = false;
+                            TVal* count_slot3 = ds.regs_base + count_reg;
+                            count_slot3.set_fastint((long)k);
+                            if (!vm_throw_value(vm, err_done2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_done2);
+                            }
+                            return (TVal){};
+                        }
+                    } else {
+                        done_val2.set_undefined();
+                    }
+                } else if (done_res2.kind == hobject::PropLookupKind.PROP_DATA) {
+                    done_val2 = done_res2.data_val;
+                } else {
+                    done_val2.set_undefined();
+                }
+                bool done = builtins::builtin_to_boolean(&done_val2);
                 if (done) { break; }
 
-                TVal? value_opt = result_obj.get_prop_proto(value_key);
-                if (try vv = value_opt) {
+                // ES IteratorValue: Get(result, "value") — may invoke a getter that throws
+                hobject::PropLookupResult value_res2 = result_obj.get_prop_or_accessor_proto(value_key, true);
+                TVal value_val2;
+                bool value_found2 = true;
+                if (value_res2.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                    TVal acc_fn2 = value_res2.acc.accessor_fn;
+                    if (!acc_fn2.is_undefined() && !acc_fn2.is_null() && vm.heap.call_fn != null) {
+                        TVal value_this2;
+                        value_this2.set_object(result_obj);
+                        value_val2 = vm.heap.call_fn(vm, acc_fn2, null, 0, value_this2);
+                        if (vm.has_error) {
+                            TVal err_val2 = vm.return_val;
+                            vm.has_error = false;
+                            TVal* count_slot4 = ds.regs_base + count_reg;
+                            count_slot4.set_fastint((long)k);
+                            if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &err_val2);
+                            }
+                            return (TVal){};
+                        }
+                    } else {
+                        value_val2.set_undefined();
+                    }
+                } else if (value_res2.kind == hobject::PropLookupKind.PROP_DATA) {
+                    value_val2 = value_res2.data_val;
+                } else {
+                    value_val2.set_undefined();
+                    value_found2 = false;
+                }
+                if (value_found2) {
                     TVal* dest_slot = ds.regs_base + dest_start + k;
-                    *dest_slot = vv;
+                    *dest_slot = value_val2;
                     k++;
                 } else { break; }
             }
