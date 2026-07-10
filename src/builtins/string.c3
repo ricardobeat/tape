@@ -436,8 +436,11 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
         if (vm_ptr.throw_pending) {
             // Propagate the pending throw value so the caller's
             // `ctx.should_throw` path surfaces the original exception.
+            // Clear throw_pending so stale state does not re-fire after the
+            // dispatcher re-throws via vm_throw_value.
             ctx.should_throw = true;
             ctx.throw_value = vm_ptr.throw_value;
+            vm_ptr.throw_pending = false;
             return null;
         }
         // ToString the resulting primitive.

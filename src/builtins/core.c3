@@ -751,10 +751,13 @@ fn double builtin_string_to_number(HString* hstr) {
     char* cstr = hstr.get_cstr();
     uint blen = hstr.blen;
 
-    // --- skip leading ECMAScript whitespace ---
+    // --- skip leading ECMAScript whitespace (CESU-8 aware) ---
     uint start = 0;
-    while (start < blen && is_ecma_whitespace(cstr[start])) {
-        start++;
+    while (start < blen) {
+        uint seq_len = 0;
+        uint cp = decode_codepoint_at(cstr, start, blen, &seq_len);
+        if (seq_len == 0 || !is_ecma_ws_codepoint(cp)) break;
+        start += seq_len;
     }
 
     // Empty or all-whitespace -> +0
@@ -772,6 +775,10 @@ fn double builtin_string_to_number(HString* hstr) {
     // --- Hex integer literal (0x...) ---
     if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         uint j = 2;
+        // Require at least one hex digit (ES2015 §7.1.3.1)
+        if (p[j] == 0 || !((p[j] >= '0' && p[j] <= '9') || (p[j] >= 'a' && p[j] <= 'f') || (p[j] >= 'A' && p[j] <= 'F'))) {
+            return double::nan;
+        }
         ulong val = 0;
         while (p[j] != 0) {
             char c = p[j];
@@ -833,6 +840,15 @@ fn double builtin_string_to_number(HString* hstr) {
     // Nothing was consumed -> NaN
     if (endptr == p) {
         return double::nan;
+    }
+
+    // strtod accepts case-insensitive "infinity" but ES requires exact case
+    if (result == double::inf || result == -double::inf) {
+        if (libc::strcmp((ZString)p, "Infinity") != 0 &&
+            libc::strcmp((ZString)p, "+Infinity") != 0 &&
+            libc::strcmp((ZString)p, "-Infinity") != 0) {
+            return double::nan;
+        }
     }
 
     // Trailing characters must be whitespace only
@@ -1632,19 +1648,39 @@ fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
 
 /// ToString for builtins with VM access — calls ToPrimitive(value, "string") then ToString.
 /// This properly handles objects by calling toString() first, then valueOf().
+/// Throws TypeError if the value is a Symbol (ToString(symbol) must throw per spec).
 fn HString* builtin_to_string_vm(BuiltinContext* ctx, TVal* val) {
-    if (val.is_string()) return (HString*)val.get_heapptr();
+    if (val.is_string()) {
+        // Symbols cannot be converted to string — ToString(symbol) must throw TypeError.
+        HString* s = (HString*)val.get_heapptr();
+        if (s != null && s.is_symbol()) {
+            arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+            return null;
+        }
+        return s;
+    }
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
         TVal prim = vm::to_primitive_value(vm_ptr, val, 1);  // hint "string"
         if (vm_ptr.throw_pending) {
             // Propagate to BuiltinContext so callers using `if (ctx.should_throw) return;`
             // bail, and the dispatcher turns the throw into a JS exception.
+            // Clear throw_pending so stale state does not re-fire after the
+            // dispatcher re-throws via vm_throw_value.
             ctx.should_throw = true;
             ctx.throw_value = vm_ptr.throw_value;
+            vm_ptr.throw_pending = false;
             return null;
         }
-        if (prim.is_string()) return (HString*)prim.get_heapptr();
+        // ToString(Symbol) must throw TypeError even when returned from ToPrimitive.
+        if (prim.is_string()) {
+            HString* ps = (HString*)prim.get_heapptr();
+            if (ps != null && ps.is_symbol()) {
+                arr_throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+                return null;
+            }
+            return ps;
+        }
         if (prim.is_object()) return null;  // ToPrimitive returned object
         return builtin_to_string(ctx.heap, &prim);
     }
