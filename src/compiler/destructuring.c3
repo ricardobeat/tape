@@ -13,28 +13,6 @@ import std::io;
 // Destructuring patterns (array and object)
 // ============================================================================
 
-/// Parse a destructuring-default AssignmentExpression with the binding name
-/// available as the inferred function name (per ES2015 §13.3.3.7 step 3 / §14.1.20
-/// SetFunctionName — NamedEvaluation tags an anonymous function/arrow/class/
-/// generator default with the binding identifier). Saves and restores the
-/// surrounding inferred_name slot so the binding-name propagation is scoped
-/// to this one default and doesn't leak to siblings.
-fn ushort? CompilerContext.destructuring_default_expr(&self, char[] binding_name) {
-    bool saved_has = self.has_inferred_name;
-    char[128] saved_buf;
-    ushort saved_len = self.inferred_name_len;
-    for (usz i = 0; i < (usz)saved_len; i++) saved_buf[i] = self.inferred_name_buf[i];
-    self.has_inferred_name = binding_name.len > 0 && binding_name.len < 128;
-    self.inferred_name_len = (ushort)(self.has_inferred_name ? binding_name.len : 0);
-    for (usz i = 0; i < (usz)binding_name.len && i < 128; i++) {
-        self.inferred_name_buf[i] = binding_name[i];
-    }
-    ushort? r = self.assignment_expr();
-    self.has_inferred_name = saved_has;
-    self.inferred_name_len = saved_len;
-    for (usz i = 0; i < (usz)saved_len; i++) self.inferred_name_buf[i] = saved_buf[i];
-    return r;
-}
 
 /// Parse a property key in a destructuring binding pattern.
 /// Per ES2015 §13.3.3.7 the property key can be an IdentifierName, a string

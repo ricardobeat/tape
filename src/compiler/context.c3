@@ -143,55 +143,9 @@ struct DestructParamDefault {
     uint    default_func_idx; // index into inner_funcs for the default expression
 }
 
-/// Tracks a binding in an array destructuring pattern.
-struct ArrayBind {
-    ushort reg;
-    uint   name_idx;
-    bool   is_rest;
-    bool   is_hole;
-    bool   has_default;
-    ushort default_val_reg;     // register holding compiled default expression result (eager — for-in path)
-    uint   default_func_idx;    // inner_funcs index for the default thunk (lazy — for-of path)
-    bool   is_resolved;      // for assignment mode: was var resolved locally?
-    bool   is_nested;        // true if this binding comes from a nested pattern
-    uint   outer_idx;        // the index in the outer RHS array
-    uint   inner_idx;        // the index within the nested sub-array
-    uint   nest_depth;       // 1 = one level nested, 2 = two levels nested
-    uint   depth2_idx;       // for nest_depth==2: index into 2nd-level array
-    bool   is_obj_nested;    // true if nested pattern is an object
-    uint   obj_key_idx;      // constant index of object property key (used when is_obj_nested)
-    bool   has_obj_default;  // true if the whole nested object has a default ([{x} = def])
-    ushort obj_default_val_reg;  // register holding whole nested object's default value (eager — for-in)
-    uint   obj_default_func_idx; // inner_funcs index for whole nested object's default thunk (lazy — for-of)
-    // Member-expression assignment targets in bare for-of/in destructuring:
-    // when true, `reg` is a temp holding the extracted value; PUTPROP is
-    // emitted using member_obj_reg/member_prop_reg instead of emit_var_store.
-    bool   is_member_target;
-    ushort member_obj_reg;
-    ushort member_prop_reg;
-}
-
-/// Tracks a binding in an object destructuring pattern.
-struct ObjBind {
-    ushort reg;
-    uint   name_idx;
-    uint   key_idx;             // constant-pool key for static keys
-    ushort key_reg;             // register holding runtime key for computed keys
-    bool   has_default;
-    ushort default_val_reg;  // register holding compiled default expression result (eager — for-in path)
-    uint   default_func_idx; // inner_funcs index for the default thunk (lazy — for-of path)
-    bool   is_resolved;      // for assignment mode: was var resolved locally?
-    bool   is_nested;
-    uint   nested_key_idx;
-    bool   is_array_nested;  // true if nested pattern is an array
-    uint   arr_nested_idx;   // index within the nested array (used when is_array_nested)
-    bool   is_computed_key;  // true when the key is `[expr]` (runtime computed)
-    bool   is_rest;          // true for the trailing `...rest` binding
-    // Assignment-pattern member-expression targets: { p: obj.x } = v
-    bool   is_member_target;   // target is a member expression, not a simple identifier
-    ushort member_obj_reg;     // register holding the object (for PUTPROP)
-    ushort member_prop_reg;    // register holding the property key (for PUTPROP)
-}
+// Destructuring now routes through the single DestructBind model
+// (see functions.c3 / emit_destruct_bindings); the former per-context ArrayBind
+// and ObjBind structs were removed in the destructuring consolidation.
 
 // ============================================================================
 // Last compile-error info (module-level; written on fault, read by callers)
