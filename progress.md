@@ -8,11 +8,16 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,342 |
-| **Overall pass rate** | **92.1%** |
-| Total failing | 2,205 |
-| CE unexpected (parser bugs) | 230 |
+| Total passing | 28,387 |
+| **Overall pass rate** | **92.2%** |
+| Total failing | 2,164 |
+| CE unexpected (parser bugs) | 229 |
 | Skipped | 14,032 |
+
+Session 274 landed four fixes: (1) bound-function re-dispatch refcount
+(+258, Phase 22 857→1119); (2) for-of destructuring RequireObjectCoercible
++ IteratorClose (Phase 14 419→434); (3) spec-compliant parseInt rewrite
+(Phase 8 +20, parseInt cluster 23→~1). 91.2% → 92.2% (+303 pass).
 
 Session 274: bound-function re-dispatch refcount fix. Phase 22 Buffers
 857 → 1119 (+262); Phase 5 +1, Phase 6 +140 vs 270 baseline, Phase 8 +13.
