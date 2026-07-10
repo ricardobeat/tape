@@ -367,22 +367,44 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
     }
 }
 
-/// Walk helper for reviver (ES5 §15.12.2, step 4 — internalize properties).
+/// InternalizeJSONProperty — ES2023 §25.5.1.
+/// Implements the spec algorithm: Get(holder,name) via full [[Get]] (invokes
+/// accessors), recurse into object/array children in integer-ascending +
+/// insertion order, then call the reviver.  Errors (from getters or reviver)
+/// are signalled via heap.has_error; the caller must check after return.
 fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name) {
     TVal val;
+    // Step 1: val = ? Get(holder, name) — must invoke accessor getters.
     if (holder.is_object() && holder.get_heapptr() != null) {
-        HObject* obj = (HObject*)holder.get_heapptr();
-        TVal? prop = obj.get_prop_proto(name);
-        if (try p = prop) {
-            val = p;
-        } else {
-            val.set_undefined();
+        HObject* holder_obj = (HObject*)holder.get_heapptr();
+        hobject::PropLookupResult res = holder_obj.get_with_accessors(name);
+        switch (res.kind) {
+            case hobject::PropLookupKind.PROP_DATA:
+                val = res.data_val;
+            case hobject::PropLookupKind.PROP_ACCESSOR: {
+                // Call the getter; propagate errors via heap.has_error.
+                TVal getter_fn = res.acc.accessor_fn;
+                bool callable = false;
+                if (getter_fn.is_object() && getter_fn.get_heapptr() != null) {
+                    callable = ((HObject*)getter_fn.get_heapptr()).is_callable();
+                } else if (getter_fn.is_lightfunc()) {
+                    callable = true;
+                }
+                if (callable && heap.call_fn != null && vm != null) {
+                    val = heap.call_fn(vm, getter_fn, null, 0, holder);
+                    if (heap.has_error) { val.set_undefined(); return val; }
+                } else {
+                    val.set_undefined();
+                }
+            }
+            case hobject::PropLookupKind.PROP_NOT_FOUND:
+                val.set_undefined();
         }
     } else {
         val.set_undefined();
     }
 
-    // ES5 §15.12.2 step 4.b: if value is an object, walk its properties recursively
+    // Step 2: if val is an Object, recurse into its children.
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == ObjClass.ARRAY) {
@@ -390,26 +412,76 @@ fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name
             TVal? len_prop = obj.get_prop_proto(len_key);
             uint len = 0;
             if (try l = len_prop) {
-                if (l.is_fastint()) len = (uint)l.get_fastint();
+                if (l.is_fastint()) {
+                    len = (uint)l.get_fastint();
+                } else if (l.is_number()) {
+                    len = (uint)(long)l.get_number();
+                }
             }
             for (uint i = 0; i < len; i++) {
                 HString* idx_key = heap.int_to_hstring((long)i);
                 if (idx_key == null) continue;
                 TVal new_elem = json_walk(vm, heap, reviver, val, idx_key);
+                if (heap.has_error) return new_elem;
+                // [[Delete]] result is ignored (non-configurable stays).
                 if (new_elem.is_undefined()) {
-                    obj.delete_prop(idx_key);
+                    obj.es_delete_prop(idx_key);
                 } else {
-                    obj.put_prop(idx_key, new_elem, hobject::PROP_FLAGS_WEC);
+                    // [[DefineOwnProperty]] with WEC descriptor; ignore if non-configurable.
+                    int ex_idx = obj.find_prop_idx(idx_key);
+                    if (ex_idx >= 0 && !obj.get_prop_flags((uint)ex_idx).configurable) {
+                        // Non-configurable: silently skip.
+                    } else {
+                        obj.put_prop(idx_key, new_elem, hobject::PROP_FLAGS_WEC);
+                    }
                 }
             }
         } else if (obj.get_class() == ObjClass.OBJECT) {
-            // Walk own properties
-            for (uint i = 0; i < obj.prop_count; i++) {
-                HString* key_str = obj.prop_key_at(i);
-                if (key_str != null) {
-                    TVal new_val = json_walk(vm, heap, reviver, val, key_str);
-                    if (new_val.is_undefined()) {
-                        obj.delete_prop(key_str);
+            // Snapshot own enumerable keys in integer-ascending + insertion order
+            // (EnumerableOwnPropertyNames per spec, for-in-order requirement).
+            HString*[128] int_keys;
+            HString*[128] str_keys;
+            uint int_count = 0;
+            uint str_count = 0;
+            for (uint i = 0; i < obj.prop_count && (int_count + str_count) < 128; i++) {
+                HString* kk = obj.prop_key_at(i);
+                if (kk == null) continue;
+                // Only enumerable own properties.
+                if (!obj.get_prop_flags(i).enumerable) continue;
+                if (kk.is_arridx()) {
+                    if (int_count < 128) int_keys[int_count++] = kk;
+                } else {
+                    if (str_count < 128) str_keys[str_count++] = kk;
+                }
+            }
+            // Insertion sort integer keys ascending.
+            for (uint i = 1; i < int_count; i++) {
+                HString* tk = int_keys[i];
+                uint j = i;
+                while (j > 0 && int_keys[j - 1].array_index() > tk.array_index()) {
+                    int_keys[j] = int_keys[j - 1];
+                    j--;
+                }
+                int_keys[j] = tk;
+            }
+            // Concatenate: integer keys first, then string keys.
+            HString*[256] ordered;
+            uint ordered_count = 0;
+            for (uint i = 0; i < int_count; i++) ordered[ordered_count++] = int_keys[i];
+            for (uint i = 0; i < str_count; i++) ordered[ordered_count++] = str_keys[i];
+
+            for (uint i = 0; i < ordered_count; i++) {
+                HString* key_str = ordered[i];
+                TVal new_val = json_walk(vm, heap, reviver, val, key_str);
+                if (heap.has_error) return new_val;
+                // [[Delete]] result is ignored.
+                if (new_val.is_undefined()) {
+                    obj.es_delete_prop(key_str);
+                } else {
+                    // [[DefineOwnProperty]] with WEC; silently skip if non-configurable.
+                    int ex_idx = obj.find_prop_idx(key_str);
+                    if (ex_idx >= 0 && !obj.get_prop_flags((uint)ex_idx).configurable) {
+                        // Non-configurable: silently skip define.
                     } else {
                         obj.put_prop(key_str, new_val, hobject::PROP_FLAGS_WEC);
                     }
@@ -418,7 +490,7 @@ fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name
         }
     }
 
-    // ES5 §15.12.2 step 4.c: Call reviver(this=holder, name, val)
+    // Step 3: Return ? Call(reviver, holder, [name, val]).
     TVal name_str;
     name_str.set_string(name);
 
@@ -434,6 +506,7 @@ fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name
             rev_args[0] = name_str;
             rev_args[1] = val;
             val = heap.call_fn(vm, reviver, &rev_args[0], 2, holder);
+            // heap.has_error signals abrupt completion; caller checks.
         }
     }
 
@@ -469,8 +542,25 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     HString* text_str;
 
     if (text_arg.is_string()) {
-        text_str = (HString*)text_arg.get_heapptr();
+        // Symbol (stored as string-tagged HString with is_symbol flag) → TypeError.
+        HString* hs = (HString*)text_arg.get_heapptr();
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a Symbol value to a string");
+            return;
+        }
+        text_str = hs;
+    } else if (text_arg.is_object()) {
+        // Objects: ToPrimitive with "string" hint → calls toString() then valueOf().
+        // Propagates abrupt completions (text-object-abrupt).
+        text_str = builtin_to_string_vm(ctx, text_arg);
+        if (ctx.should_throw) return;
+        if (text_str == null) {
+            json_throw_syntax_error(ctx, "Invalid JSON");
+            return;
+        }
     } else {
+        // Primitives (undefined → "undefined", null → "null", bool, number):
+        // plain ToString suffices — no vm call needed.
         text_str = builtin_to_string(ctx.heap, text_arg);
         if (text_str == null) {
             json_throw_syntax_error(ctx, "Invalid JSON");
@@ -521,17 +611,26 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
         if (reviver_arg.is_lightfunc() || (reviver_arg.is_object() &&
             ((HObject*)reviver_arg.get_heapptr()) != null &&
             ((HObject*)reviver_arg.get_heapptr()).is_callable())) {
-            // Create holder object { "": result }
+            // Create holder object { "": result } with Object.prototype (ES §25.5.1 step 7a).
             HObject*? holder_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
             if (try holder = holder_raw) {
+                holder.prototype = ctx.heap.object_proto;
                 HString* empty_key = builtin_intern_string(ctx.heap, "");
+                // Use [[DefineOwnProperty]] WEC (CreateDataPropertyOrThrow per spec).
                 holder.put_prop(empty_key, result, hobject::PROP_FLAGS_WEC);
 
                 TVal holder_tv;
                 holder_tv.set_object(holder);
 
-                // ES5 §15.12.2 step 4: walk the root value through the reviver
+                // ES5 §15.12.2 step 4: walk the root value through the reviver.
+                // Propagate abrupt completions (reviver-call-err, reviver-get-name-err).
                 TVal walked = json_walk(ctx.vm, ctx.heap, *reviver_arg, holder_tv, empty_key);
+                if (ctx.heap.has_error) {
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.should_throw = true;
+                    ctx.heap.has_error = false;
+                    return;
+                }
                 *ctx.result = walked;
             } else {
                 *ctx.result = result;
