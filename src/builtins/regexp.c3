@@ -508,13 +508,20 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         if (ctx.should_throw) return;
         if (li_d < 0.0) li_d = 0.0;
         if (global_flag || sticky_flag) {
-            start_pos = (int)li_d;
-            // Step 7: if lastIndex > length, set lastIndex to 0 and return null.
-            if (start_pos < 0 || start_pos > input_len) {
+            // lastIndex is a UTF-16 code unit count; convert to CESU-8 byte
+            // offset for re_exec (which takes byte offsets). Spec step 7:
+            // if lastIndex > length (char-unit length), reset and return null.
+            long li_charunit = (long)li_d;
+            uint str_charlen = input_hstr != null ? input_hstr.char_length() : 0;
+            if (li_charunit < 0 || (ulong)li_charunit > (ulong)str_charlen) {
                 TVal zero_tv; zero_tv.set_fastint(0);
                 if (!regexp_set_prop(ctx, obj, li_key, &zero_tv)) return;
                 ctx.result.set_null();
                 return;
+            }
+            // Convert char-unit index → byte offset.
+            if (input_hstr != null) {
+                start_pos = (int)input_hstr.char_offset_to_byte_offset((uint)li_charunit);
             }
         }
         // For non-global, non-sticky: start_pos stays 0; don't modify lastIndex.
@@ -546,22 +553,14 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
         return;
     }
 
-    // Step 10: if global OR sticky, update lastIndex to end of match.
+    // Step 10: if global OR sticky, update lastIndex to end of match (= e).
     // lastIndex is a UTF-16 code unit index; we store strings as CESU-8,
     // so convert byte offset → code unit count.
+    // Per spec (ES2022 §22.2.7.2.2 step 16), we set lastIndex = e without
+    // any AdvanceStringIndex here; callers (@@match step 8.g, @@replace step
+    // 11.d) handle the empty-match advance so that custom exec overrides work.
     if (global_flag || sticky_flag) {
-        bool is_unicode = (jsf & (16 | 128)) != 0;
-        long new_li;
-        // ES2017 §21.2.5.2 step 17: when matchStr is empty, AdvanceStringIndex
-        // to lastIndex+1 (or unicode step) so next call moves forward.
-        if (out_end == out_start) {
-            int adv_bytes = (int)hstring::advance_string_index_byte_len(
-                input[:input_len], (uint)out_start, is_unicode);
-            int new_byte = out_start + adv_bytes;
-            new_li = (long)hstring::compute_charlen(input[:new_byte]);
-        } else {
-            new_li = (long)hstring::compute_charlen(input[:out_end]);
-        }
+        long new_li = (long)hstring::compute_charlen(input[:out_end]);
         TVal end_tv; end_tv.set_fastint(new_li);
         if (!regexp_set_prop(ctx, obj, li_key, &end_tv)) return;
     }
@@ -652,12 +651,20 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
     bool global_flag = false;
     if (try gv = g_opt) { global_flag = builtin_to_boolean(&gv); }
 
-    // 6. Let fullUnicode be ToBoolean(? Get(rx, "unicode")).
+    // 6. Let fullUnicode be ToBoolean(? Get(rx, "unicode")) ||
+    //    ToBoolean(? Get(rx, "unicodeSets"))  — ES2023 §21.2.5.6 step 6.
+    //    The `v` flag sets .unicodeSets; both enable surrogate-pair advancement.
     HString* unicode_key = builtin_intern_string(ctx.heap, "unicode");
     TVal? u_opt = builtins_generic_get(rx, unicode_key, ctx);
     if (ctx.should_throw) return;
     bool full_unicode = false;
     if (try uv = u_opt) { full_unicode = builtin_to_boolean(&uv); }
+    if (!full_unicode) {
+        HString* us_key = builtin_intern_string(ctx.heap, "unicodeSets");
+        TVal? us_opt = builtins_generic_get(rx, us_key, ctx);
+        if (ctx.should_throw) return;
+        if (try usv = us_opt) { full_unicode = builtin_to_boolean(&usv); }
+    }
 
     if (!global_flag) {
         // 7.a. Return ? RegExpExec(rx, S).
@@ -723,20 +730,27 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
         //    i. Let thisIndex be ? ToLength(? Get(rx, "lastIndex")).
         //    ii. Let nextIndex be AdvanceStringIndex(S, thisIndex, fullUnicode).
         //    iii. Perform ? Set(rx, "lastIndex", nextIndex, true).
+        // thisIndex is a UTF-16 code unit count; convert to byte offset to
+        // call advance_string_index_byte_len, then back to code units.
         if (match_str.blen == 0) {
             // ToLength(? Get(rx, "lastIndex"))
             TVal? li_opt = builtins_generic_get(rx, li_key, ctx);
             if (ctx.should_throw) return;
-            int this_index = 0;
+            long this_index = 0;
             if (try lv = li_opt) {
-                if (lv.is_fastint()) { this_index = (int)lv.get_fastint(); }
-                else if (lv.is_number()) { this_index = (int)lv.get_number(); }
+                if (lv.is_fastint()) { this_index = lv.get_fastint(); }
+                else if (lv.is_number()) { this_index = (long)lv.get_number(); }
             }
             char* input = s_hstr.get_cstr();
             int input_len = (int)s_hstr.blen;
-            int next_index = (int)hstring::advance_string_index_byte_len(
-                input[:input_len], (uint)this_index, full_unicode);
-            TVal next_tv; next_tv.set_fastint((long)next_index);
+            // Convert char-unit index → byte offset, compute the byte advance,
+            // then convert the resulting byte offset back to char-unit count.
+            uint byte_off = s_hstr.char_offset_to_byte_offset((uint)this_index);
+            int adv_bytes = (int)hstring::advance_string_index_byte_len(
+                input[:input_len], byte_off, full_unicode);
+            uint new_byte_off = byte_off + (uint)adv_bytes;
+            long next_index = (long)hstring::compute_charlen(input[:new_byte_off]);
+            TVal next_tv; next_tv.set_fastint(next_index);
             if (!rx.put_prop((void*)li_key, next_tv, hobject::PROP_FLAGS_WEC)) {
                 builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex on regexp");
                 return;
@@ -862,6 +876,23 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
         if (replace_val.is_object() && replace_val.get_heapptr() != null &&
             ((HObject*)replace_val.get_heapptr()).is_callable()) {
             replace_is_fn = true;
+        }
+    }
+
+    // ES6 §21.2.5.8 step 9: fullUnicode = ToBoolean(Get(rx, "unicode")) ||
+    //                                       ToBoolean(Get(rx, "unicodeSets")).
+    // Used for AdvanceStringIndex after empty matches in the global loop.
+    bool rr_full_unicode = false;
+    {
+        HString* u_key2 = builtin_intern_string(ctx.heap, "unicode");
+        TVal? u2_opt = builtins_generic_get(rx, u_key2, ctx);
+        if (ctx.should_throw) return;
+        if (try uv2 = u2_opt) { rr_full_unicode = builtin_to_boolean(&uv2); }
+        if (!rr_full_unicode) {
+            HString* us_key2 = builtin_intern_string(ctx.heap, "unicodeSets");
+            TVal? us2_opt = builtins_generic_get(rx, us_key2, ctx);
+            if (ctx.should_throw) return;
+            if (try usv2 = us2_opt) { rr_full_unicode = builtin_to_boolean(&usv2); }
         }
     }
 
@@ -1221,12 +1252,33 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
             // (= out_end). This is tracked independently of rx.lastIndex — a
             // custom exec may return match positions without updating lastIndex
             // (see g-pos-increment/decrement), so relying on lastIndex here
-            // would fail to advance. The empty-match lastIndex bump (spec loop
-            // step 11.d) is handled separately by regexp_exec_call.
+            // would fail to advance.
             if (do_append) {
                 last_end = out_end;
                 if (last_end > input_len) {
                     last_end = input_len;
+                }
+            }
+
+            // ES §21.2.5.8 step 11.d (global loop): if matchStr is "",
+            // AdvanceStringIndex so the next exec call moves forward.
+            if (matched_hstr.blen == 0) {
+                TVal? li_cur_opt = builtins_generic_get(rx, li_key, ctx);
+                if (ctx.should_throw) return;
+                long li_cur = 0;
+                if (try lcv = li_cur_opt) {
+                    if (lcv.is_fastint()) { li_cur = lcv.get_fastint(); }
+                    else if (lcv.is_number()) { li_cur = (long)lcv.get_number(); }
+                }
+                uint byte_off2 = s_hstr.char_offset_to_byte_offset((uint)li_cur);
+                int adv2 = (int)hstring::advance_string_index_byte_len(
+                    input[:input_len], byte_off2, rr_full_unicode);
+                uint new_byte2 = byte_off2 + (uint)adv2;
+                long next_li = (long)hstring::compute_charlen(input[:new_byte2]);
+                TVal next_li_tv; next_li_tv.set_fastint(next_li);
+                if (!rx.put_prop((void*)li_key, next_li_tv, hobject::PROP_FLAGS_WEC)) {
+                    builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex");
+                    return;
                 }
             }
         }
@@ -1815,13 +1867,17 @@ fn bool regexp_exec_call(BuiltinContext* ctx, HObject* rx, TVal* input_str_tv) {
         if (ctx.should_throw) return false;
         if (li_d < 0.0) li_d = 0.0;
         if (global_flag || sticky_flag) {
-            start_pos = (int)li_d;
-            if (start_pos < 0 || start_pos > input_len) {
+            // lastIndex is a UTF-16 code unit count; convert to CESU-8 byte
+            // offset for re_exec. Bounds-check against char-unit length.
+            long li_charunit = (long)li_d;
+            uint str_charlen = s_hstr.char_length();
+            if (li_charunit < 0 || (ulong)li_charunit > (ulong)str_charlen) {
                 TVal zero_tv; zero_tv.set_fastint(0);
                 if (!regexp_set_prop(ctx, rx, li_key, &zero_tv)) return false;
                 ctx.result.set_null();
                 return true;
             }
+            start_pos = (int)s_hstr.char_offset_to_byte_offset((uint)li_charunit);
         }
         // For non-global/non-sticky: start_pos stays 0; don't modify lastIndex.
     }
@@ -1849,19 +1905,12 @@ fn bool regexp_exec_call(BuiltinContext* ctx, HObject* rx, TVal* input_str_tv) {
     }
 
     if (global_flag || sticky_flag) {
-        // ES2017 §21.2.5.2.2 step 16-17: lastIndex = UTF-16 code unit index.
-        // Strings are CESU-8; convert byte offset to code unit count.
-        bool is_unicode = (jsf & (16 | 128)) != 0;
-        long new_li;
-        if (out_end == out_start && global_flag) {
-            // Empty match: advance via AdvanceStringIndex.
-            int adv_bytes = (int)hstring::advance_string_index_byte_len(
-                input[:input_len], (uint)out_start, is_unicode);
-            int new_byte = out_start + adv_bytes;
-            new_li = (long)hstring::compute_charlen(input[:new_byte]);
-        } else {
-            new_li = (long)hstring::compute_charlen(input[:out_end]);
-        }
+        // ES2017 §21.2.5.2.2 step 16: lastIndex = e (end of match) as a
+        // UTF-16 code unit index. For empty matches (e == matchStart) the
+        // AdvanceStringIndex step is performed by the *caller* (@@match step
+        // 8.g, @@replace step 11.d) so that custom exec overrides are also
+        // covered. Do NOT advance here — set lastIndex = charlen(input[:e]).
+        long new_li = (long)hstring::compute_charlen(input[:out_end]);
         TVal end_tv; end_tv.set_fastint(new_li);
         if (!regexp_set_prop(ctx, rx, li_key, &end_tv)) return false;
     }
