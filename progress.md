@@ -8,13 +8,19 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 27,879 |
-| **Overall pass rate** | **90.6%** |
-| Total failing | 2,668 |
+| Total passing | 28,006 |
+| **Overall pass rate** | **91.0%** |
+| Total failing | 2,541 |
 | CE unexpected (parser bugs) | 230 |
 | Skipped | 14,032 |
 
-Up from session 272 (88.0%, 27,079 pass): **+818 pass** this session.
+Up from session 272 (88.0%, 27,079 pass): **+927 pass** this session.
+
+Later in session 273: MEMKILL sweep (14→1), then subclassing-built-ins fix
+(instances of `class Sub extends Array/Map/Error/...` now get the subclass
+prototype via new.target — Phase 15 Classes 1781→1849, +68),
+Object.getOwnPropertyDescriptors implemented, and Object.keys/values/entries
+symbol-key leak fixed (Phase 3 +21). 90.6% → 91.0%.
 
 **MEMKILL/TIMEOUT sweep** (near-eliminated, ~14 → 1): (1) sparse-array writes
 `a[2**31]=x` grew the dense backing to billions of slots (9.9 GB) — added
