@@ -1099,8 +1099,16 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
             int out_end = out_start + (int)matched_hstr.blen;
             if (out_end > input_len) out_end = input_len;
 
+            // ES §21.2.5.8 step 14.n: the prefix copy, replacement append, and
+            // nextSourcePosition advance happen only when position >=
+            // nextSourcePosition. A match reported behind the cursor (custom
+            // exec, g-pos-decrement) contributes nothing.
+            bool do_append = out_start >= last_end;
+
             // Copy unmatched prefix [last_end, out_start)
-            for (usz i = (usz)last_end; i < (usz)out_start && bOff < 8192; i++) buf[bOff++] = input[i];
+            if (do_append) {
+                for (usz i = (usz)last_end; i < (usz)out_start && bOff < 8192; i++) buf[bOff++] = input[i];
+            }
 
             HString* replace_str;
             if (replace_is_fn && ctx.heap.call_fn != null && ctx.vm != null) {
@@ -1193,30 +1201,22 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
                 if (replace_str == null) replace_str = raw_replace;
             }
 
-            char* rData = replace_str.get_cstr();
-            uint rLen = replace_str.blen;
-            for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
+            if (do_append) {
+                char* rData = replace_str.get_cstr();
+                uint rLen = replace_str.blen;
+                for (usz i = 0; i < (usz)rLen && bOff < 8192; i++) buf[bOff++] = rData[i];
+            }
 
-            // Use rx.lastIndex as last_end — regexp_exec_call has correctly
-            // advanced it for us per §21.2.5.2.2 (out_end for non-empty
-            // matches, AdvanceStringIndex-step for empty ones).
-            {
-                HString* li_key_inner = builtin_intern_string(ctx.heap, "lastIndex");
-                int new_last_end = last_end;
-                if (try liv = rx.get_prop_proto(li_key_inner)) {
-                    if (liv.is_fastint()) { new_last_end = (int)liv.get_fastint(); }
-                    else if (liv.is_number()) { new_last_end = (int)liv.get_number(); }
-                }
-                // Append any input between out_end and new_last_end to the
-                // result buffer (this copies the empty-match unicode step
-                // character into the output).
-                if (new_last_end > out_end) {
-                    for (usz i = (usz)out_end; i < (usz)new_last_end && bOff < 8192; i++) buf[bOff++] = input[i];
-                }
-                last_end = new_last_end;
+            // ES §21.2.5.8 step 14.p: nextSourcePosition = position + matchLength
+            // (= out_end). This is tracked independently of rx.lastIndex — a
+            // custom exec may return match positions without updating lastIndex
+            // (see g-pos-increment/decrement), so relying on lastIndex here
+            // would fail to advance. The empty-match lastIndex bump (spec loop
+            // step 11.d) is handled separately by regexp_exec_call.
+            if (do_append) {
+                last_end = out_end;
                 if (last_end > input_len) {
                     last_end = input_len;
-                    break;
                 }
             }
         }
