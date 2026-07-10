@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 275 — **93.3% reached** (28,730 pass / 30,780 executable, up from 92.6%). Generator-completion fix (+75): a generator whose body threw stayed in GEN_EXECUTING, so a later `.next()` wrongly reported "Generator is executing" — the exception unwinder now transitions each generator frame it pops past to GEN_COMPLETED (via the reused `async_gen_state` activation slot), clearing the whole `iter-step-err` dstr cluster. Earlier this session — **Full destructuring unification**: the algorithm had been implemented independently across ≥6 contexts (a shared array emitter; bespoke ObjBind object decl/assign; four inline copies in bare for-of, bare for-in, for-in-decl, and catch patterns). Consolidated ALL of them onto the single `emit_destruct_bindings` + one parser per pattern kind (array/object). Removed ~2,000 lines and the dead `ArrayBind`/`ObjBind` structs. Along the way fixed: object rest in the shared emitter (`{a,...r}` yielded undefined), empty/elision array patterns performing GetIterator (`[] = undefined` → TypeError), NamedEvaluation for destructuring defaults (`{a = fn}` names fn), a const-assignment-target check via the new `assign_needs_putvar` flag (replacing register-number guessing that mis-fired on r0), and leaf object-rest done-latching so a consumed iterator skips IteratorClose. Phase 14 for-of 461→497 (+36).
+**Last Updated:** Session 275 — **93.4% reached** (28,750 pass / 30,780 executable, up from 92.6%). Async-throw-rejects-Promise fix (+20): an async function that threw an uncaught exception surfaced as a VM_ERROR instead of rejecting its Promise; vm_throw_value now recognizes the async-function boundary (ACT_FLAG_ASYNC) the same way it recognizes catchers — the throw rejects the frame's Promise and unwinds like a return, at the single chokepoint every throw funnels through. Generator-completion fix (+75): a generator whose body threw stayed in GEN_EXECUTING, so a later `.next()` wrongly reported "Generator is executing" — the exception unwinder now transitions each generator frame it pops past to GEN_COMPLETED (via the reused `async_gen_state` activation slot), clearing the whole `iter-step-err` dstr cluster. Earlier this session — **Full destructuring unification**: the algorithm had been implemented independently across ≥6 contexts (a shared array emitter; bespoke ObjBind object decl/assign; four inline copies in bare for-of, bare for-in, for-in-decl, and catch patterns). Consolidated ALL of them onto the single `emit_destruct_bindings` + one parser per pattern kind (array/object). Removed ~2,000 lines and the dead `ArrayBind`/`ObjBind` structs. Along the way fixed: object rest in the shared emitter (`{a,...r}` yielded undefined), empty/elision array patterns performing GetIterator (`[] = undefined` → TypeError), NamedEvaluation for destructuring defaults (`{a = fn}` names fn), a const-assignment-target check via the new `assign_needs_putvar` flag (replacing register-number guessing that mis-fired on r0), and leaf object-rest done-latching so a consumed iterator skips IteratorClose. Phase 14 for-of 461→497 (+36).
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
 ## Summary (full run, session 275, 2026-07-10)
@@ -8,9 +8,9 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,730 |
-| **Overall pass rate** | **93.3%** |
-| Total failing | 1,883 |
+| Total passing | 28,750 |
+| **Overall pass rate** | **93.4%** |
+| Total failing | 1,863 |
 | CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
 
