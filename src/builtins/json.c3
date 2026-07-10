@@ -180,9 +180,12 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
     double d = libc::strtod(jctx.src + start, &endptr);
     jctx.src[end] = saved;
 
-    // Try fastint preservation
+    // Try fastint preservation. Guard against negative zero: (long)(-0.0)==0
+    // and (double)0==-0.0, so the fastint path would silently drop the sign.
+    // JSON.parse("-0") must yield -0 (ES §25.5.1 → ToNumber preserves it).
     long fi = (long)d;
-    if ((double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
+    bool is_neg_zero = d == 0.0 && (1.0 / d) < 0.0;
+    if (!is_neg_zero && (double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
         TVal r; r.set_fastint(fi); return r;
     }
     TVal r; r.set_number(d); return r;

@@ -1150,6 +1150,112 @@ fn void builtin_date_proto_valueOf(BuiltinContext* ctx) {
     ctx.result.set_number(time_val);
 }
 
+/// Date.prototype[Symbol.toPrimitive](hint) — ES2023 §21.4.4.45
+/// Converts a Date to a primitive. hint "string"/"default" → try toString first;
+/// hint "number" → try valueOf first. Non-object this or unknown hint → TypeError.
+fn void builtin_date_proto_toPrimitive(BuiltinContext* ctx) {
+    TVal this_val = ctx.regs[ctx.base_reg - 1];
+
+    // Step 1: If Type(this) is not Object, throw TypeError.
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, ctx.heap.type_err_proto,
+            "Date.prototype[Symbol.toPrimitive] called on non-object");
+        return;
+    }
+    HObject* this_obj = (HObject*)this_val.get_heapptr();
+
+    // Step 2: Determine tryFirst from the hint argument.
+    TVal hint_tv = (ctx.argc > 0) ? builtin_arg(ctx, 0) : (TVal){};
+    // tryFirst: true = "string" order (toString, valueOf), false = "number" order (valueOf, toString)
+    bool try_string_first;
+    if (ctx.argc > 0 && hint_tv.is_string() && hint_tv.get_heapptr() != null) {
+        HString* hint_str = (HString*)hint_tv.get_heapptr();
+        if (hint_str.equals("string") || hint_str.equals("default")) {
+            try_string_first = true;
+        } else if (hint_str.equals("number")) {
+            try_string_first = false;
+        } else {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Invalid hint for Date[Symbol.toPrimitive]");
+            return;
+        }
+    } else {
+        builtin_throw(ctx, ctx.heap.type_err_proto,
+            "Invalid hint for Date[Symbol.toPrimitive]");
+        return;
+    }
+
+    // Step 3: OrdinaryToPrimitive(O, tryFirst).
+    // Try two method names in order; skip non-callable; return first non-Object result.
+    char[][2] method_order;
+    if (try_string_first) {
+        method_order = { "toString", "valueOf" };
+    } else {
+        method_order = { "valueOf", "toString" };
+    }
+
+    Vm* v = (Vm*)ctx.vm;
+    for (int i = 0; i < 2; i++) {
+        char[] method_name = method_order[i];
+        HString* key = builtin_intern_string(ctx.heap, method_name);
+        if (key == null) continue;
+
+        // Get the method via accessor-aware lookup (handles getter-defined props).
+        TVal method_fn;
+        bool found = false;
+        hobject::AccessorResult acc = this_obj.find_accessor_proto(key, true);
+        if (acc.found) {
+            // Invoke the getter to obtain the method value.
+            TVal getter_this;
+            getter_this.set_object(acc.this_obj);
+            method_fn = ctx.heap.call_fn(v, acc.accessor_fn, null, 0, getter_this);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return;
+            }
+            found = true;
+        } else {
+            TVal? mv = this_obj.get_prop_proto(key);
+            if (try tv = mv) {
+                method_fn = tv;
+                found = true;
+            }
+        }
+        if (!found) continue;
+
+        // IsCallable check.
+        bool callable = false;
+        if (method_fn.is_lightfunc()) {
+            callable = true;
+        } else if (method_fn.is_object() && method_fn.get_heapptr() != null) {
+            callable = ((HObject*)method_fn.get_heapptr()).is_callable();
+        }
+        if (!callable) continue;
+
+        // Call the method with this as receiver, no arguments.
+        TVal result = ctx.heap.call_fn(v, method_fn, null, 0, this_val);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
+
+        // If result is not Object, return it as the primitive.
+        if (!result.is_object()) {
+            ctx.heap.tval_copy_ref(ctx.result, &result);
+            return;
+        }
+        // Result is an Object — try the next method.
+    }
+
+    // No method produced a primitive → TypeError.
+    builtin_throw(ctx, ctx.heap.type_err_proto,
+        "Cannot convert Date to primitive");
+}
+
 /// Date.prototype.getTime() — ES5 §15.9.5.9
 fn void builtin_date_proto_getTime(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
@@ -2247,6 +2353,22 @@ fn bool register_date_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add Date.prototype.data.valueOf()
     if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_DATE_PROTO_VALUEOF)) return false;
+
+    // Add Date.prototype[Symbol.toPrimitive] — ES2023 §21.4.4.45.
+    // Property descriptor: writable:false, enumerable:false, configurable:true.
+    {
+        HString* toprim_key = ensure_toprimitive_symbol(heap);
+        if (toprim_key != null) {
+            TVal toprim_tv;
+            toprim_tv.set_lightfunc((void*)(usz)BUILTIN_DATE_PROTO_TOPRIMITIVE);
+            PropFlags tp_flags;
+            tp_flags.writable = false;
+            tp_flags.enumerable = false;
+            tp_flags.configurable = true;
+            tp_flags.is_accessor = false;
+            proto.put_prop(toprim_key, toprim_tv, tp_flags);
+        }
+    }
 
     // Add Date.prototype.getTime()
     if (!register_string_proto_method(proto, heap, "getTime", BUILTIN_DATE_PROTO_GETTIME)) return false;
