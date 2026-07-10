@@ -151,8 +151,14 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
         if (binds[i].parent_idx == 0xFFFF) binds[i].arg_idx = rhs_reg;
     }
 
-    self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
-                                DestructStoreMode.DECLARE, is_lexical, is_const);
+    if (count == 0) {
+        // Empty pattern `var [] = rhs`: still GetIterator(rhs), so
+        // `var [] = undefined` throws TypeError per the spec.
+        self.emit_empty_array_iter(rhs_reg);
+    } else {
+        self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
+                                    DestructStoreMode.DECLARE, is_lexical, is_const);
+    }
 
     self.free_regs_to(saved_next);
 
@@ -855,24 +861,19 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     for (;;) {
         if (self.check(TokenType.RBRACKET)) break;
 
-        // Elision / hole: `, ,` skips an iterator position.
+        // Elision / hole: `, ,` skips an iterator position. Record a hole so
+        // emit_destruct_bindings calls IteratorStep at this position per
+        // IteratorBindingInitialization §13.3.3 (matching collect_arr_param_binds).
         if (self.match(TokenType.COMMA)) {
             if (count < (uint)MAX_DESTRUCT_BINDS) {
-                // Record a synthetic hole so emit_destruct_bindings advances the
-                // iterator past this element.
-                binds[count].key_idx  = (uint)elem_idx;  // use key_idx as index
-                binds[count].index    = elem_idx;
-                binds[count].is_object = false;
-                binds[count].arg_idx  = 0xFFFF;          // patched to rhs_reg later
+                binds[count].key_idx    = 0;
+                binds[count].index      = elem_idx;
+                binds[count].is_object  = false;
+                binds[count].arg_idx    = 0xFFFF;          // patched to rhs_reg later
                 binds[count].parent_idx = 0xFFFF;
-                binds[count].is_synthetic = true;         // hole = synthetic with no children
-                // Mark as a pure hole: key_idx=0 (not 0xFFFF which means rest).
-                // Actually emit_destruct_bindings treats is_synthetic+not-object+key_idx!=0xFFFF
-                // as an array element fetch. For a pure hole we just advance index
-                // without recording — use the existing `collect_arr_param_binds` hole
-                // convention: omit the bind entirely but increment elem_idx.
-                // Re-use the approach from collect_arr_param_binds: don't record the
-                // hole in binds (elem_idx already advanced). Just bump elem_idx.
+                binds[count].is_synthetic = true;
+                binds[count].is_hole    = true;
+                count++;
             }
             elem_idx++;
             continue;
@@ -1047,8 +1048,14 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     // directly by the extraction; env-resident targets get a bare PUTVAR;
     // member-expression targets get PUTPROP (handled in emit_destruct_bindings
     // via is_member_target).
-    self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
-                                DestructStoreMode.ASSIGN_TARGET);
+    if (count == 0) {
+        // Empty pattern `[] = rhs`: still GetIterator(rhs) then close, so
+        // `[] = undefined` throws TypeError per the spec.
+        self.emit_empty_array_iter(rhs_reg);
+    } else {
+        self.emit_destruct_bindings(binds[..], count, group_regs[..], binding_regs[..],
+                                    DestructStoreMode.ASSIGN_TARGET);
+    }
 
     // Release all destructuring temporaries above the RHS register (iterator
     // state + per-element scratch), keeping rhs_reg live so the destructuring

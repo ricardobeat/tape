@@ -522,6 +522,16 @@ fn ushort find_destruct_iter(ushort src_reg, DestructIterState[] states, uint* c
 }
 
 /// Shared emission helper for function-parameter destructuring bindings.
+/// Force GetIterator(src) + immediate IteratorClose. Used for an empty array
+/// assignment pattern `[] = rhs`: per DestructuringAssignmentEvaluation the
+/// pattern still performs GetIterator, so `[] = undefined` must throw TypeError.
+fn void CompilerContext.emit_empty_array_iter(&self, ushort src_reg) {
+    DestructIterState state;
+    self.emit_destruct_iter_setup(src_reg, &state);
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)state.method_reg, 0, 0);
+    self.free_destruct_iter(&state);
+}
+
 /// Walks binds in declaration order, resolving source registers from arg slots
 /// or parent group temps, and emits GETPROP (object patterns) or iterator
 /// protocol (array patterns) to extract values into group_regs / binding_regs.
