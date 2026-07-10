@@ -1,18 +1,28 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 274 — **92.1% reached** (28,342 pass / 30,780 executable, up from 88.0%). Bound-function re-dispatch refcount fix (+258): a bound arg (e.g. a constructor passed via `f.bind(undefined, Ctor)`) was written into the callee's arg registers without an incref, so the callee's normal decref freed it while still live — the freed pool block was then recycled into a new bound function, corrupting the original (e.g. `Float64Array.name` returning `"bound makeArrayLike"`). This broke nearly every `testWithTypedArrayConstructors`/`testWithAllTypedArrayConstructors` test. Earlier this session: dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0 + reviver/text coercion, RegExp exec/@@split/@@replace lastIndex+result coercion, for-of destructuring lazy defaults, subclassing built-ins, Promise combinators+then/species.
+**Last Updated:** Session 275 — **93.1% reached** (28,664 pass / 30,780 executable, up from 92.6%). **Full destructuring unification**: the algorithm had been implemented independently across ≥6 contexts (a shared array emitter; bespoke ObjBind object decl/assign; four inline copies in bare for-of, bare for-in, for-in-decl, and catch patterns). Consolidated ALL of them onto the single `emit_destruct_bindings` + one parser per pattern kind (array/object). Removed ~2,000 lines and the dead `ArrayBind`/`ObjBind` structs. Along the way fixed: object rest in the shared emitter (`{a,...r}` yielded undefined), empty/elision array patterns performing GetIterator (`[] = undefined` → TypeError), NamedEvaluation for destructuring defaults (`{a = fn}` names fn), a const-assignment-target check via the new `assign_needs_putvar` flag (replacing register-number guessing that mis-fired on r0), and leaf object-rest done-latching so a consumed iterator skips IteratorClose. Phase 14 for-of 461→497 (+36).
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
-## Summary (full run, session 274, 2026-07-10)
+## Summary (full run, session 275, 2026-07-10)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,511 |
-| **Overall pass rate** | **92.6%** |
-| Total failing | 2,065 |
-| CE unexpected (parser bugs) | 201 |
+| Total passing | 28,664 |
+| **Overall pass rate** | **93.1%** |
+| Total failing | 1,949 |
+| CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
+
+**Next dstr cluster (~90 tests):** generator/method destructuring params whose
+arg-iterator `.next()` throws (`gen-meth-*`/`meth-*`/`generators/*` with
+`iter-step-err`) fail with an uncatchable VM_ERROR / "Generator is executing"
+— param destructuring's IteratorStep throwing inside a generator's first
+`.next()` isn't propagated as a catchable JS exception (and IteratorClose must
+be skipped when `.next()` throws, §13.3.3). This is a VM generator-frame
+exception bug, not a destructuring-structure issue. Also open: `yield` inside a
+destructuring default (3 tests) — the shared emitter's lazy default thunks
+can't suspend the enclosing generator (needs inline defaults).
 
 Session 274 batch 3 — **destructuring consolidation**. Root cause of the
 recurring destructuring failures: the algorithm was implemented 3× independently
