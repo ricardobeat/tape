@@ -329,9 +329,11 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             if (target.uses_arguments()) {
                 HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
                 if (try args_obj = args_obj_raw) {
-                    // Store arguments in dense array_part (avoids O(argc) string key allocs)
+                    // Store arguments in dense array_part (avoids O(argc) string key allocs).
+                    // Read from the original args[] array (not frame[]) so arguments
+                    // beyond num_regs are included when nargs > nregs.
                     for (uint ai = 0; ai < nargs; ai++) {
-                        args_obj.set_array_idx(ai, frame[ai]);
+                        args_obj.set_array_idx(ai, args[ai]);
                     }
                     // ES5 §10.6: [[Prototype]] is Object.prototype
                     args_obj.prototype = vm.heap.object_proto;
@@ -970,10 +972,10 @@ fn TVal? Vm.run(Vm* vm) {
             TVal prim_b = *rb;
             TVal prim_c = *rc;
             // ES5 §11.6.1: + operator uses ToPrimitive with no hint (default "number")
-            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, false); }
+            if (rb.get_tag() == OBJECT) { prim_b = to_primitive_value(vm, rb, 0); }
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, false); }
+            if (rc.get_tag() == OBJECT) { prim_c = to_primitive_value(vm, rc, 0); }
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             TValTag pt_b = prim_b.get_tag();

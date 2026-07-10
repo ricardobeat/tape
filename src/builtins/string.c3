@@ -432,7 +432,7 @@ fn HString* string_proto_get_this(BuiltinContext* ctx) {
     // and propagates abrupt completions (including accessor get errors).
     if (this_val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
-        TVal prim = vm::to_primitive_value(vm_ptr, &this_val, true);  // hint "string"
+        TVal prim = vm::to_primitive_value(vm_ptr, &this_val, 1);  // hint "string"
         if (vm_ptr.throw_pending) {
             // Propagate the pending throw value so the caller's
             // `ctx.should_throw` path surfaces the original exception.

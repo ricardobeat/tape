@@ -1536,7 +1536,7 @@ fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
     }
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
-        TVal prim = vm::to_primitive_value(vm_ptr, val, false);
+        TVal prim = vm::to_primitive_value(vm_ptr, val, 2);  // hint "number"
         if (vm_ptr.throw_pending) {
             vm_ptr.throw_pending = false;
             ctx.should_throw = true;
@@ -1591,7 +1591,7 @@ fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
     }
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
-        TVal prim = vm::to_primitive_value(vm_ptr, val, false);  // hint "number"
+        TVal prim = vm::to_primitive_value(vm_ptr, val, 2);  // hint "number"
         if (vm_ptr.throw_pending) {
             // Propagate the thrown error (TypeError from to_primitive_value).
             ctx.should_throw = true;
@@ -1635,7 +1635,7 @@ fn HString* builtin_to_string_vm(BuiltinContext* ctx, TVal* val) {
     if (val.is_string()) return (HString*)val.get_heapptr();
     if (val.is_object() && ctx.vm != null) {
         Vm* vm_ptr = (Vm*)ctx.vm;
-        TVal prim = vm::to_primitive_value(vm_ptr, val, true);  // hint "string"
+        TVal prim = vm::to_primitive_value(vm_ptr, val, 1);  // hint "string"
         if (vm_ptr.throw_pending) {
             // Propagate to BuiltinContext so callers using `if (ctx.should_throw) return;`
             // bail, and the dispatcher turns the throw into a JS exception.

@@ -532,7 +532,8 @@ fn bool vm_check_call_fn_error(Vm* vm) @inline {
 /// ES5 §9.1 ToPrimitive — hint "string" for +, "number" for arithmetic.
 /// Calls Symbol.toPrimitive first (ES6 §7.1.1), then valueOf/toString.
 /// Sets vm.throw_pending if both valueOf and toString return non-primitives.
-fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
+/// hint: 0 = default, 1 = string, 2 = number
+fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         hobject::ObjClass cls = obj.get_class();
@@ -590,9 +591,11 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
             if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
                 // Call Symbol.toPrimitive(obj, hint) — use "default" for general ToPrimitive,
                 // but "string" for + operator (ES5 §11.6.1).
-                HString* hint_str = hint_is_string
+                HString* hint_str = (hint == 1)
                     ? intern_string(vm, "string")
-                    : intern_string(vm, "default");
+                    : ((hint == 2)
+                        ? intern_string(vm, "number")
+                        : intern_string(vm, "default"));
                 TVal hint_val;
                 hint_val.set_string(hint_str);
                 TVal[1] hint_args;
@@ -614,7 +617,7 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, bool hint_is_string = false) {
             Heap* h = vm.heap;
             bool is_date = (cls == hobject::ObjClass.DATE);
             // Date always uses toString first; other objects depend on hint.
-            bool use_string_first = is_date || hint_is_string;
+            bool use_string_first = is_date || (hint == 1);
             HString* first_key = use_string_first
                 ? (HString*)h.strs[heap::BuiltinStr.TO_STRING]
                 : (HString*)h.strs[heap::BuiltinStr.VALUE_OF];
