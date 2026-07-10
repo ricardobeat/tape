@@ -65,6 +65,12 @@ struct DestructBind {
     // reads the value via GETPROP with that register instead of a constant key.
     bool   is_computed_key;   // true = key comes from computed_key_reg, not key_idx
     ushort computed_key_reg;  // register holding the evaluated computed key
+    // ASSIGN_TARGET only: the identifier target is env-resident (did not resolve
+    // to a reused local register), so the emitter must PUTVAR by name — this
+    // runs the VM's const-assignment check. Set by the assignment collectors;
+    // decouples the store decision from is_local_var_reg register-number guessing
+    // (a fresh temp can collide with reserved low registers like r0).
+    bool   assign_needs_putvar;
 }
 
 /// Check if a candidate param name already exists in the seen-params table.
@@ -883,6 +889,11 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     int back_offset = (int)collect_start - (int)self.code_count - 1;
                     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
                     self.patch_jump(done_jump);
+                    // Rest consumed the iterator to done:true — latch [[done]] so
+                    // the trailing IteratorClose is skipped (§13.3.3.8 step 4.b),
+                    // matching the synthetic-rest path. Without this, ITER_CLOSE
+                    // calls .return() on an already-done iterator.
+                    self.emit_abc(Opcode.LDUNDEF, (uint)iter_states[iter_idx].method_reg, 0, 0);
 
                     self.free_reg(done_key_reg);
                     self.free_reg(done_reg);
@@ -945,7 +956,7 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                             (uint)bind_reg);
                         self.free_reg(binds[di].member_prop_reg);
                         self.free_reg(binds[di].member_obj_reg);
-                    } else if (!self.is_local_var_reg(bind_reg)) {
+                    } else if (binds[di].assign_needs_putvar || !self.is_local_var_reg(bind_reg)) {
                         self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
                     }
             }

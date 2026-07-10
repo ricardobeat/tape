@@ -354,28 +354,16 @@ fn bool? CompilerContext.parse_assign_target_lhs(&self,
 /// DestructuringAssignmentTarget = LeftHandSideExpression). Member targets are
 /// parsed eagerly to capture the object/key registers before the RHS iterator
 /// is set up; the emission machinery stores PUTPROP instead of PUTVAR.
-fn ushort? CompilerContext.array_destructure_assign(&self) {
-    DestructBind[MAX_DESTRUCT_BINDS] binds;
-    uint count = 0;
-
-    // Parse the array assignment pattern. Each element may be:
-    //   - a plain identifier (`a`)
-    //   - a member-expression target (`obj.x`, `arr[i]`, `{}[f()]`)
-    //   - a nested array or object assignment pattern (`[a]`, `{a}`)
-    //   - a rest element with any of the above targets (`...a`, `...obj.x`)
-    //   - a hole (elision: leading or interior commas)
-    //
-    // For member-expression targets, `parse_assign_target_lhs` emits code
-    // to evaluate the object and key into fresh registers NOW (before the
-    // RHS iterator is set up). The resulting registers are stored in
-    // `binds[i].member_obj_reg` / `member_prop_reg`; `emit_destruct_bindings`
-    // will emit PUTPROP instead of PUTVAR for these entries.
-    //
-    // Nested patterns are handled by delegating back to the shared
-    // `collect_arr_param_binds` / `collect_obj_param_binds` machinery (which
-    // only accepts identifier leaf targets within the nested sub-pattern).
-    // Top-level and rest targets accept the full LHS grammar.
-
+/// Collect an array assignment pattern into the shared DestructBind model.
+/// Accepts the full LeftHandSideExpression grammar at top level and in rest
+/// (identifiers, member expressions, nested array/object patterns, defaults,
+/// elision holes). Consumes through the closing ']'. Shared by
+/// array_destructure_assign and the bare for-of loop.
+fn void? CompilerContext.collect_arr_assign_binds(&self,
+    DestructBind[] binds_arg, uint* count_ptr)
+{
+    DestructBind[] binds = binds_arg;
+    uint count = *count_ptr;
     ushort elem_idx = 0;
     bool in_rest = false;
 
@@ -504,11 +492,16 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 count++;
             }
 
-            // Default: `[a = expr]`
+            // Default: `[a = expr]` — NamedEvaluation for identifier targets.
             if (self.match(TokenType.ASSIGN)) {
                 if (count > 0) {
                     binds[count - 1].has_default = true;
-                    CompiledFunction* default_func = self.compile_default_expr()!;
+                    char[] iname = "";
+                    if (!is_member) {
+                        HString* nhs = (HString*)self.constants[tgt_name].get_heapptr();
+                        iname = nhs.get_data();
+                    }
+                    CompiledFunction* default_func = self.compile_default_expr(iname)!;
                     uint def_idx = self.add_inner_func(default_func);
                     binds[count - 1].default_func_idx = def_idx;
                 }
@@ -520,6 +513,32 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     }
 
     self.expect(TokenType.RBRACKET)!;
+    *count_ptr = count;
+}
+
+fn ushort? CompilerContext.array_destructure_assign(&self) {
+    DestructBind[MAX_DESTRUCT_BINDS] binds;
+    uint count = 0;
+
+    // Parse the array assignment pattern. Each element may be:
+    //   - a plain identifier (`a`)
+    //   - a member-expression target (`obj.x`, `arr[i]`, `{}[f()]`)
+    //   - a nested array or object assignment pattern (`[a]`, `{a}`)
+    //   - a rest element with any of the above targets (`...a`, `...obj.x`)
+    //   - a hole (elision: leading or interior commas)
+    //
+    // For member-expression targets, `parse_assign_target_lhs` emits code
+    // to evaluate the object and key into fresh registers NOW (before the
+    // RHS iterator is set up). The resulting registers are stored in
+    // `binds[i].member_obj_reg` / `member_prop_reg`; `emit_destruct_bindings`
+    // will emit PUTPROP instead of PUTVAR for these entries.
+    //
+    // Nested patterns are handled by delegating back to the shared
+    // `collect_arr_param_binds` / `collect_obj_param_binds` machinery (which
+    // only accepts identifier leaf targets within the nested sub-pattern).
+    // Top-level and rest targets accept the full LHS grammar.
+
+    self.collect_arr_assign_binds(binds[..], &count)!;
 
     ushort[MAX_DESTRUCT_BINDS] group_regs;
     ushort[MAX_DESTRUCT_BINDS] binding_regs;
@@ -554,7 +573,9 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
                 continue;
             }
         }
+        // Env-resident target: temp + forced PUTVAR so const-assignment throws.
         binding_regs[i] = self.alloc_reg();
+        binds[i].assign_needs_putvar = true;
     }
 
     // Consume the '=' separating pattern from RHS (the caller verified it via
@@ -667,7 +688,9 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
             }
             if (self.match(TokenType.ASSIGN)) {
                 binds[*count - 1].has_default = true;
-                CompiledFunction* df = self.compile_default_expr()!;
+                // NamedEvaluation: `{a = fn}` names the anonymous fn "a".
+                HString* nhs = (HString*)self.constants[key_idx].get_heapptr();
+                CompiledFunction* df = self.compile_default_expr(nhs.get_data())!;
                 binds[*count - 1].default_func_idx = self.add_inner_func(df);
             }
         } else if (self.check(TokenType.LBRACKET) || self.check(TokenType.LBRACE)) {
@@ -723,7 +746,13 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
             }
             if (self.match(TokenType.ASSIGN)) {
                 binds[*count - 1].has_default = true;
-                CompiledFunction* df = self.compile_default_expr()!;
+                // NamedEvaluation for `{k: t = fn}` — only identifier targets.
+                char[] iname = "";
+                if (!is_member) {
+                    HString* nhs = (HString*)self.constants[tgt_name].get_heapptr();
+                    iname = nhs.get_data();
+                }
+                CompiledFunction* df = self.compile_default_expr(iname)!;
                 binds[*count - 1].default_func_idx = self.add_inner_func(df);
             }
         }
@@ -756,7 +785,10 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
         if (!self.is_global) {
             if (try existing = self.resolve_var(name)) { binding_regs[i] = existing; continue; }
         }
+        // Env-resident target (global, or captured/undeclared from a nested
+        // scope): use a temp and force PUTVAR so the const-assignment check runs.
         binding_regs[i] = self.alloc_reg();
+        binds[i].assign_needs_putvar = true;
     }
 
     self.expect(TokenType.ASSIGN)!;
