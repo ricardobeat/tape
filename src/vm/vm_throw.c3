@@ -5,6 +5,7 @@ import duktape::bytecode;
 import duktape::hobject;
 import duktape::hstring;
 import duktape::heap;
+import duktape::builtins;
 import libc;
 
 // ============================================================================
@@ -124,8 +125,48 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
             cat = cat.parent;
         }
         if (local_only) break;  // Don't walk parent activations
-        // No catcher in this activation — the throw unwinds past it. If it is a
-        // generator body, complete it before moving to the caller.
+        // No catcher in this activation — the throw unwinds past it. If it is an
+        // async function body, the throw does not propagate to the caller: it
+        // rejects the function's Promise (which the caller already received) and
+        // the async frame returns normally. Absorb it here.
+        if ((search_act.flags & ACT_FLAG_ASYNC) != 0 && search_act.async_promise != null
+            && !local_only) {
+            HObject* prom = search_act.async_promise;
+            // Pop every activation above and including the async frame.
+            while (vm.activation_count > 0
+                   && &vm.activations[vm.activation_count - 1] != search_act) {
+                vm_complete_gen_on_unwind(vm, &vm.activations[vm.activation_count - 1]);
+                vm.activation_count--;
+            }
+            if (search_act.async_gen_state != null
+                && vm.heap.resume_gen == search_act.async_gen_state) {
+                vm.heap.resume_gen = null;
+            }
+            decref_callee_regs(vm, search_act);
+            if (vm.activation_count > 0) vm.activation_count--;  // pop the async frame
+
+            builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &thrown_val, vm.heap);
+            builtins::promise_trigger_reactions(prom, vm.heap, (void*)vm);
+
+            if (vm.activation_count == 0) {
+                // Top-level async call: no caller to resume. Deliver undefined.
+                TVal undef; undef.set_undefined();
+                vm.heap.tval_copy_ref(&vm.return_val, &undef);
+                *needs_restart = true;
+                return true;
+            }
+            // Resume the caller; it already holds the Promise in its result reg.
+            Activation* caller = &vm.activations[vm.activation_count - 1];
+            vm.valstack_bottom = caller.bottom;
+            if (caller.func != null) {
+                CompiledFunction* cf = (CompiledFunction*)caller.func;
+                vm.valstack_top = caller.bottom + cf.num_regs;
+            }
+            *curr_pc = caller.curr_pc;
+            *needs_restart = true;
+            return true;
+        }
+        // Generator body: complete it before moving to the caller.
         vm_complete_gen_on_unwind(vm, search_act);
         search_act = search_act.parent;
         if (search_act == null) break;
