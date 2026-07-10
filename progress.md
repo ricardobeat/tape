@@ -1,18 +1,29 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 273 — **90.6% reached** (27,879 pass / 30,780 executable, up from 88.0%). Dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0 + reviver/text coercion, RegExp exec/@@split/@@replace lastIndex+result coercion, for-of destructuring lazy defaults.
+**Last Updated:** Session 274 — **92.1% reached** (28,342 pass / 30,780 executable, up from 88.0%). Bound-function re-dispatch refcount fix (+258): a bound arg (e.g. a constructor passed via `f.bind(undefined, Ctor)`) was written into the callee's arg registers without an incref, so the callee's normal decref freed it while still live — the freed pool block was then recycled into a new bound function, corrupting the original (e.g. `Float64Array.name` returning `"bound makeArrayLike"`). This broke nearly every `testWithTypedArrayConstructors`/`testWithAllTypedArrayConstructors` test. Earlier this session: dense-array >65535 fix (+~600), String proto ToPrimitive coercion, isWellFormed/toWellFormed, bind name/length, frozen-array pop/shift, Function.prototype[Symbol.hasInstance], Date[Symbol.toPrimitive], JSON.parse -0 + reviver/text coercion, RegExp exec/@@split/@@replace lastIndex+result coercion, for-of destructuring lazy defaults, subclassing built-ins, Promise combinators+then/species.
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
-## Summary (full run, session 273, 2026-07-10)
+## Summary (full run, session 274, 2026-07-10)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,084 |
-| **Overall pass rate** | **91.2%** |
-| Total failing | 2,463 |
+| Total passing | 28,342 |
+| **Overall pass rate** | **92.1%** |
+| Total failing | 2,205 |
 | CE unexpected (parser bugs) | 230 |
 | Skipped | 14,032 |
+
+Session 274: bound-function re-dispatch refcount fix. Phase 22 Buffers
+857 → 1119 (+262); Phase 5 +1, Phase 6 +140 vs 270 baseline, Phase 8 +13.
+Root-caused via HW watchpoint: `builtin_bound_call` compiled/BUILTIN_FN
+re-dispatch copied bound args into the callee register window with raw
+assignment. The callee decrefs those slots, but the bound args were read
+from the stored args array (`get_prop_proto`) without an incref → net
+over-decref, premature free of a live object (a TypedArray constructor),
+pool-block recycle into the next bound function. Fixed by increffing
+heap-ref bound args (indices `< bound_argc`) before the register write.
+91.2% → 92.1% (+258 pass).
 
 Promise combinators (all/any/race/allSettled) + Promise.prototype.then custom
 constructor / Promise[Symbol.species]: Phase 17-20 1004 → 1083 (+79). 91.0% → 91.2%.
