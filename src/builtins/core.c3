@@ -791,6 +791,40 @@ fn double builtin_string_to_number(HString* hstr) {
         return (double)val;
     }
 
+    // --- Binary integer literal (0b... / 0B...) — ES2015 §7.1.3.1 ---
+    // Unlike parseInt, ToNumber(String) accepts the ES2015 non-decimal
+    // integer literal prefixes 0b/0o/0x (but NOT a sign or a trailing radix).
+    if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
+        uint j = 2;
+        if (p[j] != '0' && p[j] != '1') return double::nan; // require ≥1 digit
+        double val = 0.0;
+        while (p[j] == '0' || p[j] == '1') {
+            val = val * 2.0 + (double)(p[j] - '0');
+            j++;
+        }
+        while (p[j] != 0) {
+            if (!is_ecma_whitespace(p[j])) return double::nan;
+            j++;
+        }
+        return val;
+    }
+
+    // --- Octal integer literal (0o... / 0O...) — ES2015 §7.1.3.1 ---
+    if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
+        uint j = 2;
+        if (p[j] < '0' || p[j] > '7') return double::nan; // require ≥1 digit
+        double val = 0.0;
+        while (p[j] >= '0' && p[j] <= '7') {
+            val = val * 8.0 + (double)(p[j] - '0');
+            j++;
+        }
+        while (p[j] != 0) {
+            if (!is_ecma_whitespace(p[j])) return double::nan;
+            j++;
+        }
+        return val;
+    }
+
     // --- Decimal via libc::strtod ---
     char* endptr;
     double result = libc::strtod(p, &endptr);
