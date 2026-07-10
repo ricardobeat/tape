@@ -8,11 +8,23 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 28,457 |
-| **Overall pass rate** | **92.5%** |
-| Total failing | 2,093 |
-| CE unexpected (parser bugs) | 230 |
+| Total passing | 28,511 |
+| **Overall pass rate** | **92.6%** |
+| Total failing | 2,065 |
+| CE unexpected (parser bugs) | 201 |
 | Skipped | 14,032 |
+
+Session 274 batch 3 — **destructuring consolidation**. Root cause of the
+recurring destructuring failures: the algorithm was implemented 3× independently
+(shared emit_destruct_bindings; a 1,450-line inline for-of copy; the dead
+destructure_for_value), so each fix patched only one copy. Deleted the dead copy
+(287 ln) and the inline for-of copy (1,352 ln), rerouting for-of through the
+shared emitter (collect_*_param_binds → emit_destruct_bindings(DECLARE)). Added
+computed-key support to the shared emitter as the enabling prerequisite (Phase 15
+Classes +16 on its own). Phase 14 for-of 434→461 (+27), Phase 21 Generators +4,
+CE-unexpected 230→201. Net ~1,600 lines removed, zero regressions across 3,563
+dstr/for-of/assignment tests. 92.5% → 92.6%. Cumulative session 91.2% → 92.6%
+(+1,432 pass).
 
 Session 274 second batch (self + 3 parallel worktree agents, reconciled):
 Function.prototype.toString object-method source retention (cluster 62→70);
