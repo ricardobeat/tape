@@ -94,26 +94,126 @@ fn void builtin_parse_int(BuiltinContext* ctx) {
         ctx.result.set_number(double::nan);
         return;
     }
-    char* cstr = h.get_cstr();
-    // Skip leading whitespace
-    char* p = cstr;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-
-    int radix;
+    // ── Radix coercion (ES2015 §18.2.5 step 7: ToInt32) ────────────────────
+    // Done before string scanning; a throwing radix must propagate.
+    int radix = 0;
     if (ctx.argc > 1) {
-        TVal* rad_arg = &ctx.regs[ctx.base_reg + 1];
-        radix = (int)(rad_arg.is_fastint() ? rad_arg.get_fastint() : rad_arg.get_number());
-    } else {
-        radix = 0;  // auto-detect: 0x/0X = hex; leading 0 = octal via strtol (legacy ES5; not ES2015+ spec)
+        double r = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) return;
+        // ToInt32 modular wrap.
+        if (math::is_nan(r) || math::is_inf(r)) {
+            radix = 0;
+        } else {
+            radix = (int)(long)r;  // truncated; large values wrap harmlessly below
+        }
     }
 
-    char* end;
-    long result = libc::strtol(p, &end, radix);
-    if (end == cstr) {
+    char* cstr = h.get_cstr();
+    usz blen = h.blen;
+    usz i = 0;
+
+    // ── Step 2: strip leading StrWhiteSpace (WhiteSpace + LineTerminator) ──
+    // Covers ASCII ws plus the common Unicode spaces test262 exercises via
+    // their UTF-8 encodings (NBSP U+00A0, BOM U+FEFF, various U+2000..U+200A,
+    // U+2028/U+2029, U+1680, U+202F, U+205F, U+3000).
+    while (i < blen) {
+        char c = cstr[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r'
+                || c == 0x0B || c == 0x0C) { i++; continue; }
+        // Multi-byte UTF-8 whitespace.
+        usz adv = utf8_whitespace_len(cstr, blen, i);
+        if (adv > 0) { i += adv; continue; }
+        break;
+    }
+
+    // ── Step 4-5: optional sign ────────────────────────────────────────────
+    int sign = 1;
+    if (i < blen && (cstr[i] == '+' || cstr[i] == '-')) {
+        if (cstr[i] == '-') sign = -1;
+        i++;
+    }
+
+    // ── Step 8-10: radix normalisation + 0x prefix ─────────────────────────
+    bool strip_prefix = false;
+    if (radix == 0) {
+        radix = 10;
+        strip_prefix = true;
+    } else if (radix < 2 || radix > 36) {
+        ctx.result.set_number(double::nan);
+        return;
+    } else if (radix == 16) {
+        strip_prefix = true;
+    }
+    if (strip_prefix && i + 1 < blen && cstr[i] == '0'
+            && (cstr[i + 1] == 'x' || cstr[i + 1] == 'X')) {
+        i += 2;
+        radix = 16;
+    }
+
+    // ── Step 11-16: consume digits ─────────────────────────────────────────
+    double value = 0.0;
+    bool saw_digit = false;
+    while (i < blen) {
+        char c = cstr[i];
+        int d;
+        if (c >= '0' && c <= '9') { d = c - '0'; }
+        else if (c >= 'a' && c <= 'z') { d = c - 'a' + 10; }
+        else if (c >= 'A' && c <= 'Z') { d = c - 'A' + 10; }
+        else { break; }
+        if (d >= radix) break;
+        value = value * (double)radix + (double)d;
+        saw_digit = true;
+        i++;
+    }
+
+    if (!saw_digit) {
         ctx.result.set_number(double::nan);
         return;
     }
-    ctx.result.set_fastint(result);
+    value *= (double)sign;
+    // Emit a fastint only within its 48-bit payload range; larger exact
+    // integers must go through set_number to avoid truncation.
+    if (value >= (double)types::FASTINT_MIN && value <= (double)types::FASTINT_MAX
+            && value == (double)(long)value) {
+        ctx.result.set_fastint((long)value);
+    } else {
+        ctx.result.set_number(value);
+    }
+}
+
+/// Returns the UTF-8 byte length of a Unicode whitespace/BOM code point at
+/// `buf[i]`, or 0 if the code point there is not JS StrWhiteSpace. Handles the
+/// 2- and 3-byte sequences ECMAScript treats as whitespace.
+fn usz utf8_whitespace_len(char* buf, usz len, usz i) {
+    char c0 = buf[i];
+    // 2-byte: U+00A0 (C2 A0) NBSP.
+    if (i + 1 < len && (uint)(char)c0 == 0xC2 && (uint)(char)buf[i + 1] == 0xA0) {
+        return 2;
+    }
+    // 3-byte sequences.
+    if (i + 2 < len && (uint)(char)c0 == 0xE1
+            && (uint)(char)buf[i + 1] == 0x9A && (uint)(char)buf[i + 2] == 0x80) {
+        return 3; // U+1680
+    }
+    if (i + 2 < len && (uint)(char)c0 == 0xE2) {
+        uint b1 = (uint)(char)buf[i + 1];
+        uint b2 = (uint)(char)buf[i + 2];
+        // U+2000..U+200A (E2 80 80..8A), U+2028 (E2 80 A8), U+2029 (E2 80 A9),
+        // U+202F (E2 80 AF), U+205F (E2 81 9F).
+        if (b1 == 0x80 && ((b2 >= 0x80 && b2 <= 0x8A) || b2 == 0xA8 || b2 == 0xA9 || b2 == 0xAF)) {
+            return 3;
+        }
+        if (b1 == 0x81 && b2 == 0x9F) { return 3; } // U+205F
+    }
+    if (i + 2 < len && (uint)(char)c0 == 0xE3
+            && (uint)(char)buf[i + 1] == 0x80 && (uint)(char)buf[i + 2] == 0x80) {
+        return 3; // U+3000
+    }
+    if (i + 2 < len && (uint)(char)c0 == 0xEF
+            && (uint)(char)buf[i + 1] == 0xBB && (uint)(char)buf[i + 2] == 0xBF) {
+        return 3; // U+FEFF BOM
+    }
+    return 0;
 }
 
 fn void builtin_parse_float(BuiltinContext* ctx) {
