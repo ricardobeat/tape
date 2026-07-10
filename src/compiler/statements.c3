@@ -3058,6 +3058,14 @@ fn void? CompilerContext.for_statement(&self) {
         // Expression init
         ushort init_reg = self.expression()!;
         self.free_reg(init_reg);
+        // Guard: if the init expression returned a local variable's register
+        // (e.g. `i = 0` returning `i`'s reg), free_reg may have dropped
+        // next_reg below the locals already allocated before the for-statement.
+        // Restore next_reg to saved_reg so subsequent alloc_reg calls do not
+        // clobber those live locals.
+        if (self.next_reg < saved_reg) {
+            self.next_reg = saved_reg;
+        }
         self.expect(TokenType.SEMICOLON)!;
     } else {
         // Empty init
