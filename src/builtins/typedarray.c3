@@ -111,18 +111,9 @@ fn void typedarray_link_view(HObject* buf, HObject* view) {
 /// %TypedArray%.prototype-derived per-class prototype) for `new.target`-style
 /// prototype inheritance.
 fn HObject* typedarray_instance_proto(BuiltinContext* ctx, HObject* fallback_proto) {
-    HObject* instance_proto = fallback_proto;
-    if (ctx.callee_obj != null) {
-        HString* prototype_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
-        TVal? proto_tv = ctx.callee_obj.get_prop(prototype_key);
-        if (try ptv = proto_tv) {
-            if (ptv.is_object()) {
-                HObject* cp = (HObject*)ptv.get_heapptr();
-                if (cp != null) instance_proto = cp;
-            }
-        }
-    }
-    return instance_proto;
+    // Prefer new_target (set by vm_calls for both direct new and super() paths).
+    // Fall back to callee_obj for the legacy path where new_target is not set.
+    return builtin_proto_from_new_target(ctx, fallback_proto);
 }
 
 /// Store one converted element into `buf`'s backing store at element index

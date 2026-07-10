@@ -1185,6 +1185,39 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             TVal* super_slot = ds.regs_base + callee_reg;
             TVal super_val = *super_slot;
 
+            // Handle lightfunc super constructors (Boolean, Number, String, etc.)
+            if (super_val.is_lightfunc()) {
+                uint fn_idx = (uint)(usz)super_val.get_heapptr();
+                HObject* lf_ctor_proto = lightfunc_get_proto(vm, fn_idx);
+                if (lf_ctor_proto == null) {
+                    HString* type_str = typeof_string(vm, &super_val);
+                    vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart);
+                    return (TVal){};
+                }
+                HObject* lf_new_target = ds.act.new_target;
+                if (lf_new_target == null) { ra.set_undefined(); return (TVal){}; }
+                builtins::BuiltinContext ctx;
+                ctx.vm = vm;
+                ctx.regs = vm.valstack;
+                ctx.base_reg = (ushort)((uint)(ds.act.bottom - vm.valstack) + callee_reg + 2);
+                ctx.argc = (ushort)nargs;
+                ctx.result = ds.regs_base + result_reg;
+                ctx.heap = vm.heap;
+                ctx.this_val = ds.regs_base[callee_reg + 1];
+                ctx.is_constructor = true;
+                ctx.needs_re_dispatch = false;
+                ctx.re_nargs = 0;
+                ctx.global_env = vm.global_env;
+                ctx.should_throw = false;
+                ctx.callee_obj = null;
+                ctx.new_target = lf_new_target;
+                builtins::dispatch_builtin(fn_idx, &ctx);
+                if (ctx.should_throw) {
+                    vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
+                }
+                return (TVal){};
+            }
+
             if (!super_val.is_object()) {
                 // TypeError: superclass is not a constructor
                 HString* type_str = typeof_string(vm, &super_val);
@@ -1228,6 +1261,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.global_env = vm.global_env;
                     ctx.should_throw = false;
                     ctx.callee_obj = super_hobj;
+                    ctx.new_target = new_target;
                     builtins::dispatch_builtin(fn_idx, &ctx);
                 }
                 return (TVal){};
@@ -1531,6 +1565,11 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.global_env = vm.global_env;
                     ctx.should_throw = false;
                     ctx.callee_obj = hobj;
+                    // For a plain `new Builtin()` the new.target IS the callee, so
+                    // GetPrototypeFromConstructor(hobj, default) will find the same
+                    // intrinsic prototype that the constructor would hardcode — no
+                    // change in behaviour for non-subclassed calls.
+                    ctx.new_target = hobj;
                     builtins::dispatch_builtin(fn_idx, &ctx);
                     // Refresh ds.regs_base after possible valstack realloc inside builtin.
                     ds.regs_base = ds.act.bottom;

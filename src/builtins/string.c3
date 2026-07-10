@@ -73,7 +73,7 @@ fn void builtin_string(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.flags.exotic_stringobj = true;
-        obj.prototype = ctx.heap.string_proto;
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.string_proto);
         (*obj.extra_ptr()).prim.primitive_value.set_string(s);
         // Set .length own property (ES5 §15.5.5.1) — non-writable, non-enumerable, non-configurable
         HString* len_key = (HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH];

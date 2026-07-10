@@ -520,7 +520,7 @@ fn void builtin_date(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
-        obj.prototype = ctx.heap.date_proto;
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.date_proto);
 
         double time_val;
         if (ctx.argc == 0) {

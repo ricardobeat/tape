@@ -472,6 +472,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
             bctx.global_env = vm.global_env;
             bctx.should_throw = false;
             bctx.callee_obj = ctor;
+            bctx.new_target = ctor;
             builtins::dispatch_builtin((uint)builtin_idx, &bctx);
             if (bctx.should_throw) {
                 vm.throw_pending = true;

@@ -22,7 +22,7 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
         return;
     }
     HObject* err = err_raw;
-    err.prototype = proto;
+    err.prototype = builtin_proto_from_new_target(ctx, proto);
 
     // Set .message if first arg is provided and not undefined
     HString* msg_str = null;
@@ -154,7 +154,7 @@ fn void builtin_aggregate_error(BuiltinContext* ctx) {
         return;
     }
     HObject* err = err_raw;
-    err.prototype = ctx.heap.aggregate_err_proto;
+    err.prototype = builtin_proto_from_new_target(ctx, ctx.heap.aggregate_err_proto);
 
     // Set .message if provided and not undefined
     HString* msg_str = null;

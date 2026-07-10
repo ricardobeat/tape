@@ -192,7 +192,7 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = obj_raw;
-    obj.prototype = ctx.heap.regexp_proto;
+    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.regexp_proto);
     (*obj.extra_ptr()).regexp.regexp_data = compiled;
     (*obj.extra_ptr()).regexp.flags = js_flags;
 

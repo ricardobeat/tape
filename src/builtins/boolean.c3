@@ -28,7 +28,7 @@ fn void builtin_boolean(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
-        obj.prototype = ctx.heap.bool_proto;
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.bool_proto);
         (*obj.extra_ptr()).prim.primitive_value.set_boolean(b);
         ctx.result.set_object(obj);
     } else {

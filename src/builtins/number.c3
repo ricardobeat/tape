@@ -85,7 +85,7 @@ fn void builtin_number(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
-        obj.prototype = ctx.heap.number_proto;
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.number_proto);
         (*obj.extra_ptr()).prim.primitive_value = num;
         ctx.result.set_object(obj);
     } else {

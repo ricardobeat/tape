@@ -422,7 +422,7 @@ fn void builtin_array(BuiltinContext* ctx) {
         return;
     }
     HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
+    arr.prototype = builtin_proto_from_new_target(ctx, ctx.heap.array_proto);
 
     HString* len_key = builtin_intern_string(ctx.heap, "length");
 

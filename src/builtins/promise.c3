@@ -694,6 +694,8 @@ fn void builtin_promise(BuiltinContext* ctx) {
         return;
     }
     HObject* promise = prom_raw;
+    // ES2015 §25.4.3.1 step 3: OrdinaryCreateFromConstructor(NewTarget, "%PromisePrototype%")
+    promise.prototype = builtin_proto_from_new_target(ctx, ctx.heap.promise_proto);
 
     if (ctx.argc < 1) {
         // No executor — return pending promise

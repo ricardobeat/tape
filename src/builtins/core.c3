@@ -518,9 +518,36 @@ struct BuiltinContext {
     TVal  throw_value;
     /// The function object being called (for builtins that need to access their own properties).
     HObject* callee_obj;
+    /// ES2015 GetPrototypeFromConstructor: the new.target passed to this constructor
+    /// invocation.  Set to the subclass constructor when called via super(); set to
+    /// the callee itself for a plain `new Builtin()`.  Null for non-constructor calls.
+    HObject* new_target;
 }
 
 alias BuiltinFunc = fn void(BuiltinContext*);
+
+/// ES2015 §9.1.14 OrdinaryCreateFromConstructor / §9.1.15 GetPrototypeFromConstructor.
+///
+/// If ctx.new_target is non-null, read its "prototype" property; if that is an
+/// object return it as the instance prototype.  Otherwise return default_proto.
+/// This makes `class Sub extends Builtin {}` produce instances whose __proto__ is
+/// Sub.prototype rather than the built-in prototype.
+fn HObject* builtin_proto_from_new_target(BuiltinContext* ctx, HObject* default_proto) {
+    HObject* nt = ctx.new_target;
+    if (nt == null) return default_proto;
+    // Avoid the trivial case: if new_target is the builtin itself (plain `new Builtin()`)
+    // its ".prototype" IS default_proto, so we'd return the same value — but it's still
+    // correct to do the lookup for callee-less lightfunc paths.
+    HString* proto_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
+    if (proto_key == null) return default_proto;
+    TVal? proto_tv = nt.get_prop_proto(proto_key);
+    if (try ptv = proto_tv) {
+        if (ptv.is_object() && ptv.get_heapptr() != null) {
+            return (HObject*)ptv.get_heapptr();
+        }
+    }
+    return default_proto;
+}
 
 /// ES5 §8.12.3 [[Get]] / ES2020 §10.1.8.1 OrdinaryGet — for builtins that
 /// need full Get semantics on a property (walks prototype chain, invokes
@@ -1015,7 +1042,7 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
         return;
     }
     HObject* coll = obj_raw;
-    coll.prototype = proto;
+    coll.prototype = builtin_proto_from_new_target(ctx, proto);
 
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];

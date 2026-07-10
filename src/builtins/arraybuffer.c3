@@ -128,18 +128,7 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
     (*obj.extra_ptr()).ab.byte_length = byte_length;
     (*obj.extra_ptr()).ab.views_head = null;
 
-    HObject* instance_proto = ctx.heap.arraybuffer_proto;
-    if (ctx.callee_obj != null) {
-        HString* prototype_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
-        TVal? proto_tv = ctx.callee_obj.get_prop(prototype_key);
-        if (try ptv = proto_tv) {
-            if (ptv.is_object()) {
-                HObject* cp = (HObject*)ptv.get_heapptr();
-                if (cp != null) instance_proto = cp;
-            }
-        }
-    }
-    obj.prototype = instance_proto;
+    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.arraybuffer_proto);
 
     ctx.result.set_object(obj);
 }
