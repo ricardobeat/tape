@@ -1755,14 +1755,31 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     // Dense array promotion: if the key is a valid array index and the element
     // exists in the dense array part but not in named props, promote it with
     // WEC flags so the normal [[DefineOwnProperty]] update path handles it.
+    // We use a non-WEC flag (WC: enumerable=false) to force put_prop into the
+    // named property table; otherwise put_prop re-routes back to dense storage
+    // (leaving find_prop_idx returning -1) and the update creates a new property
+    // with all-false default flags instead of preserving the WEC defaults.
+    // After creating the named entry we fix its flags to WEC and clear the dense
+    // slot to prevent the VM GETPROP fast path from returning the stale dense value.
     if (existing_idx < 0 && ((HString*)key).is_arridx()) {
         uint arr_idx = ((HString*)key).array_index();
         TVal* ap = obj.array_part();
         if (ap != null && arr_idx < obj.array_size) {
             TVal arr_val = ap[arr_idx];
             if (!arr_val.is_undefined()) {
-                obj.put_prop((void*)key, arr_val, hobject::PROP_FLAGS_WEC);
+                // PROP_FLAGS_WC has enumerable=false — put_prop routes to named table.
+                obj.put_prop((void*)key, arr_val, hobject::PROP_FLAGS_WC);
                 existing_idx = obj.find_prop_idx(key);
+                if (existing_idx >= 0) {
+                    // Fix flags to WEC: dense elements are WEC data properties.
+                    obj.set_prop_flags((uint)existing_idx, hobject::PROP_FLAGS_WEC);
+                    // Clear the dense slot: the named-prop table is now authoritative.
+                    // This prevents the VM GETPROP fast path from returning the stale
+                    // dense value instead of the (soon-to-be-updated) named value.
+                    TVal hole; hole.set_undefined();
+                    ap[arr_idx] = hole;
+                    if (obj.array_used > 0) obj.array_used--;
+                }
             }
         }
     }
@@ -2171,13 +2188,27 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             // with {writable:true, enumerable:true, configurable:true}. Promote a
             // dense element to a named property before the descriptor-validation so
             // the existing-property path applies with the correct implicit flags.
+            // Dense-to-named promotion: when a dense array slot exists but has no named
+            // property entry, we must create one so the existing-property update path
+            // (which reads/updates named-prop flags) can operate correctly.
+            // Use PROP_FLAGS_WC (enumerable=false) to force put_prop into the named
+            // property table — WEC would route back to dense and leave find_prop_idx at -1.
+            // After creating the named entry we fix flags to WEC and clear the dense slot
+            // so the VM GETPROP fast path does not return the stale dense value.
             if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
                 && obj.find_prop_idx(p_key) < 0 && p_key.is_arridx()) {
                 uint p_ai = (uint)((HString*)p_key).array_index();
                 if (p_ai < obj.array_size) {
                     TVal dense_elem = obj.array_part()[p_ai];
                     if (!dense_elem.is_undefined()) {
-                        obj.put_prop(p_key, dense_elem, hobject::PROP_FLAGS_WEC);
+                        obj.put_prop(p_key, dense_elem, hobject::PROP_FLAGS_WC);
+                        int promo_idx = obj.find_prop_idx(p_key);
+                        if (promo_idx >= 0) {
+                            obj.set_prop_flags((uint)promo_idx, hobject::PROP_FLAGS_WEC);
+                            TVal hole; hole.set_undefined();
+                            obj.array_part()[p_ai] = hole;
+                            if (obj.array_used > 0) obj.array_used--;
+                        }
                     }
                 }
             }

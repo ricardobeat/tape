@@ -200,11 +200,12 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
     (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);
 
-    // Set RegExp.prototype.lastIndex (ES5 §15.10.7) — own data property
+    // Set RegExp.prototype.lastIndex (ES5 §15.10.7.5) — writable, non-enumerable,
+    // non-configurable own data property.
     HString* lastindex_key = builtin_intern_string(ctx.heap, "lastIndex");
     TVal lastindex_tv;
     lastindex_tv.set_fastint(0);
-    obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WENC);
 
     ctx.result.set_object(obj);
 }

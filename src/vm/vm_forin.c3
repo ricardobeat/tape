@@ -113,11 +113,12 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         }
 
         // Own named properties — integer indices ascending, then strings in insertion order.
-        // Phase 1: integer-indexed named properties (sorted by numeric index)
+        // Phase 1: integer-indexed named properties (sorted by numeric index, enumerable only)
         {
             uint int_count = 0;
             for (uint i = 0; i < cur.prop_count; i++) {
-                if (cur.prop_key_at(i) != null && ((HString*)cur.prop_key_at(i)).is_arridx()) {
+                if (cur.prop_key_at(i) != null && ((HString*)cur.prop_key_at(i)).is_arridx()
+                    && cur.get_prop_flags(i).enumerable) {
                     int_count++;
                 }
             }
@@ -126,7 +127,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 if (sbuf != null) {
                     uint p = 0;
                     for (uint i = 0; i < cur.prop_count; i++) {
-                        if (cur.prop_key_at(i) != null) {
+                        if (cur.prop_key_at(i) != null && cur.get_prop_flags(i).enumerable) {
                             HString* k = (HString*)cur.prop_key_at(i);
                             if (k.is_arridx()) {
                                 sbuf[p * 2] = k.array_index();
