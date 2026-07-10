@@ -522,6 +522,66 @@ fn ushort find_destruct_iter(ushort src_reg, DestructIterState[] states, uint* c
 }
 
 /// Shared emission helper for function-parameter destructuring bindings.
+/// Emit object-rest collection into dest_reg: `dest = Object.assign({}, src)`
+/// then delete every sibling explicit key (own key list minus the rest target),
+/// per ES2018 §13.3.3 RestBindingInitialization / DestructuringAssignment.
+/// `binds`/`count` describe the full pattern; `rest_di` is the rest bind whose
+/// siblings (same parent_idx) name the properties to exclude. `__proto__` is
+/// excluded even if not explicitly listed.
+fn void CompilerContext.emit_object_rest(&self,
+    ushort dest_reg, ushort src_reg,
+    DestructBind[] binds, uint count, uint rest_di)
+{
+    ushort parent = binds[rest_di].parent_idx;
+
+    // dest = Object.assign({}, src)
+    ushort empty_obj_reg = self.alloc_reg();
+    self.emit_abc(Opcode.NEWOBJ, (uint)empty_obj_reg, 0, 0);
+
+    ushort obj_var_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)obj_var_reg, self.add_string_constant("Object"));
+    ushort assign_key_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.LDCONST, (uint)assign_key_reg, self.add_string_constant("assign"));
+    ushort assign_method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)assign_method_reg, (uint)obj_var_reg, (uint)assign_key_reg);
+    self.free_reg(assign_key_reg);
+    self.free_reg(obj_var_reg);
+
+    ushort callee_reg = self.alloc_reg();
+    if (self.next_reg < callee_reg + 3) { self.next_reg = callee_reg + 3; }
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)assign_method_reg, 0);
+    self.free_reg(assign_method_reg);
+    self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 1), (uint)empty_obj_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)(callee_reg + 2), (uint)src_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)callee_reg, (uint)callee_reg, 2);
+    self.emit_abc(Opcode.LDREG, (uint)dest_reg, (uint)callee_reg, 0);
+    self.free_reg(callee_reg);
+    self.free_reg(empty_obj_reg);
+
+    // Delete each sibling explicit key from dest.
+    uint proto_idx = self.add_string_constant("__proto__");
+    for (uint j = 0; j < count; j++) {
+        if (j == rest_di) continue;
+        if (binds[j].parent_idx != parent) continue;
+        if (binds[j].is_object == false) continue;   // array siblings can't share an object parent
+        if (binds[j].key_idx == 0xFFFF) continue;     // another rest (shouldn't happen)
+        if (binds[j].is_computed_key) {
+            // Delete by the runtime computed key value.
+            ushort dr = self.alloc_reg();
+            self.emit_abc(Opcode.DELPROP, (uint)dr, (uint)dest_reg, (uint)binds[j].computed_key_reg);
+            self.free_reg(dr);
+            continue;
+        }
+        if (binds[j].key_idx == proto_idx) continue;  // __proto__ already excluded
+        ushort del_key_reg = self.alloc_reg();
+        self.emit_a_bc(Opcode.LDCONST, (uint)del_key_reg, binds[j].key_idx);
+        ushort del_result_reg = self.alloc_reg();
+        self.emit_abc(Opcode.DELPROP, (uint)del_result_reg, (uint)dest_reg, (uint)del_key_reg);
+        self.free_reg(del_key_reg);
+        self.free_reg(del_result_reg);
+    }
+}
+
 /// Force GetIterator(src) + immediate IteratorClose. Used for an empty array
 /// assignment pattern `[] = rhs`: per DestructuringAssignmentEvaluation the
 /// pattern still performs GetIterator, so `[] = undefined` must throw TypeError.
@@ -746,7 +806,10 @@ fn void CompilerContext.emit_destruct_bindings(&self,
 
             // Extract value from source into bind_reg
             if (binds[di].is_object) {
-                if (binds[di].is_computed_key) {
+                if (binds[di].key_idx == 0xFFFF) {
+                    // Object rest: `{...rest}` → Object.assign({}, src) minus siblings.
+                    self.emit_object_rest(bind_reg, src_reg, binds, count, di);
+                } else if (binds[di].is_computed_key) {
                     self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)binds[di].computed_key_reg);
                 } else {
                     ushort key_reg = self.alloc_reg();
