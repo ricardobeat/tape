@@ -543,8 +543,8 @@ struct HObjectBase {
     Shape*        shape @if(USE_SHAPE_CACHE);
     ushort        prop_capacity;
     ushort        prop_count;
-    ushort        array_size;
-    ushort        array_used;
+    uint          array_size;
+    uint          array_used;
     void*         prop_alloc;
     PropHashInfo* prop_hash;
 }
@@ -1140,6 +1140,33 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
         return true;
     }
 
+    // --- New array-index element on an exotic array → dense part ---
+    // A fresh integer-indexed write with the default data descriptor (WEC)
+    // must grow the dense array part, not the named-property table.  The
+    // named table is ushort-capped (65535 entries), so routing large indexed
+    // writes there would silently truncate long arrays (e.g. `for (i…) a[i]=i`
+    // past 2^16).  set_array_idx grows a separate uint-sized dense backing.
+    if (self.flags.exotic_array && key != builtin_length_key) {
+        HString* ks = (HString*)key;
+        // Only route non-undefined values: the dense part uses `undefined` as
+        // its hole sentinel, so it cannot distinguish an explicitly-stored
+        // `undefined` element from an absent index.  Such writes fall through
+        // to the named-property table, which records genuine presence.
+        if (ks.is_arridx() && !val.is_undefined()
+            && pflags.writable && pflags.enumerable && pflags.configurable
+            && !pflags.is_accessor) {
+            uint ks_idx = ks.array_index();
+            if (self.set_array_idx(ks_idx, val)) {
+                if (ks_idx >= *self.array_len_ptr()) {
+                    *self.array_len_ptr() = ks_idx + 1;
+                }
+                return true;
+            }
+            // Dense growth failed (allocation/overflow) — fall through to the
+            // named-property path as a best-effort fallback.
+        }
+    }
+
     // --- Grow if necessary ---
     if (self.prop_count >= self.prop_capacity) {
         self.grow_props();
@@ -1495,8 +1522,6 @@ fn void HObject.grow_props(&self) {
 /// and copies inline prop values to it.
 fn void HObject.grow_array(&self, uint new_size) {
     if (new_size <= self.array_size) return;
-    // Dense arrays with >65535 elements would overflow ushort. Clamp.
-    if (new_size > 65535) new_size = 65535;
 
     usz new_bytes = (usz)self.prop_capacity * PropValue::size + (usz)new_size * TVal::size;
 
@@ -1524,7 +1549,7 @@ fn void HObject.grow_array(&self, uint new_size) {
 
     self.prop_alloc = new_raw;
     usz old_array_size = self.array_size;
-    self.array_size = (ushort)new_size;
+    self.array_size = new_size;
 
     usz added = (usz)(new_size - old_array_size);
     for (usz i = 0; i < added; i++) {

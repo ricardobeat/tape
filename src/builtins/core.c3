@@ -1265,7 +1265,7 @@ fn void coll_set_entry(BuiltinContext* ctx, HObject* coll, uint stride, bool req
         coll.set_array_idx(cnt, key);
         coll.set_array_idx(cnt + 1, value);
         if (grow_hwm && coll.array_used <= cnt + 1) {
-            coll.array_used = (ushort)(cnt + 2);
+            coll.array_used = (uint)(cnt + 2);
         }
     }
     ctx.result.set_object(coll);
@@ -1290,7 +1290,7 @@ fn void coll_add_value(BuiltinContext* ctx, HObject* coll, bool require_object_v
         uint idx = coll.array_used;
         coll.set_array_idx(idx, value);
         if (grow_hwm && coll.array_used <= idx) {
-            coll.array_used = (ushort)(idx + 1);
+            coll.array_used = (uint)(idx + 1);
         }
     }
     ctx.result.set_object(coll);
@@ -1318,7 +1318,7 @@ fn void coll_delete(BuiltinContext* ctx, HObject* coll, TVal key, uint stride, b
         for (uint i = 0; i < stride; i++) {
             coll.array_part()[cnt - stride + i].set_undefined();
         }
-        coll.array_used = (ushort)(cnt - stride);
+        coll.array_used = (uint)(cnt - stride);
     }
     ctx.result.set_boolean(true);
 }
