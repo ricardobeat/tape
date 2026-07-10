@@ -1498,12 +1498,32 @@ fn void? CompilerContext.for_statement(&self) {
                             // Whole-pattern default: [sub] = default
                             if (self.match(TokenType.ASSIGN)) {
                                 uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
+                                bool attached = false;
                                 for (uint i = outer_pos; i < bind_count; i++) {
                                     if (!arr_binds[i].is_hole) {
                                         arr_binds[i].has_obj_default = true;
                                         arr_binds[i].obj_default_func_idx = def_func_idx;
+                                        attached = true;
                                         break;
                                     }
+                                }
+                                // Empty nested pattern `[] = default`: add a synthetic hole marker
+                                // so the emit body calls the iterator step, fires the default when
+                                // the value is undefined, and discards the result.
+                                if (!attached && bind_count < 32) {
+                                    arr_binds[bind_count].is_hole = true;
+                                    arr_binds[bind_count].is_nested = true;
+                                    arr_binds[bind_count].outer_idx = outer_pos;
+                                    arr_binds[bind_count].inner_idx = 0;
+                                    arr_binds[bind_count].has_default = false;
+                                    arr_binds[bind_count].has_obj_default = true;
+                                    arr_binds[bind_count].obj_default_func_idx = def_func_idx;
+                                    arr_binds[bind_count].is_obj_nested = false;
+                                    arr_binds[bind_count].is_rest = false;
+                                    arr_binds[bind_count].is_member_target = false;
+                                    arr_binds[bind_count].reg = 0;
+                                    arr_binds[bind_count].name_idx = 0;
+                                    bind_count++;
                                 }
                             }
 
