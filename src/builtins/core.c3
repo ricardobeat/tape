@@ -309,8 +309,9 @@ const uint BUILTIN_TA_FROM                     = 413;
 const uint BUILTIN_TYPEDARRAY_INTRINSIC        = 414;
 const uint BUILTIN_FUNCTION_PROTO_HASINSTANCE  = 415;
 const uint BUILTIN_DATE_PROTO_TOPRIMITIVE      = 416;
+const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTORS = 417;
 
-const uint BUILTIN_COUNT                       = 417;
+const uint BUILTIN_COUNT                       = 418;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1750,6 +1751,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 159: return { "isExtensible", 1 };
         case 160: return { "preventExtensions", 1 };
         case 161: return { "getOwnPropertyDescriptor", 2 };
+        case 417: return { "getOwnPropertyDescriptors", 1 };
         case 162: return { "defineProperty", 3 };
         case 163: return { "getOwnPropertyNames", 1 };
         case 164: return { "defineProperties", 2 };
@@ -2477,6 +2479,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_OBJECT_SEAL] = &builtin_object_seal,
     [BUILTIN_OBJECT_SETPROTOTYPEOF] = &builtin_object_setPrototypeOf,
     [BUILTIN_OBJECT_VALUES] = &builtin_object_values,
+    [BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTORS] = &builtin_object_getOwnPropertyDescriptors,
     [BUILTIN_PARSE_FLOAT] = &builtin_parse_float,
     [BUILTIN_PARSE_INT] = &builtin_parse_int,
     [BUILTIN_PRINT] = &builtin_print,

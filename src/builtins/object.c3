@@ -320,6 +320,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
+            if (key.is_symbol()) continue;  // Object.keys returns only String keys
             if (key.is_arridx()) continue;
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             if (obj.flags.exotic_array && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
@@ -1214,6 +1215,94 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
     }
 
     ctx.result.set_object(desc);
+}
+
+// ============================================================================
+// Object.getOwnPropertyDescriptors — ES2017 §19.1.2.9
+// ============================================================================
+/// Returns an object whose own keys are the own property keys of ToObject(arg),
+/// each mapped to that property's descriptor object.
+fn void builtin_object_getOwnPropertyDescriptors(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getOwnPropertyDescriptors called on non-object");
+        return;
+    }
+    TVal arg0 = ctx.regs[ctx.base_reg];
+    if (arg0.is_null() || arg0.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.getOwnPropertyDescriptors called on non-object");
+        return;
+    }
+    if (!arg0.is_object()) {
+        if (!builtin_to_object(ctx, arg0)) { ctx.result.set_undefined(); return; }
+        arg0 = *ctx.result;
+    }
+    HObject* obj = (HObject*)arg0.get_heapptr();
+    if (obj == null) { ctx.result.set_undefined(); return; }
+
+    HObject*? res_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch e = res_raw) { ctx.result.set_undefined(); return; }
+    HObject* res = res_raw;
+    res.prototype = ctx.heap.object_proto;
+
+    // Collect own keys from every source so enumeration matches
+    // [[OwnPropertyKeys]]: String-exotic char indices, the dense array part,
+    // and named/symbol entries in the property table.
+    uint cap = obj.prop_count + obj.array_size + 64;
+    HString** keys = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(cap * HString*::size));
+    if (keys == null) { ctx.result.set_undefined(); return; }
+    defer ctx.heap.free_func(ctx.heap.heap_udata, keys);
+    uint kn = 0;
+
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            for (uint i = 0; i < prim.char_length() && kn < cap; i++) {
+                HString* k = ctx.heap.int_to_hstring((long)i);
+                if (k != null) keys[kn++] = k;
+            }
+        }
+    }
+    if (obj.flags.exotic_array) {
+        for (uint i = 0; i < obj.array_size && kn < cap; i++) {
+            if (!obj.array_part()[i].is_undefined()) {
+                HString* k = ctx.heap.int_to_hstring((long)i);
+                if (k != null) keys[kn++] = k;
+            }
+        }
+    }
+    for (uint i = 0; i < obj.prop_count && kn < cap; i++) {
+        void* kptr = obj.prop_key_at(i);
+        if (kptr == null) continue;
+        keys[kn++] = (HString*)kptr;
+    }
+
+    for (uint ki = 0; ki < kn; ki++) {
+        HString* key = keys[ki];
+        // Reuse the singular builtin's descriptor logic via a scratch window.
+        TVal[2] sub_regs;
+        sub_regs[0] = arg0;
+        sub_regs[1].set_string(key);
+        BuiltinContext sub;
+        sub = *ctx;
+        sub.regs = &sub_regs;
+        sub.base_reg = 0;
+        sub.argc = 2;
+        TVal desc_result;
+        desc_result.set_undefined();
+        sub.result = &desc_result;
+        sub.is_constructor = false;
+        sub.should_throw = false;
+        builtin_object_getOwnPropertyDescriptor(&sub);
+        if (sub.should_throw) {
+            ctx.should_throw = true;
+            ctx.throw_value = sub.throw_value;
+            return;
+        }
+        if (desc_result.is_undefined()) continue;
+        res.put_prop(key, desc_result, hobject::PROP_FLAGS_WEC);
+    }
+
+    ctx.result.set_object(res);
 }
 
 /// ES5 [[Get]] for descriptor field extraction — invokes getters per §8.10.5.
@@ -2778,7 +2867,8 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Count enumerable own properties
     uint count = 0;
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) count++;
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
+            && !((HString*)obj.prop_key_at(i)).is_symbol()) count++;
     }
     for (uint i = 0; i < obj.array_size; i++) {
         if (!obj.array_part()[i].is_undefined()) count++;
@@ -2829,7 +2919,8 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     }
     // Named properties → [key, value] pairs
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
+            && !((HString*)obj.prop_key_at(i)).is_symbol()) {
             HString* key = (HString*)obj.prop_key_at(i);
             // Create pair array [key, value]
             HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -2918,7 +3009,8 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     uint idx = 0;
     // Named properties
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
+        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
+            && !((HString*)obj.prop_key_at(i)).is_symbol()) {
             array_set_elem(arr, idx, obj.prop_values()[i], ctx.heap);
             idx++;
         }
@@ -4125,6 +4217,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     TVal getownpropdesc_tv;
     getownpropdesc_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTOR);
     obj.put_prop(getownpropdesc_key, getownpropdesc_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.getOwnPropertyDescriptors — ES2017 §19.1.2.9
+    HString* getownpropdescs_key = builtin_intern_string(heap, "getOwnPropertyDescriptors");
+    if (getownpropdescs_key == null) return false;
+    TVal getownpropdescs_tv;
+    getownpropdescs_tv.set_lightfunc((void*)(usz)BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTORS);
+    obj.put_prop(getownpropdescs_key, getownpropdescs_tv, hobject::PROP_FLAGS_WC);
 
     // Object.defineProperty — ES5 §15.2.3.6
     HString* defineprop_key = builtin_intern_string(heap, "defineProperty");
