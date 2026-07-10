@@ -2395,16 +2395,6 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     result = self.alloc_reg();
                     self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)prop_key_reg);
                     self.free_reg(prop_key_reg);
-
-                    // Save for method call this-binding
-                    // Don't use the super prototype as 'this' — use LDTHIS
-                    // The this-binding for super.method() calls should be
-                    // set by the caller (emit_call will use call_prop_obj_reg)
-                    // But we don't have a good way to pass "this" from here.
-                    // For now, just return the method; the caller handles this.
-                    self.last_was_member = true;
-                    self.last_member_obj_reg = super_proto_reg;
-                    self.last_member_prop_reg = result;
                 } else {
                     // super[expr]
                     self.advance()!;  // consume '['
@@ -2416,6 +2406,18 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 }
 
                 self.free_reg(super_proto_reg);
+
+                // For super method calls (super.m() / super[s]()), the this-binding
+                // must be the current instance, not the prototype. Emit LDTHIS into a
+                // fresh register and store it in call_prop_obj_reg so emit_call picks
+                // it up. call_expr will free the register if no call follows.
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                ushort this_reg = self.alloc_reg();
+                self.emit_abc(Opcode.LDTHIS, (uint)this_reg, 0, 0);
+                self.call_prop_obj_reg = this_reg;
+
                 return result;
             }
 

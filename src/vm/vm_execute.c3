@@ -291,9 +291,33 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 for (uint i = 0; i < nregs; i++) {
                     frame[i].set_undefined();
                 }
-                uint copy_n = nargs < nregs ? nargs : nregs;
-                for (uint i = 0; i < copy_n; i++) {
-                    vm.heap.tval_copy_ref(&frame[i], &args[i]);
+                if (target.has_rest()) {
+                    // Copy the fixed (pre-rest) formals first.
+                    uint copy_count = (uint)target.num_formals;
+                    uint copy_n = nargs < copy_count ? nargs : copy_count;
+                    for (uint i = 0; i < copy_n; i++) {
+                        vm.heap.tval_copy_ref(&frame[i], &args[i]);
+                    }
+                    // Build the rest array from remaining args.
+                    uint rest_idx = copy_count;
+                    uint overflow = (nargs > copy_count) ? (nargs - copy_count) : 0;
+                    HObject*? arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
+                    if (try arr = arr_raw) {
+                        arr.prototype = vm.heap.array_proto;
+                        for (uint i = 0; i < overflow; i++) {
+                            arr.set_array_idx(i, args[copy_count + i]);
+                        }
+                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                        TVal len_tv;
+                        len_tv.set_fastint((long)overflow);
+                        if (len_str != null) arr.put_prop(len_str, len_tv, hobject::PROP_FLAGS_WEC);
+                        frame[rest_idx].set_object(arr);
+                    }
+                } else {
+                    uint copy_n = nargs < nregs ? nargs : nregs;
+                    for (uint i = 0; i < copy_n; i++) {
+                        vm.heap.tval_copy_ref(&frame[i], &args[i]);
+                    }
                 }
             }
             vm.valstack_top = frame + nregs;

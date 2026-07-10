@@ -846,8 +846,14 @@ fn void builtin_regexp_proto_symbol_search(BuiltinContext* ctx) {
 //   4. global/unicode/sticky are derived from `Get(rx, "flags")` + ToBoolean,
 //      not the compiled bytecode (rx may have overridden properties).
 fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
-    HObject* rx = regexp_get_this_or_throw(ctx);
+    // ES2023 §22.2.5.8 step 1: Type(rx) must be Object — no [[RegExpMatcher]] brand required.
+    HObject* rx = regexp_get_symbol_this(ctx);
     if (rx == null) return;
+    // Only proceed with the fast built-in path when the receiver actually carries
+    // compiled regexp data. If it doesn't (e.g. a plain object passed in via
+    // an exotic call path), return undefined gracefully — the caller should use
+    // the abstract RegExpExec path instead.
+    if (rx.get_class() != hobject::ObjClass.REGEXP) { ctx.result.set_undefined(); return; }
     void* re_data = (*rx.extra_ptr()).regexp.regexp_data;
     if (re_data == null) { ctx.result.set_undefined(); return; }
 
