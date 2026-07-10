@@ -1070,29 +1070,33 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
             if (!match.is_object() || match.get_heapptr() == null) break;
             HObject* m = (HObject*)match.get_heapptr();
 
-            // Get index via Get
+            // Step 14.b: matched = ToString(Get(result,"0")).
+            HString* zero_key = builtin_intern_string(ctx.heap, "0");
+            TVal? z_opt = builtins_generic_get(m, zero_key, ctx);
+            if (ctx.should_throw) return;
+            TVal z_raw; z_raw.set_undefined();
+            if (try zv = z_opt) { z_raw = zv; }
+            HString* matched_hstr = builtin_to_string_vm(ctx, &z_raw);
+            if (ctx.should_throw) return;
+            if (matched_hstr == null) matched_hstr = builtin_intern_string(ctx.heap, "undefined");
+            TVal z_tv; z_tv.set_string(matched_hstr);
+
+            // Step 14.c-d: position = ToInteger(Get(result,"index")) clamped.
             HString* idx_key = builtin_intern_string(ctx.heap, "index");
             TVal? idx_opt = builtins_generic_get(m, idx_key, ctx);
             if (ctx.should_throw) return;
             int out_start = 0;
             if (try iv = idx_opt) {
-                if (iv.is_fastint()) { out_start = (int)iv.get_fastint(); }
-                else if (iv.is_number()) { out_start = (int)iv.get_number(); }
+                double idx_d = builtin_to_integer_vm(ctx, &iv);
+                if (ctx.should_throw) return;
+                if (idx_d < 0.0) { idx_d = 0.0; }
+                else if (idx_d > (double)input_len) { idx_d = (double)input_len; }
+                out_start = (int)idx_d;
             }
             if (out_start < 0) out_start = 0;
             if (out_start > input_len) break;
 
-            // Get "0" via Get for matched string
-            HString* zero_key = builtin_intern_string(ctx.heap, "0");
-            TVal? z_opt = builtins_generic_get(m, zero_key, ctx);
-            if (ctx.should_throw) return;
-            TVal z_tv; z_tv.set_undefined();
-            if (try zv = z_opt) { z_tv = zv; }
-            int out_end = out_start;
-            if (z_tv.is_string() && z_tv.get_heapptr() != null) {
-                HString* zs = (HString*)z_tv.get_heapptr();
-                out_end = out_start + (int)zs.blen;
-            }
+            int out_end = out_start + (int)matched_hstr.blen;
             if (out_end > input_len) out_end = input_len;
 
             // Copy unmatched prefix [last_end, out_start)
@@ -1106,8 +1110,10 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
                 if (ctx.should_throw) return;
                 int num_caps = 0;
                 if (try lv = len_opt) {
-                    if (lv.is_fastint()) { num_caps = (int)lv.get_fastint() - 1; }
-                    else if (lv.is_number()) { num_caps = (int)lv.get_number() - 1; }
+                    double len_d = builtin_to_integer_vm(ctx, &lv);
+                    if (ctx.should_throw) return;
+                    if (len_d < 0.0) len_d = 0.0;
+                    num_caps = (int)len_d - 1;
                 }
                 if (num_caps < 0) num_caps = 0;
                 if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
@@ -1120,7 +1126,13 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
                     TVal? cap_opt = builtins_generic_get(m, cap_key, ctx);
                     if (ctx.should_throw) return;
                     TVal cap_tv; cap_tv.set_undefined();
-                    if (try cv = cap_opt) { cap_tv = cv; }
+                    if (try cv = cap_opt) {
+                        if (!cv.is_undefined()) {
+                            HString* cap_hstr = builtin_to_string_vm(ctx, &cv);
+                            if (ctx.should_throw) return;
+                            if (cap_hstr != null) cap_tv.set_string(cap_hstr);
+                        }
+                    }
                     fn_args[arg_count++] = cap_tv;
                 }
                 TVal offset_tv; offset_tv.set_fastint((long)out_start);
