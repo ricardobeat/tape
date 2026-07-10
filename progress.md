@@ -14,7 +14,17 @@
 | CE unexpected (parser bugs) | 230 |
 | Skipped | 14,032 |
 
-Up from session 272 (88.0%, 27,079 pass): **+800 pass** this session.
+Up from session 272 (88.0%, 27,079 pass): **+818 pass** this session.
+
+**MEMKILL/TIMEOUT sweep** (near-eliminated, ~14 → 1): (1) sparse-array writes
+`a[2**31]=x` grew the dense backing to billions of slots (9.9 GB) — added
+`dense_index_ok` gate routing large-sparse indices to the named table; (2) array/
+call spread with a throwing iterator-result `value` getter looped forever — now
+invokes the getter and routes the throw; (3) RegExp empty global matches
+(`/(?:)/g[u]`) didn't AdvanceStringIndex and lastIndex was byte/char-unit
+confused — fixed exec + @@match/@@replace. The sole remaining MEMKILL is a
+property-escapes test that uses ~450 MB standalone and only trips the 2 GB cap
+under concurrent worker pressure (not an engine bug).
 
 ## Test Infrastructure
 
