@@ -362,6 +362,9 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             inner_ctx.needs_re_dispatch = false;
             inner_ctx.re_nargs = 0;
             inner_ctx.should_throw = false;
+            // Lightfuncs read `this` from regs[base_reg - 1] just like builtins.
+            // Stamp new_this into that slot so the callee sees the correct receiver.
+            ctx.regs[ctx.base_reg - 1] = new_this;
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
             if (inner_ctx.should_throw) {
                 ctx.should_throw = true;
@@ -533,7 +536,10 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         inner_ctx.re_nargs = 0;
         inner_ctx.should_throw = false;
 
-        // Write extracted args onto stack
+        // Write extracted args onto stack.
+        // Also stamp new_this into regs[base_reg - 1] so lightfunc callees
+        // that read their receiver from that slot see the correct value.
+        ctx.regs[ctx.base_reg - 1] = new_this;
         for (uint i = 0; i < actual_count; i++) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
         }
