@@ -241,6 +241,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 GeneratorState* gs_r = vm.heap.resume_gen;
                 if ((CompiledFunction*)gs_r.func == target) {
                     did_resume = true;
+                    act.async_gen_state = gs_r;
                     act.curr_pc = (Instruction*)gs_r.saved_pc;
                     act.var_env = (EnvRecord*)gs_r.var_env;
                     act.lex_env = (EnvRecord*)gs_r.lex_env;

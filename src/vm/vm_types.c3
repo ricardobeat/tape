@@ -79,7 +79,10 @@ struct Activation {
     HObject* new_target;
     /// For async functions: the associated Promise (owned reference while activation is live)
     HObject* async_promise;
-    /// For async functions: pointer to saved GeneratorState for AWAIT resume
+    /// For a generator/async body resume: the GeneratorState this activation is
+    /// executing. Lets exception unwinding transition the generator to
+    /// GEN_COMPLETED when an uncaught throw pops past its body (ES6 §25.3.3.2).
+    /// null for ordinary frames.
     void* async_gen_state;
     /// Value stack pointer to function (borrowed; for lightfuncs)
     TVal tv_func;

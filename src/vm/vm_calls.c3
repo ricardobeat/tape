@@ -669,6 +669,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_act_r.curr_pc = gs.saved_pc;
                     new_act_r.bottom = new_bottom_r;
                     new_act_r.retval = ds.regs_base + result_reg;
+                    new_act_r.async_gen_state = gs;
                     new_act_r.flags = ACT_FLAG_PREVENT_YIELD
                                     | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
                     vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);

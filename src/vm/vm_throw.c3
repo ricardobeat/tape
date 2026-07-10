@@ -11,6 +11,23 @@ import libc;
 // Catcher chain — helper functions
 // ============================================================================
 
+/// If the activation being unwound is a generator/async body, transition its
+/// GeneratorState to GEN_COMPLETED (ES6 §25.3.3.2: a generator whose body
+/// throws is completed). Without this a later .next()/.throw()/.return() sees a
+/// stale GEN_EXECUTING state and wrongly reports "Generator is executing".
+fn void vm_complete_gen_on_unwind(Vm* vm, Activation* act) {
+    if (act.async_gen_state == null) return;
+    // Async functions settle their Promise (reject) via their own throw path;
+    // don't pre-complete their GeneratorState here.
+    if ((act.flags & ACT_FLAG_ASYNC) != 0) return;
+    GeneratorState* gs = (GeneratorState*)act.async_gen_state;
+    gs.state = GEN_COMPLETED;
+    if (vm.heap.resume_gen == act.async_gen_state) {
+        vm.heap.resume_gen = null;
+    }
+    act.async_gen_state = null;
+}
+
 /// Walk the catcher chain and throw a value.
 /// Searches the full activation chain, unwinding intermediate activations
 /// when a catcher is found in a parent activation.
@@ -51,9 +68,11 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                 // If we found the catcher in a parent activation, unwind
                 // intermediate activations so the VM resumes at the right level.
                 if (search_act != act) {
-                    // Pop all activations down to the one with the catcher
+                    // Pop all activations down to the one with the catcher,
+                    // completing any generator body we unwind through.
                     while (vm.activation_count > 0
                            && &vm.activations[vm.activation_count - 1] != search_act) {
+                        vm_complete_gen_on_unwind(vm, &vm.activations[vm.activation_count - 1]);
                         vm.activation_count--;
                     }
                     // Restore the valstack_bottom for the target activation
@@ -81,6 +100,7 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
                 if (search_act != act) {
                     while (vm.activation_count > 0
                            && &vm.activations[vm.activation_count - 1] != search_act) {
+                        vm_complete_gen_on_unwind(vm, &vm.activations[vm.activation_count - 1]);
                         vm.activation_count--;
                     }
                     vm.valstack_bottom = search_act.bottom;
@@ -104,6 +124,9 @@ fn bool vm_throw_value(Vm* vm, TVal thrown_val, Activation* act,
             cat = cat.parent;
         }
         if (local_only) break;  // Don't walk parent activations
+        // No catcher in this activation — the throw unwinds past it. If it is a
+        // generator body, complete it before moving to the caller.
+        vm_complete_gen_on_unwind(vm, search_act);
         search_act = search_act.parent;
         if (search_act == null) break;
     }
