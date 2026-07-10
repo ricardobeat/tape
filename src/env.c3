@@ -367,10 +367,17 @@ fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val) {
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
+            TVal* pv = &cur.bindings.prop_values()[idx];
+            // Assignment to a still-uninitialized let/const binding is a TDZ
+            // access → ReferenceError. Initialization uses PUTLEX/PUTLEX_C, not
+            // this path, so the sentinel here always means an assignment before
+            // the declaration was reached.
+            if (is_tdz_sentinel(pv)) {
+                return -2;
+            }
             if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                 return -1;
             }
-            TVal* pv = &cur.bindings.prop_values()[idx];
             if (hobject::_active_heap != null) {
                 heap::Heap* h = (heap::Heap*)hobject::_active_heap;
                 if (pv.is_string()) { h.decref_tval(pv); }

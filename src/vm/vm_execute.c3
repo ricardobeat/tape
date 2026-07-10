@@ -2416,6 +2416,13 @@ fn TVal? Vm.run(Vm* vm) {
                             return VM_ERROR~;
                         }
                         break;
+                    } else if (put_result == -2) {
+                        // TDZ: assignment before initialization — ReferenceError.
+                        HString* name_hstr = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "Cannot access '%s' before initialization", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
                     } else if (put_result == 0) {
                         // Not in lex_env — fall through to var_env
                         env::env_put(ds.act.var_env, key, *ra);
