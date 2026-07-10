@@ -1932,11 +1932,30 @@ fn void? CompilerContext.for_statement(&self) {
                         self.emit_abc(Opcode.LDREG, (uint)inner_callee_reg, (uint)inner_next_reg, 0);
                         self.emit_abc(Opcode.LDREG, (uint)inner_callee_this_reg, (uint)inner_method_reg, 0);
 
+                        // IteratorClose tracking (ES2015 §13.3.3.6 step 4): if the
+                        // pattern doesn't exhaust the iterator (no rest element and
+                        // the last next() returned done:false), the iterator must be
+                        // closed via return(). Track the most recent done value in a
+                        // persistent register; a rest binding drives to done, so it
+                        // clears the need to close.
+                        bool has_rest_bind = false;
+                        for (uint ri = 0; ri < bind_count; ri++) {
+                            if (arr_binds[ri].is_rest) { has_rest_bind = true; break; }
+                        }
+                        ushort iter_done_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.LDFALSE, (uint)iter_done_reg, 0, 0);
+
                         uint bi = 0;
                         while (bi < bind_count) {
                             if (arr_binds[bi].is_hole && !arr_binds[bi].is_nested) {
                                 ushort hole_result = self.alloc_reg();
                                 self.emit_abc(Opcode.CALL, (uint)hole_result, (uint)inner_callee_reg, 0);
+                                if (!has_rest_bind) {
+                                    ushort hdk = self.alloc_reg();
+                                    self.emit_abc(Opcode.LDCONST, (uint)hdk, self.add_string_constant("done"), 0);
+                                    self.emit_abc(Opcode.GETPROP, (uint)iter_done_reg, (uint)hole_result, (uint)hdk);
+                                    self.free_reg(hdk);
+                                }
                                 self.free_reg(hole_result);
                                 bi++;
                                 continue;
@@ -2358,6 +2377,13 @@ fn void? CompilerContext.for_statement(&self) {
                                 ushort inner_result_reg = self.alloc_reg();
                                 self.emit_abc(Opcode.CALL, (uint)inner_result_reg, (uint)inner_callee_reg, 0);
 
+                                if (!has_rest_bind) {
+                                    ushort sdk = self.alloc_reg();
+                                    self.emit_abc(Opcode.LDCONST, (uint)sdk, self.add_string_constant("done"), 0);
+                                    self.emit_abc(Opcode.GETPROP, (uint)iter_done_reg, (uint)inner_result_reg, (uint)sdk);
+                                    self.free_reg(sdk);
+                                }
+
                                 ushort inner_val_key_reg = self.alloc_reg();
                                 ushort inner_val_reg = self.alloc_reg();
                                 self.emit_abc(Opcode.LDCONST, (uint)inner_val_key_reg, self.add_string_constant("value"), 0);
@@ -2385,13 +2411,28 @@ fn void? CompilerContext.for_statement(&self) {
                             }
                         }
 
+                        // IteratorClose: a rest binding always drives the iterator
+                        // to done, so only close when there is no rest and the last
+                        // consumed step left it open (done:false).
+                        if (!has_rest_bind) {
+                            uint skip_close = self.emit_cond_jump(Opcode.IF_TRUE, (uint)iter_done_reg);
+                            self.emit_abc(Opcode.ITER_CLOSE, (uint)inner_method_reg, 0, 0);
+                            self.patch_jump(skip_close);
+                        }
+                        self.free_reg(iter_done_reg);
+
                         self.free_reg(inner_callee_this_reg);
                         self.free_reg(inner_callee_reg);
                         self.free_reg(inner_next_reg);
                         self.free_reg(inner_method_reg);
                     }
                 } else {
-                    // Object destructuring: GETPROP with string keys
+                    // Object destructuring: GETPROP with string keys.
+                    // RequireObjectCoercible (ES2015 §13.3.3.6): the value being
+                    // destructured must not be null/undefined — this holds even
+                    // for an empty pattern `for (var {} of [null])`, so emit the
+                    // check before the (possibly empty) property-extraction loop.
+                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_reg, 0, 0);
                     uint obi = 0;
                     while (obi < bind_count) {
                         if (obj_binds[obi].is_nested && obj_binds[obi].is_array_nested) {
