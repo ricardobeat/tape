@@ -2497,6 +2497,22 @@ fn void? CompilerContext.throw_statement(&self) {
 fn void? CompilerContext.try_statement(&self) {
     self.expect(TokenType.TRY)!;
 
+    // ── Eval-mode completion value tracking ──────────────────────────
+    // ES2015 §13.15.8: for try-finally / try-catch-finally, if the
+    // finally block completes normally, the try statement's completion
+    // value is the try block's value (B) or the catch block's value (C),
+    // NOT the finally block's value (F).  We implement this by:
+    //   1. Resetting eval_acc_reg to undefined before the try block
+    //      (so an empty try block yields undefined, not a stale value).
+    //   2. Saving eval_acc_reg after the try block (captures B).
+    //   3. If there's a catch, saving eval_acc_reg after the catch block
+    //      (captures C for the exceptional path).
+    //   4. Restoring eval_acc_reg after the finally block (before
+    //      ENDFINALLY, which handles return/break/continue/throw by
+    //      jumping away — so the restore only fires for normal completion).
+    ushort try_completion_reg = 0;
+    bool eval_try_tracking = false;
+
     // Emit TRY instruction (placeholder: A=0, BC=0, jump_slot BC=0)
     uint try_addr = self.emit_a_bc(Opcode.TRY, 0, 0);
     // Jump slot — the VM reads this word for the finally_offset (BC field)
@@ -2509,8 +2525,26 @@ fn void? CompilerContext.try_statement(&self) {
         self.try_depth++;
     }
 
+    // In eval mode, reset eval_acc_reg to undefined so that an empty try
+    // block (or one whose body has no expressions) contributes undefined
+    // rather than a stale value from a preceding expression statement.
+    // We also allocate a temp register to save/restore across the finally
+    // block; it's only used when a finally clause is present, but we
+    // allocate it unconditionally to avoid a second pass.
+    if (self.eval_mode) {
+        eval_try_tracking = true;
+        try_completion_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     // Compile try block
     self.block(false)!;
+
+    // In eval mode, save the try block's completion value (B) so the
+    // finally block cannot overwrite it.
+    if (eval_try_tracking) {
+        self.emit_abc(Opcode.LDREG, (uint)try_completion_reg, (uint)self.eval_acc_reg, 0);
+    }
 
     // Emit ENDTRY to pop the try handler (normal exit)
     self.emit_simple(Opcode.ENDTRY);
@@ -2613,6 +2647,14 @@ fn void? CompilerContext.try_statement(&self) {
 
         self.pop_scope_to(catch_scope);
         self.free_regs_to(catch_saved_reg);
+
+        // In eval mode with a finally clause, save the catch block's
+        // completion value (C).  On the exceptional path this overwrites
+        // the try block's value saved earlier; on the normal path this
+        // instruction is never reached (the JUMP skips the catch handler).
+        if (eval_try_tracking && self.check(TokenType.FINALLY)) {
+            self.emit_abc(Opcode.LDREG, (uint)try_completion_reg, (uint)self.eval_acc_reg, 0);
+        }
     }
 
     // Parse finally clause
@@ -2629,11 +2671,24 @@ fn void? CompilerContext.try_statement(&self) {
         // Compile finally block
         self.block(false)!;
 
+        // In eval mode, restore eval_acc_reg from the saved try/catch
+        // completion value.  This runs only on the normal completion path
+        // (return/break/continue/throw are handled by ENDFINALLY which
+        // jumps away before reaching this restore).
+        if (eval_try_tracking) {
+            self.emit_abc(Opcode.LDREG, (uint)self.eval_acc_reg, (uint)try_completion_reg, 0);
+        }
+
         // Emit ENDFINALLY
         self.emit_simple(Opcode.ENDFINALLY);
     } else {
         // Patch jump to skip catch handler
         self.patch_jump(jump_over);
+    }
+
+    // Free the completion-value temp register
+    if (eval_try_tracking) {
+        self.free_reg(try_completion_reg);
     }
 
     // Patch TRY instruction: A=flags, BC=catch_offset
