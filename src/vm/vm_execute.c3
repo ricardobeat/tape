@@ -874,7 +874,7 @@ fn TVal? Vm.run(Vm* vm) {
             // ES5 §11.6.1: ToPrimitive both, then string concat or numeric add
             // Fast path: FASTINT + FASTINT — most common in arithmetic benchmarks.
             // Check this BEFORE OBJECT/STRING to avoid unnecessary tag dispatch.
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 long sum = rb.get_fastint() + rc.get_fastint();
                 if (sum >= types::FASTINT_MIN && sum <= types::FASTINT_MAX) {
                     ra.set_fastint(sum);
@@ -1018,7 +1018,7 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.SUB:
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 long diff = rb.get_fastint() - rc.get_fastint();
                 if (diff >= types::FASTINT_MIN && diff <= types::FASTINT_MAX) {
                     ra.set_fastint(diff);
@@ -1036,13 +1036,22 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
 
         case Opcode.MUL:
-            if (rb.is_fastint() && rc.is_fastint()) {
-                // Use 64-bit multiply and check overflow
-                long mul_result = rb.get_fastint() * rc.get_fastint();
-                if (mul_result >= types::FASTINT_MIN && mul_result <= types::FASTINT_MAX) {
-                    ra.set_fastint(mul_result);
+            if (types::both_fastint(rb, rc)) {
+                // 48-bit operands can overflow 64-bit signed long (2^47 * 2^47 = 2^94).
+                // Guard: if both operands fit in 31 bits the product fits in 62 bits
+                // and is safely range-checked; otherwise fall through to double path.
+                long mul_b = rb.get_fastint();
+                long mul_c = rc.get_fastint();
+                if (mul_b >= -0x40000000L && mul_b <= 0x3FFFFFFFL &&
+                    mul_c >= -0x40000000L && mul_c <= 0x3FFFFFFFL) {
+                    long mul_result = mul_b * mul_c;
+                    if (mul_result >= types::FASTINT_MIN && mul_result <= types::FASTINT_MAX) {
+                        ra.set_fastint(mul_result);
+                    } else {
+                        ra.set_number((double)mul_result);
+                    }
                 } else {
-                    ra.set_number((double)mul_result);
+                    ra.set_number((double)mul_b * (double)mul_c);
                 }
             } else {
                 double mul_b = vm_to_number(vm,rb);
@@ -1065,7 +1074,7 @@ fn TVal? Vm.run(Vm* vm) {
         }
 
         case Opcode.MOD:
-            if (rb.is_fastint() && rc.is_fastint() && rc.get_fastint() != 0) {
+            if (types::both_fastint(rb, rc) && rc.get_fastint() != 0) {
                 long mod_result = rb.get_fastint() % rc.get_fastint();
                 if (mod_result == 0 && rb.get_fastint() < 0) {
                     // -1 % 1 → -0: sign of zero matches dividend per ES5 §11.5.3
@@ -1110,8 +1119,14 @@ fn TVal? Vm.run(Vm* vm) {
 
         // === BITWISE ===
         case Opcode.BAND:
-            // Bitwise ops always produce Int32, always fit in FASTINT
+            // Bitwise ops always produce Int32, always fit in FASTINT.
+            // Fast path: FASTINTs are already integer-valued; cast directly to int
+            // instead of round-tripping through double + toint32.
         {
+            if (types::both_fastint(rb, rc)) {
+                ra.set_fastint((long)((int)rb.get_fastint() & (int)rc.get_fastint()));
+                continue;
+            }
             int band_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
@@ -1123,6 +1138,10 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.BOR:
         {
+            if (types::both_fastint(rb, rc)) {
+                ra.set_fastint((long)((int)rb.get_fastint() | (int)rc.get_fastint()));
+                continue;
+            }
             int bor_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
@@ -1134,6 +1153,10 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.BXOR:
         {
+            if (types::both_fastint(rb, rc)) {
+                ra.set_fastint((long)((int)rb.get_fastint() ^ (int)rc.get_fastint()));
+                continue;
+            }
             int bxor_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
@@ -1145,6 +1168,10 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.SHL:
         {
+            if (types::both_fastint(rb, rc)) {
+                ra.set_fastint((long)((int)rb.get_fastint() << ((int)rc.get_fastint() & 0x1F)));
+                continue;
+            }
             int shl_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
@@ -1156,6 +1183,10 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.SHR:
         {
+            if (types::both_fastint(rb, rc)) {
+                ra.set_fastint((long)((int)rb.get_fastint() >> ((int)rc.get_fastint() & 0x1F)));
+                continue;
+            }
             int shr_b = toint32(vm_to_number(vm,rb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
@@ -1190,7 +1221,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.SEQ: {
             // Fast path: FASTINT === FASTINT — most common in loop counters and
             // arithmetic benchmarks. Short-circuit before full tag dispatch.
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 ra.set_boolean(rb.get_fastint() == rc.get_fastint());
                 continue;
             }
@@ -1278,7 +1309,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.LT: {
             bool result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 result = rb.get_fastint() < rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
@@ -1298,7 +1329,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.LE: {
             bool result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 result = rb.get_fastint() <= rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
@@ -1318,7 +1349,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.GT: {
             bool result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 result = rb.get_fastint() > rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
@@ -1338,7 +1369,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.GE: {
             bool result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 result = rb.get_fastint() >= rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
@@ -1366,7 +1397,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.JMP_NLT: {
             bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 jmp_result = rb.get_fastint() < rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 jmp_result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
@@ -1386,7 +1417,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.JMP_NLE: {
             bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 jmp_result = rb.get_fastint() <= rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 jmp_result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
@@ -1406,7 +1437,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.JMP_NGT: {
             bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 jmp_result = rb.get_fastint() > rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 jmp_result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
@@ -1426,7 +1457,7 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.JMP_NGE: {
             bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
+            if (types::both_fastint(rb, rc)) {
                 jmp_result = rb.get_fastint() >= rc.get_fastint();
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
                 jmp_result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);

@@ -411,6 +411,19 @@ $else
 $endif
 }
 
+/// Single-branch combined FASTINT check for two TVal pointers.
+/// In the NaN-box build: XORing each value's top 16 bits with TAG_FASTINT
+/// yields zero iff that value IS a FASTINT; ORing the two results means the
+/// OR is zero iff BOTH are FASTINTs — one branch, no sequential dependency.
+/// Falls back to two is_fastint() calls in the non-NaN-box build.
+macro bool both_fastint(TVal* b, TVal* c) {
+$if USE_NANBOX:
+    return (((b.bits ^ (TAG_FASTINT << 48)) | (c.bits ^ (TAG_FASTINT << 48))) >> 48) == 0;
+$else
+    return b.is_fastint() && c.is_fastint();
+$endif
+}
+
 // ---------------------------------------------------------------------------
 // TVal — mutating setters
 // ---------------------------------------------------------------------------
