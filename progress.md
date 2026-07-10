@@ -29,6 +29,29 @@ measured via `run_test262.py --phase 6`. Changes (all committed):
 
 No regressions across Phase 6 between fixes.
 
+### Dense array >65535 elements (major)
+
+`HObject.array_size`/`array_used` were `ushort`, capping the dense array part at
+65535 elements: `for (i…) a[i]=i` past 2^16 truncated (`.length` stuck at
+65534) and even push-built arrays lost tail elements (`a[199999]` read
+`undefined`). Widened both to `uint`, removed the `grow_array` 65535 clamp, and
+made `put_prop` route fresh plain-data (WEC, non-undefined) array-index writes
+to `set_array_idx` (dense growth) instead of the ushort-capped named-property
+table. Undefined-valued writes stay in the named table because the dense part
+uses `undefined` as its hole sentinel (preserves sparse iteration semantics —
+forEach/every skip holes).
+
+Phase gains from this fix:
+| Phase | Before | After | Δ |
+|---|---|---|---|
+| 8: ES5 Built-in Objects | 1520 | 1966 | +446 |
+| 5: Built-in Constructors | 7261 | 7392 | +131 |
+| 3: Object System | 6368 | 6390 | +22 |
+
+Phase 8's jump is RegExp/property-escapes tests, which build million-element
+code-point arrays via `regExpUtils.js buildString` — previously truncated.
+No regressions in phases 3/6.
+
 
 ## Summary (full run, session 272, 2026-07-09)
 
