@@ -135,7 +135,9 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (try func_obj = func_obj_raw) {
                     // Generator function objects inherit from GeneratorFunction.prototype,
                     // all other functions inherit from Function.prototype (ES6 §25.2.3).
-                    if (template.is_generator() && vm.heap.generator_func_proto != null) {
+                    if (template.is_async() && vm.heap.async_func_proto != null) {
+                        func_obj.prototype = vm.heap.async_func_proto;
+                    } else if (template.is_generator() && vm.heap.generator_func_proto != null) {
                         func_obj.prototype = vm.heap.generator_func_proto;
                     } else {
                         func_obj.prototype = vm.heap.function_proto;

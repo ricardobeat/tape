@@ -351,6 +351,14 @@ struct CompilerContext {
     bool is_arrow;
     bool is_async;
 
+    // Source offset of the `async` keyword when parsing an async arrow function
+    // (`async x => ...` / `async (params) => ...`).  Set by primary_expr before
+    // it consumes `async` and re-enters itself; read by parse_arrow_function /
+    // parse_arrow_function_reparse to override the src_start so that the retained
+    // source text includes the `async` prefix (ES2019 §19.2.3.5).
+    // 0xFFFFFFFF means "not pending".
+    uint pending_async_arrow_src;
+
     // Module tracking — true when compiling an ESM module body.
     bool is_module;
     void* current_module;  // ModuleDef* (opaque to avoid import cycle)
@@ -397,6 +405,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.const_hash_count = 0;
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
+    self.pending_async_arrow_src = 0xFFFFFFFF;
 
     // Allocate growable buffers
     Heap* h = (Heap*)heap;

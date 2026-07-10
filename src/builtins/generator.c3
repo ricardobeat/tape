@@ -7,17 +7,119 @@ import duktape::env;
 
 import duktape::heap;
 import duktape::hobject;
+import duktape::compiler;
+import duktape::lexer;
+import libc;
 
 // ============================================================================
 // GeneratorFunction constructor (ES6 §25.2.1)
 // ============================================================================
 
+/// Build a dynamic generator/async function from param + body strings, per
+/// ES2019 §19.2.1.1.1 CreateDynamicFunction.  is_generator / is_async select
+/// which keyword prefix appears in the retained source text and which compile
+/// flags are set on the CompilerContext.
+fn void builtin_dynamic_gen_function(BuiltinContext* ctx, bool is_gen, bool is_async) {
+    char* body_str = "";
+    usz body_len = 0;
+    char[256] param_buf;
+    int param_pos = 0;
+
+    if (ctx.argc > 0) {
+        TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
+        if (body_arg.is_string() && body_arg.get_heapptr() != null) {
+            HString* s = (HString*)body_arg.get_heapptr();
+            body_str = s.get_cstr();
+            body_len = s.blen;
+        }
+        for (ushort i = 0; i < ctx.argc - 1; i++) {
+            TVal* arg = &ctx.regs[ctx.base_reg + (uint)i];
+            char* pname = "";
+            usz plen = 0;
+            if (arg.is_string() && arg.get_heapptr() != null) {
+                HString* s = (HString*)arg.get_heapptr();
+                pname = s.get_cstr();
+                plen = s.blen;
+            }
+            if (param_pos > 0 && param_pos < 255) param_buf[param_pos++] = ',';
+            for (usz j = 0; j < plen && param_pos < 255; j++) param_buf[param_pos++] = pname[j];
+        }
+    }
+    param_buf[param_pos] = 0;
+
+    // Compilation source: (params\n) {\n body \n}
+    char[16384] src_buf;
+    int src_pos = 0;
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "(%s\n){\n", param_buf);
+    for (usz i = 0; i < body_len && src_pos < 16377; i++) src_buf[src_pos++] = body_str[i];
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "\n}");
+
+    lexer::Lexer lex = lexer::lexer_init(src_buf[:src_pos], ctx.heap);
+    CompiledFunction*? cf = compiler::compile_function_kind(&lex, ctx.heap, true, is_gen, is_async);
+    CompiledFunction* func;
+    if (try f = cf) {
+        func = f;
+    } else {
+        builtin_throw_no_result_change(ctx, ctx.heap.syntax_err_proto, "SyntaxError in GeneratorFunction constructor");
+        return;
+    }
+
+    // Build spec-formatted source text: "function* anonymous(\nparams\n) {\nbody\n}"
+    {
+        char[16384] spec_buf;
+        int spec_pos = 0;
+        char[] kw = is_async ? (is_gen ? "async function* " : "async function ") : (is_gen ? "function* " : "function ");
+        spec_pos += libc::snprintf(&spec_buf[spec_pos], (usz)(16384 - spec_pos), "%.*sanonymous(%s\n) {\n", (int)kw.len, kw.ptr, param_buf);
+        for (usz i = 0; i < body_len && spec_pos < 16378; i++) spec_buf[spec_pos++] = body_str[i];
+        spec_pos += libc::snprintf(&spec_buf[spec_pos], (usz)(16384 - spec_pos), "\n}");
+        if (spec_pos > 0) {
+            char* spec_heap = (char*)libc::malloc((usz)spec_pos);
+            if (spec_heap != null) {
+                for (int i = 0; i < spec_pos; i++) spec_heap[i] = spec_buf[i];
+                if (func.src_ptr != null) libc::free(func.src_ptr);
+                func.src_ptr = spec_heap;
+                func.src_len = (uint)spec_pos;
+            }
+        }
+    }
+
+    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_obj_raw) { ctx.result.set_undefined(); return; }
+    HObject* func_obj = func_obj_raw;
+    (*func_obj.extra_ptr()).func.comp_func = func;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
+    (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
+    (*func_obj.extra_ptr()).func.lex_env = ctx.global_env;
+
+    // Set [[Prototype]] of the returned function object:
+    // async functions → AsyncFunction.prototype, generator functions → GeneratorFunction.prototype
+    if (is_async && ctx.heap.async_func_proto != null) {
+        func_obj.prototype = ctx.heap.async_func_proto;
+    } else if (ctx.heap.generator_func_proto != null) {
+        func_obj.prototype = ctx.heap.generator_func_proto;
+    } else {
+        func_obj.prototype = ctx.heap.function_proto;
+    }
+
+    // Prototype object for generator instances
+    HObject*? gen_proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (try gen_proto = gen_proto_raw) {
+        gen_proto.prototype = ctx.heap.generator_proto;
+        HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
+        TVal proto_tv;
+        proto_tv.set_object(gen_proto);
+        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    ctx.result.set_object(func_obj);
+}
+
 fn void builtin_generator_function(BuiltinContext* ctx) {
-    // GeneratorFunction is not directly callable as a constructor.
-    // The user creates generator functions via function* syntax.
-    // This builtin exists as the GeneratorFunction constructor object
-    // but doesn't actually compile generator functions from strings.
-    ctx.result.set_undefined();
+    builtin_dynamic_gen_function(ctx, true, false);
+}
+
+fn void builtin_async_function(BuiltinContext* ctx) {
+    builtin_dynamic_gen_function(ctx, false, true);
 }
 
 // ============================================================================
@@ -458,6 +560,62 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
         gf_tv.set_object(ctor);
         env::env_declare_nonenum(global_env, gf_key, gf_tv);
     }
+
+    // ── AsyncFunction infrastructure (ES2017 §25.7) ──────────────────────────
+    // AsyncFunction.prototype inherits from Function.prototype (§25.7.3).
+    HObject*? af_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = af_proto_raw) return false;
+    HObject* af_proto = af_proto_raw;
+    af_proto.prototype = heap.function_proto;
+    heap.async_func_proto = af_proto;
+
+    // @@toStringTag on AsyncFunction.prototype = "AsyncFunction"
+    {
+        HString* af_tag_key = ensure_tostringtag_symbol(heap);
+        if (af_tag_key != null) {
+            TVal tag_tv;
+            tag_tv.set_string(builtin_intern_string(heap, "AsyncFunction"));
+            af_proto.put_prop(af_tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
+    // AsyncFunction constructor object
+    HObject*? af_ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = af_ctor_raw) return false;
+    HObject* af_ctor = af_ctor_raw;
+    (*af_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ASYNC_FUNCTION;
+    af_ctor.flags.callable = true;
+    af_ctor.prototype = heap.function_proto;
+
+    // AsyncFunction.prototype.constructor → AsyncFunction
+    {
+        HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+        TVal constructor_tv;
+        constructor_tv.set_object(af_ctor);
+        af_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+    }
+
+    // AsyncFunction.prototype → af_proto (non-writable, non-enumerable, non-configurable)
+    {
+        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal af_proto_tv;
+        af_proto_tv.set_object(af_proto);
+        PropFlags proto_pflags;
+        proto_pflags.writable = false;
+        proto_pflags.enumerable = false;
+        proto_pflags.configurable = false;
+        proto_pflags.is_accessor = false;
+        af_ctor.put_prop(prototype_key, af_proto_tv, proto_pflags);
+    }
+
+    // AsyncFunction.length = 1, AsyncFunction.name = "AsyncFunction"
+    {
+        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal length_tv;
+        length_tv.set_fastint(1);
+        af_ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+    }
+    set_func_ctor_name(af_ctor, heap, "AsyncFunction");
 
     return true;
 }

@@ -96,17 +96,20 @@ fn void builtin_function(BuiltinContext* ctx) {
 
     param_buf[param_pos] = 0;
 
-    // Build source string: "(p1,p2,...){ body }"
+    // Build source string for compilation.  The params string may contain
+    // `//` line comments, so we must separate params from `)` with a newline
+    // (per ES2019 §19.2.1.1.1 CreateDynamicFunction step 14).  We compile as
+    // a function expression by wrapping in `(\n%params%\n) {\n%body%\n}`.
     // Use a generously-sized stack buffer
     char[16384] src_buf;
     int src_pos = 0;
 
-    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "(%s){", param_buf);
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "(%s\n){\n", param_buf);
     // Copy body (up to remaining buffer space)
-    for (usz i = 0; i < body_len && src_pos < 16380; i++) {
+    for (usz i = 0; i < body_len && src_pos < 16377; i++) {
         src_buf[src_pos++] = body_str[i];
     }
-    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "}");
+    src_pos += libc::snprintf(&src_buf[src_pos], (usz)(16384 - src_pos), "\n}");
 
     // Lex and compile as a function expression
     Lexer lex = lexer::lexer_init(src_buf[:src_pos], ctx.heap);
@@ -118,6 +121,29 @@ fn void builtin_function(BuiltinContext* ctx) {
         // Compilation failed: throw SyntaxError
         builtin_throw_no_result_change(ctx, ctx.heap.syntax_err_proto, "SyntaxError in Function constructor");
         return;
+    }
+
+    // Per ES2019 §19.2.1.1.1 CreateDynamicFunction, the source text retained for
+    // Function.prototype.toString is "function anonymous(\n" + params + "\n) {\n" + body + "\n}".
+    // Build this spec-formatted string and store it on the CompiledFunction.
+    {
+        char[16384] spec_buf;
+        int spec_pos = 0;
+        spec_pos += libc::snprintf(&spec_buf[spec_pos], (usz)(16384 - spec_pos), "function anonymous(%s\n) {\n", param_buf);
+        for (usz i = 0; i < body_len && spec_pos < 16378; i++) {
+            spec_buf[spec_pos++] = body_str[i];
+        }
+        spec_pos += libc::snprintf(&spec_buf[spec_pos], (usz)(16384 - spec_pos), "\n}");
+        if (spec_pos > 0) {
+            char* spec_heap = (char*)libc::malloc((usz)spec_pos);
+            if (spec_heap != null) {
+                for (int i = 0; i < spec_pos; i++) spec_heap[i] = spec_buf[i];
+                // Free any existing src_ptr (may have been set by compile_function)
+                if (func.src_ptr != null) libc::free(func.src_ptr);
+                func.src_ptr = spec_heap;
+                func.src_len = (uint)spec_pos;
+            }
+        }
     }
 
     // Create an HObject for the compiled function

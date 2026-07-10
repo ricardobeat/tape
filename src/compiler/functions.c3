@@ -2700,8 +2700,16 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self, uint src_start = 
         self.inferred_name_len = 0;
     }
 
+    // If primary_expr set pending_async_arrow_src before consuming `async` and
+    // re-entering, override the caller's src_start so the retained source text
+    // begins at `async` rather than `(` (ES2019 §19.2.3.5).
+    uint effective_src_start = (self.pending_async_arrow_src != 0xFFFFFFFF)
+        ? self.pending_async_arrow_src
+        : src_start;
+    self.pending_async_arrow_src = 0xFFFFFFFF;
+
     // Create inner CompiledFunction for the arrow
-    CompiledFunction* inner = self.compile_arrow_inner_reparse(src_start)!;
+    CompiledFunction* inner = self.compile_arrow_inner_reparse(effective_src_start)!;
 
     if (arrow_name.len > 0) {
         char* name_heap = (char*)libc::malloc((usz)arrow_name.len + 1);
@@ -3134,7 +3142,14 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
         self.has_inferred_name = false;
         self.inferred_name_len = 0;
     }
-    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest, src_start)!;
+    // If primary_expr recorded the `async` keyword's position before
+    // consuming it and re-entering (async arrow form `async param => body`),
+    // use that offset so toString() starts at `async` (ES2019 §19.2.3.5).
+    uint effective_src_start = (self.pending_async_arrow_src != 0xFFFFFFFF)
+        ? self.pending_async_arrow_src
+        : src_start;
+    self.pending_async_arrow_src = 0xFFFFFFFF;
+    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest, effective_src_start)!;
 
     // Set the function's display name from the inferred source. This is a
     // non-binding name (no lexical scope entry) — only the name property.

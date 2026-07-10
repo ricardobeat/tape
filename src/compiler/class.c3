@@ -118,6 +118,9 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
 
 /// Parse a class declaration: `class Name [extends Base] { body }`
 fn void? CompilerContext.class_declaration(&self) {
+    // Capture class source start before consuming `class` keyword.
+    self.lexer.refresh_token_start();
+    uint class_decl_src_start = self.lexer.token_start;
     self.expect(TokenType.CLASS)!;
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
 
@@ -158,7 +161,7 @@ fn void? CompilerContext.class_declaration(&self) {
     // Parse extends clause and class body.  Methods CLOSURE here, capturing
     // classScope as their lex_env so the class name resolves to the
     // constructor from inside method bodies.
-    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value)!;
+    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value, class_decl_src_start)!;
 
     // Initialize the classScope's immutable binding with the constructor value
     // (overwriting the TDZ placeholder).
@@ -177,6 +180,9 @@ fn void? CompilerContext.class_declaration(&self) {
 /// Parse a class expression: `class [Name] [extends Base] { body }`
 /// Returns the register holding the constructor.
 fn ushort? CompilerContext.class_expression(&self) {
+    // Capture class source start before consuming `class` keyword.
+    self.lexer.refresh_token_start();
+    uint class_expr_src_start = self.lexer.token_start;
     self.expect(TokenType.CLASS)!;
 
     // Optional class name (only visible inside the class body).
@@ -227,7 +233,7 @@ fn ushort? CompilerContext.class_expression(&self) {
     // Parse extends clause and class body.
     // Anonymous class expression: pass empty name so default constructor
     // has empty .name (per ES2015 anonymous class expression).
-    ushort ctor_reg = self.parse_class_tail_with_name(name)!;
+    ushort ctor_reg = self.parse_class_tail_with_name(name, class_expr_src_start)!;
 
     // For named class expressions, initialize the classScope's immutable
     // binding with the constructor, then pop classScope.  Methods retain it
@@ -245,7 +251,7 @@ fn ushort? CompilerContext.class_expression(&self) {
 /// Returns the register holding the constructor function.
 /// `class_name`: when non-empty, the default constructor inherits this name
 /// as its `.name` property (ES2015 §14.5.14 + SetFunctionName).
-fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) {
+fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, uint class_src_start = 0xFFFFFFFF) {
     // Save state for restoration after class body
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
@@ -295,14 +301,19 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         // element's closing `}`).
         self.lexer.refresh_token_start();
 
-        // Capture source start for Function.prototype.toString (ES2019 §19.2.3.5).
-        uint class_elem_src_start = self.lexer.token_start;
-
         // Check for static modifier
         bool is_static = false;
         if (self.match(TokenType.STATIC)) {
             is_static = true;
+            // Refresh so the source-start captured below is after `static`.
+            self.lexer.refresh_token_start();
         }
+
+        // Capture source start for Function.prototype.toString (ES2019 §19.2.3.5).
+        // Per spec, the class method's source text does NOT include the `static`
+        // keyword — it starts at the method-kind prefix (`get`/`set`/`*`/`async`)
+        // or directly at the property name.
+        uint class_elem_src_start = self.lexer.token_start;
 
         // ES2015 §14.4: generator-method shorthand — `*m() { yield ... }`.
         // Save the generator + async flags; they are only overridden right
@@ -549,6 +560,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
     }
 
     self.expect(TokenType.RBRACE)!;
+    // Capture the end position of the class (after `}`) for source retention.
+    uint class_src_end = self.lexer.pos;
 
     // If no constructor was specified, create a default one.
     // ES2015 §14.1.20 SetFunctionName step 6.d: if the class has a static
@@ -567,6 +580,28 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name) 
         // Track for heap cleanup
         hp.track_compiled_func((void*)ctor_func);
         ctor_inner_idx = self.add_inner_func(ctor_func);
+    }
+
+    // Retain the entire class source text on the constructor function so that
+    // Function.prototype.toString returns the full `class ... { }` text when
+    // called on the class (ES2019 §19.2.3.5 / §14.6.3 ClassDefinitionEvaluation).
+    if (class_src_start != 0xFFFFFFFF
+            && class_src_start < (uint)self.lexer.source.len
+            && ctor_inner_idx < self.inner_func_count) {
+        CompiledFunction* ctor_cf = self.inner_funcs[ctor_inner_idx];
+        uint src_end = class_src_end;
+        if (src_end > (uint)self.lexer.source.len) src_end = (uint)self.lexer.source.len;
+        uint slen = src_end > class_src_start ? (src_end - class_src_start) : 0;
+        if (slen > 0) {
+            char* src_heap = (char*)libc::malloc((usz)slen + 1);
+            if (src_heap != null) {
+                for (uint i = 0; i < slen; i++) src_heap[i] = self.lexer.source[class_src_start + i];
+                src_heap[slen] = 0;
+                if (ctor_cf.src_ptr != null) libc::free(ctor_cf.src_ptr);
+                ctor_cf.src_ptr = src_heap;
+                ctor_cf.src_len = slen;
+            }
+        }
     }
 
     // Emit CLOSURE for the constructor

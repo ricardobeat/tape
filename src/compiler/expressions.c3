@@ -1858,11 +1858,21 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // logic in primary_expr by consuming `async` and re-entering
                 // this function with is_async set, so it falls straight into
                 // the IDENTIFIER-ARROW or LPAREN-speculative-arrow cases below.
+                // We record the `async` keyword's source offset so the retained
+                // source span starts there (ES2019 §19.2.3.5).
+                // Capture `async`'s source offset here, after match_async_function()
+                // left token_start = pos(async) as a side effect of consuming then
+                // re-pushing the `async` token.  is_async_arrow_lookahead() may scan
+                // further tokens and clobber token_start, so we save it first.
+                uint pre_check_src = self.lexer.token_start;
                 if (self.check(TokenType.IDENTIFIER) && self.is_async_arrow_lookahead()) {
+                    uint async_src = pre_check_src;
                     self.advance()!;  // consume 'async'
                     self.is_async = true;
+                    self.pending_async_arrow_src = async_src;
                     ushort r = self.primary_expr()!;
                     self.is_async = false;
+                    self.pending_async_arrow_src = 0xFFFFFFFF;
                     return r;
                 }
                 Token id_tok = self.advance()!;
@@ -2786,9 +2796,15 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // name is the empty string for computed keys).
                 self.has_inferred_name = false;
                 self.inferred_name_len = 0;
-                // Capture offset of `[` for Function.prototype.toString retention.
-                self.lexer.refresh_token_start();
-                key_src_start = self.lexer.token_start;
+                // For plain computed methods `[expr](){}`, update key_src_start to
+                // the `[` so toString returns `[ expr ]() {}`.  For generator methods
+                // `* [expr](){}` and async methods `async [expr](){}` the span must
+                // start at `*`/`async`, so keep the prop_src_start already stored in
+                // key_src_start and leave it unchanged (ES2019 §19.2.3.5).
+                if (!is_generator_method && !is_async_method) {
+                    self.lexer.refresh_token_start();
+                    key_src_start = self.lexer.token_start;
+                }
                 self.advance()!;
                 key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;

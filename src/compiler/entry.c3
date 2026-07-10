@@ -148,6 +148,20 @@ fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
     return ctx.finish()!;
 }
 
+/// Like compile_function but with generator/async flags set for dynamic
+/// GeneratorFunction / AsyncFunction constructor (ES2019 §19.2.1.1.1).
+fn CompiledFunction*? compile_function_kind(Lexer* lex, void* heap, bool is_expr, bool is_generator, bool is_async) {
+    CompilerContext ctx;
+    ctx.init(lex, heap);
+    ctx.is_generator = is_generator;
+    ctx.is_async = is_async;
+    ctx.is_constructable = false;
+
+    ctx.parse_function_body(is_expr)!;
+
+    return ctx.finish()!;
+}
+
 /// Compile an ESM module body. Parses import/export declarations and
 /// emits RETUNDEF (modules return undefined, not the last expression).
 /// `module_name` is used for error messages and relative path resolution.
