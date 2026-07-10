@@ -12,7 +12,7 @@ Net ~+700 pass vs session 272, confirmed via per-phase `run_test262.py` runs:
 | 3: Object System | 6368 | 6390 | +22 |
 | 5: Built-in Constructors | 7261 | 7392 | +131 |
 | 6: Built-in Prototype Methods | 3986 | 4077 | +91 |
-| 8: ES5 Built-in Objects | 1514 | ~1968 | +454 |
+| 8: ES5 Built-in Objects | 1514 | ~1986 | +472 |
 
 The dominant win is the dense-array >65535 fix (below). Phase-8 numbers vary
 ±few between runs due to RegExp property-escapes concurrency memory pressure
@@ -66,6 +66,19 @@ Phase gains from this fix:
 Phase 8's jump is RegExp/property-escapes tests, which build million-element
 code-point arrays via `regExpUtils.js buildString` — previously truncated.
 No regressions in phases 3/6.
+
+### RegExp `@@replace` conformance
+
+`RegExp.prototype[Symbol.replace]` now follows ES §21.2.5.8 step 14 on the exec
+result (both non-global and global paths): matched = ToString(result[0]),
+position = ToInteger(result.index) clamped to [0, len(S)], nCaptures via
+ToLength(result.length), each capture ToString unless undefined, with abrupt
+propagation. The global loop tracks `nextSourcePosition = position + matchLength`
+independently of `rx.lastIndex` and gates prefix/replacement append + cursor
+advance on `position >= nextSourcePosition`. RegExp/prototype/Symbol.replace:
+0/35 → 5/35 passing (result-coerce-*, g-pos-increment, g-pos-decrement).
+Remaining 30 need lastIndex-coercion, flags-ToString, and an output-buffer
+rewrite (currently a fixed 8 KB stack buffer).
 
 
 ## Summary (full run, session 272, 2026-07-09)
