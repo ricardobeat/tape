@@ -444,6 +444,25 @@ fn void CompilerContext.emit_var_store(&self, ushort reg, uint name_idx, bool is
     }
 }
 
+/// Emit a lazy default-value call for destructuring.
+/// When the binding value is undefined, evaluates the default thunk and stores
+/// the result in bind_reg. Called inside the for-of loop body so the default
+/// expression is only ever evaluated at runtime when the value is undefined
+/// (per ES2015 §13.3.3.6 IteratorBindingInitialization step 6.b).
+fn void CompilerContext.emit_lazy_default(&self, ushort bind_reg, uint func_idx) {
+    ushort closure_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.CLOSURE, (uint)closure_reg, func_idx);
+    ushort call_base = self.alloc_reg();
+    ushort this_reg  = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG,  (uint)call_base,     (uint)closure_reg, 0);
+    self.emit_abc(Opcode.LDTHIS, (uint)(call_base + 1), 0, 0);
+    self.emit_abc(Opcode.CALL,   (uint)call_base, (uint)call_base, 0);
+    self.emit_abc(Opcode.LDREG,  (uint)bind_reg,  (uint)call_base, 0);
+    self.free_reg(this_reg);
+    self.free_reg(call_base);
+    self.free_reg(closure_reg);
+}
+
 /// Parse var/let/const declaration.
 fn void? CompilerContext.var_declaration(&self) {
     Token decl_tok = self.advance()!;
@@ -1278,7 +1297,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             arr_binds[bind_count].has_default = true;
-                                            arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
+                                            arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(sub_tok.str_value)!);
                                         }
 
                                         bind_count++;
@@ -1290,11 +1309,11 @@ fn void? CompilerContext.for_statement(&self) {
 
                                 // Whole-pattern default: [...[x]] = default
                                 if (self.match(TokenType.ASSIGN)) {
-                                    ushort def_reg = self.assignment_expr()!;
+                                    uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                     for (uint i = outer_pos; i < bind_count; i++) {
                                         if (!arr_binds[i].is_hole) {
                                             arr_binds[i].has_obj_default = true;
-                                            arr_binds[i].obj_default_val_reg = def_reg;
+                                            arr_binds[i].obj_default_func_idx = def_func_idx;
                                             break;
                                         }
                                     }
@@ -1345,7 +1364,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                 if (self.match(TokenType.ASSIGN)) {
                                                     arr_binds[bind_count].has_default = true;
-                                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                                                    arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(bind_tok.str_value)!);
                                                 }
 
                                                 bind_count++;
@@ -1367,7 +1386,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                 if (self.match(TokenType.ASSIGN)) {
                                                     arr_binds[bind_count].has_default = true;
-                                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                                                    arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(prop_tok.str_value)!);
                                                 }
 
                                                 bind_count++;
@@ -1384,11 +1403,11 @@ fn void? CompilerContext.for_statement(&self) {
 
                                 // Whole-pattern default: [...{x}] = default
                                 if (self.match(TokenType.ASSIGN)) {
-                                    ushort def_reg = self.assignment_expr()!;
+                                    uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                     for (uint i = outer_pos; i < bind_count; i++) {
                                         if (!arr_binds[i].is_hole) {
                                             arr_binds[i].has_obj_default = true;
-                                            arr_binds[i].obj_default_val_reg = def_reg;
+                                            arr_binds[i].obj_default_func_idx = def_func_idx;
                                             break;
                                         }
                                     }
@@ -1466,7 +1485,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         arr_binds[bind_count].has_default = true;
-                                        arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(sub_tok.str_value)!;
+                                        arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(sub_tok.str_value)!);
                                     }
 
                                     bind_count++;
@@ -1478,11 +1497,11 @@ fn void? CompilerContext.for_statement(&self) {
 
                             // Whole-pattern default: [sub] = default
                             if (self.match(TokenType.ASSIGN)) {
-                                ushort def_reg = self.assignment_expr()!;
+                                uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                 for (uint i = outer_pos; i < bind_count; i++) {
                                     if (!arr_binds[i].is_hole) {
                                         arr_binds[i].has_obj_default = true;
-                                        arr_binds[i].obj_default_val_reg = def_reg;
+                                        arr_binds[i].obj_default_func_idx = def_func_idx;
                                         break;
                                     }
                                 }
@@ -1516,7 +1535,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 arr_binds[bind_count].has_default = true;
-                                                arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                                                arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(bind_tok.str_value)!);
                                             }
 
                                             bind_count++;
@@ -1537,7 +1556,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 arr_binds[bind_count].has_default = true;
-                                                arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                                                arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(prop_tok.str_value)!);
                                             }
 
                                             bind_count++;
@@ -1551,11 +1570,11 @@ fn void? CompilerContext.for_statement(&self) {
 
                             // Whole-pattern default: {props} = default
                             if (self.match(TokenType.ASSIGN)) {
-                                ushort def_reg = self.assignment_expr()!;
+                                uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                 for (uint i = outer_pos; i < bind_count; i++) {
                                     if (!arr_binds[i].is_hole) {
                                         arr_binds[i].has_obj_default = true;
-                                        arr_binds[i].obj_default_val_reg = def_reg;
+                                        arr_binds[i].obj_default_func_idx = def_func_idx;
                                         break;
                                     }
                                 }
@@ -1577,7 +1596,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                 if (self.match(TokenType.ASSIGN)) {
                                     arr_binds[bind_count].has_default = true;
-                                    arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(name_tok.str_value)!;
+                                    arr_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(name_tok.str_value)!);
                                 }
 
                                 bind_count++;
@@ -1611,8 +1630,7 @@ fn void? CompilerContext.for_statement(&self) {
                                     obj_binds[bind_count].has_default = false;
                                     if (self.match(TokenType.ASSIGN)) {
                                         obj_binds[bind_count].has_default = true;
-                                        obj_binds[bind_count].default_val_reg =
-                                            self.destructuring_default_expr(ck_bind.str_value)!;
+                                        obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(ck_bind.str_value)!);
                                     }
                                     bind_count++;
                                 }
@@ -1669,7 +1687,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                             if (self.match(TokenType.ASSIGN)) {
                                                 obj_binds[bind_count].has_default = true;
-                                                obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(elem_tok.str_value)!;
+                                                obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(elem_tok.str_value)!);
                                             }
 
                                             bind_count++;
@@ -1681,12 +1699,12 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     // Whole-pattern default: {prop: [x] = default}
                                     if (self.match(TokenType.ASSIGN)) {
-                                        ushort def_reg = self.assignment_expr()!;
+                                        uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                         for (uint i = bind_count; i > 0; i--) {
                                             uint idx = i - 1;
                                             if (obj_binds[idx].is_nested && obj_binds[idx].is_array_nested && !obj_binds[idx].is_rest) {
                                                 obj_binds[idx].has_default = true;
-                                                obj_binds[idx].default_val_reg = def_reg;
+                                                obj_binds[idx].default_func_idx = def_func_idx;
                                                 break;
                                             }
                                         }
@@ -1714,7 +1732,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                     if (self.match(TokenType.ASSIGN)) {
                                                         obj_binds[bind_count].has_default = true;
-                                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                                                        obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(bind_tok.str_value)!);
                                                     }
 
                                                     bind_count++;
@@ -1732,7 +1750,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                                     if (self.match(TokenType.ASSIGN)) {
                                                         obj_binds[bind_count].has_default = true;
-                                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(inner_prop_tok.str_value)!;
+                                                        obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(inner_prop_tok.str_value)!);
                                                     }
 
                                                     bind_count++;
@@ -1746,12 +1764,12 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     // Whole-pattern default: {prop: {x} = default}
                                     if (self.match(TokenType.ASSIGN)) {
-                                        ushort def_reg = self.assignment_expr()!;
+                                        uint def_func_idx = self.add_inner_func(self.compile_default_expr()!);
                                         for (uint i = bind_count; i > 0; i--) {
                                             uint idx = i - 1;
                                             if (obj_binds[idx].is_nested && !obj_binds[idx].is_array_nested) {
                                                 obj_binds[idx].has_default = true;
-                                                obj_binds[idx].default_val_reg = def_reg;
+                                                obj_binds[idx].default_func_idx = def_func_idx;
                                                 break;
                                             }
                                         }
@@ -1768,7 +1786,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                         if (self.match(TokenType.ASSIGN)) {
                                             obj_binds[bind_count].has_default = true;
-                                            obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(bind_tok.str_value)!;
+                                            obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(bind_tok.str_value)!);
                                         }
 
                                         bind_count++;
@@ -1785,7 +1803,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                                     if (self.match(TokenType.ASSIGN)) {
                                         obj_binds[bind_count].has_default = true;
-                                        obj_binds[bind_count].default_val_reg = self.destructuring_default_expr(prop_tok.str_value)!;
+                                        obj_binds[bind_count].default_func_idx = self.add_inner_func(self.compile_default_expr(prop_tok.str_value)!);
                                     }
 
                                     bind_count++;
@@ -2083,9 +2101,8 @@ fn void? CompilerContext.for_statement(&self) {
                                                 self.free_reg(undef_reg);
                                                 uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                                 self.free_reg(is_undef_reg);
-                                                self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_binds[gi].default_val_reg, 0);
+                                                self.emit_lazy_default(arr_binds[gi].reg, arr_binds[gi].default_func_idx);
                                                 self.patch_jump(skip_default);
-                                                self.free_reg(arr_binds[gi].default_val_reg);
                                             }
 
                                             self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, is_lexical, is_const);
@@ -2114,9 +2131,8 @@ fn void? CompilerContext.for_statement(&self) {
                                                 self.free_reg(undef_reg);
                                                 uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                                 self.free_reg(is_undef_reg);
-                                                self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_binds[gi].default_val_reg, 0);
+                                                self.emit_lazy_default(arr_binds[gi].reg, arr_binds[gi].default_func_idx);
                                                 self.patch_jump(skip_default);
-                                                self.free_reg(arr_binds[gi].default_val_reg);
                                             }
 
                                             self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, is_lexical, is_const);
@@ -2165,9 +2181,8 @@ fn void? CompilerContext.for_statement(&self) {
                                     self.free_reg(undef_reg);
                                     uint skip_def = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                     self.free_reg(is_undef_reg);
-                                    self.emit_abc(Opcode.LDREG, (uint)nest_val, (uint)arr_binds[group_start].obj_default_val_reg, 0);
+                                    self.emit_lazy_default(nest_val, arr_binds[group_start].obj_default_func_idx);
                                     self.patch_jump(skip_def);
-                                    self.free_reg(arr_binds[group_start].obj_default_val_reg);
                                 }
 
                                 // Check if any sub-bind is array-nested (needs inner iterator)
@@ -2277,9 +2292,8 @@ fn void? CompilerContext.for_statement(&self) {
                                             self.free_reg(undef_reg);
                                             uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                             self.free_reg(is_undef_reg);
-                                            self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_binds[gi].default_val_reg, 0);
+                                            self.emit_lazy_default(arr_binds[gi].reg, arr_binds[gi].default_func_idx);
                                             self.patch_jump(skip_default);
-                                            self.free_reg(arr_binds[gi].default_val_reg);
                                         }
 
                                         self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, is_lexical, is_const);
@@ -2291,6 +2305,8 @@ fn void? CompilerContext.for_statement(&self) {
                                     self.free_reg(nmethod);
                                 } else {
                                     // All sub-binds are object-nested — just GETPROP
+                                    // Throw TypeError if nest_val is null/undefined (ES §13.3.3.6 step 5)
+                                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)nest_val, 0, 0);
                                     for (uint gi = group_start; gi < group_start + group_count; gi++) {
                                         if (arr_binds[gi].is_hole) continue;
                                         if (arr_binds[gi].is_rest) continue;
@@ -2308,9 +2324,8 @@ fn void? CompilerContext.for_statement(&self) {
                                             self.free_reg(undef_reg);
                                             uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                             self.free_reg(is_undef_reg);
-                                            self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_binds[gi].default_val_reg, 0);
+                                            self.emit_lazy_default(arr_binds[gi].reg, arr_binds[gi].default_func_idx);
                                             self.patch_jump(skip_default);
-                                            self.free_reg(arr_binds[gi].default_val_reg);
                                         }
 
                                         self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, is_lexical, is_const);
@@ -2341,9 +2356,8 @@ fn void? CompilerContext.for_statement(&self) {
                                     self.free_reg(undef_reg);
                                     uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                     self.free_reg(is_undef_reg);
-                                    self.emit_abc(Opcode.LDREG, (uint)arr_binds[bi].reg, (uint)arr_binds[bi].default_val_reg, 0);
+                                    self.emit_lazy_default(arr_binds[bi].reg, arr_binds[bi].default_func_idx);
                                     self.patch_jump(skip_default);
-                                    self.free_reg(arr_binds[bi].default_val_reg);
                                 }
 
                                 self.emit_var_store(arr_binds[bi].reg, arr_binds[bi].name_idx, is_lexical, is_const);
@@ -2379,10 +2393,10 @@ fn void? CompilerContext.for_statement(&self) {
 
                             // Whole-property default
                             ushort def_applied = 0;
-                            ushort def_val_reg = 0;
+                            uint def_func_idx = 0;
                             for (uint gi = group_start; gi < group_start + group_count; gi++) {
                                 if (obj_binds[gi].has_default && def_applied == 0) {
-                                    def_val_reg = obj_binds[gi].default_val_reg;
+                                    def_func_idx = obj_binds[gi].default_func_idx;
                                     def_applied = 1;
                                     break;
                                 }
@@ -2395,9 +2409,8 @@ fn void? CompilerContext.for_statement(&self) {
                                 self.free_reg(undef_reg);
                                 uint skip_def = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                 self.free_reg(is_undef_reg);
-                                self.emit_abc(Opcode.LDREG, (uint)parent_reg, (uint)def_val_reg, 0);
+                                self.emit_lazy_default(parent_reg, def_func_idx);
                                 self.patch_jump(skip_def);
-                                self.free_reg(def_val_reg);
                             }
 
                             // Create inner iterator on the array
@@ -2489,9 +2502,8 @@ fn void? CompilerContext.for_statement(&self) {
                                     self.free_reg(undef_reg);
                                     uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                     self.free_reg(is_undef_reg);
-                                    self.emit_abc(Opcode.LDREG, (uint)obj_binds[gi].reg, (uint)obj_binds[gi].default_val_reg, 0);
+                                    self.emit_lazy_default(obj_binds[gi].reg, obj_binds[gi].default_func_idx);
                                     self.patch_jump(skip_default);
-                                    self.free_reg(obj_binds[gi].default_val_reg);
                                 }
 
                                 self.emit_var_store(obj_binds[gi].reg, obj_binds[gi].name_idx, is_lexical, is_const);
@@ -2524,9 +2536,8 @@ fn void? CompilerContext.for_statement(&self) {
                                 self.free_reg(undef_reg);
                                 uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                 self.free_reg(is_undef_reg);
-                                self.emit_abc(Opcode.LDREG, (uint)obj_binds[obi].reg, (uint)obj_binds[obi].default_val_reg, 0);
+                                self.emit_lazy_default(obj_binds[obi].reg, obj_binds[obi].default_func_idx);
                                 self.patch_jump(skip_default);
-                                self.free_reg(obj_binds[obi].default_val_reg);
                             }
 
                             self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, is_lexical, is_const);
@@ -2551,9 +2562,8 @@ fn void? CompilerContext.for_statement(&self) {
                                 self.free_reg(undef_reg);
                                 uint skip_default = self.emit_cond_jump(Opcode.IF_FALSE, (uint)is_undef_reg);
                                 self.free_reg(is_undef_reg);
-                                self.emit_abc(Opcode.LDREG, (uint)obj_binds[obi].reg, (uint)obj_binds[obi].default_val_reg, 0);
+                                self.emit_lazy_default(obj_binds[obi].reg, obj_binds[obi].default_func_idx);
                                 self.patch_jump(skip_default);
-                                self.free_reg(obj_binds[obi].default_val_reg);
                             }
 
                             self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, is_lexical, is_const);
@@ -3891,8 +3901,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
                         if (self.match(TokenType.ASSIGN)) {
                             arr_binds[bind_count].has_default = true;
-                            arr_binds[bind_count].default_val_reg =
-                                self.destructuring_default_expr(hs.get_data())!;
+                            arr_binds[bind_count].default_val_reg = self.destructuring_default_expr(hs.get_data())!;
                         }
                     }
                     bind_count++;
@@ -4352,7 +4361,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                                 self.free_reg(nd);
                                 self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_r, 0);
                                 self.free_reg(arr_r);
-                                self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                                self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                                 while (gi + 1 < first_sub + group_count) { gi++; }
                                 continue;
                             }
@@ -4382,7 +4391,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                                 self.free_reg(arr_binds[gi].default_val_reg);
                             }
 
-                            self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                            self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                         }
 
                         self.free_reg(ncallee_this);
@@ -4413,7 +4422,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                                 self.free_reg(arr_binds[gi].default_val_reg);
                             }
 
-                            self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                            self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                         }
                     }
 
@@ -4423,7 +4432,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     // ── Simple rest: store arr_reg to variable ──
                     self.emit_abc(Opcode.LDREG, (uint)arr_binds[bi].reg, (uint)arr_reg, 0);
                     self.free_reg(arr_reg);
-                    self.emit_var_store(arr_binds[bi].reg, arr_binds[bi].name_idx, false, false);
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[bi].reg, arr_binds[bi].name_idx);
                     bi++;
                     break;
                 }
@@ -4546,7 +4555,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                             self.free_reg(nd);
                             self.emit_abc(Opcode.LDREG, (uint)arr_binds[gi].reg, (uint)arr_r, 0);
                             self.free_reg(arr_r);
-                            self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                            self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                             while (gi + 1 < group_start + group_count) { gi++; }
                             continue;
                         }
@@ -4576,7 +4585,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                             self.free_reg(arr_binds[gi].default_val_reg);
                         }
 
-                        self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                     }
 
                     self.free_reg(ncallee_this);
@@ -4585,6 +4594,8 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(nmethod);
                 } else {
                     // All sub-binds are object-nested — just GETPROP
+                    // Throw TypeError if nest_val is null/undefined (ES §13.3.3.6 step 5)
+                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)nest_val, 0, 0);
                     for (uint gi = group_start; gi < group_start + group_count; gi++) {
                         if (arr_binds[gi].is_hole) continue;
                         if (arr_binds[gi].is_rest) continue;
@@ -4607,7 +4618,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                             self.free_reg(arr_binds[gi].default_val_reg);
                         }
 
-                        self.emit_var_store(arr_binds[gi].reg, arr_binds[gi].name_idx, false, false);
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[gi].reg, arr_binds[gi].name_idx);
                     }
                 }
 
@@ -4649,7 +4660,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(arr_binds[bi].member_obj_reg);
                     self.free_reg(arr_binds[bi].reg);
                 } else {
-                    self.emit_var_store(arr_binds[bi].reg, arr_binds[bi].name_idx, false, false);
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)arr_binds[bi].reg, arr_binds[bi].name_idx);
                 }
                 bi++;
             }
@@ -4766,7 +4777,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                         self.free_reg(nd);
                         self.emit_abc(Opcode.LDREG, (uint)obj_binds[gi].reg, (uint)arr_r, 0);
                         self.free_reg(arr_r);
-                        self.emit_var_store(obj_binds[gi].reg, obj_binds[gi].name_idx, false, false);
+                        self.emit_a_bc(Opcode.PUTVAR, (uint)obj_binds[gi].reg, obj_binds[gi].name_idx);
                         while (gi + 1 < group_start + group_count) { gi++; }
                         continue;
                     }
@@ -4796,7 +4807,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                         self.free_reg(obj_binds[gi].default_val_reg);
                     }
 
-                    self.emit_var_store(obj_binds[gi].reg, obj_binds[gi].name_idx, false, false);
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)obj_binds[gi].reg, obj_binds[gi].name_idx);
                 }
 
                 self.free_reg(ncallee_this);
@@ -4831,7 +4842,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(obj_binds[obi].default_val_reg);
                 }
 
-                self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, false, false);
+                self.emit_a_bc(Opcode.PUTVAR, (uint)obj_binds[obi].reg, obj_binds[obi].name_idx);
                 obi++;
             } else {
                 // Simple GETPROP from the yielded value
@@ -4862,7 +4873,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
                     self.free_reg(obj_binds[obi].member_obj_reg);
                     self.free_reg(obj_binds[obi].reg);
                 } else {
-                    self.emit_var_store(obj_binds[obi].reg, obj_binds[obi].name_idx, false, false);
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)obj_binds[obi].reg, obj_binds[obi].name_idx);
                 }
                 obi++;
             }

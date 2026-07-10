@@ -150,7 +150,8 @@ struct ArrayBind {
     bool   is_rest;
     bool   is_hole;
     bool   has_default;
-    ushort default_val_reg;  // register holding compiled default expression result
+    ushort default_val_reg;     // register holding compiled default expression result (eager — for-in path)
+    uint   default_func_idx;    // inner_funcs index for the default thunk (lazy — for-of path)
     bool   is_resolved;      // for assignment mode: was var resolved locally?
     bool   is_nested;        // true if this binding comes from a nested pattern
     uint   outer_idx;        // the index in the outer RHS array
@@ -160,7 +161,8 @@ struct ArrayBind {
     bool   is_obj_nested;    // true if nested pattern is an object
     uint   obj_key_idx;      // constant index of object property key (used when is_obj_nested)
     bool   has_obj_default;  // true if the whole nested object has a default ([{x} = def])
-    ushort obj_default_val_reg; // register holding the whole nested object's default value
+    ushort obj_default_val_reg;  // register holding whole nested object's default value (eager — for-in)
+    uint   obj_default_func_idx; // inner_funcs index for whole nested object's default thunk (lazy — for-of)
     // Member-expression assignment targets in bare for-of/in destructuring:
     // when true, `reg` is a temp holding the extracted value; PUTPROP is
     // emitted using member_obj_reg/member_prop_reg instead of emit_var_store.
@@ -176,7 +178,8 @@ struct ObjBind {
     uint   key_idx;             // constant-pool key for static keys
     ushort key_reg;             // register holding runtime key for computed keys
     bool   has_default;
-    ushort default_val_reg;  // register holding compiled default expression result
+    ushort default_val_reg;  // register holding compiled default expression result (eager — for-in path)
+    uint   default_func_idx; // inner_funcs index for the default thunk (lazy — for-of path)
     bool   is_resolved;      // for assignment mode: was var resolved locally?
     bool   is_nested;
     uint   nested_key_idx;
