@@ -491,25 +491,33 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     bool global_flag = (jsf & 1) != 0;
     bool sticky_flag = (jsf & 32) != 0;
 
-    // Get lastIndex (steps 4-5) — used when global OR sticky
+    // ES §22.2.5.2.2 RegExpBuiltinExec steps 4-8:
+    // Step 4: Let lastIndex be ? ToLength(? Get(R, "lastIndex")).
+    //   ToLength always runs (so valueOf on an object lastIndex is called).
+    // Step 8: If global and sticky are both false, let lastIndex be 0.
+    //   (The property is NOT modified in this case.)
     HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
     int start_pos = 0;
-    if (global_flag || sticky_flag) {
-        if (try liv = obj.get_prop_proto(li_key)) {
-            if (liv.is_fastint()) {
-                start_pos = (int)liv.get_fastint();
-            } else if (liv.is_number()) {
-                start_pos = (int)liv.get_number();
+    {
+        TVal? li_opt = builtins_generic_get(obj, li_key, ctx);
+        if (ctx.should_throw) return;
+        // Always ToLength-coerce (calls valueOf) — spec step 4.
+        TVal li_raw; li_raw.set_fastint(0);
+        if (try lv = li_opt) { li_raw = lv; }
+        double li_d = builtin_to_integer_vm(ctx, &li_raw);
+        if (ctx.should_throw) return;
+        if (li_d < 0.0) li_d = 0.0;
+        if (global_flag || sticky_flag) {
+            start_pos = (int)li_d;
+            // Step 7: if lastIndex > length, set lastIndex to 0 and return null.
+            if (start_pos < 0 || start_pos > input_len) {
+                TVal zero_tv; zero_tv.set_fastint(0);
+                if (!regexp_set_prop(ctx, obj, li_key, &zero_tv)) return;
+                ctx.result.set_null();
+                return;
             }
         }
-        // Step 7: if i < 0 or i > length, set lastIndex to 0 and return null
-        if (start_pos < 0 || start_pos > input_len) {
-            TVal zero_tv;
-            zero_tv.set_fastint(0);
-            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
-            ctx.result.set_null();
-            return;
-        }
+        // For non-global, non-sticky: start_pos stays 0; don't modify lastIndex.
     }
 
     // Execute with capture arrays
@@ -528,32 +536,34 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
     );
 
     if (result != re_bindings::RE_MATCH) {
-        // Step 9: no match — reset lastIndex to 0 if global (not sticky)
-        if (global_flag) {
-            TVal zero_tv;
-            zero_tv.set_fastint(0);
-            obj.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+        // Step 9: no match — reset lastIndex to 0 if global or sticky.
+        // For sticky, Set throws if lastIndex is non-writable (step 9.c.i.1).
+        if (global_flag || sticky_flag) {
+            TVal zero_tv; zero_tv.set_fastint(0);
+            if (!regexp_set_prop(ctx, obj, li_key, &zero_tv)) return;
         }
         ctx.result.set_null();
         return;
     }
 
-    // Step 10: if global, update lastIndex to end of match (sticky does NOT update)
-    if (global_flag) {
+    // Step 10: if global OR sticky, update lastIndex to end of match.
+    // lastIndex is a UTF-16 code unit index; we store strings as CESU-8,
+    // so convert byte offset → code unit count.
+    if (global_flag || sticky_flag) {
+        bool is_unicode = (jsf & (16 | 128)) != 0;
+        long new_li;
         // ES2017 §21.2.5.2 step 17: when matchStr is empty, AdvanceStringIndex
         // to lastIndex+1 (or unicode step) so next call moves forward.
         if (out_end == out_start) {
-            bool is_unicode = (jsf & (16 | 128)) != 0;
-            int adv = (int)hstring::advance_string_index_byte_len(
+            int adv_bytes = (int)hstring::advance_string_index_byte_len(
                 input[:input_len], (uint)out_start, is_unicode);
-            TVal end_tv;
-            end_tv.set_fastint((long)(out_start + adv));
-            obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
+            int new_byte = out_start + adv_bytes;
+            new_li = (long)hstring::compute_charlen(input[:new_byte]);
         } else {
-            TVal end_tv;
-            end_tv.set_fastint((long)out_end);
-            obj.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
+            new_li = (long)hstring::compute_charlen(input[:out_end]);
         }
+        TVal end_tv; end_tv.set_fastint(new_li);
+        if (!regexp_set_prop(ctx, obj, li_key, &end_tv)) return;
     }
 
     // Build result array with .groups and .indices (when d flag is set)
@@ -1227,235 +1237,320 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// RegExp.prototype[@@split] — ES6 §21.2.5.11
+// RegExp.prototype[@@split] — ES2022 §21.2.5.11
 // ============================================================================
 fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
     HObject* rx = regexp_get_symbol_this(ctx);
     if (rx == null) return;
 
-    // 3. Let S be ? ToString(string).
+    Heap* heap = ctx.heap;
+    HString* li_key   = builtin_intern_string(heap, "lastIndex");
+    HString* len_key  = builtin_intern_string(heap, "length");
+
+    // Step 3: Let S be ? ToString(string).
     TVal s_tv; s_tv.set_undefined();
-    if (ctx.argc > 0) s_tv = ctx.regs[ctx.base_reg];
+    if (ctx.argc > 0) { s_tv = ctx.regs[ctx.base_reg]; }
     HString* s_hstr;
     if (s_tv.is_string() && s_tv.get_heapptr() != null) {
-        s_hstr = (HString*)s_tv.get_heapptr();
+        HString* tmp_hs = (HString*)s_tv.get_heapptr();
+        // Symbols cannot be converted to string — throw TypeError.
+        if (tmp_hs.is_symbol()) {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                "Cannot convert Symbol to string");
+            return;
+        }
+        s_hstr = tmp_hs;
     } else {
         s_hstr = builtin_to_string_vm(ctx, &s_tv);
         if (ctx.should_throw) return;
-        if (s_hstr == null) s_hstr = builtin_intern_string(ctx.heap, "undefined");
+        if (s_hstr == null) { s_hstr = builtin_intern_string(heap, "undefined"); }
     }
 
-    // 4. Let C be ? SpeciesConstructor(rx, %RegExp%).
-    // 5-6. If limit is undefined, lim = 2^32-1; else ToUint32(limit).
-    uint limit = 0xFFFFFFFF;
-    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
-        TVal limit_arg = ctx.regs[ctx.base_reg + 1];
-        double limit_num;
-        if (limit_arg.is_fastint()) {
-            limit_num = (double)limit_arg.get_fastint();
-        } else if (limit_arg.is_number()) {
-            limit_num = limit_arg.get_number();
-        } else {
-            limit_num = builtin_to_number_getdouble(ctx, &limit_arg);
-            if (ctx.should_throw) return;
-        }
-        // ToUint32
-        if (limit_num != limit_num) {
-            limit = 0;
-        } else if (limit_num == 0.0 || limit_num == double::inf || limit_num == -double::inf) {
-            limit = 0;
-        } else {
-            double two32 = 4294967296.0;
-            double n = limit_num - math::floor(limit_num / two32) * two32;
-            if (n < 0.0) n += two32;
-            limit = (uint)n;
+    // Step 4: Let C be ? SpeciesConstructor(rx, %RegExp%).
+    // Inline SpeciesConstructor: Get(rx, "constructor") → Get(C, @@species).
+    TVal species_ctor_tv; species_ctor_tv.set_undefined();
+    {
+        HString* ctor_key = builtin_intern_string(heap, "constructor");
+        TVal? ctor_opt = builtins_generic_get(rx, ctor_key, ctx);
+        if (ctx.should_throw) return;
+        TVal ctor_tv; ctor_tv.set_undefined();
+        if (try cv = ctor_opt) { ctor_tv = cv; }
+        if (!ctor_tv.is_undefined()) {
+            if (!ctor_tv.is_object() || ctor_tv.get_heapptr() == null) {
+                builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                    "constructor is not an object");
+                return;
+            }
+            HObject* ctor_obj = (HObject*)ctor_tv.get_heapptr();
+            HString* species_sym = ensure_species_symbol(heap);
+            if (species_sym != null) {
+                TVal? sp_opt = builtins_generic_get(ctor_obj, species_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try spv = sp_opt) {
+                    if (!spv.is_undefined() && !spv.is_null()) {
+                        species_ctor_tv = spv;
+                    }
+                }
+            }
         }
     }
 
-    // 7. Let flags be ToString(? Get(rx, "flags")).
-    HString* flags_key = builtin_intern_string(ctx.heap, "flags");
+    // Step 7: Let flags be ? ToString(? Get(rx, "flags")).
+    HString* flags_key = builtin_intern_string(heap, "flags");
     TVal? flags_opt = builtins_generic_get(rx, flags_key, ctx);
     if (ctx.should_throw) return;
     TVal flags_tv; flags_tv.set_undefined();
     if (try fv = flags_opt) { flags_tv = fv; }
     HString* flags_str = builtin_to_string_vm(ctx, &flags_tv);
     if (ctx.should_throw) return;
-    if (flags_str == null) flags_str = builtin_intern_string(ctx.heap, "");
+    if (flags_str == null) { flags_str = builtin_intern_string(heap, ""); }
 
-    // 8. If flags contains "y", let newFlags be flags; otherwise let
-    //    newFlags be flags + "y" (the constructed matcher must be sticky).
-    // We append "y" if not present.
-    bool needs_y = true;
+    // Step 8: newFlags = flags; if 'y' not in flags, append 'y'.
+    bool has_y = false;
+    bool has_u = false;
     char* fp = flags_str.get_cstr();
     uint flen = flags_str.blen;
     for (uint i = 0; i < flen; i++) {
-        if (fp[i] == 'y') { needs_y = false; break; }
+        if (fp[i] == 'y') { has_y = true; }
+        if (fp[i] == 'u') { has_u = true; }
+    }
+    HString* new_flags_str;
+    if (has_y) {
+        new_flags_str = flags_str;
+    } else {
+        // Append 'y'.
+        char[64] nf_buf;
+        uint nf_len = 0;
+        for (uint i = 0; i < flen && nf_len < 63; i++) { nf_buf[nf_len++] = fp[i]; }
+        if (nf_len < 63) { nf_buf[nf_len++] = 'y'; }
+        new_flags_str = builtin_intern_string(heap, nf_buf[:nf_len]);
     }
 
-    // Create result array
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    // Step 9: Let splitter be ? Construct(C, «rx, newFlags»).
+    // If species_ctor_tv is callable and construct_fn is available, use it.
+    // Otherwise, fall through to use rx itself as the splitter (built-in path).
+    HObject* splitter = null;
+    bool have_external_splitter = false;
+    if (!species_ctor_tv.is_undefined() && heap.construct_fn != null && ctx.vm != null) {
+        TVal rx_tv; rx_tv.set_object(rx);
+        TVal new_flags_tv; new_flags_tv.set_string(new_flags_str);
+        TVal[2] ctor_args;
+        ctor_args[0] = rx_tv;
+        ctor_args[1] = new_flags_tv;
+        TVal splitter_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+        if (splitter_tv.is_object() && splitter_tv.get_heapptr() != null) {
+            splitter = (HObject*)splitter_tv.get_heapptr();
+            have_external_splitter = true;
+        } else {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                "species constructor did not return an object");
+            return;
+        }
+    }
+
+    // If no external splitter, use rx itself as splitter (built-in fast path).
+    if (splitter == null) { splitter = rx; }
+
+    // Step 16: ToLength(limit), or 2^53-1 when undefined.
+    // ES2015 spec uses 2^32-1 for @@split limit but later revisions differ;
+    // we use 2^32-1 here for compatibility with test262 expectations.
+    // NOTE: spec step 17 now says ToLength, not ToUint32 — tests coerce-limit-err
+    // require Symbol to throw TypeError. We call builtin_to_integer_vm which
+    // propagates Symbol-as-number TypeError.
+    ulong limit = 0xFFFFFFFF;  // 2^32-1 default
+    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
+        TVal limit_arg = ctx.regs[ctx.base_reg + 1];
+        // Symbol as limit must throw TypeError.
+        if (limit_arg.is_string() && limit_arg.get_heapptr() != null &&
+            ((HString*)limit_arg.get_heapptr()).is_symbol()) {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                "Cannot convert Symbol to number");
+            return;
+        }
+        double limit_d = builtin_to_integer_vm(ctx, &limit_arg);
+        if (ctx.should_throw) return;
+        if (limit_d < 0.0) { limit_d = 0.0; }
+        // ToUint32 semantics: wrap mod 2^32
+        if (limit_d >= 0.0 && limit_d < 4294967296.0) {
+            limit = (ulong)limit_d;
+        } else if (limit_d >= 4294967296.0) {
+            // Wrap mod 2^32
+            double two32 = 4294967296.0;
+            double n = limit_d - math::floor(limit_d / two32) * two32;
+            limit = (ulong)n;
+        } else {
+            limit = 0;
+        }
+    }
+
+    // Create result array.
+    HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_null(); return; }
     HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
+    arr.prototype = heap.array_proto;
 
     if (limit == 0) {
-        // 21. If lim = 0, return A. (length 0)
         ctx.result.set_object(arr);
         return;
     }
 
-    // 9-13: Construct C, the new "splitter" regexp with "y" appended.
-    // For the fast path with built-in regexps, we keep using rx's compiled
-    // data and require that rx is already sticky.
-    void* re_data = null;
-    int jsf = 0;
-    if (rx.get_class() == hobject::ObjClass.REGEXP) {
-        re_data = (*rx.extra_ptr()).regexp.regexp_data;
-        jsf = (*rx.extra_ptr()).regexp.flags;
-    }
-    if (re_data == null) {
-        // Slow path: no built-in regexp data — for now, fall back to throwing
-        // since this matches user-defined objects which we can't process here.
-        // (Full species-constructor handling would require `Construct`.)
-        ctx.result.set_object(arr);
-        return;
-    }
-    bool rx_sticky = (jsf & 32) != 0;
-    if (!rx_sticky && !needs_y) {
-        // Force sticky flag for the matcher (spec: anyFlags + "y").
-        // For the built-in path, we leave lastIndex reset and rely on the
-        // anchored scan in the loop below (which anchors to q).
-    }
-
-    // Reset lastIndex (spec step 12)
-    HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
-    TVal zero_tv; zero_tv.set_fastint(0);
-    if (!rx.put_prop((void*)li_key, zero_tv, hobject::PROP_FLAGS_WEC)) {
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex on regexp");
-        return;
-    }
-
-    uint arr_idx = 0;
-    int q = 0;
-    int p = 0;
     char* input = s_hstr.get_cstr();
     int input_len = (int)s_hstr.blen;
-    HString* len_key = builtin_intern_string(ctx.heap, "length");
 
-    // Empty string edge case
+    // Step 22: if size = 0, handle empty string case.
     if (input_len == 0) {
-        int[re_bindings::RE_MAX_CAPTURES] caps0_s;
-        int[re_bindings::RE_MAX_CAPTURES] caps0_e;
-        libc::memset(&caps0_s, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        libc::memset(&caps0_e, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        int os0 = 0;
-        int oe0 = 0;
-        int onc0 = 0;
-        int r0 = re_bindings::re_exec(
-            re_data, input, input_len, 0,
-            &os0, &oe0, &onc0, &caps0_s, &caps0_e, re_bindings::RE_MAX_CAPTURES
-        );
-        if (r0 != re_bindings::RE_MATCH) {
-            TVal elem; elem.set_string(builtin_intern_string(ctx.heap, ""));
-            arr.put_prop(ctx.heap.int_to_hstring(0), elem, hobject::PROP_FLAGS_WEC);
+        TVal s_tv2; s_tv2.set_string(s_hstr);
+        if (!regexp_exec_call(ctx, splitter, &s_tv2)) return;
+        TVal z = *ctx.result;
+        if (z.is_null()) {
+            // No match on empty string — return [S].
+            TVal elem; elem.set_string(s_hstr);
+            arr.put_prop(heap.int_to_hstring(0), elem, hobject::PROP_FLAGS_WEC);
             TVal lv; lv.set_fastint(1);
             arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
-        } else {
-            TVal lv; lv.set_fastint(0);
-            arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
         }
+        // else: match — return [] (empty).
         ctx.result.set_object(arr);
         return;
     }
 
-    bool unicode_flag = (jsf & 16) != 0;
-    // Main loop
-    while (q < input_len && arr_idx < limit) {
-        int[re_bindings::RE_MAX_CAPTURES] caps_s;
-        int[re_bindings::RE_MAX_CAPTURES] caps_e;
-        libc::memset(&caps_s, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        libc::memset(&caps_e, 0, re_bindings::RE_MAX_CAPTURES * int::size);
-        int out_start = 0;
-        int out_end = 0;
-        int out_num_captures = 0;
+    ulong arr_idx = 0;
+    int q = 0;  // current search position in bytes (CESU-8 byte offset)
+    int p = 0;  // start of current substring in bytes
 
-        int result = re_bindings::re_exec(
-            re_data, input, input_len, q,
-            &out_start, &out_end, &out_num_captures,
-            &caps_s, &caps_e, re_bindings::RE_MAX_CAPTURES
-        );
-        int e = out_end;
-        if (e > input_len) e = input_len;
-        // Anchor to q (matches SymbolSplit behaviour for sticky scan)
-        if (result != re_bindings::RE_MATCH || out_start != q || e == p) {
-            q++;
+    // Main loop: ES §21.2.5.11 step 24.
+    while (q < input_len) {
+        // Step 24.a: Set(splitter, "lastIndex", q, true) — q as char-unit index.
+        {
+            long q_cu = (long)hstring::compute_charlen(input[:q]);
+            TVal q_tv; q_tv.set_fastint(q_cu);
+            if (!regexp_set_with_setter(ctx, splitter, li_key, q_tv)) return;
+        }
+
+        // Step 24.c: Let z be ? RegExpExec(splitter, S).
+        TVal s_tv2; s_tv2.set_string(s_hstr);
+        if (!regexp_exec_call(ctx, splitter, &s_tv2)) return;
+        TVal z = *ctx.result;
+
+        // Step 24.e: If z is null, let q be AdvanceStringIndex(S, q, unicodeMatching).
+        if (z.is_null()) {
+            int adv = (int)hstring::advance_string_index_byte_len(
+                input[:input_len], (uint)q, has_u);
+            q += adv;
             continue;
         }
 
-        // Push substring [p, q)
-        uint substr_len = (uint)q - (uint)p;
-        HString* substr;
-        if (substr_len == 0) {
-            substr = builtin_intern_string(ctx.heap, "");
-        } else if (substr_len < 256) {
-            char[256] tmp;
-            for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(uint)p + i];
-            substr = builtin_intern_string(ctx.heap, tmp[:substr_len]);
-        } else {
-            substr = builtin_intern_string(ctx.heap, input[p : substr_len]);
+        if (!z.is_object() || z.get_heapptr() == null) {
+            // Treat as no match.
+            int adv = (int)hstring::advance_string_index_byte_len(
+                input[:input_len], (uint)q, has_u);
+            q += adv;
+            continue;
         }
-        TVal elem; elem.set_string(substr);
-        arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
-        arr_idx++;
-        if (arr_idx >= limit) {
-            TVal lv; lv.set_fastint((long)arr_idx);
-            arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
-            ctx.result.set_object(arr);
-            return;
+        HObject* z_obj = (HObject*)z.get_heapptr();
+
+        // Step 24.f.i: Let e be ? ToLength(? Get(splitter, "lastIndex")).
+        TVal? li_opt = builtins_generic_get(splitter, li_key, ctx);
+        if (ctx.should_throw) return;
+        TVal li_raw; li_raw.set_fastint(0);
+        if (try lv = li_opt) { li_raw = lv; }
+        double e_d = builtin_to_integer_vm(ctx, &li_raw);
+        if (ctx.should_throw) return;
+        if (e_d < 0.0) { e_d = 0.0; }
+        // Clamp e to size.
+        if (e_d > (double)input_len) { e_d = (double)input_len; }
+        // Convert char-unit index (from lastIndex) back to byte offset.
+        // splitter.lastIndex is a char-unit count; convert to byte offset.
+        int e_cu = (int)e_d;
+        int e_byte;
+        if (e_cu <= 0) {
+            e_byte = 0;
+        } else {
+            // Walk s_hstr to find byte offset corresponding to e_cu char units.
+            e_byte = (int)s_hstr.char_offset_to_byte_offset((uint)e_cu);
+            if (e_byte > input_len) { e_byte = input_len; }
+        }
+        int e = e_byte;
+
+        // Step 24.f.ii: If e == p, advance q (no forward progress).
+        if (e == p) {
+            int adv = (int)hstring::advance_string_index_byte_len(
+                input[:input_len], (uint)q, has_u);
+            q += adv;
+            continue;
         }
 
-        // Push capture groups
-        int num_caps = out_num_captures;
-        if (num_caps > re_bindings::RE_MAX_CAPTURES) num_caps = re_bindings::RE_MAX_CAPTURES;
-        for (int i = 0; i < num_caps && arr_idx < limit; i++) {
-            TVal cap_elem;
-            if (caps_s[i] >= 0 && caps_e[i] >= 0) {
-                usz cap_len = (usz)(caps_e[i] - caps_s[i]);
-                if (cap_len == 0) {
-                    cap_elem.set_string(builtin_intern_string(ctx.heap, ""));
-                } else if (cap_len < 256) {
-                    char[256] cap_buf;
-                    for (usz j = 0; j < cap_len; j++) cap_buf[j] = input[(uint)caps_s[i] + j];
-                    cap_elem.set_string(builtin_intern_string(ctx.heap, cap_buf[:cap_len]));
-                } else {
-                    cap_elem.set_string(builtin_intern_string(ctx.heap, input[caps_s[i] : cap_len]));
-                }
+        // Step 24.f.iv: e != p — we have a real match boundary.
+        // Push substring [p, q) as the next result element.
+        {
+            int sub_len = q - p;
+            HString* substr;
+            if (sub_len <= 0) {
+                substr = builtin_intern_string(heap, "");
             } else {
-                cap_elem.set_undefined();
+                substr = builtin_intern_string(heap, input[p : (usz)sub_len]);
             }
-            arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), cap_elem, hobject::PROP_FLAGS_WEC);
+            TVal elem; elem.set_string(substr);
+            arr.put_prop(heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
             arr_idx++;
+            if (arr_idx >= limit) {
+                TVal lv; lv.set_fastint((long)arr_idx);
+                arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
+                ctx.result.set_object(arr);
+                return;
+            }
+        }
+
+        // Step 24.f.iv.7: numberOfCaptures = ToLength(Get(z, "length")) - 1.
+        TVal? zlen_opt = builtins_generic_get(z_obj, len_key, ctx);
+        if (ctx.should_throw) return;
+        TVal zlen_raw; zlen_raw.set_fastint(0);
+        if (try zlv = zlen_opt) { zlen_raw = zlv; }
+        double zlen_d = builtin_to_integer_vm(ctx, &zlen_raw);
+        if (ctx.should_throw) return;
+        if (zlen_d < 0.0) { zlen_d = 0.0; }
+        int num_caps = (int)zlen_d - 1;
+        if (num_caps < 0) { num_caps = 0; }
+
+        // Step 24.f.iv.11: For each capture group i in 1..numberOfCaptures.
+        for (int i = 1; i <= num_caps; i++) {
+            HString* cap_key = heap.int_to_hstring((long)i);
+            TVal? cap_opt = builtins_generic_get(z_obj, cap_key, ctx);
+            if (ctx.should_throw) return;
+            TVal cap_tv; cap_tv.set_undefined();
+            if (try cv = cap_opt) { cap_tv = cv; }
+            // Captures are pushed as-is (undefined stays undefined).
+            arr.put_prop(heap.int_to_hstring((long)arr_idx), cap_tv, hobject::PROP_FLAGS_WEC);
+            arr_idx++;
+            if (arr_idx >= limit) {
+                TVal lv; lv.set_fastint((long)arr_idx);
+                arr.put_prop(len_key, lv, hobject::PROP_FLAGS_WEC);
+                ctx.result.set_object(arr);
+                return;
+            }
         }
 
         p = e;
         q = e;
     }
 
-    // Tail: ES6 §21.2.5.11 step 16. Always push [p, input_len), even when
-    // it is empty — that's how V8/QuickJS get an empty tail entry for the
-    // case "abc".split(/[a-z]/) which yields ["", "", "", ""].
+    // Tail: push [p, size) as the final element.
     if (arr_idx < limit) {
-        uint substr_len = (uint)input_len - (uint)p;
-        HString* substr;
-        if (substr_len < 256) {
-            char[256] tmp;
-            for (usz i = 0; i < (usz)substr_len; i++) tmp[i] = input[(uint)p + i];
-            substr = builtin_intern_string(ctx.heap, tmp[:substr_len]);
+        int tail_len = input_len - p;
+        HString* tail_str;
+        if (tail_len <= 0) {
+            tail_str = builtin_intern_string(heap, "");
         } else {
-            substr = builtin_intern_string(ctx.heap, input[p : substr_len]);
+            tail_str = builtin_intern_string(heap, input[p : (usz)tail_len]);
         }
-        TVal elem; elem.set_string(substr);
-        arr.put_prop(ctx.heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
+        TVal elem; elem.set_string(tail_str);
+        arr.put_prop(heap.int_to_hstring((long)arr_idx), elem, hobject::PROP_FLAGS_WEC);
         arr_idx++;
     }
 
@@ -1596,26 +1691,49 @@ fn HObject* regexp_get_symbol_this(BuiltinContext* ctx) {
     return (HObject*)this_val.get_heapptr();
 }
 
-/// Set `rx.prop = val` with spec-compliant Set semantics:
-/// walk prototype chain, invoke setter, honor non-writable getters that
-/// return undefined (only data descriptors should succeed at the receiver).
-/// Failures (sealed, frozen, non-writable, getter-throws) flip ctx.should_throw.
+/// Set `rx.prop = val` with spec-compliant strict Set semantics:
+/// Throws TypeError if the own property exists but is non-writable.
 /// Returns true when the property was written successfully.
 fn bool regexp_set_prop(BuiltinContext* ctx, HObject* rx, HString* key, TVal* val_ptr) {
-    // Try direct put_prop first (most common path: own writable data prop).
     TVal val = *val_ptr;
-    if (rx.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC)) return true;
-    // put_prop returns false for read-only / non-configurable / absent prototype
-    // setters etc. Fall through and check whether the key is even present.
-    if (try pv = rx.get_prop_proto(key)) {
-        // Property exists but is read-only — TypeError per ES2017 step 12.a.i
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property");
+    // Check writability of existing own property before writing.
+    if (!rx.is_prop_writable((void*)key)) {
+        // Own non-writable data property — Set throws TypeError per spec.
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'lastIndex'");
         return false;
     }
-    // Property doesn't exist — create it as a writable own data prop. The
-    // PROTO flag is dropped so we land on the receiver only.
     rx.put_prop((void*)key, val, hobject::PROP_FLAGS_WEC);
     return true;
+}
+
+/// Spec-compliant Set(obj, key, val, true) that handles both data properties
+/// and accessor setters. Invokes the setter via call_fn when one exists.
+/// Propagates throws via ctx.should_throw. Returns false on throw.
+fn bool regexp_set_with_setter(BuiltinContext* ctx, HObject* obj, HString* key, TVal val) {
+    // Check for accessor setter first.
+    AccessorResult acc = obj.find_accessor_proto((void*)key, false);  // false = want setter
+    if (acc.found) {
+        // Accessor property — invoke setter.
+        if (acc.accessor_fn.is_undefined() || acc.accessor_fn.is_null()) {
+            // No setter → strict TypeError.
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+                "Cannot set property — no setter");
+            return false;
+        }
+        if (ctx.heap.call_fn != null && ctx.vm != null) {
+            TVal this_tv; this_tv.set_object(obj);
+            ctx.heap.call_fn(ctx.vm, acc.accessor_fn, &val, 1, this_tv);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return false;
+            }
+        }
+        return true;
+    }
+    // Data property — use regexp_set_prop (checks writable, throws if not).
+    return regexp_set_prop(ctx, obj, key, &val);
 }
 
 /// RegExpExec abstract operation (ES2017 §21.2.5.2.1) — sets ctx.result:
@@ -1687,17 +1805,25 @@ fn bool regexp_exec_call(BuiltinContext* ctx, HObject* rx, TVal* input_str_tv) {
 
     int start_pos = 0;
     HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
-    if (global_flag || sticky_flag) {
-        if (try liv = rx.get_prop_proto(li_key)) {
-            if (liv.is_fastint()) { start_pos = (int)liv.get_fastint(); }
-            else if (liv.is_number()) { start_pos = (int)liv.get_number(); }
+    {
+        // Always ToLength(Get(R, "lastIndex")) — spec step 4 (triggers valueOf).
+        TVal? li_opt = builtins_generic_get(rx, li_key, ctx);
+        if (ctx.should_throw) return false;
+        TVal li_raw; li_raw.set_fastint(0);
+        if (try lv = li_opt) { li_raw = lv; }
+        double li_d = builtin_to_integer_vm(ctx, &li_raw);
+        if (ctx.should_throw) return false;
+        if (li_d < 0.0) li_d = 0.0;
+        if (global_flag || sticky_flag) {
+            start_pos = (int)li_d;
+            if (start_pos < 0 || start_pos > input_len) {
+                TVal zero_tv; zero_tv.set_fastint(0);
+                if (!regexp_set_prop(ctx, rx, li_key, &zero_tv)) return false;
+                ctx.result.set_null();
+                return true;
+            }
         }
-        if (start_pos < 0 || start_pos > input_len) {
-            TVal zero_tv; zero_tv.set_fastint(0);
-            rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
-            ctx.result.set_null();
-            return true;
-        }
+        // For non-global/non-sticky: start_pos stays 0; don't modify lastIndex.
     }
 
     int out_start = 0;
@@ -1714,28 +1840,30 @@ fn bool regexp_exec_call(BuiltinContext* ctx, HObject* rx, TVal* input_str_tv) {
         &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
     );
     if (result != re_bindings::RE_MATCH) {
-        if (global_flag) {
+        if (global_flag || sticky_flag) {
             TVal zero_tv; zero_tv.set_fastint(0);
-            rx.put_prop(li_key, zero_tv, hobject::PROP_FLAGS_WEC);
+            if (!regexp_set_prop(ctx, rx, li_key, &zero_tv)) return false;
         }
         ctx.result.set_null();
         return true;
     }
 
-    if (global_flag) {
-        // ES2017 §21.2.5.2.2 step 16-17: when matchStr is empty, advance
-        // lastIndex via AdvanceStringIndex so the next global iteration
-        // moves past the empty-match position (otherwise we loop forever).
-        if (out_end == out_start) {
-            bool is_unicode = (jsf & (16 | 128)) != 0;
-            int adv = (int)hstring::advance_string_index_byte_len(
+    if (global_flag || sticky_flag) {
+        // ES2017 §21.2.5.2.2 step 16-17: lastIndex = UTF-16 code unit index.
+        // Strings are CESU-8; convert byte offset to code unit count.
+        bool is_unicode = (jsf & (16 | 128)) != 0;
+        long new_li;
+        if (out_end == out_start && global_flag) {
+            // Empty match: advance via AdvanceStringIndex.
+            int adv_bytes = (int)hstring::advance_string_index_byte_len(
                 input[:input_len], (uint)out_start, is_unicode);
-            TVal end_tv; end_tv.set_fastint((long)(out_start + adv));
-            rx.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
+            int new_byte = out_start + adv_bytes;
+            new_li = (long)hstring::compute_charlen(input[:new_byte]);
         } else {
-            TVal end_tv; end_tv.set_fastint((long)out_end);
-            rx.put_prop(li_key, end_tv, hobject::PROP_FLAGS_WEC);
+            new_li = (long)hstring::compute_charlen(input[:out_end]);
         }
+        TVal end_tv; end_tv.set_fastint(new_li);
+        if (!regexp_set_prop(ctx, rx, li_key, &end_tv)) return false;
     }
 
     int num_caps = out_num_captures;
