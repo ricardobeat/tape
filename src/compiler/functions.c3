@@ -2396,7 +2396,18 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
         uint src_end = inner_body_end_pos;
         if (src_end > (uint)inner_ctx.lexer.source.len) src_end = (uint)inner_ctx.lexer.source.len;
         uint slen = src_end - src_start;
-        bool needs_async_prefix = inner_ctx.is_async;
+        // Only synthesize the "async " prefix when the captured span does not
+        // already include it. Method shorthand (`async m(){}`) captures from the
+        // `async` token, whereas `async function ...` captures from `function`
+        // and needs the prefix prepended.
+        bool span_has_async = slen >= 6
+            && inner_ctx.lexer.source[src_start] == 'a'
+            && inner_ctx.lexer.source[src_start + 1] == 's'
+            && inner_ctx.lexer.source[src_start + 2] == 'y'
+            && inner_ctx.lexer.source[src_start + 3] == 'n'
+            && inner_ctx.lexer.source[src_start + 4] == 'c'
+            && inner_ctx.lexer.source[src_start + 5] == ' ';
+        bool needs_async_prefix = inner_ctx.is_async && !span_has_async;
         usz alloc_len = (usz)slen + (needs_async_prefix ? (usz)6 : (usz)0);
         if (slen > 0) {
             char* src_heap = (char*)libc::malloc((usz)alloc_len + 1);

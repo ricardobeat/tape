@@ -2583,6 +2583,14 @@ fn ushort? CompilerContext.object_literal(&self) {
             // we must not clear the flags here.
             bool saved_is_generator = self.is_generator;
             bool saved_is_async = self.is_async;
+            // Capture the byte offset of the property's very first token BEFORE
+            // any async/star prefix is consumed, so Function.prototype.toString
+            // source retention for method shorthand starts at `async`/`*`/the
+            // key. match_async_method_prefix's pushback leaves the lexer's
+            // token_start pointing past the key for identifier keys, so relying
+            // on a later refresh would drop the method name (ES2019 §19.2.3.5).
+            self.lexer.refresh_token_start();
+            uint prop_src_start = self.lexer.token_start;
             // ES2017 §14.6: async-method shorthand — `{ async m() {} }`.
             // `async` is not a keyword; match_async_method_prefix consumes it
             // only when it is a modifier (followed on the same line by a
@@ -2599,19 +2607,15 @@ fn ushort? CompilerContext.object_literal(&self) {
             ushort key_reg;
             uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
             bool is_shorthand_key = false;  // true iff the key came from a plain identifier
-            // Source start for Function.prototype.toString retention. Defaults
-            // to the computed-key bracket (consumed below) — set explicitly for
-            // identifier/string/keyword keys before their `advance()` call.
-            uint key_src_start = 0xFFFFFFFF;
+            // Source start for Function.prototype.toString retention. Captured
+            // above (prop_src_start) at the property's first token, which is the
+            // correct span origin for all method forms — `async`/`*` prefixes,
+            // `get`/`set`, and identifier/string/number/computed keys alike.
+            uint key_src_start = prop_src_start;
 
             TokenType key_tt = self.peek_type();
             if (key_tt == TokenType.IDENTIFIER || key_tt == TokenType.STRING
                 || lexer::keyword_to_string(key_tt).len > 0) {
-                // Refresh token_start so we can capture the offset of the
-                // upcoming key token before any consumes clobber it. Used
-                // downstream by Function.prototype.toString source-retention.
-                self.lexer.refresh_token_start();
-                key_src_start = self.lexer.token_start;
                 Token key_tok = self.advance()!;
                 // ES2015 §12.2.6.8: shorthand is only legal for a plain
                 // IdentifierReference — string-literal keys and reserved
