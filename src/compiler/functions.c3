@@ -60,6 +60,11 @@ struct DestructBind {
     bool   is_member_target;  // target is a member expression, not a simple identifier
     ushort member_obj_reg;    // register holding the evaluated object (for PUTPROP)
     ushort member_prop_reg;   // register holding the evaluated property key (for PUTPROP)
+    // Object-pattern computed keys: { [expr]: x }. The key expression is
+    // evaluated once at collect time into a persistent register; the emitter
+    // reads the value via GETPROP with that register instead of a constant key.
+    bool   is_computed_key;   // true = key comes from computed_key_reg, not key_idx
+    ushort computed_key_reg;  // register holding the evaluated computed key
 }
 
 /// Check if a candidate param name already exists in the seen-params table.
@@ -123,14 +128,56 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
         // extract time. (No destructuring on the key itself.)
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!; // consume '['
-            // Reuse the synthetic-binding path: stash the computed key in a
-            // scratch field by storing it as key_idx, then emit a binding
-            // with is_computed_key=true on the actual extraction. For
-            // simplicity here, we don't compile computed keys in param
-            // patterns — emit a clean SyntaxError per ES2015 §14.3.3.
-            // (The spec allows them but our emitter has no is_computed_key
-            // plumbing in collect_obj_param_binds; defer.)
-            return COMPILE_ERROR~;
+            // Evaluate the computed key expression NOW into a persistent
+            // register; the emitter reads the property via GETPROP with this
+            // register. (Matches the pre-consolidation for-of behavior of
+            // evaluating the key once at pattern-collection time.)
+            ushort ck_reg = self.assignment_expr()!;
+            self.expect(TokenType.RBRACKET)!;
+            self.expect(TokenType.COLON)!;
+
+            if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+                // Computed key with a nested pattern target: { [k]: {x} }.
+                bool is_obj = self.check(TokenType.LBRACE);
+                if (*count < binds.len) {
+                    binds[*count].is_computed_key = true;
+                    binds[*count].computed_key_reg = ck_reg;
+                    binds[*count].is_object = true;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    binds[*count].is_synthetic = true;
+                    (*count)++;
+                }
+                ushort synth_idx = (ushort)(*count - 1);
+                outer_synth_idx = synth_idx;
+                last_was_synth = true;
+                self.advance()!; // consume '{' or '['
+                if (is_obj) {
+                    self.collect_obj_param_binds(binds, count, src_reg, synth_idx)!;
+                } else {
+                    self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
+                }
+            } else {
+                Token bind = self.expect(TokenType.IDENTIFIER)!;
+                if (is_restricted_name(bind.str_value)) return COMPILE_ERROR~;
+                if (*count < binds.len) {
+                    binds[*count].name_idx = self.add_string_constant(bind.str_value);
+                    binds[*count].is_computed_key = true;
+                    binds[*count].computed_key_reg = ck_reg;
+                    binds[*count].is_object = true;
+                    binds[*count].arg_idx = src_reg;
+                    binds[*count].parent_idx = parent_idx;
+                    if (self.match(TokenType.ASSIGN)) {
+                        binds[*count].has_default = true;
+                        binds[*count].default_func_idx =
+                            self.add_inner_func(self.compile_default_expr(bind.str_value)!);
+                    }
+                    (*count)++;
+                }
+                last_was_synth = false;
+            }
+            if (!self.match(TokenType.COMMA)) break;
+            continue;
         }
 
         // Property name — per ES2015 §13.3.3.7, may be an IdentifierName
@@ -568,11 +615,15 @@ fn void CompilerContext.emit_destruct_bindings(&self,
             }
 
             if (binds[di].is_object) {
-                // Object pattern: GETPROP
-                ushort key_reg = self.alloc_reg();
-                self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
-                self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
-                self.free_reg(key_reg);
+                // Object pattern: GETPROP via a constant or computed key.
+                if (binds[di].is_computed_key) {
+                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)binds[di].computed_key_reg);
+                } else {
+                    ushort key_reg = self.alloc_reg();
+                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
+                    self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)key_reg);
+                    self.free_reg(key_reg);
+                }
             } else if (binds[di].key_idx == 0xFFFF) {
                 // Synthetic rest: collect remaining iterator values into an array.
                 self.emit_abc(Opcode.NEWARR, (uint)group_reg, 0, 0);
@@ -685,10 +736,14 @@ fn void CompilerContext.emit_destruct_bindings(&self,
 
             // Extract value from source into bind_reg
             if (binds[di].is_object) {
-                ushort key_reg = self.alloc_reg();
-                self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
-                self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
-                self.free_reg(key_reg);
+                if (binds[di].is_computed_key) {
+                    self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)binds[di].computed_key_reg);
+                } else {
+                    ushort key_reg = self.alloc_reg();
+                    self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
+                    self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);
+                    self.free_reg(key_reg);
+                }
             } else {
                 if (binds[di].key_idx == 0xFFFF) {
                     // Rest element: collect remaining iterator values into a new array.
