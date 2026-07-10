@@ -106,6 +106,40 @@ fn HObject* check_promise(BuiltinContext* ctx) {
     return null;
 }
 
+/// Call a capability resolve or reject function with a single value.
+/// Used for custom-constructor then() chains.
+fn void promise_call_cap_fn(Heap* heap, void* vm, TVal cap_fn, TVal val) {
+    if (heap.call_fn == null || vm == null) return;
+    bool callable = cap_fn.is_lightfunc() ||
+        (cap_fn.is_object() && cap_fn.get_heapptr() != null &&
+         ((HObject*)cap_fn.get_heapptr()).is_callable());
+    if (!callable) return;
+    TVal arg = val;
+    TVal undef; undef.set_undefined();
+    heap.call_fn(vm, cap_fn, &arg, 1, undef);
+    // Swallow any error from the cap function — the promise is already
+    // committed to resolve/reject; errors here are non-recoverable.
+    if (heap.has_error) heap.has_error = false;
+}
+
+/// Build a capability-wrapper object for use as the `downstream` slot of a
+/// microtask queue entry.  The wrapper carries cap_resolve and cap_reject so
+/// promise_microtask_after can call them instead of directly settling a PROMISE.
+/// The plain `promise` field records the result-promise for reference.
+fn HObject*? promise_make_cap_wrapper(Heap* heap, TVal cap_resolve, TVal cap_reject, TVal cap_promise) {
+    HObject*? raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = raw) return null;
+    HObject* w = raw;
+    w.prototype = null;
+    HString* r_key = builtin_intern_string(heap, "\xFFcap_resolve_tv");
+    HString* j_key = builtin_intern_string(heap, "\xFFcap_reject_tv");
+    HString* p_key = builtin_intern_string(heap, "\xFFcap_promise_tv");
+    if (r_key != null) w.put_prop(r_key, cap_resolve, hobject::PROP_FLAGS_WEC);
+    if (j_key != null) w.put_prop(j_key, cap_reject, hobject::PROP_FLAGS_WEC);
+    if (p_key != null) w.put_prop(p_key, cap_promise, hobject::PROP_FLAGS_WEC);
+    return w;
+}
+
 /// Trigger all pending reactions for a settled promise.  Reactions are
 /// detached from the promise's linked list before invocation, so new
 /// reactions added during a handler call don't re-trigger this promise.
@@ -152,36 +186,64 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
             }
         }
 
-        if (state == PROMISE_FULFILLED) {
-            bool callable = handler.is_lightfunc() ||
-                (handler.is_object() && handler.get_heapptr() != null &&
-                 ((HObject*)handler.get_heapptr()).is_callable());
-            if (handler.is_undefined() || !callable) {
-                // No onFulfilled — pass through to downstream
-                if (downstream != null) {
-                    promise_settle(downstream, PROMISE_FULFILLED, &result, heap);
-                    promise_trigger_reactions(downstream, heap, vm);
-                }
-            } else {
-                // Enqueue microtask — handler will be called asynchronously,
-                // downstream will be resolved with handler's return value by drain
-                heap.enqueue_microtask(handler, result, downstream_val);
+        // Check for capability resolve/reject stored on the reaction
+        // (set when then() used a custom SpeciesConstructor via NewPromiseCapability).
+        HString* cr_key = builtin_intern_string(heap, "\xFFcap_resolve_tv");
+        HString* cj_key = builtin_intern_string(heap, "\xFFcap_reject_tv");
+        TVal cap_resolve; cap_resolve.set_undefined();
+        TVal cap_reject; cap_reject.set_undefined();
+        bool has_cap = false;
+        if (cr_key != null) {
+            if (try crv = reaction.get_prop(cr_key)) {
+                cap_resolve = crv;
+                has_cap = true;
+            }
+        }
+        if (cj_key != null) {
+            if (try cjv = reaction.get_prop(cj_key)) {
+                cap_reject = cjv;
+            }
+        }
+
+        bool callable = handler.is_lightfunc() ||
+            (handler.is_object() && handler.get_heapptr() != null &&
+             ((HObject*)handler.get_heapptr()).is_callable());
+        bool has_handler = !(handler.is_undefined() || !callable);
+
+        if (!has_handler) {
+            // No handler — pass the result (or rejection) through.
+            if (has_cap) {
+                // Custom capability: call cap_resolve or cap_reject with the value.
+                TVal cap_fn = (state == PROMISE_FULFILLED) ? cap_resolve : cap_reject;
+                promise_call_cap_fn(heap, vm, cap_fn, result);
+            } else if (downstream != null) {
+                // Default promise: directly settle the downstream.
+                promise_settle(downstream, state, &result, heap);
+                promise_trigger_reactions(downstream, heap, vm);
             }
         } else {
-            bool callable = handler.is_lightfunc() ||
-                (handler.is_object() && handler.get_heapptr() != null &&
-                 ((HObject*)handler.get_heapptr()).is_callable());
-            if (handler.is_undefined() || !callable) {
-                // No onRejected — pass through rejection to downstream
-                if (downstream != null) {
-                    promise_settle(downstream, PROMISE_REJECTED, &result, heap);
-                    promise_trigger_reactions(downstream, heap, vm);
+            // Has a handler — enqueue a microtask to call it.
+            // Build the downstream TVal for the microtask queue:
+            // for custom capabilities, wrap the cap resolve/reject in a wrapper object
+            // so promise_microtask_after can call them.
+            TVal microtask_downstream;
+            if (has_cap) {
+                // Build the capability wrapper (cap_promise may be undefined if default)
+                HString* cp_key = builtin_intern_string(heap, "\xFFcap_promise_tv");
+                TVal cap_promise; cap_promise.set_undefined();
+                if (cp_key != null) {
+                    if (try cpv = reaction.get_prop(cp_key)) cap_promise = cpv;
+                }
+                HObject*? wrapper_opt = promise_make_cap_wrapper(heap, cap_resolve, cap_reject, cap_promise);
+                if (try wrapper = wrapper_opt) {
+                    microtask_downstream.set_object(wrapper);
+                } else {
+                    microtask_downstream = downstream_val;
                 }
             } else {
-                // Enqueue microtask — handler will be called asynchronously,
-                // downstream will be resolved with handler's return value by drain
-                heap.enqueue_microtask(handler, result, downstream_val);
+                microtask_downstream = downstream_val;
             }
+            heap.enqueue_microtask(handler, result, microtask_downstream);
         }
 
         reaction = next;
@@ -200,10 +262,43 @@ fn TVal call_handler(TVal handler, TVal* arg, Heap* heap, void* vm) {
 
 /// Microtask completion callback — resolves the downstream promise with the
 /// handler's return value.  Registered as heap.microtask_after_fn during init.
+///
+/// `downstream` is either:
+///  - A PROMISE object (default path): directly settled.
+///  - A capability wrapper OBJECT (custom-constructor path): has
+///    \xFFcap_resolve_tv / \xFFcap_reject_tv — call them instead.
 fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal downstream) {
     Heap* heap = (Heap*)heap_raw;
     if (!downstream.is_object() || downstream.get_heapptr() == null) return;
     HObject* ds = (HObject*)downstream.get_heapptr();
+
+    // Check if this is a capability wrapper (custom constructor path).
+    if (ds.flags.obj_class == hobject::ObjClass.OBJECT) {
+        HString* cr_key = builtin_intern_string(heap, "\xFFcap_resolve_tv");
+        HString* cj_key = builtin_intern_string(heap, "\xFFcap_reject_tv");
+        if (cr_key != null && cj_key != null) {
+            TVal? maybe_resolve = ds.get_prop(cr_key);
+            if (try cap_resolve = maybe_resolve) {
+                // This is a capability wrapper.
+                TVal cap_reject; cap_reject.set_undefined();
+                if (try cjv = ds.get_prop(cj_key)) cap_reject = cjv;
+
+                if (heap.has_error) {
+                    TVal err = heap.error_value;
+                    heap.has_error = false;
+                    promise_call_cap_fn(heap, vm, cap_reject, err);
+                    return;
+                }
+                // If the result is a thenable, we must call cap_resolve(result)
+                // and let the Promise Resolution Procedure do its work.
+                // Per spec §27.2.2.1 step 8: if result is a thenable,
+                // cap_resolve(result) chains to it.
+                promise_call_cap_fn(heap, vm, cap_resolve, result);
+                return;
+            }
+        }
+    }
+
     if (ds.flags.obj_class != hobject::ObjClass.PROMISE) return;
 
     // Check if downstream is already settled (shouldn't be, but guard)
@@ -799,21 +894,50 @@ fn void builtin_promise(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Promise[Symbol.species] getter — ES6 §27.2.4.6
+// ============================================================================
+
+/// Promise[Symbol.species] getter: returns `this` (the constructor).
+fn void builtin_promise_species_getter(BuiltinContext* ctx) {
+    *ctx.result = ctx.regs[ctx.base_reg - 1];
+}
+
+// ============================================================================
 // Promise.prototype.then(onFulfilled, onRejected) — ES6 §25.4.5.3
 // ============================================================================
 
+/// Set heap.has_error to a new TypeError with the given message.
+/// Used by SpeciesConstructor to signal abrupt completions.
+fn void species_throw_typeerror(Heap* heap, char[] msg) {
+    HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(heap, msg);
+        if (msg_str != null) {
+            TVal msg_tv; msg_tv.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(heap, "message");
+            if (msg_key != null) err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        }
+        heap.has_error = true;
+        heap.error_value.set_object(err);
+    }
+}
+
 /// SpeciesConstructor helper — ES6 §7.3.22
 /// Returns the constructor to use when creating derived objects.
+/// On TypeError (steps 5, 10), sets heap.has_error and returns null.
+/// On normal fallback-to-default, returns fallback_ctor without error.
 fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback_ctor, HObject* fallback_proto) {
     // 1. Assert: Type(O) is Object.
     // 2. Let C = O.[[Get]]("constructor").
     HString* ctor_key = builtin_intern_string(heap, "constructor");
-    if (ctor_key == null) return null;
+    if (ctor_key == null) return fallback_ctor;
     HObject* obj = (HObject*)o.get_heapptr();
-    if (obj == null) return null;
+    if (obj == null) return fallback_ctor;
     TVal? ctor_raw = obj.get_prop_proto(ctor_key);
     TVal ctor_val;
     if (catch err_c = ctor_raw) {
+        // get_prop threw — propagate as abrupt completion (heap.has_error may be set).
         return null;
     }
     ctor_val = ctor_raw;
@@ -824,27 +948,20 @@ fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback
     }
     // 5. If Type(C) is not Object, throw TypeError.
     if (!ctor_val.is_object() || ctor_val.get_heapptr() == null) {
-        HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = heap.type_err_proto;
-            HString* msg_str = builtin_intern_string(heap, "constructor is not an object");
-            if (msg_str != null) {
-                TVal msg_tv; msg_tv.set_string(msg_str);
-                err.put_prop(builtin_intern_string(heap, "message"), msg_tv, hobject::PROP_FLAGS_WC);
-            }
-        }
-        return null;
+        species_throw_typeerror(heap, "constructor is not an object");
+        return null;  // heap.has_error = true
     }
     // 6. Let S = Get(C, @@species).
+    // Use full Get semantics so the accessor getter is invoked (e.g.
+    // Function.prototype[Symbol.species] is a getter returning `this`).
     HString* species_sym = ensure_species_symbol(heap);
     if (species_sym == null) return fallback_ctor;
     HObject* ctor_obj = (HObject*)ctor_val.get_heapptr();
-    TVal? species_raw = ctor_obj.get_prop_proto(species_sym);
     TVal species_val;
-    if (catch err_s = species_raw) {
+    if (!promise_object_get(heap, vm, ctor_obj, species_sym, &species_val)) {
+        // getter threw — heap.has_error may be set.
         return null;
     }
-    species_val = species_raw;
     // 7. ReturnIfAbrupt(S).
     // 8. If S is undefined or null, return defaultConstructor.
     if (species_val.is_undefined() || species_val.is_null()) {
@@ -853,24 +970,11 @@ fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback
     // 9. If IsConstructor(S) is true, return S.
     if (species_val.is_object() && species_val.get_heapptr() != null) {
         HObject* s_obj = (HObject*)species_val.get_heapptr();
-        if (s_obj.flags.callable) return s_obj;
-    }
-    if (species_val.is_lightfunc()) {
-        // Lightfuncs are not constructible via `new` in our engine,
-        // but for SpeciesConstructor we treat them as constructible.
-        return fallback_ctor;
+        if (s_obj.flags.constructable) return s_obj;
     }
     // 10. Throw TypeError.
-    HObject*? err_raw2 = heap.alloc_object(hobject::ObjClass.ERROR);
-    if (try err2 = err_raw2) {
-        err2.prototype = heap.type_err_proto;
-        HString* msg_str2 = builtin_intern_string(heap, "SpeciesConstructor result is not a constructor");
-        if (msg_str2 != null) {
-            TVal msg_tv2; msg_tv2.set_string(msg_str2);
-            err2.put_prop(builtin_intern_string(heap, "message"), msg_tv2, hobject::PROP_FLAGS_WC);
-        }
-    }
-    return null;
+    species_throw_typeerror(heap, "SpeciesConstructor result is not a constructor");
+    return null;  // heap.has_error = true
 }
 
 /// Synthetic executor used by NewPromiseCapability(C) when C is a custom
@@ -972,7 +1076,20 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
     HObject* default_ctor = ctx.heap.promise_ctor;
     HObject*? sc_opt = species_constructor(ctx.heap, ctx.vm, this_val, default_ctor, ctx.heap.promise_proto);
     HObject* ctor;
+    // species_constructor sets heap.has_error on TypeError (steps 5/10).
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        return;
+    }
     if (catch err_sc = sc_opt) {
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
         ctor = default_ctor;
     } else if (sc_opt != null) {
         ctor = sc_opt;
@@ -980,10 +1097,15 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
         ctor = default_ctor;
     }
 
-    // Create a new promise for the chain (use promise_create for now;
-    // full constructor call via NewPromiseCapability is future work)
-    HObject* new_promise;
+    // Create a new promise for the chain via NewPromiseCapability(C) so that
+    // custom constructors (SpeciesConstructor) are invoked per ES6 §27.2.5.4.
+    HObject* new_promise = null;
+    TVal cap_resolve_tv; cap_resolve_tv.set_undefined();
+    TVal cap_reject_tv; cap_reject_tv.set_undefined();
+    bool use_capability = false;
+
     if (ctor == default_ctor) {
+        // Fast path: allocate a plain promise without calling the constructor.
         HObject*? new_prom_raw = promise_create(ctx.heap);
         if (catch err = new_prom_raw) {
             ctx.result.set_undefined();
@@ -991,14 +1113,32 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
         }
         new_promise = new_prom_raw;
     } else {
-        // Non-default constructor: still create via promise_create
-        // (full NewPromiseCapability implementation needed for true subclassing)
-        HObject*? new_prom_raw = promise_create(ctx.heap);
-        if (catch err = new_prom_raw) {
+        // Custom SpeciesConstructor — call NewPromiseCapability(C).
+        TVal ctor_tv; ctor_tv.set_object(ctor);
+        HObject*? hole_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = hole_raw) {
             ctx.result.set_undefined();
             return;
         }
-        new_promise = new_prom_raw;
+        HObject* hole = hole_raw;
+        hole.prototype = ctx.heap.object_proto;
+        if (!promise_new_capability_full(ctx.heap, ctx.vm, ctor_tv, hole)) {
+            promise_throw_capability_failure(ctx, hole);
+            return;
+        }
+        // Extract the result promise and resolve/reject from the hole.
+        TVal cap_p = promise_hole_get_promise(ctx.heap, hole);
+        cap_resolve_tv = promise_hole_get_resolve(ctx.heap, hole);
+        cap_reject_tv  = promise_hole_get_reject(ctx.heap, hole);
+        use_capability = true;
+        // new_promise for the return value — may not be a PROMISE obj_class.
+        // We record it as null to skip downstream-settle; use cap fn instead.
+        new_promise = null;
+        // Store cap_p so we can set ctx.result at the end.
+        // Use a local TVal rather than HObject* since it may not be PROMISE class.
+        *ctx.result = cap_p;  // tentatively set; overwritten below if we return early
+        // We still need to build the reaction; carry cap_p for the return value.
+        // Fall through with use_capability = true.
     }
 
     // Build reaction object
@@ -1017,8 +1157,26 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
 
     HString* downstream_key = builtin_intern_string(ctx.heap, "downstream");
     TVal downstream_val;
-    downstream_val.set_object(new_promise);
+    if (use_capability || new_promise == null) {
+        downstream_val.set_undefined();
+    } else {
+        downstream_val.set_object(new_promise);
+    }
     reaction.put_prop(downstream_key, downstream_val, hobject::PROP_FLAGS_WEC);
+
+    // For custom capabilities, store cap_resolve and cap_reject on the reaction.
+    if (use_capability) {
+        HString* cr_key = builtin_intern_string(ctx.heap, "\xFFcap_resolve_tv");
+        HString* cj_key = builtin_intern_string(ctx.heap, "\xFFcap_reject_tv");
+        HString* cp_key = builtin_intern_string(ctx.heap, "\xFFcap_promise_tv");
+        if (cr_key != null) reaction.put_prop(cr_key, cap_resolve_tv, hobject::PROP_FLAGS_WEC);
+        if (cj_key != null) reaction.put_prop(cj_key, cap_reject_tv, hobject::PROP_FLAGS_WEC);
+        if (cp_key != null) {
+            // Store the cap_promise ref (already set in *ctx.result above).
+            TVal cp_tv = *ctx.result;
+            reaction.put_prop(cp_key, cp_tv, hobject::PROP_FLAGS_WEC);
+        }
+    }
 
     uint state = promise_get_state(promise, PROMISE_PENDING);
     if (state == PROMISE_PENDING) {
@@ -1032,7 +1190,13 @@ fn void builtin_promise_proto_then(BuiltinContext* ctx) {
         promise_trigger_reactions(promise, ctx.heap, ctx.vm);
     }
 
-    ctx.result.set_object(new_promise);
+    // Return the result promise.  For custom constructors (use_capability),
+    // ctx.result was already set to cap_p above.  For the default path,
+    // set it now.
+    if (!use_capability) {
+        ctx.result.set_object(new_promise);
+    }
+    // (use_capability case: ctx.result already holds cap_p)
 }
 
 // ============================================================================
@@ -1168,29 +1332,13 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
                         return;
                     }
                 }
-                // For non-Promise x: invoke the capability's [[Resolve]]
-                // with `val` per ES6 §25.4.4.5 step 4. The returned Promise from
-                // the constructor is ignored; spec value comes from
-                // promiseCapability.[[Promise]].
+                // Per ES6 §27.2.4.5 step 4: Call(promiseCapability.[[Resolve]], undefined, « x »).
+                // Return promiseCapability.[[Promise]].
                 TVal cap_resolve = promise_hole_get_resolve(ctx.heap, cap_hole);
-                if (cap_resolve.is_object() && cap_resolve.get_heapptr() != null
-                    && ((HObject*)cap_resolve.get_heapptr()).is_callable()) {
-                    HObject*? inner_raw = ctx.heap.alloc_object(hobject::ObjClass.PROMISE);
-                    if (catch err = inner_raw) {
-                        ctx.result.set_undefined();
-                        return;
-                    }
-                    HObject* inner = inner_raw;
-                    TVal inner_tv; inner_tv.set_object(inner);
-                    // Hook the capability's resolve to settle `inner`.
-                    HString* promise_key = builtin_intern_string(ctx.heap, "\xFFpromise");
-                    if (promise_key != null) {
-                        TVal cur_p; cur_p.set_object(inner);
-                        HObject* cap_obj = (HObject*)cap_resolve.get_heapptr();
-                        cap_obj.put_prop(promise_key, cur_p, hobject::PROP_FLAGS_WEC);
-                    }
-                    TVal r_args = val;
-                    TVal undef2; undef2.set_undefined();
+                TVal cap_p_tv = promise_hole_get_promise(ctx.heap, cap_hole);
+                TVal r_args = val;
+                TVal undef2; undef2.set_undefined();
+                if (ctx.heap.call_fn != null && ctx.vm != null) {
                     ctx.heap.call_fn(ctx.vm, cap_resolve, &r_args, 1, undef2);
                     if (ctx.heap.has_error) {
                         ctx.should_throw = true;
@@ -1198,9 +1346,9 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
                         ctx.heap.has_error = false;
                         return;
                     }
-                    ctx.result.set_object(inner);
-                    return;
                 }
+                *ctx.result = cap_p_tv;
+                return;
             } else {
                 // ES6 §25.4.1.5 step 7/8: capability is incomplete or
                 // Construct() threw. Use the rethrow-stored-abort helper so
@@ -1266,41 +1414,23 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
                 // call's resolve/reject path. We must surface any throw from
                 // the user-supplied reject so test262 capability-invocation-error
                 // passes.
+                // Per ES6 §27.2.4.4 step 4: Call(promiseCapability.[[Reject]], undefined, « r »).
+                // Return promiseCapability.[[Promise]].
                 TVal cap_reject = promise_hole_get_reject(ctx.heap, cap_hole);
-                if (cap_reject.is_object() && cap_reject.get_heapptr() != null
-                    && ((HObject*)cap_reject.get_heapptr()).is_callable()) {
-                    TVal r_args = reason;
-                    TVal undef; undef.set_undefined();
-                    TVal rtv = ctx.heap.call_fn(ctx.vm, cap_reject, &r_args, 1, undef);
+                TVal cap_p_tv = promise_hole_get_promise(ctx.heap, cap_hole);
+                TVal r_args = reason;
+                TVal undef; undef.set_undefined();
+                if (ctx.heap.call_fn != null && ctx.vm != null) {
+                    ctx.heap.call_fn(ctx.vm, cap_reject, &r_args, 1, undef);
                     if (ctx.heap.has_error) {
-                        // Propagate into ctx.should_throw.
                         ctx.should_throw = true;
                         ctx.throw_value = ctx.heap.error_value;
                         ctx.heap.has_error = false;
                         return;
                     }
-                    // Use the reject's downstream promise (the one captured by
-                    // the inner Promise.create()) as our result.
-                    HString* promise_key = builtin_intern_string(ctx.heap, "\xFFpromise");
-                    if (promise_key != null && cap_reject.is_object()) {
-                        HObject* cap_obj = (HObject*)cap_reject.get_heapptr();
-                        if (try pv = cap_obj.get_prop(promise_key)) {
-                            TVal res_tv = pv;
-                            ctx.result.set_object((HObject*)res_tv.get_heapptr());
-                            return;
-                        }
-                    }
-                    // Fallback: create a fresh promise and reject it.
-                    HObject*? inner_raw = ctx.heap.alloc_object(hobject::ObjClass.PROMISE);
-                    if (catch err = inner_raw) {
-                        ctx.result.set_undefined();
-                        return;
-                    }
-                    HObject* inner = inner_raw;
-                    promise_settle(inner, PROMISE_REJECTED, &reason, ctx.heap);
-                    ctx.result.set_object(inner);
-                    return;
                 }
+                *ctx.result = cap_p_tv;
+                return;
             } else {
                 // ES6 §25.4.1.5 step 7/8: capability is incomplete or
                 // Construct() threw. Use the rethrow-stored-abort helper so
@@ -3353,6 +3483,41 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
         HString* name_hstr = builtin_intern_string(heap, "Promise");
         TVal name_tv; name_tv.set_string(name_hstr);
         ctor.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // Promise[Symbol.species] accessor — ES6 §27.2.4.6: getter returns `this`.
+    {
+        HString* species_sym = ensure_species_symbol(heap);
+        if (species_sym != null) {
+            HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (try getter = getter_raw) {
+                getter.flags.callable = true;
+                getter.flags.constructable = false;
+                getter.prototype = heap.function_proto;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_SPECIES_GETTER;
+                HString* getter_name_key = builtin_intern_string(heap, "name");
+                if (getter_name_key != null) {
+                    HString* getter_name_str = builtin_intern_string(heap, "get [Symbol.species]");
+                    if (getter_name_str != null) {
+                        TVal gn_tv; gn_tv.set_string(getter_name_str);
+                        getter.put_prop(getter_name_key, gn_tv, hobject::PROP_FLAGS_NWC);
+                    }
+                }
+                HString* getter_len_key = builtin_intern_string(heap, "length");
+                if (getter_len_key != null) {
+                    TVal gl_tv; gl_tv.set_fastint(0);
+                    getter.put_prop(getter_len_key, gl_tv, hobject::PROP_FLAGS_NWC);
+                }
+                TVal getter_tv; getter_tv.set_object(getter);
+                TVal undef_tv; undef_tv.set_undefined();
+                PropFlags acc_flags;
+                acc_flags.writable = false;
+                acc_flags.enumerable = false;
+                acc_flags.configurable = true;
+                acc_flags.is_accessor = true;
+                ctor.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef_tv), acc_flags);
+            }
+        }
     }
 
     HString* resolve_key = builtin_intern_string(heap, "resolve");

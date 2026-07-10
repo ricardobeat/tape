@@ -310,8 +310,9 @@ const uint BUILTIN_TYPEDARRAY_INTRINSIC        = 414;
 const uint BUILTIN_FUNCTION_PROTO_HASINSTANCE  = 415;
 const uint BUILTIN_DATE_PROTO_TOPRIMITIVE      = 416;
 const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTORS = 417;
+const uint BUILTIN_PROMISE_SPECIES_GETTER      = 418;
 
-const uint BUILTIN_COUNT                       = 418;
+const uint BUILTIN_COUNT                       = 419;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2713,6 +2714,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_TYPEDARRAY_INTRINSIC]     = &builtin_typedarray_intrinsic,
     [BUILTIN_FUNCTION_PROTO_HASINSTANCE] = &builtin_function_proto_hasInstance,
     [BUILTIN_DATE_PROTO_TOPRIMITIVE]     = &builtin_date_proto_toPrimitive,
+    [BUILTIN_PROMISE_SPECIES_GETTER]     = &builtin_promise_species_getter,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
