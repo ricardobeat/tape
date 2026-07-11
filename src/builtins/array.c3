@@ -16,22 +16,56 @@ import duktape::vm;
 
 /// Array.of(...items) — ES6 §22.1.2.3
 fn void builtin_array_of(BuiltinContext* ctx) {
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
-    HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
-
     uint len = (uint)ctx.argc;
-    HString* len_key = builtin_intern_string(ctx.heap, "length");
-    TVal len_val; len_val.set_fastint((long)len);
-    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WENC);
 
+    // Step 3-4: If IsConstructor(C), A = new C(len); else A = ArrayCreate(len).
+    HObject* arr;
+    bool ctor_used = false;
+    TVal c = ctx.this_val;
+    if (c.is_object() && c.get_heapptr() != null) {
+        HObject* c_obj = (HObject*)c.get_heapptr();
+        if (c_obj.is_callable() && ctx.heap.construct_fn != null && ctx.vm != null) {
+            TVal len_arg; len_arg.set_fastint((long)len);
+            TVal result_tv = ctx.heap.construct_fn(ctx.vm, c, &len_arg, 1);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                ctx.result.set_undefined(); return;
+            }
+            if (!result_tv.is_object() || result_tv.get_heapptr() == null) {
+                arr_throw_type_error(ctx, "Array.of: constructor did not return an object");
+                return;
+            }
+            arr = (HObject*)result_tv.get_heapptr();
+            ctor_used = true;
+        }
+    }
+    if (!ctor_used) {
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+        arr = arr_raw;
+        arr.prototype = ctx.heap.array_proto;
+    }
+
+    // Step 8: CreateDataPropertyOrThrow(A, Pk, kValue) for each item.
     for (uint i = 0; i < len; i++) {
         TVal elem = ctx.regs[ctx.base_reg + (uint)i];
-        HString* idx_key = ctx.heap.int_to_hstring((long)i);
-        if (idx_key != null) {
-            arr.put_prop(idx_key, elem, hobject::PROP_FLAGS_WEC);
+        if (!array_set_elem_ulong_checked(ctx, arr, (ulong)i, elem)) return;
+    }
+
+    // Step 9: Set(A, "length", len, true).
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    if (arr.flags.exotic_proxyobj) {
+        TVal len_tv; len_tv.set_fastint((long)len);
+        TVal recv; recv.set_object(arr);
+        bool sres;
+        if (!proxy_mop_set(ctx.vm, ctx.heap, arr, len_key, len_tv, recv, &sres)) {
+            proxy_ctx_ok(ctx); return;
         }
+    } else {
+        TVal len_val; len_val.set_fastint((long)len);
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WENC);
     }
     ctx.result.set_object(arr);
 }
@@ -153,19 +187,34 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
     if (count <= 0) { ctx.result.set_object(obj); return; }
 
     // Forward copy is safe when downstream < start; otherwise copy backwards.
-    // Spec §23.1.3.3 step 17: for each index k in the range, if HasProperty(from)
-    // set the destination; else delete it (holes must propagate).
+    // Spec §23.1.3.3 step 17: for each index k in the range, HasProperty(from)
+    // determines whether to Set or Delete at the destination.
+    // For proxy objects, HasProperty fires the "has" trap explicitly before Get.
+    bool is_proxy = obj.flags.exotic_proxyobj;
     if (downstream_i < start_i) {
         for (long i = 0; i < count; i++) {
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal elem;
             ulong from_idx = (ulong)(start_i + i);
             ulong to_idx   = (ulong)(downstream_i + i);
-            if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
+            bool from_present;
+            if (is_proxy) {
+                from_present = arr_has_prop(obj, from_idx, ctx.heap, ctx.vm);
+                if (!from_present && ctx.heap.has_error) {
+                    proxy_ctx_ok(ctx); ctx.result.set_undefined(); return;
+                }
+            } else {
+                from_present = arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            }
+            if (from_present) {
+                if (is_proxy) {
+                    if (!arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
+                        ctx.result.set_undefined(); return;
+                    }
+                }
                 array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
             } else if (!ctx.should_throw) {
-                // Source is a hole — delete the destination element.
                 if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
                     ctx.result.set_undefined(); return;
                 }
@@ -179,11 +228,24 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
             TVal elem;
             ulong from_idx = (ulong)(start_i + i);
             ulong to_idx   = (ulong)(downstream_i + i);
-            if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
+            bool from_present;
+            if (is_proxy) {
+                from_present = arr_has_prop(obj, from_idx, ctx.heap, ctx.vm);
+                if (!from_present && ctx.heap.has_error) {
+                    proxy_ctx_ok(ctx); ctx.result.set_undefined(); return;
+                }
+            } else {
+                from_present = arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem);
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            }
+            if (from_present) {
+                if (is_proxy) {
+                    if (!arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
+                        ctx.result.set_undefined(); return;
+                    }
+                }
                 array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
             } else if (!ctx.should_throw) {
-                // Source is a hole — delete the destination element.
                 if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
                     ctx.result.set_undefined(); return;
                 }
@@ -325,7 +387,7 @@ fn void builtin_array_proto_flat(BuiltinContext* ctx) {
 
     ulong n = flatten_into(result, obj, len, 0, depth_num, ctx);
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-    array_set_length_ulong(result, n, ctx.heap);
+    array_set_length_ulong(result, n, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result);
 }
@@ -407,7 +469,7 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
         }
     }
 
-    array_set_length_ulong(result, n, ctx.heap);
+    array_set_length_ulong(result, n, ctx.heap, ctx.vm);
     ctx.result.set_object(result);
 }
 
@@ -601,6 +663,26 @@ fn double invoke_getter_as_length(HObject* obj, TVal getter_fn, Heap* heap, Buil
 /// Handles accessor properties by invoking the getter.
 /// Propagates getter errors through ctx.should_throw / ctx.throw_value.
 fn double array_get_length_raw(HObject* obj, Heap* heap, BuiltinContext* ctx) {
+    // Proxy exotic: [[Get]]("length") through trap machinery.
+    if (obj.flags.exotic_proxyobj) {
+        void* vm_ptr = (ctx != null) ? ctx.vm : null;
+        if (vm_ptr == null) return 0;
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key == null) return 0;
+        TVal out;
+        if (!js_get(vm_ptr, heap, obj, len_key, &out)) {
+            if (ctx != null && heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
+            }
+            return 0;
+        }
+        if (out.is_fastint()) return (double)out.get_fastint();
+        if (out.is_number()) return out.get_number();
+        if (ctx != null) return builtin_to_number_vm(ctx, &out);
+        return 0;
+    }
 
     if (obj.get_class() == ARRAY) {
         // For ARRAY class, also check if length is an accessor (set via defineProperty)
@@ -867,7 +949,23 @@ fn void array_set_elem_ulong(HObject* obj, ulong idx, TVal val, Heap* heap) {
 /// Set 'length' on an array-like to a 53-bit value. ARRAY-class objects can
 /// never exceed 2^32-1 so they keep the uint fast path; plain array-likes
 /// store length as an ordinary numeric property (fastint holds 2^53-1 exactly).
-fn void array_set_length_ulong(HObject* obj, ulong len_val, Heap* heap) {
+fn void array_set_length_ulong(HObject* obj, ulong len_val, Heap* heap, void* vm = null) {
+    // Proxy exotic: Set("length", val, proxy) via [[Set]] trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (vm == null) return;
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (len_key == null) return;
+        TVal tv;
+        if (len_val <= (ulong)types::FASTINT_MAX) {
+            tv.set_fastint((long)len_val);
+        } else {
+            tv.set_number((double)len_val);
+        }
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        proxy_mop_set(vm, heap, obj, len_key, tv, recv, &sres);
+        return;
+    }
     if (len_val <= 0xFFFFFFFFUL || obj.get_class() == ARRAY) {
         array_set_length(obj, (uint)len_val, heap);
         return;
@@ -1475,7 +1573,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
         }
         n++;
     }
-    array_set_length_ulong(result_arr, n, ctx.heap);
+    array_set_length_ulong(result_arr, n, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result_arr);
 }
@@ -1779,7 +1877,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
             }
         }
     }
-    array_set_length_ulong(result, actual_delete_count, ctx.heap);
+    array_set_length_ulong(result, actual_delete_count, ctx.heap, ctx.vm);
 
     // Shift elements left or right
     if (item_count < actual_delete_count) {
@@ -1894,7 +1992,7 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
             array_set_elem_ulong(result, i, elem, ctx.heap);
         }
     }
-    array_set_length_ulong(result, len, ctx.heap);
+    array_set_length_ulong(result, len, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result);
 }
@@ -2082,7 +2180,7 @@ fn void builtin_array_proto_toSpliced(BuiltinContext* ctx) {
             n++;
         }
     }
-    array_set_length_ulong(result, n, ctx.heap);
+    array_set_length_ulong(result, n, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result);
 }
@@ -2175,7 +2273,7 @@ fn void builtin_array_proto_with(BuiltinContext* ctx) {
             }
         }
     }
-    array_set_length_ulong(result, len, ctx.heap);
+    array_set_length_ulong(result, len, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result);
 }
@@ -2419,7 +2517,7 @@ fn void builtin_array_proto_concat(BuiltinContext* ctx) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
-    array_set_length_ulong(result, n, ctx.heap);
+    array_set_length_ulong(result, n, ctx.heap, ctx.vm);
 
     ctx.result.set_object(result);
 }
@@ -2450,9 +2548,18 @@ fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
     // ES2022 §23.1.3.1 step 5.b: spreadable = IsConcatSpreadable(E)
     // 5.b.ii: Get(E, @@isConcatSpreadable) — use full Get semantics so
     //         accessor getters are invoked and their throws propagate.
-    // 5.b.iii: If undefined, fall back to IsArray(E).
+    // 5.b.iii: If undefined, fall back to IsArray(E) — §7.2.2 IsArray recurses
+    //          through proxy targets; revoked proxy → TypeError.
     bool spread;
-    bool is_array = item_obj.get_class() == hobject::ObjClass.ARRAY;
+    bool is_array;
+    if (item_obj.flags.exotic_proxyobj) {
+        if (!proxy_is_array(ctx.heap, item_obj, &is_array)) {
+            proxy_ctx_ok(ctx);
+            return false;
+        }
+    } else {
+        is_array = (item_obj.get_class() == hobject::ObjClass.ARRAY);
+    }
     if (concat_sym != null) {
         TVal? spreadable_val = builtins_generic_get(item_obj, concat_sym, ctx);
         if (ctx.should_throw) return false;
@@ -3131,7 +3238,16 @@ fn bool arr_create_data_property_or_throw(BuiltinContext* ctx, HObject* obj, HSt
 
 /// Helper: check if numeric key exists on object (ES5 §15.4.5.1 step 4 "k in O").
 /// Uses get_prop_or_accessor_proto to handle accessor properties.
-fn bool arr_has_prop(HObject* obj, ulong key, Heap* heap) {
+fn bool arr_has_prop(HObject* obj, ulong key, Heap* heap, void* vm = null) {
+    // Proxy exotic: route through the [[HasProperty]] MOP trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (vm == null) return false;
+        HString* pk = heap.int_to_hstring((long)key);
+        if (pk == null) return false;
+        bool out;
+        if (!proxy_mop_has(vm, heap, obj, pk, &out)) return false;
+        return out;
+    }
     // Fast path: dense array storage (also used by the arguments object,
     // which stores its indexed values in array_part rather than as named props).
     // Indices ≥ 2^32 can never live in dense storage (array indices cap at 2^32-2).
@@ -3294,10 +3410,20 @@ fn bool array_species_create(BuiltinContext* ctx, HObject* original, HObject** o
 /// Returns the result array, or null on allocation/throw error (caller should
 /// check ctx.should_throw).
 fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, ulong len) {
-    // ES2022 §9.4.2.3 ArraySpeciesCreate step 3-4: if original is not an
-    // Array, return ArrayCreate(length) directly without consulting the
-    // constructor property.
-    if (original.get_class() != hobject::ObjClass.ARRAY) {
+    // ES2022 §9.4.2.3 ArraySpeciesCreate step 3: IsArray(original).
+    // Proxy objects must recurse through their target (revoked → TypeError).
+    bool orig_is_array;
+    if (original.flags.exotic_proxyobj) {
+        if (!proxy_is_array(ctx.heap, original, &orig_is_array)) {
+            proxy_ctx_ok(ctx);
+            return null;
+        }
+    } else {
+        orig_is_array = (original.get_class() == hobject::ObjClass.ARRAY);
+    }
+    // Step 4: if original is not an Array, return ArrayCreate(length) directly
+    // without consulting the constructor property.
+    if (!orig_is_array) {
         HObject*? fallback_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         if (catch err = fallback_raw) return null;
         HObject* fallback = fallback_raw;
@@ -3378,6 +3504,32 @@ fn bool array_can_set_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
 /// Set an array element using CreateDataPropertyOrThrow semantics.
 /// Returns true on success, false if an error was thrown (ctx.should_throw set).
 fn bool array_set_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong idx, TVal val) {
+    // Proxy exotic: CreateDataPropertyOrThrow routes through [[DefineOwnProperty]].
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx == null || ctx.vm == null) return false;
+        HString* pk = ctx.heap.int_to_hstring((long)idx);
+        if (pk == null) return false;
+        ProxyDesc nd = {};
+        nd.found = true;
+        nd.has_value = true; nd.value = val;
+        nd.has_writable = true; nd.writable = true;
+        nd.has_enumerable = true; nd.enumerable = true;
+        nd.has_configurable = true; nd.configurable = true;
+        bool res;
+        if (!proxy_mop_define(ctx.vm, ctx.heap, obj, pk, &nd, &res)) {
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            return false;
+        }
+        if (!res) {
+            arr_throw_type_error(ctx, "Cannot define property on proxy");
+            return false;
+        }
+        return true;
+    }
     if (!array_can_set_index(ctx, obj, idx)) return false;
     if (idx <= 0xFFFFFFFFUL) {
         HString* key = ctx.heap.int_to_hstring((long)idx);
@@ -3420,6 +3572,26 @@ fn bool array_can_delete_index(BuiltinContext* ctx, HObject* obj, ulong idx) {
 /// Delete an array element, throwing TypeError if the delete is not allowed.
 /// Returns true on success, false if an error was thrown.
 fn bool array_delete_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong idx) {
+    // Proxy exotic: DeletePropertyOrThrow routes through [[Delete]] trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx == null || ctx.vm == null) return false;
+        HString* pk = ctx.heap.int_to_hstring((long)idx);
+        if (pk == null) return true;
+        bool res;
+        if (!proxy_mop_delete(ctx.vm, ctx.heap, obj, pk, &res)) {
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            return false;
+        }
+        if (!res) {
+            arr_throw_type_error(ctx, "Cannot delete property on proxy");
+            return false;
+        }
+        return true;
+    }
     if (!array_can_delete_index(ctx, obj, idx)) return false;
     HString* key = ctx.heap.int_to_hstring((long)idx);
     if (key != null) {
@@ -3609,6 +3781,22 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
 /// any thrown error from the getter back to ctx.should_throw/ctx.throw_value
 /// so the surrounding JS try/catch can catch it.
 fn bool arr_get_elem_vm(HObject* obj, ulong key, Heap* heap, BuiltinContext* ctx, TVal* out) {
+    // Proxy exotic: route through [[Get]] trap machinery.
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx == null || ctx.vm == null) return false;
+        HString* pk = heap.int_to_hstring((long)key);
+        if (pk == null) return false;
+        TVal recv; recv.set_object(obj);
+        if (!proxy_mop_get(ctx.vm, heap, obj, pk, recv, out)) {
+            if (heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
+            }
+            return false;
+        }
+        return true;
+    }
     // STRING exotic: serve indexed character properties lazily
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();

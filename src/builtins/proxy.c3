@@ -273,13 +273,29 @@ fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
         cur = cur.prototype;
         depth++;
     }
-    // CreateDataProperty / set existing data prop on the receiver.
+    // CreateDataProperty / set existing data prop on the receiver
+    // (OrdinarySet §10.1.9.2 steps 4-9).
     if (!receiver.is_object()) { *res = false; return true; }
     HObject* recv_obj = (HObject*)receiver.get_heapptr();
     if (recv_obj.flags.exotic_proxyobj) {
+        // Step 4: existingDescriptor = Receiver.[[GetOwnProperty]](P)
+        ProxyDesc existing;
+        if (!proxy_mop_get_own(vm, heap, recv_obj, key, &existing)) return false;
         ProxyDesc nd = {};
         nd.found = true;
         nd.has_value = true; nd.value = val;
+        if (existing.found) {
+            // Step 5-7: reject if accessor or non-writable; else [[Define]]({value}).
+            if (existing.is_accessor_desc() || !existing.writable) { *res = false; return true; }
+            nd.has_writable = true; nd.writable = existing.writable;
+            nd.has_enumerable = true; nd.enumerable = existing.enumerable;
+            nd.has_configurable = true; nd.configurable = existing.configurable;
+        } else {
+            // Step 8: CreateDataProperty — full WEC descriptor.
+            nd.has_writable = true; nd.writable = true;
+            nd.has_enumerable = true; nd.enumerable = true;
+            nd.has_configurable = true; nd.configurable = true;
+        }
         return proxy_mop_define(vm, heap, recv_obj, key, &nd, res);
     }
     ProxyDesc existing;

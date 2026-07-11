@@ -3130,52 +3130,77 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives — use proper exotic class
         if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // Snapshot the ordered enumerable String keys first, then [[Get]] each — so
-    // getters that mutate the object mid-enumeration don't affect the key set
-    // (ES2017 §7.3.21 / §19.1.2.5).
-    HString** key_buf;
-    uint key_count;
-    if (obj.flags.exotic_proxyobj) {
-        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
-    } else {
-        uint max_keys = obj.prop_count + obj.array_size + 32;
-        key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-        if (key_buf == null) { ctx.result.set_undefined(); return; }
-        key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
-    }
-    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
     uint idx = 0;
-    for (uint i = 0; i < key_count; i++) {
-        HString* key = key_buf[i];
-        TVal val;
-        if (!desc_get_enum(ctx, obj, key, &val)) {
-            if (ctx.should_throw) { return; }
-            continue;
+
+    if (obj.flags.exotic_proxyobj) {
+        // EnumerableOwnProperties §7.3.21: for each key interleave
+        // [[GetOwnProperty]] (descriptor) then [[Get]] (value) before next key.
+        HObject* keys_arr;
+        if (!proxy_mop_own_keys(ctx.vm, ctx.heap, obj, &keys_arr)) { proxy_ctx_ok(ctx); return; }
+        uint n = keys_arr.array_used;
+        for (uint i = 0; i < n; i++) {
+            TVal el = keys_arr.array_part()[i];
+            if (!el.is_string()) continue;
+            HString* k = (HString*)el.get_heapptr();
+            if (k.is_symbol()) continue;
+            ProxyDesc d;
+            if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, k, &d)) { proxy_ctx_ok(ctx); return; }
+            if (!d.found || !d.enumerable) continue;
+            TVal val;
+            TVal recv; recv.set_object(obj);
+            if (!proxy_mop_get(ctx.vm, ctx.heap, obj, k, recv, &val)) { proxy_ctx_ok(ctx); return; }
+            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch e4 = pair_raw) { ctx.result.set_undefined(); return; }
+            HObject* pair = pair_raw;
+            pair.prototype = ctx.heap.array_proto;
+            TVal key_tv; key_tv.set_string(k);
+            array_set_elem(pair, 0, key_tv, ctx.heap);
+            array_set_elem(pair, 1, val, ctx.heap);
+            TVal len_tv; len_tv.set_fastint(2);
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+            TVal pair_tv; pair_tv.set_object(pair);
+            array_set_elem(arr, idx, pair_tv, ctx.heap);
+            idx++;
         }
-        HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-        if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
-        HObject* pair = pair_raw;
-        pair.prototype = ctx.heap.array_proto;
-        TVal key_tv; key_tv.set_string(key);
-        array_set_elem(pair, 0, key_tv, ctx.heap);
-        array_set_elem(pair, 1, val, ctx.heap);
-        TVal len_tv; len_tv.set_fastint(2);
-        HString* len_key = builtin_intern_string(ctx.heap, "length");
-        pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-        TVal pair_tv; pair_tv.set_object(pair);
-        array_set_elem(arr, idx, pair_tv, ctx.heap);
-        idx++;
+    } else {
+        // Non-proxy: snapshot keys first, then get each value.
+        uint max_keys = obj.prop_count + obj.array_size + 32;
+        HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+        if (key_buf == null) { ctx.result.set_undefined(); return; }
+        defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+        for (uint i = 0; i < key_count; i++) {
+            HString* key = key_buf[i];
+            TVal val;
+            if (!desc_get_enum(ctx, obj, key, &val)) {
+                if (ctx.should_throw) { return; }
+                continue;
+            }
+            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
+            HObject* pair = pair_raw;
+            pair.prototype = ctx.heap.array_proto;
+            TVal key_tv; key_tv.set_string(key);
+            array_set_elem(pair, 0, key_tv, ctx.heap);
+            array_set_elem(pair, 1, val, ctx.heap);
+            TVal len_tv; len_tv.set_fastint(2);
+            HString* len_key = builtin_intern_string(ctx.heap, "length");
+            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+            TVal pair_tv; pair_tv.set_object(pair);
+            array_set_elem(arr, idx, pair_tv, ctx.heap);
+            idx++;
+        }
     }
-    // Set .length on result array
+
     TVal rlen_tv; rlen_tv.set_fastint((long)idx);
     HString* rlen_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
@@ -3192,7 +3217,6 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         return;
     }
     TVal arg = ctx.regs[ctx.base_reg];
-    // TypeError if argument is null or undefined
     if (arg.is_null() || arg.is_undefined()) {
         builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert undefined or null to object");
         return;
@@ -3201,41 +3225,53 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     if (arg.is_object()) {
         obj = (HObject*)arg.get_heapptr();
     } else {
-        // ToObject wrapper for primitives — use proper exotic class
         if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // Snapshot the ordered enumerable String keys first (EnumerableOwnProperties
-    // step 3 gathers keys), then [[Get]] each — so getters that mutate the object
-    // during enumeration don't affect the key set (ES2017 §7.3.21 / §19.1.2.22).
-    HString** key_buf;
-    uint key_count;
-    if (obj.flags.exotic_proxyobj) {
-        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
-    } else {
-        uint max_keys = obj.prop_count + obj.array_size + 32;
-        key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-        if (key_buf == null) { ctx.result.set_undefined(); return; }
-        key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
-    }
-    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
     uint idx = 0;
-    for (uint i = 0; i < key_count; i++) {
-        TVal val;
-        if (!desc_get_enum(ctx, obj, key_buf[i], &val)) {
-            // Either the key was deleted by a prior getter (skip) or the getter
-            // threw (should_throw set by desc_get — propagate).
-            if (ctx.should_throw) { return; }
-            continue;
+
+    if (obj.flags.exotic_proxyobj) {
+        // EnumerableOwnProperties §7.3.21: interleave [[GetOwnProperty]] then
+        // [[Get]] per key so that observable trap order matches the spec.
+        HObject* keys_arr;
+        if (!proxy_mop_own_keys(ctx.vm, ctx.heap, obj, &keys_arr)) { proxy_ctx_ok(ctx); return; }
+        uint n = keys_arr.array_used;
+        for (uint i = 0; i < n; i++) {
+            TVal el = keys_arr.array_part()[i];
+            if (!el.is_string()) continue;
+            HString* k = (HString*)el.get_heapptr();
+            if (k.is_symbol()) continue;
+            ProxyDesc d;
+            if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, k, &d)) { proxy_ctx_ok(ctx); return; }
+            if (!d.found || !d.enumerable) continue;
+            TVal val;
+            TVal recv; recv.set_object(obj);
+            if (!proxy_mop_get(ctx.vm, ctx.heap, obj, k, recv, &val)) { proxy_ctx_ok(ctx); return; }
+            array_set_elem(arr, idx, val, ctx.heap);
+            idx++;
         }
-        array_set_elem(arr, idx, val, ctx.heap);
-        idx++;
+    } else {
+        uint max_keys = obj.prop_count + obj.array_size + 32;
+        HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+        if (key_buf == null) { ctx.result.set_undefined(); return; }
+        defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+        for (uint i = 0; i < key_count; i++) {
+            TVal val;
+            if (!desc_get_enum(ctx, obj, key_buf[i], &val)) {
+                if (ctx.should_throw) { return; }
+                continue;
+            }
+            array_set_elem(arr, idx, val, ctx.heap);
+            idx++;
+        }
     }
+
     TVal rlen_tv; rlen_tv.set_fastint((long)idx);
     HString* rlen_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
