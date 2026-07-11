@@ -628,10 +628,27 @@ fn void CompilerContext.emit_destruct_bindings(&self,
     // setup, so they land below callee_reg and survive the per-iteration CALL
     // frame overlay (see plan 042/043). alloc_persistent_reg documents that
     // these registers must outlive the collection-loop calls.
+    // Also detect whether any array (iterator-based) binds are present so we
+    // can decide whether to emit a TRY guard for IteratorClose on abrupt completion.
+    bool has_array_binds = false;
     for (uint di = 0; di < count; di++) {
         if (binds[di].is_synthetic && !binds[di].is_object && binds[di].key_idx == 0xFFFF) {
             group_regs[di] = self.alloc_persistent_reg();
         }
+        if (!binds[di].is_object) has_array_binds = true;
+    }
+
+    // IteratorClose on abrupt completion (ES2022 §13.3.3.8):
+    // Wrap array-destructuring body in TRY so that any throw during lref
+    // evaluation, default-value evaluation, or IteratorStep propagates
+    // through a catch block that calls iterator.return() before re-throwing.
+    // try_addr / jump_slot_addr track the placeholder instructions; both are
+    // set to 0xFFFFFFFF if there are no array binds (no guard needed).
+    uint iter_try_addr      = 0xFFFFFFFF;
+    uint iter_jump_slot     = 0xFFFFFFFF;
+    if (has_array_binds) {
+        iter_try_addr   = self.emit_a_bc(Opcode.TRY, 0, 0);
+        iter_jump_slot  = self.emit_a_bc(Opcode.NOP, 0, 0);
     }
 
     for (uint di = 0; di < count; di++) {
@@ -964,9 +981,56 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         }
     }
 
-    // Free iterator registers
+    // Close the TRY guard and emit the IteratorClose-on-error catch block.
+    if (iter_try_addr != 0xFFFFFFFF && iter_count > 0) {
+        // Normal path: end the try region.
+        self.emit_simple(Opcode.ENDTRY);
+        // Jump over the catch block (patched below).
+        uint jump_over = self.emit_jump(Opcode.JUMP);
+
+        // Catch block starts here — called on any abrupt completion.
+        uint catch_target = self.code_count;
+
+        // Consume the thrown value; it will be re-thrown after IteratorClose.
+        ushort err_reg = self.alloc_reg();
+        self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+
+        // Call IteratorClose for each active iterator.  The ITER_CLOSE opcode
+        // is a no-op when method_reg is undefined (iterator already exhausted),
+        // so emitting it unconditionally is safe.
+        for (uint i = 0; i < iter_count; i++) {
+            self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 0, 0);
+        }
+
+        // Re-throw the original error.
+        self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+        self.free_reg(err_reg);
+
+        // Patch the jump to skip the catch block.
+        self.patch_jump(jump_over);
+
+        // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
+        uint catch_off = catch_target - iter_try_addr;
+        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+        // Jump slot (NOP): finally_offset = 0.
+        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+    } else if (iter_try_addr != 0xFFFFFFFF) {
+        // TRY was emitted but no iterators were set up (unusual: pure object binds
+        // after the pre-scan flag — should not happen, but be safe).
+        self.emit_simple(Opcode.ENDTRY);
+        uint catch_target_empty = self.code_count;
+        ushort dummy_reg = self.alloc_reg();
+        self.emit_abc(Opcode.CATCH, (uint)dummy_reg, 0, 0);
+        self.emit_abc(Opcode.THROW, (uint)dummy_reg, 0, 0);
+        self.free_reg(dummy_reg);
+        uint catch_off_empty = catch_target_empty - iter_try_addr;
+        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off_empty);
+        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+    }
+
+    // Free iterator registers and emit IteratorClose on the normal path.
     for (uint i = 0; i < iter_count; i++) {
-        // IteratorClose (ES2015 §13.3.3.8): notify the iterator that we
+        // IteratorClose (ES2022 §7.4.6): notify the iterator that we
         // are done consuming. The VM handler is a no-op when the
         // iterator is exhausted or has no `.return` method, so this is
         // safe to emit unconditionally. Without this, partially-consumed

@@ -255,6 +255,16 @@ struct Heap {
     void*           gen_initial_obj;  /// HObject* — the generator object being initialized
     TVal*           gen_initial_retval; /// Where to write the generator object in the caller's frame
 
+    // Nested generator initial-call stack — supports generator functions whose
+    // parameter initialization itself calls other generator functions (e.g.
+    // `*outer([[,] = innerGen()])`).  Each entry saves the outer gen_initial_*
+    // state before the inner call overwrites it; GEN_START pops one entry per
+    // generator that completes its initial-call phase.
+    GeneratorState*[8] gen_init_stack_gs;
+    void*[8]           gen_init_stack_obj;
+    TVal*[8]           gen_init_stack_retval;
+    uint               gen_init_stack_depth;  /// Number of saved entries (0 = empty)
+
     // Global symbol registry for Symbol.for / Symbol.keyFor
     HString** symbol_registry_keys;   /// Array of key HString* pointers
     HString** symbol_registry_syms;   /// Array of symbol HString* pointers
@@ -1929,6 +1939,13 @@ fn void Heap.mark_roots(&self) {
     // param-init execution, so it must be marked explicitly to prevent GC collection.
     if (self.gen_initial_obj != null) {
         self.mark_hobject((HObject*)self.gen_initial_obj);
+    }
+    // Mark any generator objects saved on the nested init stack (outer generators
+    // whose param-init is paused while an inner generator call completes).
+    for (uint gsi = 0; gsi < self.gen_init_stack_depth; gsi++) {
+        if (self.gen_init_stack_obj[gsi] != null) {
+            self.mark_hobject((HObject*)self.gen_init_stack_obj[gsi]);
+        }
     }
 
     // Drain the gray stack — transitively marks all reachable objects
