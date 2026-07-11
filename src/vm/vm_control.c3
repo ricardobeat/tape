@@ -169,8 +169,9 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     len_val.set_fastint((long)template.num_formals);
                     func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
 
-                    // Arrow functions don't get a .prototype property (ES6 §14.2.16)
-                    if (!template.is_arrow()) {
+                    // Arrow and async functions don't get a .prototype property
+                    // (ES6 §14.2.16, ES2017 §14.7.5: async functions are not constructors)
+                    if (!template.is_arrow() && !template.is_async()) {
                         // ES5 §13.2: create .prototype property (plain object with .constructor).
                         // For class constructors, ES2015 §14.5.14 step 25 requires the
                         // resulting constructor's .prototype to be non-configurable so
@@ -612,6 +613,29 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     }
                 }
                 return (TVal){};
+            }
+            return (TVal){};
+        }
+
+        case Opcode.CHKCTOR: {
+            // ES2022 §15.7.14 step 5.f: throw TypeError if the superclass
+            // value is not null and not a constructor, before .prototype access.
+            bool is_ctor = false;
+            if (ra.is_lightfunc()) {
+                uint lf_idx = (uint)(usz)ra.get_heapptr();
+                is_ctor = lightfunc_get_proto(vm, lf_idx) != null;
+            } else if (ra.is_null()) {
+                is_ctor = true;   // null extends is explicitly legal
+            } else if (ra.is_object() && ra.get_heapptr() != null) {
+                HObject* base_obj = (HObject*)ra.get_heapptr();
+                is_ctor = base_obj.flags.constructable;
+            }
+            if (!is_ctor) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto,
+                        "class extends value is not a constructor or null",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
             }
             return (TVal){};
         }
