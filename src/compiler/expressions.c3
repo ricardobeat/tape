@@ -2951,12 +2951,12 @@ fn ushort? CompilerContext.object_literal(&self) {
                     // ES2015 §12.2.6.1: `__proto__: value` sets the object's [[Prototype]].
                     // Only object values and null are valid; non-objects are silently ignored.
                     self.emit_abc(Opcode.SETPROTO, (uint)obj_reg, (uint)val_reg, 0);
-                    self.free_reg(key_reg);
                 } else {
                     self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
-                    self.free_reg(key_reg);
                 }
+                // LIFO free order: val_reg was allocated after key_reg.
                 self.free_reg(val_reg);
+                self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
                 self.is_async = saved_is_async;
             }
