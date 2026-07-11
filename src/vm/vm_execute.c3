@@ -1719,6 +1719,24 @@ fn TVal? Vm.run(Vm* vm) {
 
             HObject* obj = (HObject*)rc.get_heapptr();
 
+            // Proxy exotic: route through [[Has]].
+            if (obj.flags.exotic_proxyobj) {
+                void* pkey = get_prop_key(vm, rb);
+                bool has = false;
+                if (pkey != null) {
+                    if (!builtins::proxy_mop_has(vm, vm.heap, obj, (HString*)pkey, &has)) {
+                        TVal perr = vm.heap.error_value;
+                        vm.heap.has_error = false;
+                        if (!vm_throw_value(vm, perr, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return vm_uncaught_error(vm, &perr);
+                        }
+                        continue;
+                    }
+                }
+                ra.set_boolean(has);
+                continue;
+            }
+
             // TypedArray: numeric index membership (0..length-1, not detached).
             if (obj.get_class() >= hobject::ObjClass.INT8ARRAY && obj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
                 long idx_long = -1;

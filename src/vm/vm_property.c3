@@ -14,6 +14,17 @@ import std::math;
 // ============================================================================
 // vm_property — GETPROP / PUTPROP / DELPROP and inline-cache paths
 // ============================================================================
+/// Rethrow a pending proxy-op error (heap.error_value) in the current frame.
+/// Returns the opcode-handler result: {} when a catcher was found, VM_ERROR~ otherwise.
+fn TVal? vm_proxy_rethrow(Vm* vm, Dispatch* ds) {
+    TVal errv = vm.heap.error_value;
+    vm.heap.has_error = false;
+    if (!vm_throw_value(vm, errv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+        return vm_uncaught_error(vm, &errv);
+    }
+    return (TVal){};
+}
+
 /// Sub-dispatch for GETPROP, GETPROPC, GETPROPC_CACHED, GETPROPC2, PUTPROP, DELPROP opcodes.
 fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -21,6 +32,19 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
         case Opcode.GETPROP:
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
+
+                // Proxy exotic: route through [[Get]] before any cache/fast path.
+                if (hobj.flags.exotic_proxyobj) {
+                    void* pkey = get_prop_key(vm, rc);
+                    if (pkey == null) { ra.set_undefined(); return (TVal){}; }
+                    TVal pout;
+                    if (!builtins::proxy_mop_get(vm, vm.heap, hobj, (HString*)pkey, *rb, &pout)) {
+                        return vm_proxy_rethrow(vm, ds);
+                    }
+                    vm.heap.tval_copy_ref(ra, &pout);
+                    track_heap_store(ds.act, ra, (uint)insn.a);
+                    return (TVal){};
+                }
 
                 // Inline Cache fast path: check shape + key + prop_values pointer
                 // NOTE: We use prop_values() (not prop_alloc) because prop_alloc is
@@ -443,6 +467,17 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (rb.is_object()) {
                     HObject* hobj = (HObject*)rb.get_heapptr();
 
+                    // Proxy exotic: route through [[Get]] before the IC.
+                    if (hobj.flags.exotic_proxyobj) {
+                        TVal pout;
+                        if (!builtins::proxy_mop_get(vm, vm.heap, hobj, key_hstr, *rb, &pout)) {
+                            return vm_proxy_rethrow(vm, ds);
+                        }
+                        vm.heap.tval_copy_ref(ra, &pout);
+                        track_heap_store(ds.act, ra, (uint)insn.a);
+                        return (TVal){};
+                    }
+
                     // Inline Cache fast path: key is always non-null, skip lookup_key check.
                     if (ds.ic_base != null) {
                         uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
@@ -800,7 +835,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                 // === Hop 1: hobj1[key1] ===
                 TVal mid_val;
-                mid_val.set_undefined();                if (ds.ic_base != null) {
+                mid_val.set_undefined();
+                bool hop1_proxy = hobj1.flags.exotic_proxyobj;
+                if (hop1_proxy) {
+                    if (!builtins::proxy_mop_get(vm, vm.heap, hobj1, key1_hstr, *rb, &mid_val)) {
+                        return vm_proxy_rethrow(vm, ds);
+                    }
+                }
+                if (!hop1_proxy && ds.ic_base != null) {
                     hobject::ICEntry* ic1 = ds.ic_base + pc1;
                     if (ic1.key == (void*)key1_hstr && ic1.shape_id == hobj1.shape_id) {
                         HObject* owner1;
@@ -818,7 +860,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
 
                 // Full lookup for hop 1 if IC miss
-                if (mid_val.is_undefined() && key1_hstr != null) {
+                if (!hop1_proxy && mid_val.is_undefined() && key1_hstr != null) {
                     // ARRAY .length fast path
                     if (hobj1.get_class() == hobject::ObjClass.ARRAY
                         && (void*)key1_hstr == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
@@ -867,6 +909,17 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // === Hop 2: mid_val[key2] ===
                 if (mid_val.is_object()) {                    HObject* hobj2 = (HObject*)mid_val.get_heapptr();
                     uint pc2 = (uint)(ds.curr_pc - 1 - ds.code_base);  // pc of the data slot
+
+                    // Proxy exotic on the second hop: route through [[Get]].
+                    if (hobj2.flags.exotic_proxyobj) {
+                        TVal pout2;
+                        if (!builtins::proxy_mop_get(vm, vm.heap, hobj2, key2_hstr, mid_val, &pout2)) {
+                            return vm_proxy_rethrow(vm, ds);
+                        }
+                        vm.heap.tval_copy_ref(ra2, &pout2);
+                        track_heap_store(ds.act, ra2, dst2_reg);
+                        return (TVal){};
+                    }
 
                     // IC fast path for hop 2
                     if (ds.ic_base != null && key2_hstr != null) {
@@ -1751,6 +1804,23 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
+                // Proxy exotic: route through [[Set]].
+                if (hobj.flags.exotic_proxyobj) {
+                    void* pkey = get_prop_key(vm, rb);
+                    if (pkey == null) { return (TVal){}; }
+                    bool set_ok;
+                    if (!builtins::proxy_mop_set(vm, vm.heap, hobj, (HString*)pkey, *rc, *ra, &set_ok)) {
+                        return vm_proxy_rethrow(vm, ds);
+                    }
+                    if (!set_ok) {
+                        // Strict-only engine: [[Set]] returning false throws.
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'set' on proxy: trap returned falsish", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    }
+                    return (TVal){};
+                }
+
                 // TypedArray element write: convert FIRST, bounds-check AFTER
                 // (ToNumber on rc can run user code — e.g. valueOf — that
                 // detaches the buffer; spec requires the conversion to happen
@@ -2168,6 +2238,24 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
+
+                // Proxy exotic: route through [[Delete]].
+                if (hobj.flags.exotic_proxyobj) {
+                    void* pkey = get_prop_key(vm, rc);
+                    if (pkey == null) { return (TVal){}; }
+                    bool deleted;
+                    if (!builtins::proxy_mop_delete(vm, vm.heap, hobj, (HString*)pkey, &deleted)) {
+                        return vm_proxy_rethrow(vm, ds);
+                    }
+                    ra.set_boolean(deleted);
+                    if (!deleted) {
+                        // Strict-only engine: failed delete throws.
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'deleteProperty' on proxy: trap returned falsish", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                    }
+                    return (TVal){};
+                }
 
                 // TypedArray: in-range indices are non-configurable (delete
                 // returns false without deleting); out-of-range/detached
