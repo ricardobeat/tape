@@ -1564,6 +1564,11 @@ fn ushort? CompilerContext.new_expr(&self) {
     }
 
     // Handle trailing member access and calls: new X().prop, new X()[idx], new X().method()
+    // Reset member tracking: only a trailing property access (not a call) that is
+    // the *last* thing parsed here should leave last_was_member set, so an outer
+    // assignment (`new X().p = v`) emits a PUTPROP that runs setters, rather than
+    // treating the read result as a discardable value.
+    self.last_was_member = false;
     for (;;) {
         if (self.match(TokenType.DOT)) {
             Token? prop_name_opt = self.lexer.next_token();
@@ -1581,16 +1586,23 @@ fn ushort? CompilerContext.new_expr(&self) {
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)prop_reg);
-            self.free_reg(prop_reg);
             // Check if this is a method call: new X().method(args)
             if (self.check(TokenType.LPAREN)) {
+                self.last_was_member = false;
+                self.free_reg(prop_reg);
                 // Keep ctor_reg alive as 'this' for the method call
                 self.call_prop_obj_reg = ctor_reg;
                 ctor_reg = result;
                 self.next_reg = ctor_reg + 1;
                 ctor_reg = self.emit_call(ctor_reg)!;
             } else {
-                self.free_reg(ctor_reg);
+                // Record member info so an enclosing assignment can PUTPROP.
+                // Keep obj (ctor_reg) and prop_reg alive; assignment_expr frees
+                // them after emitting the store (mirrors member_expr's lhs path).
+                self.last_was_member = true;
+                self.last_member_obj_reg = ctor_reg;
+                self.last_member_prop_reg = prop_reg;
+                self.call_prop_obj_reg = ctor_reg;
                 ctor_reg = result;
                 self.next_reg = ctor_reg + 1;
             }
@@ -1601,16 +1613,20 @@ fn ushort? CompilerContext.new_expr(&self) {
             self.expect(TokenType.RBRACKET)!;
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
-            self.free_reg(idx_reg);
             // Check if this is a method call: new X()[idx](args)
             if (self.check(TokenType.LPAREN)) {
+                self.last_was_member = false;
+                self.free_reg(idx_reg);
                 // Keep ctor_reg alive as 'this' for the method call
                 self.call_prop_obj_reg = ctor_reg;
                 ctor_reg = result;
                 self.next_reg = ctor_reg + 1;
                 ctor_reg = self.emit_call(ctor_reg)!;
             } else {
-                self.free_reg(ctor_reg);
+                self.last_was_member = true;
+                self.last_member_obj_reg = ctor_reg;
+                self.last_member_prop_reg = idx_reg;
+                self.call_prop_obj_reg = ctor_reg;
                 ctor_reg = result;
                 self.next_reg = ctor_reg + 1;
             }
