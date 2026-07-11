@@ -2435,7 +2435,9 @@ fn bool concat_process_item(BuiltinContext* ctx, TVal item, HString* concat_sym,
             arr_throw_type_error(ctx, "Concatenating would exceed the maximum array length (2^53-1)");
             return false;
         }
-        array_set_elem_ulong(result, n, item, ctx.heap);
+        // CreateDataPropertyOrThrow — throws TypeError on a non-extensible
+        // (species-created) result rather than silently dropping the element.
+        if (!array_set_elem_ulong_checked(ctx, result, n, item)) return false;
         n++;
         *n_ptr = n;
         return true;
