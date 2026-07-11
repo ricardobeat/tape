@@ -345,11 +345,17 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     // for-in + result[stringKey] all work correctly on the result array.
 
     // Maximum number of keys we'll collect
-    uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    HString** key_buf;
+    uint key_count;
+    if (obj.flags.exotic_proxyobj) {
+        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
+    } else {
+        uint max_keys = obj.prop_count + obj.array_size + 32;
+        key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+        if (key_buf == null) { ctx.result.set_undefined(); return; }
+        key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+    }
     defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
-    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
 
     // Write collected keys into the result array as named properties.
     // Using put_prop with string index keys ensures hasOwnProperty("0"),
@@ -436,6 +442,28 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
         obj = (HObject*)ctx.result.get_heapptr();
     }
+    // Proxy exotic: [[OwnPropertyKeys]] filtered to string keys.
+    if (obj.flags.exotic_proxyobj) {
+        HString** pkeys;
+        uint pn;
+        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 1, &pkeys, &pn)) { proxy_ctx_ok(ctx); return; }
+        defer ctx.heap.free_func(ctx.heap.heap_udata, pkeys);
+        HObject*? parr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch perr = parr_raw) { ctx.result.set_undefined(); return; }
+        HObject* parr = parr_raw;
+        parr.prototype = ctx.heap.array_proto;
+        for (uint i = 0; i < pn; i++) {
+            HString* idx_key = ctx.heap.int_to_hstring((long)i);
+            if (idx_key == null) { ctx.result.set_undefined(); return; }
+            TVal kv; kv.set_string(pkeys[i]);
+            parr.put_prop(idx_key, kv, hobject::PROP_FLAGS_WEC);
+        }
+        TVal plen; plen.set_fastint((long)pn);
+        parr.put_prop(builtin_intern_string(ctx.heap, "length"), plen, hobject::PROP_FLAGS_WC);
+        ctx.result.set_object(parr);
+        return;
+    }
+
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
@@ -578,6 +606,26 @@ fn void builtin_object_getOwnPropertySymbols(BuiltinContext* ctx) {
         }
         obj = (HObject*)ctx.result.get_heapptr();
     }
+    // Proxy exotic: [[OwnPropertyKeys]] filtered to symbol keys.
+    if (obj.flags.exotic_proxyobj) {
+        HString** pkeys;
+        uint pn;
+        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 2, &pkeys, &pn)) { proxy_ctx_ok(ctx); return; }
+        defer ctx.heap.free_func(ctx.heap.heap_udata, pkeys);
+        HObject*? parr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch perr = parr_raw) { ctx.result.set_undefined(); return; }
+        HObject* parr = parr_raw;
+        parr.prototype = ctx.heap.array_proto;
+        for (uint i = 0; i < pn; i++) {
+            TVal kv; kv.set_string(pkeys[i]);
+            array_set_elem(parr, i, kv, ctx.heap);
+        }
+        TVal plen; plen.set_fastint((long)pn);
+        parr.put_prop(builtin_intern_string(ctx.heap, "length"), plen, hobject::PROP_FLAGS_WC);
+        ctx.result.set_object(parr);
+        return;
+    }
+
     // Allocate result array
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
@@ -638,6 +686,14 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
             return;
         }
         obj = (HObject*)ctx.result.get_heapptr();
+    }
+
+    // Proxy exotic: [[OwnPropertyKeys]] verbatim.
+    if (obj.flags.exotic_proxyobj) {
+        HObject* parr;
+        if (!proxy_mop_own_keys(ctx.vm, ctx.heap, obj, &parr)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_object(parr);
+        return;
     }
 
     // Allocate result array
@@ -780,6 +836,12 @@ fn void builtin_object_getPrototypeOf(BuiltinContext* ctx) {
         arg = *ctx.result;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    if (obj.flags.exotic_proxyobj) {
+        TVal pproto;
+        if (!proxy_mop_get_proto(ctx.vm, ctx.heap, obj, &pproto)) { proxy_ctx_ok(ctx); return; }
+        *ctx.result = pproto;
+        return;
+    }
     HObject* proto = obj.prototype;
     if (proto == null) {
         ctx.result.set_null();
@@ -805,6 +867,12 @@ fn void builtin_object_isExtensible(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    if (obj.flags.exotic_proxyobj) {
+        bool ext;
+        if (!proxy_mop_is_extensible(ctx.vm, ctx.heap, obj, &ext)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(ext);
+        return;
+    }
     ctx.result.set_boolean(obj.is_extensible());
 }
 
@@ -825,6 +893,16 @@ fn void builtin_object_preventExtensions(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    if (obj.flags.exotic_proxyobj) {
+        bool pok;
+        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &pok)) { proxy_ctx_ok(ctx); return; }
+        if (!pok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'preventExtensions' on proxy: trap returned falsish");
+            return;
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
     obj.flags.extensible = false;
     ctx.result.set_object(obj);
 }
@@ -1013,6 +1091,18 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         }
     }
     void* key = key_hstr;
+
+    // Proxy exotic: route through [[GetOwnProperty]].
+    if (obj.flags.exotic_proxyobj) {
+        ProxyDesc pd;
+        if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, key_hstr, &pd)) { proxy_ctx_ok(ctx); return; }
+        if (!pd.found) { ctx.result.set_undefined(); return; }
+        pd.complete();
+        HObject* desc_out = proxy_desc_to_object(ctx.heap, &pd);
+        if (desc_out == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_object(desc_out);
+        return;
+    }
 
     // String exotic [[GetOwnProperty]] — ES5 §15.5.5.1
     // Numeric indices on String exotic objects return character descriptors.
@@ -1317,6 +1407,14 @@ fn void builtin_object_getOwnPropertyDescriptors(BuiltinContext* ctx) {
 /// ES5 [[Get]] for descriptor field extraction — invokes getters per §8.10.5.
 /// Returns true if the property exists, setting `out` to the result value.
 fn bool desc_get(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal* out) {
+    if (obj.flags.exotic_proxyobj) {
+        TVal recv; recv.set_object(obj);
+        if (!proxy_mop_get(ctx.vm, ctx.heap, obj, key, recv, out)) {
+            proxy_ctx_ok(ctx);
+            return false;
+        }
+        return true;
+    }
     hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(key, true);
     if (res.kind == hobject::PropLookupKind.PROP_NOT_FOUND) {
         return false;
@@ -1631,6 +1729,20 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
     HObject* desc_obj = (HObject*)attr_val.get_heapptr();
+
+    // Proxy exotic: route through [[DefineOwnProperty]].
+    if (obj.flags.exotic_proxyobj) {
+        ProxyDesc pd;
+        if (!proxy_object_to_desc(ctx.vm, ctx.heap, desc_obj, &pd)) { proxy_ctx_ok(ctx); return; }
+        bool dok;
+        if (!proxy_mop_define(ctx.vm, ctx.heap, obj, key_hstr, &pd, &dok)) { proxy_ctx_ok(ctx); return; }
+        if (!dok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'defineProperty' on proxy: trap returned falsish");
+            return;
+        }
+        *ctx.result = arg0;
+        return;
+    }
 
     // Step 4: ToPropertyDescriptor
     hobject::PropFlags desc_flags;
@@ -2950,11 +3062,17 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
     // Snapshot the ordered enumerable String keys first, then [[Get]] each — so
     // getters that mutate the object mid-enumeration don't affect the key set
     // (ES2017 §7.3.21 / §19.1.2.5).
-    uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    HString** key_buf;
+    uint key_count;
+    if (obj.flags.exotic_proxyobj) {
+        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
+    } else {
+        uint max_keys = obj.prop_count + obj.array_size + 32;
+        key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+        if (key_buf == null) { ctx.result.set_undefined(); return; }
+        key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+    }
     defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
-    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
@@ -3015,11 +3133,17 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     // Snapshot the ordered enumerable String keys first (EnumerableOwnProperties
     // step 3 gathers keys), then [[Get]] each — so getters that mutate the object
     // during enumeration don't affect the key set (ES2017 §7.3.21 / §19.1.2.22).
-    uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    HString** key_buf;
+    uint key_count;
+    if (obj.flags.exotic_proxyobj) {
+        if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
+    } else {
+        uint max_keys = obj.prop_count + obj.array_size + 32;
+        key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+        if (key_buf == null) { ctx.result.set_undefined(); return; }
+        key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+    }
     defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
-    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
@@ -3241,6 +3365,12 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         ctx.result.set_boolean(false);
         return;
     }
+    if (obj.flags.exotic_proxyobj) {
+        ProxyDesc pd;
+        if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, key, &pd)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(pd.found);
+        return;
+    }
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
         ctx.result.set_boolean(true);
@@ -3276,6 +3406,17 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)obj_val.get_heapptr();
+
+    if (obj.flags.exotic_proxyobj) {
+        bool sok;
+        if (!proxy_mop_set_proto(ctx.vm, ctx.heap, obj, proto_val, &sok)) { proxy_ctx_ok(ctx); return; }
+        if (!sok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'setPrototypeOf' on proxy: trap returned falsish");
+            return;
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
 
     // Immutable-prototype exotic object check (ES2022 §10.4.7.1):
     // Object.prototype is an immutable-prototype exotic object — its [[Prototype]]
@@ -3849,6 +3990,12 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
         ctx.result.set_boolean(false);
         return;
     }
+    if (obj.flags.exotic_proxyobj) {
+        ProxyDesc pd;
+        if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, key, &pd)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(pd.found);
+        return;
+    }
     // Check own property
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
@@ -3908,6 +4055,12 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
         obj = (HObject*)this_val.get_heapptr();
     } else {
         ctx.result.set_boolean(false);
+        return;
+    }
+    if (obj.flags.exotic_proxyobj) {
+        ProxyDesc pd;
+        if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, key, &pd)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(pd.found && pd.enumerable);
         return;
     }
     // Find own property descriptor

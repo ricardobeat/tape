@@ -163,6 +163,19 @@ fn bool object_get_proto(void* vm, Heap* heap, HObject* obj, TVal* out) {
     return true;
 }
 
+/// Transfer a pending heap-level proxy error into a BuiltinContext throw.
+/// Returns false when an error was pending (caller should bail out).
+fn bool proxy_ctx_ok(BuiltinContext* ctx) {
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        ctx.result.set_undefined();
+        return false;
+    }
+    return true;
+}
+
 // ============================================================================
 // Callability check for TVals
 // ============================================================================
@@ -982,6 +995,46 @@ fn bool proxy_mop_own_keys(void* vm, Heap* heap, HObject* proxy, HObject** arr_o
     arr.put_prop((void*)(HString*)heap.strs[heap::BuiltinStr.LENGTH], alen_tv, hobject::PROP_FLAGS_WC);
     heap.free_func(heap.heap_udata, keys);
     *arr_out = arr;
+    return true;
+}
+
+/// Own keys of a proxy filtered by kind and enumerability.
+/// mode: 0 = enumerable string keys (Object.keys / for-in),
+///       1 = all string keys (getOwnPropertyNames),
+///       2 = symbol keys (getOwnPropertySymbols).
+/// Returns keys in *buf_out (caller frees via heap.free_func) and the count.
+fn bool proxy_filtered_own_keys(void* vm, Heap* heap, HObject* proxy, int mode,
+                                HString*** buf_out, uint* count_out) {
+    *buf_out = null;
+    *count_out = 0;
+    HObject* arr;
+    if (!proxy_mop_own_keys(vm, heap, proxy, &arr)) return false;
+    uint n = arr.array_used;
+    HString** buf = (HString**)heap.alloc_func(heap.heap_udata, (usz)(n + 1) * (usz)void*::size);
+    if (buf == null) { proxy_throw_type(heap, "out of memory"); return false; }
+    uint out_n = 0;
+    for (uint i = 0; i < n; i++) {
+        TVal el = arr.array_part()[i];
+        if (!el.is_string()) continue;
+        HString* k = (HString*)el.get_heapptr();
+        bool is_sym = k.is_symbol();
+        if (mode == 2) {
+            if (!is_sym) continue;
+        } else {
+            if (is_sym) continue;
+        }
+        if (mode == 0) {
+            ProxyDesc d;
+            if (!proxy_mop_get_own(vm, heap, proxy, k, &d)) {
+                heap.free_func(heap.heap_udata, buf);
+                return false;
+            }
+            if (!d.found || !d.enumerable) continue;
+        }
+        buf[out_n++] = k;
+    }
+    *buf_out = buf;
+    *count_out = out_n;
     return true;
 }
 

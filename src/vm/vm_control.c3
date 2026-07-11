@@ -303,6 +303,15 @@ fn TVal? dispatch_iterator(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             // Collect enumerable keys
             ForInState* state = collect_forin_keys(vm, obj);
             if (state == null) {
+                // A proxy trap may have thrown during key collection.
+                if (vm.heap.has_error) {
+                    TVal perr = vm.heap.error_value;
+                    vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, perr, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &perr);
+                    }
+                    return (TVal){};
+                }
                 rb.set_null();
                 break;
             }

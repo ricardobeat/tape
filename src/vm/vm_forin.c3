@@ -62,6 +62,37 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
     HObject* cur = obj;
     uint depth = 0;
     while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
+        // Proxy exotic: enumerable string keys via [[OwnPropertyKeys]] +
+        // [[GetOwnProperty]]; continue the walk through [[GetPrototypeOf]].
+        if (cur.flags.exotic_proxyobj) {
+            HString** pkeys;
+            uint pn;
+            if (!builtins::proxy_filtered_own_keys(vm, h, cur, 0, &pkeys, &pn)) {
+                // Trap threw: surface as an empty enumeration; the pending
+                // heap error is rethrown by the FORIN opcode handler.
+                h.free_func(h.heap_udata, keys);
+                h.free_func(h.heap_udata, seen);
+                return null;
+            }
+            for (uint i = 0; i < pn; i++) {
+                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, pkeys[i])) {
+                    h.free_func(h.heap_udata, pkeys);
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
+                    return null;
+                }
+            }
+            h.free_func(h.heap_udata, pkeys);
+            TVal pproto;
+            if (!builtins::proxy_mop_get_proto(vm, h, cur, &pproto)) {
+                h.free_func(h.heap_udata, keys);
+                h.free_func(h.heap_udata, seen);
+                return null;
+            }
+            cur = pproto.is_object() ? (HObject*)pproto.get_heapptr() : null;
+            depth++;
+            continue;
+        }
         // STRING exotic: enumerate integer indices [0, clen) from the primitive value
         // before the named property list so index order matches the spec.
         if (cur.flags.exotic_stringobj && (*cur.extra_ptr()).prim.primitive_value.is_string()) {

@@ -2999,6 +2999,13 @@ fn void builtin_array_isArray(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    if (obj.flags.exotic_proxyobj) {
+        // §7.2.2 IsArray recurses through the proxy target (revoked → TypeError).
+        bool is_arr;
+        if (!proxy_is_array(ctx.heap, obj, &is_arr)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(is_arr);
+        return;
+    }
     ctx.result.set_boolean(obj.get_class() == hobject::ObjClass.ARRAY);
 }
 
