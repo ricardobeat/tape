@@ -122,19 +122,38 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                 void* key = get_prop_key(vm, rc);
 
-                // CanonicalNumericIndexString (ES2022 §9.4.5.4) on a
-                // TypedArray receiver: non-arridx numeric-looking string keys
-                // ("1.5", "-0", "NaN", "Infinity") never resolve through the
-                // ordinary property path — reads always yield undefined.
+                // Integer-indexed exotic [[Get]] (ES2022 §9.4.5.4):
+                // For TypedArray objects, any canonical numeric index string must
+                // bypass OrdinaryGet and go through IntegerIndexedElementGet.
+                // - Non-arridx numeric strings ("1.5", "-0", "NaN"): always undefined.
+                // - Arridx strings ("0", "1", "2"): read element if in-bounds, else undefined.
+                // Neither case walks the prototype chain, preventing spurious accessor hits.
                 if (key != null
                     && hobj_cls >= hobject::ObjClass.INT8ARRAY
                     && hobj_cls <= hobject::ObjClass.FLOAT64ARRAY) {
                     HString* key_hstr = (HString*)key;
-                    if (!key_hstr.is_symbol() && !key_hstr.is_arridx()) {
-                        double cni_d;
-                        if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
-                            ra.set_undefined();
+                    if (!key_hstr.is_symbol()) {
+                        if (key_hstr.is_arridx()) {
+                            // Array-index string key ("0", "1", …): use II-exotic element read.
+                            uint idx = key_hstr.array_index();
+                            HObject* buf = (*hobj.extra_ptr()).view.buffer;
+                            uint shift = builtins::ta_elem_shift(hobj_cls);
+                            uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                            if (buf != null && (*buf.extra_ptr()).ab.data != null
+                                && (ulong)idx < (ulong)elem_count) {
+                                char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
+                                TVal v = builtins::ta_load_element(base, hobj_cls, idx);
+                                *ra = v;
+                            } else {
+                                ra.set_undefined();
+                            }
                             return (TVal){};
+                        } else {
+                            double cni_d;
+                            if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                                ra.set_undefined();
+                                return (TVal){};
+                            }
                         }
                     }
                 }
@@ -215,6 +234,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             ds.regs_base = ds.act.bottom;
                             return (TVal){};
                         }
+                        if (vm.has_error) return VM_ERROR~;
                         return (TVal){};
                         } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                             vm.heap.tval_copy_ref(ra, &res.data_val);
@@ -299,6 +319,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 ds.regs_base = ds.act.bottom;
                                 return (TVal){};
                             }
+                            if (vm.has_error) return VM_ERROR~;
                             return (TVal){};
                         } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                             vm.heap.tval_copy_ref(ra, &res.data_val);
@@ -548,6 +569,37 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 }
                             }
                         }
+                        // Integer-indexed exotic [[Get]] (ES2022 §9.4.5.4) for GETPROPC.
+                        // TypedArray string keys that are canonical numeric indices must
+                        // bypass OrdinaryGet (no prototype chain walk).
+                        {
+                            hobject::ObjClass cls_c = hobj.get_class();
+                            if (key_hstr != null && !key_hstr.is_symbol()
+                                && cls_c >= hobject::ObjClass.INT8ARRAY
+                                && cls_c <= hobject::ObjClass.FLOAT64ARRAY) {
+                                if (key_hstr.is_arridx()) {
+                                    uint cidx = key_hstr.array_index();
+                                    HObject* cbuf = (*hobj.extra_ptr()).view.buffer;
+                                    uint cshift = builtins::ta_elem_shift(cls_c);
+                                    uint ccount = (*hobj.extra_ptr()).view.byte_length >> cshift;
+                                    if (cbuf != null && (*cbuf.extra_ptr()).ab.data != null
+                                        && (ulong)cidx < (ulong)ccount) {
+                                        char* cbase = (*cbuf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
+                                        TVal cv = builtins::ta_load_element(cbase, cls_c, cidx);
+                                        *ra = cv;
+                                    } else {
+                                        ra.set_undefined();
+                                    }
+                                    return (TVal){};
+                                } else {
+                                    double cni_d;
+                                    if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                                        ra.set_undefined();
+                                        return (TVal){};
+                                    }
+                                }
+                            }
+                        }
                         // Megamorphic cache: try global (shape, key) → offset cache before full chain walk
                         hobject::MegamorphicEntry* mega = hobject::mega_cache_lookup(vm.heap, hobj, key);
                         if (mega != null) {
@@ -569,6 +621,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 ds.regs_base = ds.act.bottom;
                                 return (TVal){};
                             }
+                            if (vm.has_error) return VM_ERROR~;
                             return (TVal){};
                         } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                             vm.heap.tval_copy_ref(ra, &res.data_val);
@@ -651,6 +704,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     ds.regs_base = ds.act.bottom;
                                     return (TVal){};
                                 }
+                                if (vm.has_error) return VM_ERROR~;
                                 return (TVal){};
                             } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
                                 vm.heap.tval_copy_ref(ra, &res.data_val);
@@ -896,8 +950,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 this_tv1.set_object(hobj1);
                                 mid_val = vm.heap.call_fn(vm, getter1, null, 0, this_tv1);
                                 if (vm.heap.has_error) {
-                                    vm.has_error = true;
-                                    return VM_ERROR~;
+                                    vm.heap.has_error = false;
+                                    TVal err_val = vm.heap.error_value;
+                                    if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        vm.has_error = true;
+                                        vm.heap.has_error = true;
+                                        return VM_ERROR~;
+                                    }
+                                    return (TVal){};
                                 }
                             } else {
                                 mid_val.set_undefined();
@@ -987,8 +1047,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 if (!getter2.is_undefined() && !getter2.is_null() && vm.heap.call_fn != null) {
                                     TVal gv2 = vm.heap.call_fn(vm, getter2, null, 0, mid_val);
                                     if (vm.heap.has_error) {
-                                        vm.has_error = true;
-                                        return VM_ERROR~;
+                                        vm.heap.has_error = false;
+                                        TVal err_gv2 = vm.heap.error_value;
+                                        if (!vm_throw_value(vm, err_gv2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            vm.has_error = true;
+                                            vm.heap.has_error = true;
+                                            return VM_ERROR~;
+                                        }
+                                        return (TVal){};
                                     }
                                     vm.heap.tval_copy_ref(ra2, &gv2);
                                     track_heap_store(ds.act, ra2, dst2_reg);
@@ -1397,8 +1463,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                 if (!getter2.is_undefined() && !getter2.is_null() && vm.heap.call_fn != null) {
                                     TVal gv2 = vm.heap.call_fn(vm, getter2, null, 0, mid_val);
                                     if (vm.heap.has_error) {
-                                        vm.has_error = true;
-                                        return VM_ERROR~;
+                                        vm.heap.has_error = false;
+                                        TVal err_gv2b = vm.heap.error_value;
+                                        if (!vm_throw_value(vm, err_gv2b, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            vm.has_error = true;
+                                            vm.heap.has_error = true;
+                                            return VM_ERROR~;
+                                        }
+                                        return (TVal){};
                                     }
                                     vm.heap.tval_copy_ref(ra2, &gv2);
                                     track_heap_store(ds.act, ra2, dst2_reg);
@@ -1888,17 +1960,50 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                 }
 
-                // CanonicalNumericIndexString (ES2022 §9.4.5.5) on a
-                // TypedArray receiver: numeric-looking non-arridx string keys
-                // ("1.5", "-0", "NaN") are silently ignored on write.
+                // Integer-indexed exotic [[Set]] (ES2022 §9.4.5.5) for TypedArray string keys.
+                // This handles the case where receiver == hobj (the TypedArray itself).
+                // - Arridx string key ("0", "1", …): IntegerIndexedElementSet — convert value,
+                //   write if in-bounds (or no-op if OOB/detached).
+                // - Non-arridx numeric-looking keys ("1.5", "-0", "NaN"): silently no-op.
                 if (rb.is_string()
                     && hobj.get_class() >= hobject::ObjClass.INT8ARRAY
                     && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
                     HString* key_hstr = (HString*)rb.get_heapptr();
-                    if (key_hstr != null && !key_hstr.is_symbol() && !key_hstr.is_arridx()) {
-                        double cni_d;
-                        if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                    if (key_hstr != null && !key_hstr.is_symbol()) {
+                        if (key_hstr.is_arridx()) {
+                            // Array-index string key: perform IntegerIndexedElementSet.
+                            // Value conversion (ToNumber) runs FIRST, THEN bounds check.
+                            hobject::ObjClass ta_cls = hobj.get_class();
+                            BuiltinContext conv_ctx;
+                            conv_ctx.vm = vm;
+                            conv_ctx.heap = vm.heap;
+                            conv_ctx.should_throw = false;
+                            TVal converted = *rc;
+                            char[8] scratch;
+                            builtins::ta_write_element((char*)&scratch, ta_cls, &converted, &conv_ctx);
+                            if (conv_ctx.should_throw) {
+                                if (!vm_throw_value(vm, conv_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return vm_uncaught_error(vm, &conv_ctx.throw_value);
+                                }
+                                return (TVal){};
+                            }
+                            uint idx = key_hstr.array_index();
+                            HObject* buf = (*hobj.extra_ptr()).view.buffer;
+                            uint shift = builtins::ta_elem_shift(ta_cls);
+                            uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                            if (buf != null && (*buf.extra_ptr()).ab.data != null
+                                && (ulong)idx < (ulong)elem_count) {
+                                char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
+                                char* p = base + ((ulong)idx << shift);
+                                builtins::ta_write_element(p, ta_cls, &converted, &conv_ctx);
+                            }
+                            // OOB/detached after conversion: spec says silently succeed.
                             return (TVal){};
+                        } else {
+                            double cni_d;
+                            if (builtins::is_canonical_numeric_index(vm.heap, key_hstr, &cni_d)) {
+                                return (TVal){};
+                            }
                         }
                     }
                 }
@@ -2287,6 +2392,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                   ds.act, &ds.curr_pc, &ds.needs_restart, ds.regs_base)) {
                     ds.regs_base = ds.act.bottom;
                 }
+                if (vm.has_error) return VM_ERROR~;
             } else if (gres.kind == hobject::PropLookupKind.PROP_DATA) {
                 vm.heap.tval_copy_ref(ra, &gres.data_val);
                 track_heap_store(ds.act, ra, (uint)insn.a);

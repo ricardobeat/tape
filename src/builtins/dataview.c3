@@ -200,15 +200,19 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "DataView getter: buffer is detached");
-        return;
-    }
 
+    // Spec §24.2.1.1 GetViewValue: ToIndex(requestIndex) runs FIRST (step 4),
+    // then the detach check (step 6-7). Do NOT check detach before ToIndex.
     TVal pos_arg; pos_arg.set_undefined();
     if (ctx.argc >= 1) pos_arg = ctx.regs[ctx.base_reg];
     uint pos = 0;
     if (!arraybuffer_to_index(ctx, &pos_arg, &pos)) return;
+
+    // Detach check after ToIndex per spec step 6.
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "DataView getter: buffer is detached");
+        return;
+    }
 
     bool little_endian = false;
     if (ctx.argc >= 2) {
