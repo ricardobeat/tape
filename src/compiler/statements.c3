@@ -604,6 +604,15 @@ fn void? CompilerContext.if_statement(&self) {
     self.expect(TokenType.IF)!;
     self.expect(TokenType.LPAREN)!;
 
+    // In eval mode, the if-statement always produces a completion value.
+    // Per spec §14.6.2: if-false-no-else returns NormalCompletion(undefined);
+    // if-with-else returns UpdateEmpty(branchCompletion, undefined).
+    // Either way, any prior completion value is replaced — reset to undefined
+    // now so an empty or not-taken branch leaves the correct undefined result.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     // Compile condition
     ushort cond_reg = self.expression()!;
 
@@ -749,6 +758,11 @@ fn void? CompilerContext.while_statement(&self) {
     // ----------------------------------------------------------------
     // Step 3: Emit initial JUMP → cond_label and record body_label.
     // ----------------------------------------------------------------
+    // ES spec §14.7.3.2: while starts with V=undefined. In eval mode, reset
+    // eval_acc_reg before the loop so a zero-iteration while returns undefined.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
     uint cond_jump = 0;
     if (!is_const_true) {
         cond_jump = self.emit_jump(Opcode.JUMP);  // forward → cond_label
@@ -767,6 +781,12 @@ fn void? CompilerContext.while_statement(&self) {
     //          updated to cond_label in Step 7).
     // ----------------------------------------------------------------
     self.push_loop(body_label, true);
+    // In eval mode, reset eval_acc_reg at the top of each body iteration.
+    // This ensures break with empty body leaves undefined (not a stale value
+    // from a previous iteration) and matches spec §14.7.3.2 UpdateEmpty.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
     self.statement()!;
 
     // Save post-body lexer state — outer parser resumes here after return.
@@ -2418,7 +2438,15 @@ fn void? CompilerContext.emit_member_lhs_store(&self, ForLhsSnapshot lhs_snap, u
 fn void? CompilerContext.do_while_statement(&self) {
     self.expect(TokenType.DO)!;
 
+    // ES spec §14.7.2.2: do-while starts with V=undefined. In eval mode, reset
+    // eval_acc_reg at the top of each iteration (loop_start is the back-edge
+    // target, so the reset runs on every pass). An empty body or break with no
+    // preceding expression leaves eval_acc_reg as undefined.
     uint loop_start = self.code_count;
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     // Continue target is the condition (we'll record the address after the body)
     self.push_loop(loop_start, true);  // temporary; we'll fix continue_target
 

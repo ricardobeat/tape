@@ -3160,6 +3160,13 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     ushort callee_reg = self.alloc_reg();
     ushort callee_this_reg = self.alloc_reg();
 
+    // ES spec §14.7.5.6 ForIn/OfBodyEvaluation: V starts as undefined.
+    // In eval mode, reset eval_acc_reg before the loop so a zero-iteration
+    // for-of (empty iterable) returns undefined, not a stale prior value.
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
     // Loop start
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
@@ -3213,6 +3220,12 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     self.free_reg(result_reg);
 
     // Step 9: Body
+    // In eval mode, reset eval_acc_reg at the start of each iteration body.
+    // This ensures break with an empty body leaves undefined, matching spec
+    // §14.7.5.6 UpdateEmpty semantics (V only updates on non-empty completions).
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
     self.statement()!;
 
     // Per-iteration env epilogue: pop this iteration's env before the back-jump.
