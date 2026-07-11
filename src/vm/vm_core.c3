@@ -13,25 +13,50 @@ import libc;
 // GC activation marking
 // ============================================================================
 
+/// Mark env bindings held by a single activation.  Shared between the live
+/// activation array and the shadow frame stack.
+fn void mark_activation_envs(heap::Heap* h, Activation* act) @inline {
+    if (act.var_env != null && act.var_env.bindings != null) {
+        h.mark_hobject(act.var_env.bindings);
+    }
+    if (act.lex_env != null && act.lex_env.bindings != null && act.lex_env != act.var_env) {
+        h.mark_hobject(act.lex_env.bindings);
+    }
+    // Walk the full var_env parent chain to keep all enclosing scopes alive.
+    env::EnvRecord* cur = act.var_env;
+    while (cur != null) {
+        if (cur.bindings != null) { h.mark_hobject(cur.bindings); }
+        cur = cur.parent;
+    }
+    // Also walk the lex_env parent chain in case it diverges from var_env.
+    cur = act.lex_env;
+    while (cur != null) {
+        if (cur.bindings != null) { h.mark_hobject(cur.bindings); }
+        cur = cur.parent;
+    }
+}
+
 /// Mark all env bindings held by live activation records.
 /// Called from heap's mark_roots to keep per-call var_envs alive during GC.
+/// Also marks saved activations stored in vm_call_fn_impl's shadow frame list
+/// so that outer call frames remain alive during nested Vm.run() execution.
 fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
     Vm* vm = (Vm*)vm_ptr;
     heap::Heap* h = (heap::Heap*)heap_ptr;
+
+    // Mark live activations (inner-most vm_call_fn_impl's callback + inline callees)
     for (uint i = 0; i < vm.activation_count; i++) {
-        Activation* act = &vm.activations[i];
-        if (act.var_env != null && act.var_env.bindings != null) {
-            h.mark_hobject(act.var_env.bindings);
+        mark_activation_envs(h, &vm.activations[i]);
+    }
+
+    // Mark saved outer activations from all vm_call_fn_impl frames on the C stack.
+    // These are stored in C-stack ShadowActFrame structs linked via vm.shadow_act_list.
+    ShadowActFrame* shadow = (ShadowActFrame*)vm.shadow_act_list;
+    while (shadow != null) {
+        for (uint i = 0; i < shadow.count; i++) {
+            mark_activation_envs(h, &shadow.acts[i]);
         }
-        if (act.lex_env != null && act.lex_env.bindings != null && act.lex_env != act.var_env) {
-            h.mark_hobject(act.lex_env.bindings);
-        }
-        // Walk parent env chains too
-        env::EnvRecord* cur = act.var_env;
-        while (cur != null) {
-            if (cur.bindings != null) { h.mark_hobject(cur.bindings); }
-            cur = cur.parent;
-        }
+        shadow = (ShadowActFrame*)shadow.prev;
     }
 }
 
@@ -130,6 +155,7 @@ fn bool setup_call(Vm* vm, uint idx_func, uint nargs, bool is_construct) {
     // Set up 'this' binding from slot idx_func+1
     TVal* this_slot = caller_bottom + idx_func + 1;
     vm.heap.tval_copy_ref(&new_act.this_binding, this_slot);
+    new_act.flags |= ACT_FLAG_THIS_OWNED;
 
     // Move valstack_bottom to new activation
     vm.valstack_bottom = new_bottom;
@@ -252,6 +278,7 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
         new_act.flags |= ACT_FLAG_DIRECT_EVAL;
     }
     vm.heap.tval_copy_ref(&new_act.this_binding, this_val);
+    new_act.flags |= ACT_FLAG_THIS_OWNED;
 
     // Clear registers and copy args (getters have 0 args)
     TVal* new_regs = new_act.bottom;
@@ -330,6 +357,10 @@ fn TVal handle_return(Vm* vm, TVal val) @inline {
     // If we just popped the last activation, there is no caller
     if (vm.activation_count == 0) {
         vm.heap.tval_copy_ref(&vm.return_val, &val);
+        // Release the this_binding reference after the return value is saved.
+        if ((callee_act.flags & ACT_FLAG_THIS_OWNED) != 0) {
+            vm.heap.decref_tval(&callee_act.this_binding);
+        }
         return val;
     }
 
@@ -353,6 +384,14 @@ fn TVal handle_return(Vm* vm, TVal val) @inline {
         }
         TVal* result_slot = callee_result;
         vm.heap.tval_copy_ref(result_slot, &final_val);
+    }
+
+    // Release the this_binding reference AFTER the result has been written
+    // (construct returns may read this_binding to produce the result value).
+    // ACT_FLAG_THIS_OWNED is set by paths that incref this_binding (inline CALL,
+    // getter invocation) and NOT set by vm_call_fn_impl (raw assign + restore).
+    if ((callee_act.flags & ACT_FLAG_THIS_OWNED) != 0) {
+        vm.heap.decref_tval(&callee_act.this_binding);
     }
 
     // Restore valstack_top to match caller's nregs
