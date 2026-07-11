@@ -4292,6 +4292,35 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
         }
     }
 
+    // Array.prototype[@@unscopables] (ES2023 §23.1.3.34): a null-prototype
+    // object listing the for-in-shadowing method names, each a data property
+    // with value true. The property itself is { writable:false, enumerable:false,
+    // configurable:true }.
+    {
+        HString* unsc_sym = ensure_unscopables_symbol(heap);
+        if (unsc_sym != null) {
+            HObject*? list_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+            if (catch err = list_raw) return false;
+            HObject* list = list_raw;
+            list.prototype = null;  // ObjectCreate(null)
+            String[*] names = {
+                "at", "copyWithin", "entries", "fill", "find", "findIndex",
+                "findLast", "findLastIndex", "flat", "flatMap", "includes",
+                "keys", "toReversed", "toSorted", "toSpliced", "values",
+            };
+            TVal true_tv; true_tv.set_boolean(true);
+            foreach (nm : names) {
+                HString* k = builtin_intern_string(heap, nm);
+                if (k == null) return false;
+                list.put_prop(k, true_tv, hobject::PROP_FLAGS_WEC);
+            }
+            TVal list_tv; list_tv.set_object(list);
+            // { writable:false, enumerable:false, configurable:true }
+            hobject::PropFlags unsc_flags = { .writable = false, .enumerable = false, .configurable = true, .is_accessor = false };
+            proto.put_prop(unsc_sym, list_tv, unsc_flags);
+        }
+    }
+
     // Set @@toStringTag on Array.prototype
     HString* tag_key = ensure_tostringtag_symbol(heap);
     if (tag_key != null) {
