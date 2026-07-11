@@ -13,9 +13,19 @@ test_file="$1"
 keep="${2:-}"
 vm="$PROJECT_DIR/out/duktape_c3"
 
-# Resolve a path relative to test262/test/ if the file doesn't exist as given
-if [ ! -f "$test_file" ] && [ -f "$PROJECT_DIR/test262/test/$test_file" ]; then
-  test_file="$PROJECT_DIR/test262/test/$test_file"
+# Resolve a path relative to test262/test/ if the file doesn't exist as given.
+# Accept both "language/…" and "test/language/…" forms.
+if [ ! -f "$test_file" ]; then
+  if [ -f "$PROJECT_DIR/test262/test/$test_file" ]; then
+    test_file="$PROJECT_DIR/test262/test/$test_file"
+  elif [ -f "$PROJECT_DIR/test262/$test_file" ]; then
+    test_file="$PROJECT_DIR/test262/$test_file"
+  fi
+fi
+# A missing test file must be an error, never a harness-only false PASS.
+if [ ! -f "$test_file" ]; then
+  echo "ERROR: test file not found: $test_file" >&2
+  exit 2
 fi
 
 combined="${TMPDIR:-/tmp}/t262_$$_${RANDOM}.js"

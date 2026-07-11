@@ -1179,6 +1179,14 @@ fn void Heap.reset(&self) {
     self.yield_value.set_undefined();
     self.has_error = false;
 
+    // Clear generator initial-call state — gen_initial_obj points into the
+    // freed heap and the GC mark phase dereferences it when non-null; a test
+    // aborted mid-generator-init would poison every later test in the worker.
+    self.gen_initial_gs = null;
+    self.gen_initial_obj = null;
+    self.gen_initial_retval = null;
+    self.gen_init_stack_depth = 0;
+
     // Clear cached symbol pointers — these point into the (now-freed)
     // string table and must not be reused after reset.  They are
     // re-populated lazily by ensure_iterator_symbol / ensure_toprimitive_symbol.
