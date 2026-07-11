@@ -815,6 +815,21 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 gen_obj.prototype = vm.heap.generator_proto;
                 (*gen_obj.extra_ptr()).gen.generator_data = gs;
 
+                // If a generator param-init is already in progress (gen_initial_gs
+                // is non-null), save the outer state onto a small stack so it can
+                // be restored when the inner generator's GEN_START completes.
+                // Example: `*outer([[,] = innerGen()])` — calling innerGen() during
+                // outer's param-init would otherwise clobber gen_initial_*.
+                if (vm.heap.gen_initial_gs != null) {
+                    uint depth = vm.heap.gen_init_stack_depth;
+                    if (depth < 8) {
+                        vm.heap.gen_init_stack_gs[depth] = vm.heap.gen_initial_gs;
+                        vm.heap.gen_init_stack_obj[depth] = vm.heap.gen_initial_obj;
+                        vm.heap.gen_init_stack_retval[depth] = vm.heap.gen_initial_retval;
+                        vm.heap.gen_init_stack_depth = depth + 1;
+                    }
+                }
+
                 // Stash the pending initial-call state so GEN_START can find it.
                 vm.heap.gen_initial_gs = gs;
                 vm.heap.gen_initial_obj = gen_obj;
@@ -1363,6 +1378,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.retval = ds.regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT
                           | (super_target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
+            new_act.async_promise = null;
+            new_act.async_gen_state = null;
             vm.heap.tval_copy_ref(&new_act.this_binding, &ds.regs_base[callee_reg + 1]);
             new_act.new_target = new_target;  // Pass through new.target
 

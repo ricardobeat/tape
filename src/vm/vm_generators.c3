@@ -1193,10 +1193,23 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             HObject* gen_obj_g = (HObject*)vm.heap.gen_initial_obj;
             TVal* retval_g = ds.act.retval;
 
-            // Clear the pending initial-call state.
-            vm.heap.gen_initial_gs = null;
-            vm.heap.gen_initial_obj = null;
-            vm.heap.gen_initial_retval = null;
+            // Restore any enclosing generator's initial-call state that was
+            // saved when this inner generator was called during an outer
+            // generator's param-init phase (e.g. `*outer([[,] = innerGen()])`).
+            if (vm.heap.gen_init_stack_depth > 0) {
+                uint depth = vm.heap.gen_init_stack_depth - 1;
+                vm.heap.gen_initial_gs = vm.heap.gen_init_stack_gs[depth];
+                vm.heap.gen_initial_obj = vm.heap.gen_init_stack_obj[depth];
+                vm.heap.gen_initial_retval = vm.heap.gen_init_stack_retval[depth];
+                vm.heap.gen_init_stack_gs[depth] = null;
+                vm.heap.gen_init_stack_obj[depth] = null;
+                vm.heap.gen_init_stack_retval[depth] = null;
+                vm.heap.gen_init_stack_depth = depth;
+            } else {
+                vm.heap.gen_initial_gs = null;
+                vm.heap.gen_initial_obj = null;
+                vm.heap.gen_initial_retval = null;
+            }
 
             if (gen_obj_g != null && retval_g != null) {
                 TVal gen_tv;
