@@ -48,14 +48,15 @@ fn void builtin_function(BuiltinContext* ctx) {
             body_str = s.get_cstr();
             body_len = s.blen;
         } else {
-            // ToString on non-string arg (null, undefined, number, boolean, object).
-            // ToString(null)="null", ToString(undefined)="undefined", etc.
-            HString*? s_raw = builtin_to_string(ctx.heap, body_arg);
-            if (try s = s_raw) {
+            // ToString(body) — use the VM path so a JS toString()/valueOf() that
+            // throws propagates the original exception (§20.2.1.1.1 step 8), not
+            // a generic SyntaxError.
+            HString* s = builtin_to_string_vm(ctx, body_arg);
+            if (ctx.should_throw) return;
+            if (s != null) {
                 body_str = s.get_cstr();
                 body_len = s.blen;
             } else {
-                // Object with no clean toString — fall back to empty body
                 body_str = "";
                 body_len = 0;
             }
@@ -71,13 +72,14 @@ fn void builtin_function(BuiltinContext* ctx) {
                 pname = s.get_cstr();
                 plen = s.blen;
             } else {
-                // ToString on non-string arg (null, undefined, number, boolean)
-                HString*? s_raw = builtin_to_string(ctx.heap, arg);
-                if (try s = s_raw) {
+                // ToString(param) via the VM path so a throwing toString/valueOf
+                // propagates rather than silently skipping the parameter.
+                HString* s = builtin_to_string_vm(ctx, arg);
+                if (ctx.should_throw) return;
+                if (s != null) {
                     pname = s.get_cstr();
                     plen = s.blen;
                 } else {
-                    // Skip non-coercible param
                     continue;
                 }
             }
