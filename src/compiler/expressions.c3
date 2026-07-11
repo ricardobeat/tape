@@ -2946,6 +2946,12 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // must be a method (`*a() {}`). Same for `async a: 1`.
                 if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
+                if (is_proto_key) {
+                    // `__proto__: fn` is a prototype-set, not a property
+                    // definition — no NamedEvaluation (§12.2.6.8 step 5).
+                    self.has_inferred_name = false;
+                    self.inferred_name_len = 0;
+                }
                 ushort val_reg = self.assignment_expr()!;
                 if (is_proto_key) {
                     // ES2015 §12.2.6.1: `__proto__: value` sets the object's [[Prototype]].
