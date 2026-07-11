@@ -332,6 +332,12 @@ enum Opcode : char {
     /// Pop the current lexical environment record from `act.lex_env`,
     /// restoring the parent.  Used at block exit.
     POP_LEX,
+    /// Push a new variable environment child of the current var_env.
+    /// Used when a function body needs a separate var scope from parameters
+    /// (§9.2.10 step 27: hasParameterExpressions → separate varEnv for body).
+    PUSH_VAR,
+    /// Pop the current variable environment, restoring act.var_env to parent.
+    POP_VAR,
     /// `lex_env[constants[BC]] = A`  — write a binding into the current
     /// lexical environment (for `let` declarations).  A-BC format.
     PUTLEX,
@@ -626,6 +632,8 @@ case PUTLEX:     return A_BC;
         case ENDFINALLY: return NONE;
         case PUSH_LEX:   return NONE;
         case POP_LEX:    return NONE;
+        case PUSH_VAR:   return NONE;
+        case POP_VAR:    return NONE;
         case INC:        return NONE;
         case DEC:        return NONE;
         case PUTARG:     return ABC;

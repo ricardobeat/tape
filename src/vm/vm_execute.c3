@@ -2948,6 +2948,8 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.CSVARI:
         case Opcode.PUSH_LEX:
         case Opcode.POP_LEX:
+        case Opcode.PUSH_VAR:
+        case Opcode.POP_VAR:
         case Opcode.REQUIRE_OBJ:
         case Opcode.ITER_CLOSE:
         case Opcode.CHKCTOR:

@@ -269,8 +269,15 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         }
 
         if (is_logical_or_assign) {
-            // x ||= expr: skip RHS if left is truthy
-            uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
+            // x ||= expr: skip RHS if left is truthy.
+            // For var targets: PUTVAR clears the source register, so we need a
+            // stable result register that holds the final value on both paths.
+            ushort lor_res = left;
+            if (!lhs_was_member && lhs_was_getvar) {
+                lor_res = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)lor_res, (uint)left, 0);
+            }
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)lor_res);
             ushort right = self.assignment_expr()!;
             if (lhs_was_member) {
                 self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
@@ -279,18 +286,28 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
                 self.free_reg(right);
             } else {
-                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                // Copy RHS into the result register, then store to env.
+                self.emit_abc(Opcode.LDREG, (uint)lor_res, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
+                    // PUTVAR reads from left (the GETVAR register) and clears it;
+                    // lor_res already holds the value and is our result.
+                    self.emit_abc(Opcode.LDREG, (uint)left, (uint)lor_res, 0);
                     self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
+                la_result = lor_res;
             }
             self.patch_jump(skip_jump);
             return la_result;
         }
         if (is_logical_and_assign) {
-            // x &&= expr: skip RHS if left is falsy
-            uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
+            // x &&= expr: skip RHS if left is falsy.
+            ushort land_res = left;
+            if (!lhs_was_member && lhs_was_getvar) {
+                land_res = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)land_res, (uint)left, 0);
+            }
+            uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)land_res);
             ushort right = self.assignment_expr()!;
             if (lhs_was_member) {
                 self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
@@ -299,17 +316,26 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
                 self.free_reg(right);
             } else {
-                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                self.emit_abc(Opcode.LDREG, (uint)land_res, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
+                    self.emit_abc(Opcode.LDREG, (uint)left, (uint)land_res, 0);
                     self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
+                la_result = land_res;
             }
             self.patch_jump(skip_jump);
             return la_result;
         }
         if (is_nullish_assign) {
-            // x ??= expr: skip RHS if left is NOT null/undefined
+            // x ??= expr: skip RHS if left is NOT null/undefined.
+            // For var targets: allocate a stable result register before branching;
+            // initialize it to left so the skip (non-nullish) path has a valid value.
+            ushort nc_res = left;
+            if (!lhs_was_member && lhs_was_getvar) {
+                nc_res = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)nc_res, (uint)left, 0);
+            }
             ushort cmp_reg = self.alloc_reg();
             // Check null
             self.emit_abc(Opcode.LDNULL, (uint)cmp_reg, 0, 0);
@@ -333,11 +359,15 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
                 self.free_reg(right);
             } else {
-                self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
+                // Copy RHS into nc_res (the stable result reg), then store to env.
+                self.emit_abc(Opcode.LDREG, (uint)nc_res, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
+                    // PUTVAR clears its source; copy to left first, then write env.
+                    self.emit_abc(Opcode.LDREG, (uint)left, (uint)nc_res, 0);
                     self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
+                la_result = nc_res;
             }
             self.patch_jump(skip_jump);
             return la_result;

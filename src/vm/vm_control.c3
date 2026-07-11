@@ -737,6 +737,32 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             return (TVal){};
         }
 
+        case Opcode.PUSH_VAR: {
+            // Push a new declarative environment for the function body's var scope.
+            // Per §9.2.10 step 27: when hasParameterExpressions is true, body vars
+            // must not share the same environment as parameter bindings.
+            EnvRecord*? pvar_raw = env::env_create_declarative(vm.heap, ds.act.var_env);
+            if (try new_var_env = pvar_raw) {
+                ds.act.var_env = new_var_env;
+                // lex_env must also advance so PUTLEX / GETVAR resolve in the right scope
+                ds.act.lex_env = new_var_env;
+            } else {
+                return VM_ERROR~;
+            }
+            return (TVal){};
+        }
+
+        case Opcode.POP_VAR: {
+            // Restore the variable environment to its parent (undo PUSH_VAR).
+            if (ds.act.var_env != null && ds.act.var_env.parent != null) {
+                ds.act.var_env = ds.act.var_env.parent;
+            }
+            if (ds.act.lex_env != null && ds.act.lex_env.parent != null) {
+                ds.act.lex_env = ds.act.lex_env.parent;
+            }
+            return (TVal){};
+        }
+
         case Opcode.REQUIRE_OBJ: {
             // Throw TypeError if the value in register A is null or undefined.
             // Used for object destructuring pattern null/undefined check.
