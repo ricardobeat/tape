@@ -1174,7 +1174,8 @@ fn void builtin_ta_proto_copyWithin(BuiltinContext* ctx) {
     uint final_end = ta_norm_index(final_d, len);
 
     uint count = final_end > from ? final_end - from : 0;
-    if (len > to && count > len - to) count = len - to;
+    uint room = len > to ? len - to : 0;
+    if (count > room) count = room;
 
     if (count > 0) {
         char* base = (*buf.extra_ptr()).ab.data + byte_off;

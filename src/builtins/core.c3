@@ -3225,25 +3225,61 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         global_env.bindings.prototype = heap.object_proto;
     }
 
-    // Hidden test262 primitive: __evalScript(src) — runs src as a global script
-    // so that var/function declarations become non-configurable global properties
-    // (unlike eval() which creates a fresh declarative env).
-    {
-        HString* es_key = builtin_intern_string(heap, "__evalScript");
-        if (es_key != null) {
-            HObject*? es_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-            if (try es_fn = es_raw) {
-                es_fn.flags.callable = true;
-                es_fn.flags.constructable = false;
-                (*es_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_EVAL_SCRIPT;
-                es_fn.prototype = heap.function_proto;
-                set_func_ctor_name_length(es_fn, heap, "__evalScript", 1);
-                TVal es_tv;
-                es_tv.set_object(es_fn);
-                env::env_declare_nonenum(global_env, es_key, es_tv);
-            }
-        }
-    }
+    return true;
+}
 
+fn HObject* alloc_builtin_fn(Heap* heap, uint fn_index, char[] name, int length) {
+    HObject*? raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = raw) return null;
+    HObject* fobj = raw;
+    fobj.flags.callable = true;
+    fobj.flags.constructable = false;
+    (*fobj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
+    fobj.prototype = heap.function_proto;
+    set_func_ctor_name_length(fobj, heap, name, length);
+    return fobj;
+}
+
+/// test262 host globals: __evalScript, __detachArrayBuffer, and the $262
+/// object (detachArrayBuffer / evalScript / global) expected by harness
+/// files. Installed only by the test harness binaries — never part of the
+/// default engine globals.
+fn bool register_test262_host(EnvRecord* global_env, Heap* heap) {
+    HObject* es_fn = alloc_builtin_fn(heap, BUILTIN_EVAL_SCRIPT, "evalScript", 1);
+    HObject* detach_fn = alloc_builtin_fn(heap, BUILTIN_DETACH_ARRAYBUFFER, "detachArrayBuffer", 1);
+    if (es_fn == null || detach_fn == null) return false;
+
+    TVal es_tv;
+    es_tv.set_object(es_fn);
+    TVal detach_tv;
+    detach_tv.set_object(detach_fn);
+
+    // __evalScript(src) — runs src as a global script so that var/function
+    // declarations become non-configurable global properties (unlike eval()
+    // which creates a fresh declarative env).
+    HString* es_key = builtin_intern_string(heap, "__evalScript");
+    if (es_key != null) env::env_declare_nonenum(global_env, es_key, es_tv);
+    HString* d_hidden_key = builtin_intern_string(heap, "__detachArrayBuffer");
+    if (d_hidden_key != null) env::env_declare_nonenum(global_env, d_hidden_key, detach_tv);
+
+    HString* h262_key = builtin_intern_string(heap, "$262");
+    HObject*? h262_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (h262_key == null) return false;
+    if (catch err = h262_raw) return false;
+    HObject* h262 = h262_raw;
+    h262.prototype = heap.object_proto;
+    HString* d_key = builtin_intern_string(heap, "detachArrayBuffer");
+    HString* e_key = builtin_intern_string(heap, "evalScript");
+    HString* g_key = builtin_intern_string(heap, "global");
+    if (d_key != null) h262.put_prop(d_key, detach_tv, hobject::PROP_FLAGS_WC);
+    if (e_key != null) h262.put_prop(e_key, es_tv, hobject::PROP_FLAGS_WC);
+    if (g_key != null && global_env.bindings != null) {
+        TVal g_tv;
+        g_tv.set_object(global_env.bindings);
+        h262.put_prop(g_key, g_tv, hobject::PROP_FLAGS_WC);
+    }
+    TVal h262_tv;
+    h262_tv.set_object(h262);
+    env::env_declare_nonenum(global_env, h262_key, h262_tv);
     return true;
 }

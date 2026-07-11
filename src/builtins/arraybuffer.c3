@@ -527,21 +527,5 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     ctor_val.set_object(ctor);
     env::env_declare_nonenum(global_env, ctor_key, ctor_val);
 
-    // Hidden test262 primitive: __detachArrayBuffer(buf)
-    HString* detach_key = builtin_intern_string(heap, "__detachArrayBuffer");
-    if (detach_key != null) {
-        HObject*? detach_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try detach_fn = detach_raw) {
-            detach_fn.flags.callable = true;
-            detach_fn.flags.constructable = false;
-            (*detach_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_DETACH_ARRAYBUFFER;
-            detach_fn.prototype = heap.function_proto;
-            set_func_ctor_name_length(detach_fn, heap, "__detachArrayBuffer", 1);
-            TVal detach_val;
-            detach_val.set_object(detach_fn);
-            env::env_declare_nonenum(global_env, detach_key, detach_val);
-        }
-    }
-
     return true;
 }

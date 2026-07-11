@@ -337,6 +337,7 @@ fn int run_worker_loop() {
 // ============================================================================
 
 fn int main(String[] args) {
+    vm::test262_host_enabled = true;
     if (args.len >= 2 && libc::strcmp((ZString)args[1].ptr, "--worker") == 0) {
         return run_worker_loop();
     }

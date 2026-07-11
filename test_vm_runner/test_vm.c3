@@ -13,6 +13,7 @@ import std::io;
 import libc;
 
 fn int main(String[] args) {
+    vm::test262_host_enabled = true;
     String path = args.len > 1 ? args[1] : "test/simple.js";
     char[]? source = file::load_temp(path);
     if (catch err = source) { io::eprintfn("Failed to read"); return 1; }

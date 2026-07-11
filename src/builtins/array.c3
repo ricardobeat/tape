@@ -1153,6 +1153,7 @@ fn void builtin_array_proto_toString(BuiltinContext* ctx) {
         *ctx.result = ctx.heap.call_fn(ctx.vm, join_fn, null, 0, this_tv);
         if (ctx.heap.has_error) {
             ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
             ctx.heap.has_error = false;
         }
     } else {

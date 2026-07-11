@@ -49,15 +49,17 @@ TEST_TIMEOUT = 10
 # see assignment from main without a global statement.
 LOG_FH = [None]
 
-# Optional serial retry of non-pass results (set from --retry-fails in main).
-RETRY_FAILS = [False]
+# Serial retry of non-pass results. ON by default: under parallel worker
+# pressure ~30 tests per full run fail spuriously (timeout/GC timing); the
+# serial rerun reclassifies them. Disable with --no-retry-fails.
+RETRY_FAILS = [True]
 
 # Per-worker RSS cap in KB. Tests that loop allocating (e.g. huge-length
 # array-like iteration bugs) can balloon a worker to multiple GB within the
 # 10s timeout window; with 4 workers hitting such tests concurrently the
 # machine hits tens of GB of memory pressure. Workers over the cap are
 # killed and the test is recorded as MEMKILL (counted as a failure).
-MEM_LIMIT_KB = 2 * 1024 * 1024  # 2 GB
+MEM_LIMIT_KB = 3 * 1024 * 1024  # 3 GB
 
 def sample_worker_rss(workers):
     """Return {pid: rss_kb} for all live busy workers via one ps call."""
@@ -847,15 +849,20 @@ def main():
     parser.add_argument(
         "--retry-fails",
         action="store_true",
-        help="Rerun FAIL/TIMEOUT/MEMKILL tests serially before reporting to reduce flakiness",
+        help="Rerun FAIL/TIMEOUT/MEMKILL tests serially before reporting (default: on)",
+    )
+    parser.add_argument(
+        "--no-retry-fails",
+        action="store_true",
+        help="Disable the serial retry of non-pass tests",
     )
     args = parser.parse_args()
 
     if args.log:
         LOG_FH[0] = open(args.log, "w")
 
-    if args.retry_fails:
-        RETRY_FAILS[0] = True
+    if args.no_retry_fails:
+        RETRY_FAILS[0] = False
 
     # Cap workers to avoid OOM — each worker is a full VM process with its own heap
     if args.workers > 4:

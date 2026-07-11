@@ -13,6 +13,12 @@ import libc;
 // VM creation / destruction
 // ============================================================================
 
+// Opt-in flag for test-harness binaries: when set before vm_create() /
+// vm_reset_globals(), the test262 host globals ($262, __evalScript,
+// __detachArrayBuffer) are installed alongside the standard built-ins.
+// The default engine globals never include them.
+bool test262_host_enabled = false;
+
 /// Create and initialise a new VM.
 fn Vm*? vm_create(Heap* heap) {
     void* raw = heap.alloc_func(heap.heap_udata, Vm::size);
@@ -74,6 +80,9 @@ fn Vm*? vm_create(Heap* heap) {
         heap.free_func(heap.heap_udata, vs_raw);
         heap.free_func(heap.heap_udata, raw);
         return VM_ERROR~;
+    }
+    if (test262_host_enabled) {
+        builtins::register_test262_host(global, heap);
     }
 
     vm.activation_count = 0;
@@ -174,6 +183,9 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     heap.register_gc_root(global_lex.bindings.as_header());
 
     if (!builtins::register_builtins(global, heap)) { return false; }
+    if (test262_host_enabled) {
+        builtins::register_test262_host(global, heap);
+    }
 
     return true;
 }
