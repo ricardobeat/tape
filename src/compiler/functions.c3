@@ -23,6 +23,9 @@ struct DestructIterState {
     ushort next_reg;      // register holding the .next method
     ushort callee_reg;    // callee register for .next calls
     ushort callee_this_reg; // this register for .next calls
+    ushort save_reg;      // holds the iterator while method_reg is latched
+                          // undefined across .next()/.done/.value (throws there
+                          // must skip IteratorClose per §7.4.6/§7.4.7)
 }
 
 /// How emit_destruct_bindings syncs each leaf binding to the environment.
@@ -453,6 +456,9 @@ fn void CompilerContext.emit_destruct_iter_setup(&self, ushort src_reg, Destruct
     self.free_reg(next_key_reg);
 
     // Set up callee/this pair for .next calls
+    // save_reg must live BELOW the callee window so it survives .next() calls.
+    ushort save_reg = self.alloc_reg();
+
     ushort callee_reg = self.alloc_reg();
     ushort callee_this_reg = self.alloc_reg();
     self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
@@ -463,6 +469,7 @@ fn void CompilerContext.emit_destruct_iter_setup(&self, ushort src_reg, Destruct
     state.next_reg = next_reg;
     state.callee_reg = callee_reg;
     state.callee_this_reg = callee_this_reg;
+    state.save_reg = save_reg;
 }
 
 /// Advance the iterator by calling .next(), extract .value into dest_reg.
@@ -483,6 +490,13 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
     self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
 
+    // Latch [[done]] across the protocol calls: §7.4.6/§7.4.7 — a throw from
+    // .next() or from reading .done/.value sets [[Done]] before rethrowing,
+    // so the enclosing catch must NOT call IteratorClose for it. Park the
+    // iterator in save_reg and restore it only on a successful not-done step.
+    self.emit_abc(Opcode.LDREG, (uint)state.save_reg, (uint)state.method_reg, 0);
+    self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
+
     // Call .next() → result
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
@@ -492,7 +506,7 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)dest_reg, (uint)result_reg, (uint)val_key_reg);
 
-    // If result.done, latch [[done]] by clearing method_reg.
+    // If result.done, leave method_reg latched undefined.
     ushort done_reg = self.alloc_reg();
     self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("done"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)val_key_reg);
@@ -500,6 +514,8 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     self.free_reg(done_reg);
     self.free_reg(val_key_reg);
     self.free_reg(result_reg);
+    // Successful not-done step: restore the live iterator for IteratorClose.
+    self.emit_abc(Opcode.LDREG, (uint)state.method_reg, (uint)state.save_reg, 0);
     uint end_jump = self.emit_jump(Opcode.JUMP);
 
     // Exhausted: bind undefined (mark target also clears method_reg, which is
@@ -515,6 +531,7 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
 fn void CompilerContext.free_destruct_iter(&self, DestructIterState* state) {
     self.free_reg(state.callee_this_reg);
     self.free_reg(state.callee_reg);
+    self.free_reg(state.save_reg);
     self.free_reg(state.next_reg);
     self.free_reg(state.method_reg);
 }
