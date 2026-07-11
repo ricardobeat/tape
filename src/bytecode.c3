@@ -838,6 +838,10 @@ bitstruct FuncFlags : uint {
     bool  is_class_ctor    : 21;
     /// Function body had a "use strict" directive.
     bool  is_strict        : 22;
+    /// Constructor is a derived class constructor (ES2015 §9.2.2 step 13.c):
+    /// `return <non-object>` in a derived constructor throws TypeError unless
+    /// the value is undefined. Set when has_super_binding is true at compile time.
+    bool  is_derived_ctor  : 23;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -976,6 +980,13 @@ macro bool CompiledFunction.is_constructable(&self) {
 /// or static-method redefinition of .prototype.
 macro bool CompiledFunction.is_class_ctor(&self) {
     return self.flags.is_class_ctor;
+}
+
+/// Returns `true` when this is a derived class constructor.  Per ES2015 §9.2.2
+/// step 13.c, returning a non-object non-undefined value from a derived
+/// constructor throws TypeError.
+macro bool CompiledFunction.is_derived_ctor(&self) {
+    return self.flags.is_derived_ctor;
 }
 
 /// Returns `true` when the function has no local bindings and the CALL fast

@@ -2388,8 +2388,10 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 }
                 self.expect(TokenType.RPAREN)!;
 
-                // Place 'this' slot
-                self.emit_abc(Opcode.LDTHIS, (uint)(super_reg + 1), 0, 0);
+                // Place 'this' slot — use LDUNDEF as a placeholder; SUPER_CALL
+                // allocates the actual new object (OrdinaryCreateFromConstructor)
+                // using new.target.prototype and ignores this slot.
+                self.emit_abc(Opcode.LDUNDEF, (uint)(super_reg + 1), 0, 0);
 
                 // Emit SUPER_CALL / SUPER_CALL_S, reusing super_reg as result
                 if (has_spread) {

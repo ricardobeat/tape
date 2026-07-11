@@ -372,7 +372,11 @@ fn TVal handle_return(Vm* vm, TVal val) @inline {
 
     // Write result to caller's frame at the saved retval
     if (callee_result != null && callee_result >= vm.valstack && callee_result < vm.valstack_end) {
-        // For construct calls: if return value is not an object, use this_binding
+        // For construct calls: if return value is not an object, use this_binding.
+        // (The inline RET path in vm_execute.c3 already converts derived-ctor
+        // non-object non-undefined returns into throws before reaching here.
+        // This handle_return path is only reached from vm_call_fn_impl, which
+        // handles its own derived-ctor check via ACT_FLAG_DERIVED.)
         TVal final_val = val;
         if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
             if (!final_val.is_object() || final_val.get_heapptr() == null) {

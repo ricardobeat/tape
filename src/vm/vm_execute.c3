@@ -1080,6 +1080,16 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
 
         case Opcode.LDTHIS:
+            // Derived constructors have an uninitialized `this` (TDZ sentinel)
+            // until super() is called. Accessing `this` before super() → ReferenceError.
+            if (env::is_tdz_sentinel(&ds.act.this_binding)) {
+                if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                        "Must call super constructor in derived class before accessing 'this' or returning from derived constructor",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
             vm.heap.tval_copy_ref(ra, &ds.act.this_binding);
             track_heap_store(ds.act, ra, (uint)insn.a);
             continue;
@@ -2166,6 +2176,15 @@ fn TVal? Vm.run(Vm* vm) {
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
             TVal* callee_result = callee_act.retval;
 
+            // ES2015 §9.2.2 step 13.c: derived constructor returning a non-object
+            // non-undefined value must throw TypeError — but the throw must be
+            // raised in the caller's context (not catchable inside the constructor),
+            // so we set a flag to throw after restoring the caller frame.
+            bool derived_return_error = (callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+                    && (callee_act.flags & ACT_FLAG_DERIVED) != 0
+                    && !val.is_object()
+                    && !val.is_undefined();
+
             // Protect the return value: if its only reference lives in a
             // callee register, decref_callee_regs below would free it.
             bool val_pinned = false;
@@ -2201,7 +2220,8 @@ fn TVal? Vm.run(Vm* vm) {
             }
             // Write return value to caller's result register
             if (callee_result != null) {
-                // Constructor: if callee returned an object, use it; otherwise use 'this'
+                // Constructor: if callee returned an object, use it; otherwise use 'this'.
+                // (Derived non-object non-undefined case was already converted to a throw above.)
                 if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
                     if (val.is_object()) {
                         vm.heap.tval_copy_ref(callee_result, &val);
@@ -2243,6 +2263,33 @@ fn TVal? Vm.run(Vm* vm) {
             }
             ds.curr_pc = ds.act.curr_pc;
             ds.regs_base = ds.act.bottom;
+
+            // After a super-constructor returns (callee was CONSTRUCT, caller is DERIVED),
+            // initialize the derived constructor's this_binding with the constructed object.
+            // This is §9.2.2's "initialized" state — subsequent LDTHIS will succeed.
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+                    && vm.activation_count > 0) {
+                Activation* caller_act_r = &vm.activations[vm.activation_count - 1];
+                if ((caller_act_r.flags & ACT_FLAG_DERIVED) != 0
+                        && env::is_tdz_sentinel(&caller_act_r.this_binding)) {
+                    // The result of super() is in callee_result (already written above).
+                    // Use that value (the constructed object) as the derived ctor's this.
+                    if (callee_result != null) {
+                        vm.heap.tval_copy_ref(&caller_act_r.this_binding, callee_result);
+                    }
+                }
+            }
+
+            // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
+            // The activation has already been popped, so this throw is not catchable
+            // inside the constructor's own try-catch handlers.
+            if (derived_return_error) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto,
+                        "Derived constructors may only return object or undefined",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+            }
             continue;
         }
 
@@ -2267,6 +2314,19 @@ fn TVal? Vm.run(Vm* vm) {
             // Inline handle_return — eliminates function call overhead.
             Activation* callee_act = &vm.activations[vm.activation_count - 1];
             TVal* callee_result = callee_act.retval;
+
+            // ES2015 §9.2.2 step 13.d / §8.1.1.3.4: derived constructor returning
+            // without calling super() → this_binding is still TDZ sentinel → ReferenceError.
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+                    && (callee_act.flags & ACT_FLAG_DERIVED) != 0
+                    && env::is_tdz_sentinel(&callee_act.this_binding)) {
+                if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                        "Must call super constructor in derived class before returning from derived constructor",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
 
             // Decref callee registers before popping
             decref_callee_regs(vm, callee_act);
@@ -2318,6 +2378,17 @@ fn TVal? Vm.run(Vm* vm) {
             }
             ds.curr_pc = ds.act.curr_pc;
             ds.regs_base = ds.act.bottom;
+            // After base-constructor returns, initialize the derived constructor's this_binding.
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+                    && vm.activation_count > 0) {
+                Activation* retundef_caller = &vm.activations[vm.activation_count - 1];
+                if ((retundef_caller.flags & ACT_FLAG_DERIVED) != 0
+                        && env::is_tdz_sentinel(&retundef_caller.this_binding)) {
+                    if (callee_result != null) {
+                        vm.heap.tval_copy_ref(&retundef_caller.this_binding, callee_result);
+                    }
+                }
+            }
             continue;
         }
         case Opcode.RET_GEN:
