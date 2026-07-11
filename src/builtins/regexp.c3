@@ -4,7 +4,7 @@ import duktape::types;
 import libc;
 import duktape::hstring;
 import duktape::env;
-
+import duktape::vm;
 import duktape::heap;
 import duktape::hobject;
 import duktape::re_bindings;
@@ -51,25 +51,52 @@ fn void builtin_regexp(BuiltinContext* ctx) {
                     pattern_len = phs.blen;
                 }
             } else {
-                // Convert to string for pattern
-                HString* phs = builtin_to_string(ctx.heap, pattern_arg);
-                if (phs != null) {
-                    pattern_str = phs.get_cstr();
-                    pattern_len = phs.blen;
+                // ES2022 §22.2.3.1 step 1: IsRegExp(pattern) — access @@match to detect
+                // regexp-like objects; propagates any throw from the getter.
+                if (ctx.vm != null) {
+                    HString* match_sym = ensure_match_symbol(ctx.heap);
+                    if (match_sym != null) {
+                        TVal? match_opt = builtins_generic_get(obj, match_sym, ctx);
+                        if (ctx.should_throw) return;
+                        // If @@match is not undefined/null, pattern is regexp-like.
+                        if (try mv = match_opt) {
+                            if (!mv.is_undefined() && !mv.is_null()) {
+                                is_regexp = true;
+                                // No internal slot — treat as string source below.
+                            }
+                        }
+                    }
+                }
+                // Convert to string for pattern — use vm variant to propagate JS throws.
+                if (ctx.vm != null) {
+                    HString* phs = builtin_to_string_vm(ctx, pattern_arg);
+                    if (ctx.should_throw) return;
+                    if (phs != null) {
+                        pattern_str = phs.get_cstr();
+                        pattern_len = phs.blen;
+                    }
+                } else {
+                    HString* phs = builtin_to_string(ctx.heap, pattern_arg);
+                    if (phs != null) {
+                        pattern_str = phs.get_cstr();
+                        pattern_len = phs.blen;
+                    }
                 }
             }
         } else if (pattern_arg.is_string() && pattern_arg.get_heapptr() != null) {
             HString* phs = (HString*)pattern_arg.get_heapptr();
             pattern_str = phs.get_cstr();
             pattern_len = phs.blen;
-        } else {
-            // Convert to string
+        } else if (!pattern_arg.is_undefined()) {
+            // ES5 §15.10.4.1: if pattern is undefined, use empty string.
+            // Only convert to string when pattern is not undefined.
             HString* phs = builtin_to_string(ctx.heap, pattern_arg);
             if (phs != null) {
                 pattern_str = phs.get_cstr();
                 pattern_len = phs.blen;
             }
         }
+        // else: pattern_arg is undefined → use empty pattern (pattern_str = "", pattern_len = 0)
     }
 
     // Get flags from second argument
@@ -1327,15 +1354,45 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
     }
 
     // Step 4: Let C be ? SpeciesConstructor(rx, %RegExp%).
-    // Inline SpeciesConstructor: Get(rx, "constructor") → Get(C, @@species).
+    // SpeciesConstructor(O, defaultConstructor):
+    //   1. C = Get(O, "constructor"); if undefined → return defaultConstructor.
+    //   2. If C is not an object → throw TypeError.
+    //   3. species = Get(C, @@species); if null/undefined → return defaultConstructor.
+    //   4. If species is not a constructor → throw TypeError.
+    //   5. Return species.
+    // We always track the resolved constructor in species_ctor_tv.
+    // For the default path (%RegExp%), look it up from global_env.
     TVal species_ctor_tv; species_ctor_tv.set_undefined();
     {
+        // Resolve %RegExp% default constructor.
+        // The constructor object is stored on RegExp.prototype as its "constructor"
+        // property — this is available directly via heap.regexp_proto.
+        TVal default_ctor_tv; default_ctor_tv.set_undefined();
+        // Look up %RegExp% from the global environment via the VM's global_env.
+        // ctx.global_env is null when the builtin is called via call_fn (internal
+        // path), but ctx.vm always holds the Vm* pointer when available.
+        EnvRecord* genv = ctx.global_env;
+        if (genv == null && ctx.vm != null) {
+            genv = ((vm::Vm*)ctx.vm).global_env;
+        }
+        if (genv != null) {
+            HString* regexp_gkey = builtin_intern_string(heap, "RegExp");
+            if (regexp_gkey != null) {
+                TVal? gv = env::env_get(genv, regexp_gkey);
+                if (try rgv = gv) { default_ctor_tv = rgv; }
+            }
+        }
+
         HString* ctor_key = builtin_intern_string(heap, "constructor");
         TVal? ctor_opt = builtins_generic_get(rx, ctor_key, ctx);
         if (ctx.should_throw) return;
         TVal ctor_tv; ctor_tv.set_undefined();
         if (try cv = ctor_opt) { ctor_tv = cv; }
-        if (!ctor_tv.is_undefined()) {
+
+        if (ctor_tv.is_undefined()) {
+            // Step 4: C is undefined → return defaultConstructor (%RegExp%).
+            species_ctor_tv = default_ctor_tv;
+        } else {
             if (!ctor_tv.is_object() || ctor_tv.get_heapptr() == null) {
                 builtin_throw_no_result_change(ctx, heap.type_err_proto,
                     "constructor is not an object");
@@ -1348,9 +1405,18 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
                 if (ctx.should_throw) return;
                 if (try spv = sp_opt) {
                     if (!spv.is_undefined() && !spv.is_null()) {
+                        // Step 5: species is the constructor to use.
                         species_ctor_tv = spv;
+                    } else {
+                        // species is null/undefined → return defaultConstructor.
+                        species_ctor_tv = default_ctor_tv;
                     }
+                } else {
+                    // @@species not found → return defaultConstructor.
+                    species_ctor_tv = default_ctor_tv;
                 }
+            } else {
+                species_ctor_tv = default_ctor_tv;
             }
         }
     }
@@ -1435,17 +1501,14 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
         }
         double limit_d = builtin_to_integer_vm(ctx, &limit_arg);
         if (ctx.should_throw) return;
-        if (limit_d < 0.0) { limit_d = 0.0; }
-        // ToUint32 semantics: wrap mod 2^32
-        if (limit_d >= 0.0 && limit_d < 4294967296.0) {
-            limit = (ulong)limit_d;
-        } else if (limit_d >= 4294967296.0) {
-            // Wrap mod 2^32
+        // ToUint32: wrap modulo 2^32 (handles negatives: -23 → 4294967273).
+        // NaN and ±Infinity become 0 per spec (ToUint32 of non-finite is 0).
+        if (math::is_nan(limit_d) || !math::is_finite(limit_d)) {
+            limit = 0;
+        } else {
             double two32 = 4294967296.0;
             double n = limit_d - math::floor(limit_d / two32) * two32;
-            limit = (ulong)n;
-        } else {
-            limit = 0;
+            limit = (ulong)(uint)n;
         }
     }
 
@@ -1625,79 +1688,171 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
 // js_flags encoding: 1=g, 2=i, 4=m, 8=s(dotAll), 16=u(unicode), 32=y(sticky)
 // ============================================================================
 
-/// RegExp.prototype[@@matchAll] — ES2018 §21.2.5.8
-/// Stub: returns an empty RegExp String Iterator. The full matchAll
-/// protocol requires a generator that collects every match; this stub
-/// yields {value: undefined, done: true} on the first next() call. It
-/// suffices for tests asserting only the property descriptors (length,
-/// name, prop-desc) of the function object itself.
+/// RegExp.prototype[@@matchAll] — ES2020 §21.2.5.8 (MatchAllIterator)
 fn void builtin_regexp_proto_symbol_matchAll(BuiltinContext* ctx) {
     if (ctx.is_constructor) {
         builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
             "RegExp.prototype[Symbol.matchAll] is not a constructor");
         return;
     }
-    // 1. Let R be the this value.
-    // 2. If Type(R) is not Object, throw a TypeError exception.
+    // Step 1: Let R be the this value.
+    // Step 2: If Type(R) is not Object, throw a TypeError.
     HObject* rx = regexp_get_symbol_this(ctx);
     if (rx == null) return;
 
-    // 3. Let S be ? ToString(string).
+    Heap* heap = ctx.heap;
+
+    // Step 3: Return ? MatchAllIterator(R, string).
+    // MatchAllIterator steps:
+    // 1. Let S be ? ToString(O).
     TVal s_tv; s_tv.set_undefined();
     if (ctx.argc > 0) s_tv = ctx.regs[ctx.base_reg];
     HString* s_hstr;
     if (s_tv.is_string() && s_tv.get_heapptr() != null) {
-        s_hstr = (HString*)s_tv.get_heapptr();
+        HString* tmp = (HString*)s_tv.get_heapptr();
+        if (tmp.is_symbol()) {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                "Cannot convert Symbol to string");
+            return;
+        }
+        s_hstr = tmp;
     } else {
         s_hstr = builtin_to_string_vm(ctx, &s_tv);
         if (ctx.should_throw) return;
-        if (s_hstr == null) s_hstr = builtin_intern_string(ctx.heap, "undefined");
+        if (s_hstr == null) s_hstr = builtin_intern_string(heap, "undefined");
     }
+    s_tv.set_string(s_hstr);
 
-    Heap* heap = ctx.heap;
+    // 2. If ? IsRegExp(R) is true, and
+    //    SameValue(? Get(R, "flags"), undefined) — actually:
+    //    IsRegExp just checks @@match on R to determine if it "looks like" a regexp.
+    //    The spec doesn't throw here; the Construct call below triggers IsRegExp on rx.
 
-    // 4–5. Let flags be ? ToString(? Get(R, "flags")).
-    // (SpeciesConstructor simplified: use rx itself as matcher — avoids double-free
-    // from shared regexp_data; sufficient for all current test262 cases.)
-    HString* flags_key = builtin_intern_string(heap, "flags");
-    TVal? flags_opt = builtins_generic_get(rx, flags_key, ctx);
-    if (ctx.should_throw) return;
-    bool global_flag = false;
-    bool unicode_flag = false;
-    if (try fv = flags_opt) {
-        HString* flags_hstr = null;
-        if (fv.is_string() && fv.get_heapptr() != null) {
-            flags_hstr = (HString*)fv.get_heapptr();
-        } else {
-            flags_hstr = builtin_to_string_vm(ctx, &fv);
-            if (ctx.should_throw) return;
+    // 3. Let C be ? SpeciesConstructor(R, %RegExp%).
+    TVal species_ctor_tv; species_ctor_tv.set_undefined();
+    {
+        TVal default_ctor_tv; default_ctor_tv.set_undefined();
+        EnvRecord* genv = ctx.global_env;
+        if (genv == null && ctx.vm != null) {
+            genv = ((vm::Vm*)ctx.vm).global_env;
         }
-        if (flags_hstr != null) {
-            char* fc = flags_hstr.get_cstr();
-            usz flen = flags_hstr.blen;
-            for (usz i = 0; i < flen; i++) {
-                if (fc[i] == 'g') global_flag = true;
-                if (fc[i] == 'u' || fc[i] == 'v') unicode_flag = true;
+        if (genv != null) {
+            HString* regexp_gkey = builtin_intern_string(heap, "RegExp");
+            if (regexp_gkey != null) {
+                TVal? gv = env::env_get(genv, regexp_gkey);
+                if (try rgv = gv) { default_ctor_tv = rgv; }
+            }
+        }
+
+        HString* ctor_key = builtin_intern_string(heap, "constructor");
+        TVal? ctor_opt = builtins_generic_get(rx, ctor_key, ctx);
+        if (ctx.should_throw) return;
+        TVal ctor_tv; ctor_tv.set_undefined();
+        if (try cv = ctor_opt) { ctor_tv = cv; }
+
+        if (ctor_tv.is_undefined()) {
+            species_ctor_tv = default_ctor_tv;
+        } else {
+            if (!ctor_tv.is_object() || ctor_tv.get_heapptr() == null) {
+                builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                    "constructor is not an object");
+                return;
+            }
+            HObject* ctor_obj = (HObject*)ctor_tv.get_heapptr();
+            HString* species_sym = ensure_species_symbol(heap);
+            if (species_sym != null) {
+                TVal? sp_opt = builtins_generic_get(ctor_obj, species_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try spv = sp_opt) {
+                    if (!spv.is_undefined() && !spv.is_null()) {
+                        species_ctor_tv = spv;
+                    } else {
+                        species_ctor_tv = default_ctor_tv;
+                    }
+                } else {
+                    species_ctor_tv = default_ctor_tv;
+                }
+            } else {
+                species_ctor_tv = default_ctor_tv;
             }
         }
     }
 
-    // 6–8. Use rx itself as matcher (no species clone — avoids double-free on GC).
-    // Copy lastIndex from R to rx (they're the same object here, so this is a no-op,
-    // but matches the spec shape for clarity).
-    HString* li_key = builtin_intern_string(heap, "lastIndex");
-    TVal li_tv; li_tv.set_fastint(0);
-    TVal? li_opt = builtins_generic_get(rx, li_key, ctx);
+    // 4. Let flags be ? ToString(? Get(R, "flags")).
+    HString* flags_key = builtin_intern_string(heap, "flags");
+    TVal? flags_opt = builtins_generic_get(rx, flags_key, ctx);
     if (ctx.should_throw) return;
-    if (try lv = li_opt) { li_tv = lv; }
-    rx.put_prop((void*)li_key, li_tv, hobject::PROP_FLAGS_WEC);
+    HString* flags_str = builtin_intern_string(heap, "");
+    if (try fv = flags_opt) {
+        if (fv.is_string() && fv.get_heapptr() != null) {
+            flags_str = (HString*)fv.get_heapptr();
+        } else {
+            HString* fs = builtin_to_string_vm(ctx, &fv);
+            if (ctx.should_throw) return;
+            if (fs != null) flags_str = fs;
+        }
+    }
 
-    // 9. Return CreateRegExpStringIterator(rx, S, global, fullUnicode).
+    // 5. Let matcher be ? Construct(C, «R, flags»).
+    // When C is undefined (SpeciesConstructor failed to resolve), use rx itself.
+    HObject* matcher = null;
+    if (!species_ctor_tv.is_undefined() && heap.construct_fn != null && ctx.vm != null) {
+        TVal rx_tv; rx_tv.set_object(rx);
+        TVal flags_tv; flags_tv.set_string(flags_str);
+        TVal[2] ctor_args;
+        ctor_args[0] = rx_tv;
+        ctor_args[1] = flags_tv;
+        TVal matcher_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+        if (matcher_tv.is_object() && matcher_tv.get_heapptr() != null) {
+            matcher = (HObject*)matcher_tv.get_heapptr();
+        } else {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto,
+                "species constructor did not return an object");
+            return;
+        }
+    }
+    if (matcher == null) { matcher = rx; }
+
+    // 6. Let lastIndex be ? ToLength(? Get(R, "lastIndex")).
+    HString* li_key = builtin_intern_string(heap, "lastIndex");
+    TVal li_raw; li_raw.set_fastint(0);
+    {
+        TVal? li_opt = builtins_generic_get(rx, li_key, ctx);
+        if (ctx.should_throw) return;
+        if (try lv = li_opt) { li_raw = lv; }
+    }
+    double li_d = builtin_to_integer_vm(ctx, &li_raw);
+    if (ctx.should_throw) return;
+    if (li_d < 0.0) li_d = 0.0;
+    TVal li_tv; li_tv.set_fastint((long)li_d);
+
+    // 7. Perform ? Set(matcher, "lastIndex", lastIndex, true).
+    if (!regexp_set_with_setter(ctx, matcher, li_key, li_tv)) return;
+
+    // 8. If flags contains "g", let global be true.
+    bool global_flag = false;
+    bool unicode_flag = false;
+    {
+        char* fp = flags_str.get_cstr();
+        uint flen = flags_str.blen;
+        for (uint i = 0; i < flen; i++) {
+            if (fp[i] == 'g') global_flag = true;
+            if (fp[i] == 'u' || fp[i] == 'v') unicode_flag = true;
+        }
+    }
+
+    // 9. Return CreateRegExpStringIterator(matcher, S, global, unicode).
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.REGEXP_STRING_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_null(); return; }
     HObject* iter = iter_raw;
     (*iter.extra_ptr()).regexp_iter.string_val = s_tv;
-    (*iter.extra_ptr()).regexp_iter.regexp = rx;
+    (*iter.extra_ptr()).regexp_iter.regexp = matcher;
     // flags bits: bit 0 = global, bit 1 = done, bit 2 = unicode
     uint iter_flags = 0;
     if (global_flag) iter_flags |= 1;
@@ -1705,7 +1860,7 @@ fn void builtin_regexp_proto_symbol_matchAll(BuiltinContext* ctx) {
     (*iter.extra_ptr()).regexp_iter.flags = iter_flags;
     iter.prototype = heap.iterator_proto;
 
-    // Add .next method as an own property
+    // Add .next method as an own property on the iterator object.
     HString* next_key = builtin_intern_string(heap, "next");
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);

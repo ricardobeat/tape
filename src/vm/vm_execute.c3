@@ -101,8 +101,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
 
         builtins::dispatch_builtin(fn_idx, &ctx);
         if (ctx.should_throw) {
-            // Propagate throw from builtin into the vm error state so
-            // callers using vm_check_call_fn_error() detect it.
+            // Propagate throw via vm.has_error so callers checking
+            // vm_check_call_fn_error() or ctx.heap.has_error detect it.
             vm.has_error = true;
             vm.heap.has_error = true;
             vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
@@ -147,12 +147,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             builtins::dispatch_builtin(fn_idx, &ctx);
 
             if (ctx.should_throw) {
+                // Propagate throw via vm.has_error so callers checking
+                // vm_check_call_fn_error() or ctx.heap.has_error detect it.
                 vm.has_error = true;
                 vm.heap.has_error = true;
                 vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
                 vm.heap.tval_copy_ref(&vm.return_val, &ctx.throw_value);
-                vm.throw_pending = true;
-                vm.heap.tval_copy_ref(&vm.throw_value, &ctx.throw_value);
                 return undef;
             }
 
@@ -521,8 +521,10 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
             bctx.new_target = ctor;
             builtins::dispatch_builtin((uint)builtin_idx, &bctx);
             if (bctx.should_throw) {
-                vm.throw_pending = true;
-                vm.heap.tval_copy_ref(&vm.throw_value, &bctx.throw_value);
+                vm.has_error = true;
+                vm.heap.has_error = true;
+                vm.heap.tval_copy_ref(&vm.heap.error_value, &bctx.throw_value);
+                vm.heap.tval_copy_ref(&vm.return_val, &bctx.throw_value);
                 return undef;
             }
             TVal result = *bctx.result;

@@ -578,7 +578,13 @@ fn void builtin_regexp_string_iterator_next(BuiltinContext* ctx) {
         return;
     }
 
-    // Match found — update lastIndex
+    // Match found — for non-global iterators, mark done so subsequent
+    // calls return {value:undefined, done:true} per ES2022 §22.2.7.2.1.
+    if (!global_flag) {
+        (*iter.extra_ptr()).regexp_iter.flags |= 2;
+    }
+
+    // Update lastIndex for global iterators only.
     if (global_flag) {
         int next_pos = out_end;
         if (out_end == search_pos) {

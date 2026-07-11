@@ -2029,7 +2029,9 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 326: return { "[Symbol.search]", 1 };
         case 327: return { "[Symbol.replace]", 2 };
         case 328: return { "[Symbol.split]", 2 };
-        case 329: return { "next", 0 };
+        case 329: return { "[Symbol.matchAll]", 1 };
+        // RegExp string iterator .next()
+        case 330: return { "next", 0 };
         // ArrayBuffer constructor / statics / prototype
         case 349: return { "ArrayBuffer", 1 };
         case 350: return { "isView", 1 };
