@@ -711,6 +711,23 @@ fn ushort? CompilerContext.unary_expr(&self) {
             self.del_mode = false;
 
             if (self.last_was_member) {
+                if (self.last_member_is_super) {
+                    // ES2022 §13.5.1.2 step 5.b: delete super.x / delete super[x]
+                    // always throws ReferenceError — super references are not deletable.
+                    // The super expression (including key evaluation) has already run;
+                    // now emit a THROW_REF to raise ReferenceError at runtime.
+                    // Free the super base and key registers allocated during super parsing.
+                    self.free_reg(self.last_member_prop_reg);
+                    self.free_reg(self.last_member_obj_reg);
+                    self.last_was_member = false;
+                    self.last_member_is_super = false;
+                    // Discard the GETPROP_SUPER result register; emit ReferenceError throw.
+                    self.free_reg(op_del);
+                    uint msg_idx = self.add_string_constant("Cannot delete a super property");
+                    ushort err_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.THROW_REF, (uint)err_reg, msg_idx));
+                    return err_reg;
+                }
                 // Patch the last emitted instruction from GETPROP to DELPROP.
                 // Both have identical register layout: A = result, B = obj, C = key.
                 uint last_idx = self.code_count;
@@ -2393,52 +2410,74 @@ fn ushort? CompilerContext.primary_expr(&self) {
             // super.property — access property on superclass prototype
             // super[expr] — computed property access on superclass prototype
             if (self.check(TokenType.DOT) || self.check(TokenType.LBRACKET)) {
-                if (!self.has_super_binding) {
+                // super.x / super[x] is syntactically valid in any class method or
+                // object-literal method, even without `extends`. The runtime raises
+                // a ReferenceError/TypeError when GetSuperBase returns undefined/null.
+                if (!self.has_super_binding && !self.in_class_body && !self.super_is_home_object) {
                     return COMPILE_ERROR~;
                 }
-                uint super_name_idx = self.add_string_constant("__super__");
-                ushort super_ctor_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
 
-                ushort super_proto_reg;
-                if (self.super_is_home_object) {
-                    // Object-literal method: __super__ holds the HomeObject —
-                    // super base = GetPrototypeOf(homeObject), read at call time.
-                    super_proto_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
-                    self.free_reg(super_ctor_reg);
-                } else {
-                    // Class method: __super__ holds the superclass constructor —
-                    // super base = superclass.prototype.
-                    uint proto_name_idx = self.add_string_constant("prototype");
-                    ushort proto_key_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
-                    super_proto_reg = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROP, (uint)super_proto_reg, (uint)super_ctor_reg, (uint)proto_key_reg);
-                    self.free_reg(proto_key_reg);
-                    self.free_reg(super_ctor_reg);
-                }
+                // Helper macro-inline: compute super base into super_proto_reg.
+                // Defined here so both DOT and LBRACKET branches can call it after
+                // key evaluation (important for super[expr]: key must be evaluated
+                // BEFORE GetSuperBase per §13.5.3 Runtime Semantics).
+                ushort super_proto_reg = MAX_REGISTERS;
 
-                // Now parse the property access.  Record the member info so an
-                // enclosing assignment can store through PUTPROP_SUPER; the
-                // base/key registers stay live and are freed by the shared
-                // member-expression cleanup (or the assignment emitter).
+                // For super.x (DOT), the key is compile-time constant so we can
+                // compute the super base first (no observable ordering difference).
+                // For super[expr] (LBRACKET), the spec requires evaluating the key
+                // expression before checking/accessing the super base.
                 ushort result;
                 ushort super_key_reg;
                 if (self.match(TokenType.DOT)) {
+                    // DOT: compute super base first, then emit constant key.
+                    uint super_name_idx = self.add_string_constant("__super__");
+                    ushort super_ctor_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
+                    if (self.super_is_home_object) {
+                        super_proto_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
+                        self.free_reg(super_ctor_reg);
+                    } else {
+                        uint proto_name_idx = self.add_string_constant("prototype");
+                        ushort proto_key_reg = self.alloc_reg();
+                        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
+                        super_proto_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.GETPROP, (uint)super_proto_reg, (uint)super_ctor_reg, (uint)proto_key_reg);
+                        self.free_reg(proto_key_reg);
+                        self.free_reg(super_ctor_reg);
+                    }
                     char[] prop_str = self.read_property_name()!;
                     uint prop_idx = self.add_string_constant(prop_str);
                     super_key_reg = self.alloc_reg();
                     self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)super_key_reg, prop_idx));
                     result = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
+                    self.emit_abc(Opcode.GETPROP_SUPER, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
                 } else {
-                    // super[expr]
+                    // LBRACKET: evaluate key expression FIRST (spec §13.5.3 step 1-3),
+                    // THEN compute the super base (step 4 MakeSuperPropertyReference).
                     self.advance()!;  // consume '['
                     super_key_reg = self.expression()!;
                     self.expect(TokenType.RBRACKET)!;
+                    // Now compute super base.
+                    uint super_name_idx = self.add_string_constant("__super__");
+                    ushort super_ctor_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
+                    if (self.super_is_home_object) {
+                        super_proto_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
+                        self.free_reg(super_ctor_reg);
+                    } else {
+                        uint proto_name_idx = self.add_string_constant("prototype");
+                        ushort proto_key_reg = self.alloc_reg();
+                        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
+                        super_proto_reg = self.alloc_reg();
+                        self.emit_abc(Opcode.GETPROP, (uint)super_proto_reg, (uint)super_ctor_reg, (uint)proto_key_reg);
+                        self.free_reg(proto_key_reg);
+                        self.free_reg(super_ctor_reg);
+                    }
                     result = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
+                    self.emit_abc(Opcode.GETPROP_SUPER, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
                 }
 
                 self.last_was_member = true;
@@ -2631,6 +2670,8 @@ fn ushort? CompilerContext.object_literal(&self) {
             // we must not clear the flags here.
             bool saved_is_generator = self.is_generator;
             bool saved_is_async = self.is_async;
+            // ES2015 §12.2.6.1: `__proto__: value` sets the prototype, not an own property.
+            bool is_proto_key = false;
             // Capture the byte offset of the property's very first token BEFORE
             // any async/star prefix is consumed, so Function.prototype.toString
             // source retention for method shorthand starts at `async`/`*`/the
@@ -2784,6 +2825,18 @@ fn ushort? CompilerContext.object_literal(&self) {
 
                 // Regular property (not getter/setter)
 
+                // ES2015 §12.2.6.1: `__proto__: value` is prototype-set syntax
+                // when the key is a plain identifier or string (not computed, not shorthand).
+                if (key_tok.str_value.len == 9
+                    && key_tok.str_value[0] == '_' && key_tok.str_value[1] == '_'
+                    && key_tok.str_value[2] == 'p' && key_tok.str_value[3] == 'r'
+                    && key_tok.str_value[4] == 'o' && key_tok.str_value[5] == 't'
+                    && key_tok.str_value[6] == 'o' && key_tok.str_value[7] == '_'
+                    && key_tok.str_value[8] == '_'
+                    && !is_generator_method && !is_async_method) {
+                    is_proto_key = true;
+                }
+
                 uint key_idx = self.add_string_constant(key_tok.str_value);
                 shorthand_name_idx = key_idx;  // shorthand `{ name }` = GETVAR this name
                 key_reg = self.alloc_reg();
@@ -2894,9 +2947,16 @@ fn ushort? CompilerContext.object_literal(&self) {
                 if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
-                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                if (is_proto_key) {
+                    // ES2015 §12.2.6.1: `__proto__: value` sets the object's [[Prototype]].
+                    // Only object values and null are valid; non-objects are silently ignored.
+                    self.emit_abc(Opcode.SETPROTO, (uint)obj_reg, (uint)val_reg, 0);
+                    self.free_reg(key_reg);
+                } else {
+                    self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                    self.free_reg(key_reg);
+                }
                 self.free_reg(val_reg);
-                self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
                 self.is_async = saved_is_async;
             }

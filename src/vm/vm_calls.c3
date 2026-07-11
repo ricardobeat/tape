@@ -1172,15 +1172,21 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
         case Opcode.SETPROTO: {
             // A.[[Prototype]] = B
             // ABC format: A=obj_reg, B=proto_reg
-            if (!ra.is_object() || !rb.is_object()) {
-                // Non-object operands — silently ignore or error
-                return (TVal){};
-            }
+            // Used both for class inheritance and for `{ __proto__: value }` object literals.
+            // Silently ignore non-object/non-null values (§12.2.6.1 step 3c).
+            if (!ra.is_object()) return (TVal){};
             HObject* obj = (HObject*)ra.get_heapptr();
-            HObject* proto = (HObject*)rb.get_heapptr();
-            if (obj != null && proto != null) {
-                obj.prototype = proto;
+            if (obj == null) return (TVal){};
+            if (rb.is_null()) {
+                // `{ __proto__: null }` — set prototype to null (no prototype chain).
+                obj.prototype = null;
+            } else if (rb.is_object()) {
+                HObject* proto = (HObject*)rb.get_heapptr();
+                if (proto != null) {
+                    obj.prototype = proto;
+                }
             }
+            // Non-object, non-null values are silently ignored per spec.
             return (TVal){};
         }
 
