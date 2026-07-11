@@ -3111,7 +3111,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // so that Function.prototype.isPrototypeOf(Number) and similar work.
     // We look them up in the global environment by name.
     if (heap.function_proto != null) {
-        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "EvalError", "URIError", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "GeneratorFunction" };
+        // NativeErrors (TypeError, RangeError, etc.) are excluded here — their [[Prototype]]
+        // is the Error constructor HObject (set by register_native_error_ctor), not Function.prototype.
+        char[][] ctor_names = { "Object", "Number", "Boolean", "String", "Array", "Function", "Date", "RegExp", "Error", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "GeneratorFunction" };
         for (int i = 0; i < ctor_names.len; i++) {
             TVal? optv = env::env_get(global_env, builtin_intern_string(heap, ctor_names[i]));
             if (try tv = optv) {

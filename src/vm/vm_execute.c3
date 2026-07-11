@@ -2440,6 +2440,37 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
 
+        case Opcode.PUTVAR_ASSIGN: {
+            // User assignment: like PUTVAR but throws ReferenceError for a
+            // let/const binding still in its temporal dead zone.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    int put_result = env::env_try_put_lex(ds.act.lex_env, key, *ra, true);
+                    if (put_result == -1) {
+                        HString* name_hstr = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Assignment to constant variable '%s'", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    } else if (put_result == -2) {
+                        HString* name_hstr = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "Cannot access '%s' before initialization", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        break;
+                    } else if (put_result == 0) {
+                        env::env_put(ds.act.var_env, key, *ra);
+                    }
+                    vm.heap.decref_tval(ra);
+                    ra.set_undefined();
+                }
+            }
+            continue;
+        }
+
         case Opcode.DECLVAR: {
             // Declare a `var` binding in the immediate var_env only (no chain walk).
             uint bc = insn.get_bc();

@@ -957,7 +957,8 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                         self.free_reg(binds[di].member_prop_reg);
                         self.free_reg(binds[di].member_obj_reg);
                     } else if (binds[di].assign_needs_putvar || !self.is_local_var_reg(bind_reg)) {
-                        self.emit_a_bc(Opcode.PUTVAR, (uint)bind_reg, ni);
+                        // Destructuring assignment target — throws on TDZ let/const.
+                        self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)bind_reg, ni);
                     }
             }
         }

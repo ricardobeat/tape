@@ -245,7 +245,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 } else {
                     self.emit_abc(Opcode.DEC, (uint)left, 0, 0);
                     if (lhs_was_getvar) {
-                        self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                        self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                     }
                 }
                 return left;
@@ -280,7 +280,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                    self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
             }
             self.patch_jump(skip_jump);
@@ -300,7 +300,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                    self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
             }
             self.patch_jump(skip_jump);
@@ -334,7 +334,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
                 self.free_reg(right);
                 if (lhs_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                    self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 }
             }
             self.patch_jump(skip_jump);
@@ -364,7 +364,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
                 // in a temp before writing back to the environment.
                 ushort tmp = self.alloc_reg();
                 self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
-                self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+                self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
                 self.free_reg(left);
                 left = tmp;
             }
@@ -408,7 +408,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             // so the result survives the clobber.
             ushort tmp = self.alloc_reg();
             self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)left, 0);
-            self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
+            self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)left, lhs_getvar_name_idx);
             self.free_reg(left);
             left = tmp;
         }
@@ -768,7 +768,7 @@ fn ushort? CompilerContext.unary_expr(&self) {
             } else {
                 self.emit_abc(Opcode.INC, (uint)op_inc, 0, 0);
                 if (inc_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)op_inc, inc_getvar_name_idx);
+                    self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)op_inc, inc_getvar_name_idx);
                 }
             }
             self.last_was_getvar = false;
@@ -805,7 +805,7 @@ fn ushort? CompilerContext.unary_expr(&self) {
             } else {
                 self.emit_abc(Opcode.DEC, (uint)op_dec, 0, 0);
                 if (dec_was_getvar) {
-                    self.emit_a_bc(Opcode.PUTVAR, (uint)op_dec, dec_getvar_name_idx);
+                    self.emit_a_bc(Opcode.PUTVAR_ASSIGN, (uint)op_dec, dec_getvar_name_idx);
                 }
             }
             self.last_was_getvar = false;

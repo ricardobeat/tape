@@ -362,11 +362,20 @@ fn bool env_is_lex_writable(EnvRecord* lex_env, void* key) {
 ///    0 = not found in lex_env (caller should fall through to env_put)
 ///   -1 = found but not writable (const violation — caller throws TypeError)
 /// This replaces the triple-walk pattern: env_has_lex + env_is_lex_writable + env_put_lex.
-fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val) {
+/// Store `val` into the nearest lexical binding named `key`.
+/// Returns: 1 = updated, 0 = not found (caller falls through to var_env),
+/// -1 = const violation, -2 = TDZ (only when `check_tdz` and the binding still
+/// holds the TDZ sentinel — used by PUTVAR_ASSIGN for user assignment; ordinary
+/// PUTVAR passes check_tdz=false so it can initialize a sentinel binding).
+fn int env_try_put_lex(EnvRecord* lex_env, void* key, TVal val, bool check_tdz = false) {
     EnvRecord* cur = lex_env;
     while (cur != null) {
         int idx = cur.bindings.find_prop_idx(key);
         if (idx >= 0) {
+            TVal* pv0 = &cur.bindings.prop_values()[idx];
+            if (check_tdz && is_tdz_sentinel(pv0)) {
+                return -2;
+            }
             if (!cur.bindings.get_prop_flags((uint)idx).writable) {
                 return -1;
             }

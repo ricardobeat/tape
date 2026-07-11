@@ -221,7 +221,15 @@ enum Opcode : char {
     /// looked up in the constant pool (A-BC format).
     GETVAR,
     /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
+    /// Initialization store: does NOT perform a TDZ check (used by param sync,
+    /// for-loop iteration variables, etc. which legitimately write a binding
+    /// that may still hold the TDZ sentinel).
     PUTVAR,
+    /// `variable[constants[BC]] = A`  — user ASSIGNMENT to a variable by name
+    /// (A-BC). Identical to PUTVAR but throws ReferenceError when the target is
+    /// a let/const binding still in its temporal dead zone (assignment before
+    /// initialization). Emitted only for genuine assignment expressions.
+    PUTVAR_ASSIGN,
     /// `declare variable[constants[BC]] = A`  — declare+initialize a `var` in
     /// the immediate var_env only (does not walk the scope chain).
     DECLVAR,

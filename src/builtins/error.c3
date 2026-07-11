@@ -314,8 +314,10 @@ fn void builtin_error_captureStackTrace(BuiltinContext* ctx) {
 
 /// Helper: create a prototype object for an error type.
 /// proto_parent is the [[Prototype]] (e.g. Error.prototype for subclasses).
+/// The prototype is an ordinary object (ObjClass.OBJECT) per ES2015 §19.5.6.3 —
+/// it must NOT be an Error instance itself.
 fn HObject* register_error_prototype(Heap* heap, HObject* proto_parent, char[] name_str) {
-    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return null;
     HObject* proto = proto_raw;
     proto.prototype = proto_parent;
@@ -350,87 +352,54 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
-    // Add .constructor to Error.prototype pointing to Error builtin
+    // constructor_key used throughout — HObject ctors are wired by register_native_error_ctor below.
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
-    TVal constructor_tv;
-    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR);
-    err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
 
     // --- Create TypeError.prototype ---
     HObject* type_err_proto = register_error_prototype(heap, err_proto, "TypeError");
     if (type_err_proto == null) return false;
-    type_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.type_err_proto = type_err_proto;
 
     // --- Create RangeError.prototype ---
     HObject* range_err_proto = register_error_prototype(heap, err_proto, "RangeError");
     if (range_err_proto == null) return false;
-    range_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.range_err_proto = range_err_proto;
 
     // --- Create ReferenceError.prototype ---
     HObject* ref_err_proto = register_error_prototype(heap, err_proto, "ReferenceError");
     if (ref_err_proto == null) return false;
-    ref_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.ref_err_proto = ref_err_proto;
 
     // --- Create SyntaxError.prototype ---
     HObject* syntax_err_proto = register_error_prototype(heap, err_proto, "SyntaxError");
     if (syntax_err_proto == null) return false;
-    syntax_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.syntax_err_proto = syntax_err_proto;
 
     // --- Create EvalError.prototype ---
     HObject* eval_err_proto = register_error_prototype(heap, err_proto, "EvalError");
     if (eval_err_proto == null) return false;
-    eval_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.eval_err_proto = eval_err_proto;
 
     // --- Create URIError.prototype ---
     HObject* uri_err_proto = register_error_prototype(heap, err_proto, "URIError");
     if (uri_err_proto == null) return false;
-    uri_err_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
     heap.uri_err_proto = uri_err_proto;
 
-    // Set .constructor on each error sub-prototype to point to its own builtin
-    // (type_err_proto already done above — fix it now with correct index)
-    TVal type_err_constr;
-    type_err_constr.set_lightfunc((void*)(usz)BUILTIN_TYPE_ERROR);
-    type_err_proto.put_prop(constructor_key, type_err_constr, hobject::PROP_FLAGS_WC);
-
-    TVal range_err_constr;
-    range_err_constr.set_lightfunc((void*)(usz)BUILTIN_RANGE_ERROR);
-    range_err_proto.put_prop(constructor_key, range_err_constr, hobject::PROP_FLAGS_WC);
-
-    TVal ref_err_constr;
-    ref_err_constr.set_lightfunc((void*)(usz)BUILTIN_REFERENCE_ERROR);
-    ref_err_proto.put_prop(constructor_key, ref_err_constr, hobject::PROP_FLAGS_WC);
-
-    TVal syntax_err_constr;
-    syntax_err_constr.set_lightfunc((void*)(usz)BUILTIN_SYNTAX_ERROR);
-    syntax_err_proto.put_prop(constructor_key, syntax_err_constr, hobject::PROP_FLAGS_WC);
-
-    TVal eval_err_constr;
-    eval_err_constr.set_lightfunc((void*)(usz)BUILTIN_EVAL_ERROR);
-    eval_err_proto.put_prop(constructor_key, eval_err_constr, hobject::PROP_FLAGS_WC);
-
-    TVal uri_err_constr;
-    uri_err_constr.set_lightfunc((void*)(usz)BUILTIN_URI_ERROR);
-    uri_err_proto.put_prop(constructor_key, uri_err_constr, hobject::PROP_FLAGS_WC);
-
     // --- Register Error global constructor as HObject (for static methods like captureStackTrace) ---
-    {
-        HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (catch err = ctor_raw) return false;
-        HObject* err_ctor = ctor_raw;
-        (*err_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ERROR;
+    HObject*? err_ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch e2 = err_ctor_raw) return false;
+    HObject* err_ctor = err_ctor_raw;
+    (*err_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ERROR;
 
-        // Wire prototype.constructor → err_ctor
+    // Wire Error.prototype.constructor → err_ctor
+    {
         TVal ctor_tv;
         ctor_tv.set_object(err_ctor);
         err_proto.put_prop(constructor_key, ctor_tv, hobject::PROP_FLAGS_WC);
+    }
 
-        // Wire err_ctor.prototype → err_proto
+    // Wire err_ctor["prototype"] → err_proto (non-writable, non-enumerable, non-configurable)
+    {
         HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
         TVal proto_tv;
         proto_tv.set_object(err_proto);
@@ -440,20 +409,18 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
         proto_pflags.configurable = false;
         proto_pflags.is_accessor = false;
         err_ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+    }
 
-        // Error.length = 1
-        HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-        TVal length_tv;
-        length_tv.set_fastint(1);
-        err_ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
-
-        // Register static method: Error.captureStackTrace
+    // Register static method: Error.captureStackTrace
+    {
         HString* capture_key = builtin_intern_string(heap, "captureStackTrace");
         TVal capture_tv;
         capture_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_CAPTURE_STACK_TRACE);
         err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WC);
+    }
 
-        // Register in global environment
+    // Register Error in global environment
+    {
         uint hash = heap.hash_string("Error");
         HString* existing = heap.str_table_lookup("Error", hash);
         HString* err_key;
@@ -461,7 +428,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
             err_key = existing;
         } else {
             HString*? new_key = hstring::hstring_alloc(heap, "Error", hash);
-            if (catch e = new_key) return false;
+            if (catch e3 = new_key) return false;
             heap.str_table_insert(new_key);
             err_key = new_key;
         }
@@ -471,33 +438,75 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
         env::env_declare_nonenum(global_env, err_key, err_val);
     }
 
-    // --- Register TypeError ---
-    if (!register_simple_builtin(global_env, heap, "TypeError", BUILTIN_TYPE_ERROR)) return false;
+    // --- Register NativeError constructors as proper HObjects ---
+    // Per ES2015 §19.5.6.1: [[Prototype]] of each NativeError constructor is the Error constructor.
+    // Each has an own "prototype" property (NWC) pointing to its prototype object.
 
-    // --- Register RangeError ---
-    if (!register_simple_builtin(global_env, heap, "RangeError", BUILTIN_RANGE_ERROR)) return false;
-
-    // --- Register ReferenceError ---
-    if (!register_simple_builtin(global_env, heap, "ReferenceError", BUILTIN_REFERENCE_ERROR)) return false;
-
-    // --- Register SyntaxError ---
-    if (!register_simple_builtin(global_env, heap, "SyntaxError", BUILTIN_SYNTAX_ERROR)) return false;
-
-    // --- Register EvalError ---
-    if (!register_simple_builtin(global_env, heap, "EvalError", BUILTIN_EVAL_ERROR)) return false;
-
-    // --- Register URIError ---
-    if (!register_simple_builtin(global_env, heap, "URIError", BUILTIN_URI_ERROR)) return false;
+    if (!register_native_error_ctor(global_env, heap, "TypeError",       BUILTIN_TYPE_ERROR,       type_err_proto,   err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "RangeError",      BUILTIN_RANGE_ERROR,      range_err_proto,  err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "ReferenceError",  BUILTIN_REFERENCE_ERROR,  ref_err_proto,    err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "SyntaxError",     BUILTIN_SYNTAX_ERROR,     syntax_err_proto, err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "EvalError",       BUILTIN_EVAL_ERROR,       eval_err_proto,   err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "URIError",        BUILTIN_URI_ERROR,        uri_err_proto,    err_ctor)) return false;
 
     // --- Create AggregateError.prototype (parent = err_proto) ---
     HObject* aggregate_err_proto = register_error_prototype(heap, err_proto, "AggregateError");
     if (aggregate_err_proto == null) return false;
-    TVal aggregate_err_constr;
-    aggregate_err_constr.set_lightfunc((void*)(usz)BUILTIN_AGGREGATE_ERROR);
-    aggregate_err_proto.put_prop(constructor_key, aggregate_err_constr, hobject::PROP_FLAGS_WC);
     heap.aggregate_err_proto = aggregate_err_proto;
 
-    if (!register_simple_builtin(global_env, heap, "AggregateError", BUILTIN_AGGREGATE_ERROR)) return false;
+    if (!register_native_error_ctor(global_env, heap, "AggregateError", BUILTIN_AGGREGATE_ERROR, aggregate_err_proto, err_ctor)) return false;
 
+    return true;
+}
+
+/// Create and register a NativeError constructor as a real HObject.
+/// Sets [[Prototype]] = err_ctor (Error constructor HObject) per §19.5.6.1,
+/// wires own "prototype" property (NWC) to native_proto, and updates
+/// native_proto.constructor to point at the new ctor HObject.
+fn bool register_native_error_ctor(EnvRecord* global_env, Heap* heap, char[] name,
+                                   uint fn_index, HObject* native_proto, HObject* err_ctor) {
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch e = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)fn_index;
+
+    // [[Prototype]] = Error constructor (so getPrototypeOf(TypeError) === Error)
+    ctor.prototype = err_ctor;
+
+    // Own "prototype" property (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+    TVal proto_tv;
+    proto_tv.set_object(native_proto);
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Update native_proto.constructor → ctor HObject
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal ctor_tv;
+    ctor_tv.set_object(ctor);
+    native_proto.put_prop(constructor_key, ctor_tv, hobject::PROP_FLAGS_WC);
+
+    // Set .name and .length on the constructor
+    set_func_ctor_name_length(ctor, heap, name, 1);
+
+    // Register in global environment
+    uint hash = heap.hash_string(name);
+    HString* existing = heap.str_table_lookup(name, hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, name, hash);
+        if (catch e2 = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal val;
+    val.set_object(ctor);
+    env::env_declare_nonenum(global_env, key, val);
     return true;
 }

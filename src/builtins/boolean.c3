@@ -89,12 +89,6 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     (*proto.extra_ptr()).prim.primitive_value.set_boolean(false);
     heap.bool_proto = proto;
 
-    // Set .constructor to Boolean lightfunc
-    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
-    TVal constructor_tv;
-    constructor_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN);
-    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
-
     // Add .toString() method
     HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
@@ -107,8 +101,50 @@ fn bool register_boolean_constructor(EnvRecord* global_env, Heap* heap) {
     valueof_tv.set_lightfunc((void*)(usz)BUILTIN_BOOLEAN_PROTO_VALUEOF);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
-    // Register Boolean as a global constructor
-    if (!register_simple_builtin(global_env, heap, "Boolean", BUILTIN_BOOLEAN)) return false;
+    // Register Boolean as a proper HObject constructor (not a lightfunc).
+    // Needs own "prototype" property (NWC) for S15.6.3_A1 and S15.6.3.1_A3.
+    // [[Prototype]] is left null here; the post-init loop in core.c3 sets it
+    // to Function.prototype (satisfying S15.6.3_A2).
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch e2 = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_BOOLEAN;
+
+    // Own "prototype" property (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+    TVal proto_tv;
+    proto_tv.set_object(proto);
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Wire Boolean.prototype.constructor → Boolean ctor HObject
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal ctor_tv;
+    ctor_tv.set_object(ctor);
+    proto.put_prop(constructor_key, ctor_tv, hobject::PROP_FLAGS_WC);
+
+    // Set .name and .length
+    set_func_ctor_name_length(ctor, heap, "Boolean", 1);
+
+    // Register in global environment
+    uint hash = heap.hash_string("Boolean");
+    HString* existing = heap.str_table_lookup("Boolean", hash);
+    HString* key;
+    if (existing != null) {
+        key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "Boolean", hash);
+        if (catch e3 = new_key) return false;
+        heap.str_table_insert(new_key);
+        key = new_key;
+    }
+    TVal val;
+    val.set_object(ctor);
+    env::env_declare_nonenum(global_env, key, val);
 
     return true;
 }
