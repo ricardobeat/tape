@@ -612,28 +612,24 @@ fn void builtin_string_proto_slice(BuiltinContext* ctx) {
     }
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
-    // Handle negative start
+    // ES5 §15.5.4.13 steps 7-8: clamp to [0, len]. NaN→0; ±∞ resolve to the
+    // clamped extreme (cast to int after clamping so Infinity doesn't wrap).
     int start_i;
-    if (math::is_nan(start_d)) {
+    if (math::is_nan(start_d) || start_d == 0.0) {
         start_i = 0;
     } else if (start_d < 0) {
-        start_i = (int)(long)start_d + (int)len;
-        if (start_i < 0) start_i = 0;
+        start_i = (start_d + (double)len < 0) ? 0 : (int)(long)(start_d + (double)len);
     } else {
-        start_i = (int)(long)start_d;
-        if (start_i > (int)len) start_i = (int)len;
+        start_i = (start_d > (double)len) ? (int)len : (int)(long)start_d;
     }
 
-    // Handle negative end
     int end_i;
     if (math::is_nan(end_d)) {
-        end_i = (int)len;
+        end_i = 0;
     } else if (end_d < 0) {
-        end_i = (int)(long)end_d + (int)len;
-        if (end_i < 0) end_i = 0;
+        end_i = (end_d + (double)len < 0) ? 0 : (int)(long)(end_d + (double)len);
     } else {
-        end_i = (int)(long)end_d;
-        if (end_i > (int)len) end_i = (int)len;
+        end_i = (end_d > (double)len) ? (int)len : (int)(long)end_d;
     }
 
     if (start_i >= end_i) {
