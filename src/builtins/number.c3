@@ -73,7 +73,9 @@ fn int number_to_radix_str(ulong val, uint radix, char* buf, usz buf_size) {
 fn void builtin_number(BuiltinContext* ctx) {
     TVal num;
     if (ctx.argc > 0) {
-        builtin_to_number(&ctx.regs[ctx.base_reg], &num);
+        double d = builtin_to_number_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (ctx.should_throw) return;
+        num.set_number(d);
     } else {
         num.set_fastint(0);
     }

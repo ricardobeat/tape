@@ -283,6 +283,13 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                       | preserved_flags;
             act.max_heap_reg = 0;
             act.caller_valstack_top = frame + nregs;
+            // ES5 §10.4.3: for non-arrow, non-strict compiled functions called
+            // with undefined/null this, substitute the global object.
+            if (!target.is_arrow() && !target.is_strict()
+                && (this_val.is_undefined() || this_val.is_null())
+                && vm.global_env != null && vm.global_env.bindings != null) {
+                this_val.set_object(vm.global_env.bindings);
+            }
             // Raw assign: this_val is kept alive by the caller for the duration
             // of the call; the previous activation[0].this_binding bits are
             // restored verbatim below, so refcounts stay balanced.

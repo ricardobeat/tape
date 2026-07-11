@@ -227,28 +227,14 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
 
-    // Peek for a literal-1 RHS: `<var> += 1` → INC, `<var> -= 1` → DEC.
+    // Peek for a literal-1 RHS: `<var> -= 1` → DEC.
+    // The `+= 1` optimization (INC) was removed because it bypasses ADD's
+    // string-concatenation semantics: `"1" + 1` must yield `"11"`.
     // Saves a register + LDINT 1 instruction per occurrence (hot in counters).
     if (is_compound && !lhs_was_member) {
         if (self.peek_type() == TokenType.NUMBER) {
             Token num_tok2 = self.lexer.peek()!;
             double nv = num_tok2.num_value;
-            if (nv == 1.0 && compound_op == Opcode.ADD) {
-                self.advance()!;  // consume the literal
-                if (lhs_was_getvar && self.code_count > 0
-                    && self.code[self.code_count - 1].op == Opcode.GETVAR) {
-                    // Replace the GETVAR with INC_VAR: 1 instruction instead of 3
-                    uint name_idx = self.code[self.code_count - 1].get_bc();
-                    uint getvar_reg = self.code[self.code_count - 1].a;
-                    self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.INC_VAR, getvar_reg, name_idx);
-                } else {
-                    self.emit_abc(Opcode.INC, (uint)left, 0, 0);
-                    if (lhs_was_getvar) {
-                        self.emit_a_bc(Opcode.PUTVAR, (uint)left, lhs_getvar_name_idx);
-                    }
-                }
-                return left;
-            }
             if (nv == 1.0 && compound_op == Opcode.SUB) {
                 self.advance()!;
                 if (lhs_was_getvar && self.code_count > 0

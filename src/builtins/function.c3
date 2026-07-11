@@ -171,12 +171,11 @@ fn void builtin_function(BuiltinContext* ctx) {
         func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WC);
     }
 
-    // Set function length
-    uint num_params = 0;
-    if (ctx.argc > 0) num_params = (uint)(ctx.argc - 1);
+    // Set function length from the compiled function's formal parameter count.
+    // The compiler correctly counts comma-separated params (e.g. "a,b,c" → 3).
     HString* len_key = builtin_intern_string(ctx.heap, "length");
     TVal len_tv;
-    len_tv.set_fastint((long)num_params);
+    len_tv.set_fastint((long)func.num_formals);
     func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
 
     // Return the function object

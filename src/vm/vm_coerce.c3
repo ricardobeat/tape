@@ -397,10 +397,13 @@ fn double hstring_to_number(HString* hstr) {
     char* cstr = hstr.get_cstr();
     uint blen = hstr.blen;
 
-    // --- skip leading ECMAScript whitespace ---
+    // --- skip leading ECMAScript whitespace (CESU-8 aware) ---
     uint start = 0;
-    while (start < blen && is_ecma_whitespace(cstr[start])) {
-        start++;
+    while (start < blen) {
+        uint seq_len = 0;
+        uint cp = builtins::decode_codepoint_at(cstr, start, blen, &seq_len);
+        if (seq_len == 0 || !builtins::is_ecma_ws_codepoint(cp)) break;
+        start += seq_len;
     }
 
     // Empty or all-whitespace -> +0
@@ -418,6 +421,10 @@ fn double hstring_to_number(HString* hstr) {
     // --- Hex integer literal (0x...) ---
     if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         uint j = 2;
+        // Require at least one hex digit (ES2015 §7.1.3.1)
+        if (p[j] == 0 || !((p[j] >= '0' && p[j] <= '9') || (p[j] >= 'a' && p[j] <= 'f') || (p[j] >= 'A' && p[j] <= 'F'))) {
+            return double::nan;
+        }
         ulong val = 0;
         while (p[j] != 0) {
             char c = p[j];
@@ -445,6 +452,15 @@ fn double hstring_to_number(HString* hstr) {
     // Nothing was consumed -> NaN
     if (endptr == p) {
         return double::nan;
+    }
+
+    // strtod accepts case-insensitive "infinity" but ES requires exact case
+    if (result == double::inf || result == -double::inf) {
+        if (libc::strcmp((ZString)p, "Infinity") != 0 &&
+            libc::strcmp((ZString)p, "+Infinity") != 0 &&
+            libc::strcmp((ZString)p, "-Infinity") != 0) {
+            return double::nan;
+        }
     }
 
     // Trailing characters must be whitespace only
