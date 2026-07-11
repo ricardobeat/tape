@@ -1343,6 +1343,27 @@ fn void builtin_object_getOwnPropertyDescriptors(BuiltinContext* ctx) {
     HObject* res = res_raw;
     res.prototype = ctx.heap.object_proto;
 
+    // Proxy exotic: [[OwnPropertyKeys]] + [[GetOwnProperty]] per key.
+    if (obj.flags.exotic_proxyobj) {
+        HObject* karr;
+        if (!proxy_mop_own_keys(ctx.vm, ctx.heap, obj, &karr)) { proxy_ctx_ok(ctx); return; }
+        for (uint i = 0; i < karr.array_used; i++) {
+            TVal el = karr.array_part()[i];
+            if (!el.is_string()) continue;
+            HString* k = (HString*)el.get_heapptr();
+            ProxyDesc pd;
+            if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, k, &pd)) { proxy_ctx_ok(ctx); return; }
+            if (!pd.found) continue;
+            pd.complete();
+            HObject* dobj = proxy_desc_to_object(ctx.heap, &pd);
+            if (dobj == null) continue;
+            TVal dtv; dtv.set_object(dobj);
+            res.put_prop((void*)k, dtv, hobject::PROP_FLAGS_WEC);
+        }
+        ctx.result.set_object(res);
+        return;
+    }
+
     // Collect own keys from every source so enumeration matches
     // [[OwnPropertyKeys]]: String-exotic char indices, the dense array part,
     // and named/symbol entries in the property table.
@@ -1473,6 +1494,19 @@ fn bool desc_get_enum(BuiltinContext* ctx, HObject* obj, hstring::HString* key, 
 /// new property.  Returns true on success, false on error (ctx->should_throw
 /// is set in the latter case).
 fn bool obj_assign_set(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal* val) {
+    if (obj.flags.exotic_proxyobj) {
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        if (!proxy_mop_set(ctx.vm, ctx.heap, obj, key, *val, recv, &sres)) {
+            proxy_ctx_ok(ctx);
+            return false;
+        }
+        if (!sres) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'set' on proxy: trap returned falsish");
+            return false;
+        }
+        return true;
+    }
     // Step 1: own property
     int idx = obj.find_prop_idx((void*)key);
     if (idx >= 0) {
@@ -2173,6 +2207,34 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
         props_val = *ctx.result;
     }
     HObject* props = (HObject*)props_val.get_heapptr();
+
+    // Proxy exotic target: parse each descriptor and route through
+    // [[DefineOwnProperty]].
+    if (obj.flags.exotic_proxyobj) {
+        for (uint i = 0; i < props.prop_count; i++) {
+            if (props.prop_key_at(i) == null || !props.get_prop_flags(i).enumerable) continue;
+            HString* k = (HString*)props.prop_key_at(i);
+            TVal desc_val;
+            if (!desc_get(ctx, props, k, &desc_val)) {
+                if (ctx.should_throw) return;
+                continue;
+            }
+            if (!desc_val.is_object()) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Property description must be an object");
+                return;
+            }
+            ProxyDesc pd;
+            if (!proxy_object_to_desc(ctx.vm, ctx.heap, (HObject*)desc_val.get_heapptr(), &pd)) { proxy_ctx_ok(ctx); return; }
+            bool dok;
+            if (!proxy_mop_define(ctx.vm, ctx.heap, obj, k, &pd, &dok)) { proxy_ctx_ok(ctx); return; }
+            if (!dok) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "'defineProperty' on proxy: trap returned falsish");
+                return;
+            }
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
 
     // Step 4: For each key, get descriptor and call DefinePropertyOrThrow
     // Collect keys first in case properties are modified during iteration
@@ -3253,6 +3315,25 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
             // Number, Boolean, Symbol, BigInt — no enumerable own properties
             continue;
         }
+        // Proxy source: [[OwnPropertyKeys]] + enumerable filter + [[Get]].
+        if (src_obj.flags.exotic_proxyobj) {
+            HObject* karr;
+            if (!proxy_mop_own_keys(ctx.vm, ctx.heap, src_obj, &karr)) { proxy_ctx_ok(ctx); return; }
+            for (uint i = 0; i < karr.array_used; i++) {
+                TVal el = karr.array_part()[i];
+                if (!el.is_string()) continue;
+                HString* k = (HString*)el.get_heapptr();
+                ProxyDesc pd;
+                if (!proxy_mop_get_own(ctx.vm, ctx.heap, src_obj, k, &pd)) { proxy_ctx_ok(ctx); return; }
+                if (!pd.found || !pd.enumerable) continue;
+                TVal recv; recv.set_object(src_obj);
+                TVal v;
+                if (!proxy_mop_get(ctx.vm, ctx.heap, src_obj, k, recv, &v)) { proxy_ctx_ok(ctx); return; }
+                if (!obj_assign_set(ctx, downstream, k, &v)) { return; }
+            }
+            continue;
+        }
+
         // Copy enumerable own named properties via [[Set]] per ES2015 §19.1.2.2
         for (uint i = 0; i < src_obj.prop_count; i++) {
             if (src_obj.get_prop_flags(i).enumerable && src_obj.prop_key_at(i) != null) {

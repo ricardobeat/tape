@@ -1641,6 +1641,34 @@ fn TVal? Vm.run(Vm* vm) {
                 continue;
             }
 
+            // Proxy exotic on the RHS: OrdinaryHasInstance with [[Get]] of
+            // "prototype" routed through the proxy.
+            if (rfunc.flags.exotic_proxyobj) {
+                if (!lval.is_object()) { continue; }
+                HString* pk = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+                TVal pproto;
+                if (!builtins::proxy_mop_get(vm, vm.heap, rfunc, pk, rval, &pproto)) {
+                    TVal perr = vm.heap.error_value;
+                    vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, perr, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &perr);
+                    }
+                    continue;
+                }
+                if (!pproto.is_object()) {
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, "'prototype' property is not an object", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    continue;
+                }
+                HObject* pproto_obj = (HObject*)pproto.get_heapptr();
+                HObject* pcur = (HObject*)lval.get_heapptr();
+                if (pcur.is_prototype_of(pproto_obj)) {
+                    ra.set_boolean(true);
+                }
+                continue;
+            }
+
             // ES6 §12.10.4: Check Symbol.hasInstance on the constructor
             if (vm.heap.hasinstance_symbol != null) {
                 HString* hasinst_key = vm.heap.hasinstance_symbol;
