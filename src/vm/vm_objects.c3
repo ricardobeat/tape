@@ -486,8 +486,16 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             }
             if (!iterator.is_object() || iterator.get_heapptr() == null) { break; }
 
-            uint dest_start = insn.a;
+            // A = first_arg base reg, B = running-total reg (in/out). The spread
+            // is written starting at first_arg + <current running total>, so
+            // multiple spreads (and interleaved args via PUTARG) stack in order.
+            uint first_arg_reg = insn.a;
             uint count_reg = insn.b;
+            TVal* base_count_slot = ds.regs_base + count_reg;
+            uint base_off = base_count_slot.is_fastint()
+                ? (uint)base_count_slot.get_fastint()
+                : (base_count_slot.is_number() ? (uint)base_count_slot.get_number() : 0);
+            uint dest_start = first_arg_reg + base_off;
 
             // Loop: next() → {value, done}
             HString* next_key = intern_string(vm, "next");
@@ -509,7 +517,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                     TVal err_nxt2 = vm.return_val;
                     vm.has_error = false;
                     TVal* count_slot2 = ds.regs_base + count_reg;
-                    count_slot2.set_fastint((long)k);
+                    count_slot2.set_fastint((long)(base_off + k));
                     if (!vm_throw_value(vm, err_nxt2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return vm_uncaught_error(vm, &err_nxt2);
                     }
@@ -532,7 +540,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                             TVal err_done2 = vm.return_val;
                             vm.has_error = false;
                             TVal* count_slot3 = ds.regs_base + count_reg;
-                            count_slot3.set_fastint((long)k);
+                            count_slot3.set_fastint((long)(base_off + k));
                             if (!vm_throw_value(vm, err_done2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return vm_uncaught_error(vm, &err_done2);
                             }
@@ -563,7 +571,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                             TVal err_val2 = vm.return_val;
                             vm.has_error = false;
                             TVal* count_slot4 = ds.regs_base + count_reg;
-                            count_slot4.set_fastint((long)k);
+                            count_slot4.set_fastint((long)(base_off + k));
                             if (!vm_throw_value(vm, err_val2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return vm_uncaught_error(vm, &err_val2);
                             }
@@ -587,7 +595,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
 
             // Store count in output register
             TVal* count_slot = ds.regs_base + count_reg;
-            count_slot.set_fastint((long)k);
+            count_slot.set_fastint((long)(base_off + k));
             return (TVal){};
         }
 

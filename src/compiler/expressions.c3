@@ -1164,7 +1164,6 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
     // Compile arguments into consecutive registers starting at first_arg
     ushort arg_count = 0;
     bool has_spread = false;
-    ushort spread_count_reg = MAX_REGISTERS;
     ushort total_count_reg = MAX_REGISTERS;
 
     if (!self.check(TokenType.RPAREN)) {
@@ -1190,19 +1189,20 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
 
                 if (!has_spread) {
                     has_spread = true;
-                    // Allocate count registers
-                    spread_count_reg = self.alloc_reg();
+                    // Allocate the running-total register (in/out for SPREAD_ARG
+                    // and the base offset for PUTARG). Initialize with the count
+                    // of plain args emitted before the first spread.
                     total_count_reg = self.alloc_reg();
-                    // Initialize total count with non-spread args so far
                     self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
                 }
 
-                // SPREAD_ARG: A=dest_start_reg, B=count_out_reg, C=source_reg
-                self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                // SPREAD_ARG: A=first_arg base reg, B=running-total reg (in/out;
+                // the spread is written at first_arg + running_total and the
+                // register is advanced by the number of elements produced),
+                // C=source reg. This stacks multiple spreads (and interleaved
+                // PUTARG args) in argument order.
+                self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                 self.free_reg(spread_reg);
-
-                // total_count += spread_count
-                self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
 
                 // Adjust next_reg past the worst-case spread area
                 // (conservatively reserve space; actual count is only known at runtime)
@@ -1487,17 +1487,15 @@ fn ushort? CompilerContext.new_expr(&self) {
     ushort arg_count = 0;
     bool has_spread = false;
     ushort total_count_reg = MAX_REGISTERS;
-    ushort spread_count_reg = MAX_REGISTERS;
 
     if (self.match(TokenType.LPAREN)) {
         if (!self.check(TokenType.RPAREN)) {
             for (;;) {
                 if (self.match(TokenType.ELLIPSIS)) {
-                    // Spread argument inside `new ...(...)`.
-                    // SPREAD_ARG writes spread elements into consecutive
-                    // destination slots starting at first_arg + arg_count,
-                    // and writes the spread count into spread_count_reg.
-                    // ADD then folds it into total_count_reg.
+                    // Spread argument inside `new ...(...)`. SPREAD_ARG writes
+                    // the spread elements at first_arg + <running total> and
+                    // advances the running-total register, stacking multiple
+                    // spreads and interleaved PUTARG args in order.
                     ushort dest_start = first_arg + arg_count;
                     if (self.next_reg <= dest_start + 1) {
                         self.next_reg = dest_start + 2;
@@ -1514,12 +1512,10 @@ fn ushort? CompilerContext.new_expr(&self) {
                     if (!has_spread) {
                         has_spread = true;
                         total_count_reg = self.alloc_reg();
-                        spread_count_reg = self.alloc_reg();
                         self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
                     }
-                    self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                    self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                     self.free_reg(spread_reg);
-                    self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
                     if (self.next_reg <= dest_start + 1) {
                         self.next_reg = dest_start + 2;
                     }
@@ -2284,7 +2280,6 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 }
                 ushort arg_count = 0;
                 bool has_spread = false;
-                ushort spread_count_reg = MAX_REGISTERS;
                 ushort total_count_reg = MAX_REGISTERS;
                 if (!self.check(TokenType.RPAREN)) {
                     for (;;) {
@@ -2304,13 +2299,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                             }
                             if (!has_spread) {
                                 has_spread = true;
-                                spread_count_reg = self.alloc_reg();
                                 total_count_reg = self.alloc_reg();
                                 self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
                             }
-                            self.emit_abc(Opcode.SPREAD_ARG, (uint)dest_start, (uint)spread_count_reg, (uint)spread_reg);
+                            self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                             self.free_reg(spread_reg);
-                            self.emit_abc(Opcode.ADD, (uint)total_count_reg, (uint)total_count_reg, (uint)spread_count_reg);
                             if (self.next_reg <= dest_start + 1) {
                                 self.next_reg = dest_start + 2;
                             }
