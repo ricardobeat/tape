@@ -178,8 +178,11 @@ struct Vm {
     CompiledFunction* current_func;
     Instruction* curr_pc; /// Pointer to current PC variable (for sync)
 
-    // Global environment
+    // Global environment (object record — for var/function bindings)
     EnvRecord* global_env;
+    // Global lexical environment (declarative record — for let/const/class bindings)
+    // Sits on top of global_env so let/const are not properties of the global object.
+    EnvRecord* global_lex_env;
 
     // Return value (for outer executor return)
     TVal return_val;

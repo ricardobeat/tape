@@ -41,7 +41,7 @@ fn Vm*? vm_create(Heap* heap) {
     heap.curr_thread = vm;
     heap.mark_activations_fn = &vm_mark_activations;
 
-    // Create global environment
+    // Create global environment (object record — backs the global object)
     EnvRecord*? global = env::env_create(heap, null);
     if (catch err = global) {
         heap.free_func(heap.heap_udata, vs_raw);
@@ -53,6 +53,20 @@ fn Vm*? vm_create(Heap* heap) {
     // Register the global environment's bindings object as a GC root
     // so that mark-and-sweep never collects the global scope.
     heap.register_gc_root(global.bindings.as_header());
+
+    // Create the global lexical environment (declarative record — for let/const/class).
+    // Per ES2020 §8.1.1.4, the global environment has a declarative record on top
+    // of the object record so that let/const bindings are NOT properties of the
+    // global object (this.hasOwnProperty('x') is false for let x).
+    EnvRecord*? global_lex = env::env_create_declarative(heap, global);
+    if (catch err = global_lex) {
+        heap.free_func(heap.heap_udata, vs_raw);
+        heap.free_func(heap.heap_udata, raw);
+        return VM_ERROR~;
+    }
+    vm.global_lex_env = global_lex;
+    // Register global lex env bindings as GC root too
+    heap.register_gc_root(global_lex.bindings.as_header());
 
     // Register built-ins
     if (!builtins::register_builtins(global, heap)) {
@@ -152,6 +166,12 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     vm.global_env = global;
 
     heap.register_gc_root(global.bindings.as_header());
+
+    // Fresh global lexical environment (declarative record for let/const/class)
+    EnvRecord*? global_lex = env::env_create_declarative(heap, global);
+    if (catch err = global_lex) { return false; }
+    vm.global_lex_env = global_lex;
+    heap.register_gc_root(global_lex.bindings.as_header());
 
     if (!builtins::register_builtins(global, heap)) { return false; }
 

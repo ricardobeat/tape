@@ -316,8 +316,9 @@ const uint BUILTIN_PROXY                       = 420;
 const uint BUILTIN_PROXY_REVOCABLE             = 421;
 const uint BUILTIN_PROXY_REVOKE                = 422;
 const uint BUILTIN_PROXY_CALL                  = 423;
+const uint BUILTIN_EVAL_SCRIPT                 = 424;
 
-const uint BUILTIN_COUNT                       = 424;
+const uint BUILTIN_COUNT                       = 425;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2901,6 +2902,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROXY_REVOCABLE]            = &builtin_proxy_revocable,
     [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
     [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
+    [BUILTIN_EVAL_SCRIPT]                = &builtin_eval_script,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3211,6 +3213,33 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
             TVal gthis_tv;
             gthis_tv.set_object(global_env.bindings);
             env::env_declare_nonenum(global_env, gthis_key, gthis_tv);
+        }
+    }
+
+    // Wire the global object's [[Prototype]] to Object.prototype (ES2020 §9.3).
+    // This is required so that the global object inherits hasOwnProperty, valueOf,
+    // toString, etc. from Object.prototype, as mandated by the spec.
+    if (heap.object_proto != null) {
+        global_env.bindings.prototype = heap.object_proto;
+    }
+
+    // Hidden test262 primitive: __evalScript(src) — runs src as a global script
+    // so that var/function declarations become non-configurable global properties
+    // (unlike eval() which creates a fresh declarative env).
+    {
+        HString* es_key = builtin_intern_string(heap, "__evalScript");
+        if (es_key != null) {
+            HObject*? es_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (try es_fn = es_raw) {
+                es_fn.flags.callable = true;
+                es_fn.flags.constructable = false;
+                (*es_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_EVAL_SCRIPT;
+                es_fn.prototype = heap.function_proto;
+                set_func_ctor_name_length(es_fn, heap, "__evalScript", 1);
+                TVal es_tv;
+                es_tv.set_object(es_fn);
+                env::env_declare_nonenum(global_env, es_key, es_tv);
+            }
         }
     }
 
