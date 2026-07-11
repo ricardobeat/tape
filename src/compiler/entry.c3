@@ -73,7 +73,7 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 /// Compile source as eval code (Program, returns last expression value).
 /// Eval code differs from a regular program in that the value of the last
 /// expression statement is returned (not undefined).
-fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
+fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool caller_is_strict = false) {
     g_last_err_msg[0] = 0;
     g_last_err_line = 0;
     g_last_err_col  = 0;
@@ -82,6 +82,9 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     ctx.is_global = true;
     ctx.eval_mode = true;
     ctx.eval_acc_reg = ctx.alloc_reg();
+    // ES2020 §18.2.1.1: eval code inherits strict mode from the enclosing
+    // context if the direct eval call site is strict (§18.2.1.1 step 1).
+    if (caller_is_strict) { ctx.is_strict = true; }
 
     // Initialize eval result accumulator to undefined (for empty eval)
     ctx.emit_abc(Opcode.LDUNDEF, (uint)ctx.eval_acc_reg, 0, 0);

@@ -39,8 +39,23 @@ fn EnvRecord* resolve_call_lex_env(Vm* vm, HObject* func_obj,
                                    CompiledFunction* target, EnvRecord* var_env) {
     EnvRecord* base = var_env;
     EnvRecord* cap_lex = (*func_obj.extra_ptr()).func.lex_env;
+    // Use the captured lex_env as activation base only when it is a sibling scope
+    // that is NOT already reachable via var_env's parent chain.  Block-scope captures
+    // (let/const in { }) need this: the block env is a child of the outer var_env, so
+    // it is a sibling of the fresh function scope, and GETVAR must start there to see
+    // the block's bindings.  But if cap_lex is already an ancestor of var_env (e.g.
+    // global_lex_env when the function scope's parent chain already includes it),
+    // keep var_env as base so the fresh scope is not bypassed.
     if (cap_lex != null && cap_lex != var_env && cap_lex.is_declarative) {
-        base = cap_lex;
+        bool already_in_chain = false;
+        EnvRecord* walk = var_env.parent;
+        uint walk_depth = 0;
+        while (walk != null && walk_depth < 32) {
+            if (walk == cap_lex) { already_in_chain = true; break; }
+            walk = walk.parent;
+            walk_depth++;
+        }
+        if (!already_in_chain) { base = cap_lex; }
     }
     if (target.is_namebinding()) {
         char[] name_data = target.get_name();
@@ -279,7 +294,16 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             Activation* act = &vm.activations[0];
             vm.activation_count = 1;
             EnvRecord* cfn_var_env = (*hobj.extra_ptr()).func.var_env;
-            if (try fv_cfn = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { cfn_var_env = fv_cfn; }
+            // Global-code functions (compiled by compile(), not compile_eval or inner fns)
+            // must run directly in the provided env — do NOT wrap in a function scope,
+            // so that DECLVAR writes go to the global object via env_declare_global_func/var.
+            if (!target.is_global_fn()) {
+                EnvRecord* cfn_parent = (*hobj.extra_ptr()).func.var_env;
+                if (vm.global_lex_env != null && cfn_parent == vm.global_env) {
+                    cfn_parent = vm.global_lex_env;
+                }
+                if (try fv_cfn = env::env_create_function_scope(vm.heap, cfn_parent)) { cfn_var_env = fv_cfn; }
+            }
             act.func = target;
             act.parent = null;
             act.var_env = cfn_var_env;
@@ -801,7 +825,11 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.func = func;
     entry_act.parent = null;
     entry_act.var_env = vm.global_env;
-    entry_act.lex_env = vm.global_env;
+    // Use the separate lexical record so let/const/class at global scope
+    // are not properties of the global object (ES2020 §8.1.1.4).
+    // Use the separate lexical record so let/const/class at global scope
+    // are not properties of the global object (ES2020 §8.1.1.4).
+    entry_act.lex_env = (vm.global_lex_env != null) ? vm.global_lex_env : vm.global_env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;  // Points into bytecode
     entry_act.bottom = vm.valstack;
@@ -2724,7 +2752,22 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     // --- Slow path: full env_declare ---
-                    env::env_declare(ds.act.var_env, key, *ra);
+                    // Global bindings must be non-configurable per ES2020
+                    // §8.1.1.4.15 (CreateGlobalVarBinding) and
+                    // §8.1.1.4.16 (CreateGlobalFunctionBinding, deletable=false).
+                    if (ds.act.var_env == vm.global_env) {
+                        if (ra.is_undefined()) {
+                            // var hoisting: CreateGlobalVarBinding semantics —
+                            // create {undefined, NEC} only if not already present.
+                            env::env_declare_global_var(ds.act.var_env, key);
+                        } else {
+                            // function declaration: CreateGlobalFunctionBinding —
+                            // update value + make non-configurable.
+                            env::env_declare_global_func(ds.act.var_env, key, *ra);
+                        }
+                    } else {
+                        env::env_declare(ds.act.var_env, key, *ra);
+                    }
 
                     // Populate VarIC for next time
                     if (ds.var_ic_base != null) {

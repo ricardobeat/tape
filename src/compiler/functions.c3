@@ -1285,7 +1285,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             }
         }
 
-        if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+        // For global scope: process FUNCTION at brace_depth 0 (global-level declarations).
+        // For function scope: the function body starts with {, so body-level statements
+        // are at brace_depth 1. Process FUNCTION there so declarations after `return` etc.
+        // are still hoisted (ES5 §10.5 step 5: function declarations are instantiated
+        // before any body code runs).
+        bool at_hoist_level = is_global ? (brace_depth == 0) : (brace_depth == 1);
+        if (at_hoist_level && tt == TokenType.FUNCTION) {
             // At global/module scope, function declarations are already hoisted
             // by hoist_global_fn_decls().  Skip them here to avoid double
             // compilation — just advance past the star, name, and body.
@@ -1417,11 +1423,19 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 Token name_tok2 = name_opt2;
                 if (name_tok2.type != TokenType.IDENTIFIER) break;
 
-                ushort var_reg = self.declare_var(name_tok2.str_value, VAR);
-                self.has_local_bindings = true;
-                self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
-                uint var_name_idx = self.add_string_constant(name_tok2.str_value);
-                self.emit_a_bc(Opcode.DECLVAR, (uint)var_reg, var_name_idx);
+                // Skip re-declaration if a binding for this name already exists
+                // in the current scope (e.g. a parameter). ES5 §10.5 step 8c:
+                // if the identifier already has a binding, do not override it.
+                ushort? existing_opt = self.resolve_var(name_tok2.str_value);
+                if (try _existing = existing_opt) {
+                    // Already declared (as param or earlier var) — no-op for hoisting.
+                } else {
+                    ushort var_reg = self.declare_var(name_tok2.str_value, VAR);
+                    self.has_local_bindings = true;
+                    self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
+                    uint var_name_idx = self.add_string_constant(name_tok2.str_value);
+                    self.emit_a_bc(Opcode.DECLVAR, (uint)var_reg, var_name_idx);
+                }
 
                 // Check for initializer or comma
                 Token? sep_opt = self.lexer.next_token();
@@ -1433,24 +1447,11 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                     break;
                 }
             }
-        } else if (!is_global && brace_depth == 0) {
-            // Top-level token that isn't a declaration (function/var) — the
-            // remaining program is real code (statements). Restore the lexer
-            // to before this token and stop pre-scanning; the main statement()
-            // loop will parse it.
-            // Only applied for function-level hoisting (is_global=false).
-            // Global hoisting must scan the entire source for interspersed declarations.
-            self.lexer.pos             = pos_before;
-            self.lexer.line            = line_before;
-            self.lexer.col             = col_before;
-            self.lexer.current         = cur_before;
-            self.lexer.lookahead       = look_before;
-            self.lexer.has_lookahead   = haslk_before;
-            self.lexer.pushed_back     = push_before;
-            self.lexer.has_pushed_back = haspb_before;
-            self.lexer.seen_line_term  = slt_before;
-            break;
         }
+        // All non-declaration tokens at brace_depth 0 are skipped; the main
+        // statement() loop will re-parse the full body after hoist_decls restores
+        // the lexer. Scanning must continue past early returns and other statements
+        // to find all var/function declarations in the entire function body.
     }
 
     // --- Restore lexer state ---
@@ -1624,7 +1625,7 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             char[] fn_name = name_opt.str_value;
             if (fn_name.len == 0) continue;
 
-            // Check if already hoisted
+            // Check if already seen in this hoisting scan
             bool already = false;
             for (ushort hi = 0; hi < self.hoisted_fn_count; hi++) {
                 if (str_eq(self.hoisted_fn_names[hi], fn_name)) {
@@ -1632,14 +1633,14 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
                     break;
                 }
             }
-            if (already) {
-                // Skip the rest of the function body
-                self.skip_function_body();
-                continue;
-            }
+            // At global scope, duplicate function declarations are allowed
+            // (ES2020 §15.1.11 step 10 note ii): the LAST declaration wins.
+            // Compile every occurrence and emit CLOSURE+DECLVAR for each.
+            // env_declare_global_func updates the value on each write, so the
+            // last-compiled definition becomes the live global binding.
 
-            // Record as hoisted
-            if (self.hoisted_fn_count < 256) {
+            // Record name on first encounter only
+            if (!already && self.hoisted_fn_count < 256) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
             }
