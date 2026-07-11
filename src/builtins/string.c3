@@ -2383,8 +2383,18 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
 
-    double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)clen;
-    if (math::is_nan(pos_d) || pos_d < 0) { pos_d = 0; }
+    // Step 4-6: numPos = ToNumber(position); NaN → +∞ (i.e. search from the very
+    // end), otherwise ToIntegerOrInfinity. ToNumber runs valueOf and may throw
+    // (ES2022 §22.1.3.9).
+    double pos_d;
+    if (ctx.argc > 1) {
+        double num_pos = builtin_to_number_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        pos_d = math::is_nan(num_pos) ? (double)clen : num_pos;
+    } else {
+        pos_d = (double)clen;
+    }
+    if (pos_d < 0) { pos_d = 0; }
     if (pos_d > (double)clen) { pos_d = (double)clen; }
     // For lastIndexOf, search from min(pos, clen) backwards, in code units.
     int start_units = (int)(long)pos_d;
