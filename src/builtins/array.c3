@@ -3139,6 +3139,13 @@ fn bool arr_has_prop(HObject* obj, ulong key, Heap* heap) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         return prim != null && (long)key < prim.char_length();
     }
+    // TypedArray: integer indices in [0, length) are own data properties served
+    // from the backing buffer (they never appear in the named-property table).
+    if (is_typed_array_class(obj.get_class())) {
+        uint ta_shift = ta_elem_shift(obj.get_class());
+        ulong ta_len = (ulong)((*obj.extra_ptr()).view.byte_length >> ta_shift);
+        return key < ta_len;
+    }
     HString* pk = heap.int_to_hstring((long)key);
     if (pk == null) return false;
     // Check own properties first (handles accessor properties set via defineProperty)
@@ -3620,6 +3627,18 @@ fn bool arr_get_elem_vm(HObject* obj, ulong key, Heap* heap, BuiltinContext* ctx
             return false;
         }
         return false;
+    }
+
+    // TypedArray: integer indices in [0, length) load from the backing buffer.
+    if (is_typed_array_class(obj.get_class())) {
+        hobject::ObjClass ta_cls = obj.get_class();
+        uint ta_shift = ta_elem_shift(ta_cls);
+        ulong ta_len = (ulong)((*obj.extra_ptr()).view.byte_length >> ta_shift);
+        if (key >= ta_len) return false;
+        HObject* ta_buf = (*obj.extra_ptr()).view.buffer;
+        char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+        *out = ta_load_element(ta_base, ta_cls, (uint)key);
+        return true;
     }
 
     // Fast path: dense array storage (also used by the arguments object,
