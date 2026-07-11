@@ -415,6 +415,17 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initget_props = hobj.prop_values();
+                    // DefinePropertyOrThrow: redefining a non-configurable
+                    // non-accessor property (e.g. a static computed getter named
+                    // "prototype"/"length" on the class constructor) throws.
+                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable
+                        && !hobj.get_prop_flags((uint)idx).is_accessor) {
+                        HString* nm = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot redefine non-configurable property '%s'", nm.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    }
                     if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's getter
                         hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
@@ -440,6 +451,14 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initset_props = hobj.prop_values();
+                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable
+                        && !hobj.get_prop_flags((uint)idx).is_accessor) {
+                        HString* nm = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot redefine non-configurable property '%s'", nm.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    }
                     if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's setter
                         hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
