@@ -3128,6 +3128,11 @@ fn void? CompilerContext.function_declaration(&self) {
         self.is_constructable = false;
     }
 
+    // Async functions are not constructors (ES2017 §14.7.5 — no [[Construct]]).
+    if (self.is_async) {
+        self.is_constructable = false;
+    }
+
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
     ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 

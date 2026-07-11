@@ -2249,6 +2249,60 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
         return;
     }
 
+    // Proxy props: [[OwnPropertyKeys]] + [[GetOwnProperty]] per key (in trap order).
+    if (props.flags.exotic_proxyobj) {
+        HObject* karr;
+        if (!proxy_mop_own_keys(ctx.vm, ctx.heap, props, &karr)) { proxy_ctx_ok(ctx); return; }
+        for (uint i = 0; i < karr.array_used; i++) {
+            TVal el = karr.array_part()[i];
+            if (!el.is_string()) continue;
+            HString* k = (HString*)el.get_heapptr();
+            ProxyDesc pd;
+            if (!proxy_mop_get_own(ctx.vm, ctx.heap, props, k, &pd)) { proxy_ctx_ok(ctx); return; }
+            if (!pd.found || !pd.enumerable) continue;
+            // Get the descriptor value via [[Get]] on props.
+            TVal recv; recv.set_object(props);
+            TVal desc_val;
+            if (!proxy_mop_get(ctx.vm, ctx.heap, props, k, recv, &desc_val)) { proxy_ctx_ok(ctx); return; }
+            if (desc_val.is_undefined()) continue;
+            if (!desc_val.is_object()) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Property description must be an object");
+                return;
+            }
+            // Define on obj (ordinary or proxy).
+            if (obj.flags.exotic_proxyobj) {
+                ProxyDesc ipd;
+                if (!proxy_object_to_desc(ctx.vm, ctx.heap, (HObject*)desc_val.get_heapptr(), &ipd)) { proxy_ctx_ok(ctx); return; }
+                bool dok;
+                if (!proxy_mop_define(ctx.vm, ctx.heap, obj, k, &ipd, &dok)) { proxy_ctx_ok(ctx); return; }
+                if (!dok) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "'defineProperty' on proxy: trap returned falsish");
+                    return;
+                }
+            } else {
+                HObject* desc_obj = (HObject*)desc_val.get_heapptr();
+                hobject::PropFlags desc_flags;
+                TVal[2] desc_vals;
+                bool is_acc;
+                if (!to_property_descriptor(ctx, desc_obj, &desc_flags, &desc_vals, &is_acc, null)) {
+                    if (ctx.should_throw) return;
+                    continue;
+                }
+                if (is_acc) {
+                    obj.put_prop((void*)k, desc_vals[0], desc_flags);
+                    int pidx = obj.find_prop_idx(k);
+                    if (pidx >= 0) {
+                        obj.prop_values()[pidx] = hobject::hobject_create_accessors(ctx.heap, desc_vals[0], desc_vals[1]);
+                    }
+                } else {
+                    obj.put_prop((void*)k, desc_vals[0], desc_flags);
+                }
+            }
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
+
     // Step 4: For each key, get descriptor and call DefinePropertyOrThrow
     // Collect keys first in case properties are modified during iteration
     HString*[256] keys_arr;
@@ -2997,6 +3051,17 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    // Proxy: route [[PreventExtensions]] through the MOP so traps fire.
+    if (obj.flags.exotic_proxyobj) {
+        bool pok;
+        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &pok)) { proxy_ctx_ok(ctx); return; }
+        if (!pok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'preventExtensions' on proxy: trap returned falsish");
+            return;
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
     obj.seal();
     ctx.result.set_object(obj);
 }
@@ -3017,6 +3082,17 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
+    // Proxy: route [[PreventExtensions]] through the MOP so traps fire.
+    if (obj.flags.exotic_proxyobj) {
+        bool pok;
+        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &pok)) { proxy_ctx_ok(ctx); return; }
+        if (!pok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "'preventExtensions' on proxy: trap returned falsish");
+            return;
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
     obj.freeze();
     ctx.result.set_object(obj);
 }
@@ -3990,6 +4066,18 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         // GENERATOR, JSON, MATH do not appear in the spec's internal-slot list;
         // they rely on @@toStringTag set on their prototypes.
         char* class_name = "Object";
+
+        // Proxy: IsArray may throw for a revoked proxy (§7.2.2 step 3.a).
+        if (obj.flags.exotic_proxyobj) {
+            bool is_arr = false;
+            if (!proxy_is_array(ctx.heap, obj, &is_arr)) {
+                // Revoked proxy or other error — propagate TypeError.
+                if (!proxy_ctx_ok(ctx)) return;
+                return;
+            }
+            if (is_arr) class_name = "Array";
+            // Fall through to @@toStringTag lookup below.
+        } else {
         switch (obj.get_class()) {
             case hobject::ObjClass.ARRAY:     class_name = "Array"; break;
             case hobject::ObjClass.FUNCTION:  class_name = "Function"; break;
@@ -4003,9 +4091,11 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             default:                          class_name = "Object"; break;
         }
         // Check callable (IsCallable) for non-FUNCTION objects that have [[Call]]
-        if (obj.is_callable() && obj.get_class() != hobject::ObjClass.FUNCTION) {
+        if (!obj.flags.exotic_proxyobj &&
+            obj.is_callable() && obj.get_class() != hobject::ObjClass.FUNCTION) {
             class_name = "Function";
         }
+        } // end else (non-proxy class_name determination)
 
         // ES2022 §20.1.3.6 step 15: Get(O, @@toStringTag)
         if (tag_sym != null) {
@@ -4235,16 +4325,24 @@ fn void builtin_object_proto_isPrototypeOf(BuiltinContext* ctx) {
         return;
     }
     HObject* proto = (HObject*)this_val.get_heapptr();
-    HObject* obj = (HObject*)arg.get_heapptr();
+    HObject* cur = (HObject*)arg.get_heapptr();
 
-    // Walk the prototype chain of obj looking for proto
-    HObject* cur = obj.prototype;
-    while (cur != null) {
+    // ES2022 §20.1.3.3 step 3: walk [[GetPrototypeOf]] on V (respects proxy traps).
+    uint depth = 0;
+    while (depth < 1024) {
+        TVal proto_tv;
+        if (!object_get_proto(ctx.vm, ctx.heap, cur, &proto_tv)) {
+            if (!proxy_ctx_ok(ctx)) return;
+            return;
+        }
+        if (proto_tv.is_null()) break;
+        if (!proto_tv.is_object() || proto_tv.get_heapptr() == null) break;
+        cur = (HObject*)proto_tv.get_heapptr();
         if (cur == proto) {
             ctx.result.set_boolean(true);
             return;
         }
-        cur = cur.prototype;
+        depth++;
     }
 }
 

@@ -505,6 +505,11 @@ enum Opcode : char {
     /// .return method (allocated by the VM); B = C on exit.
     ITER_CLOSE,
 
+    /// `IsConstructor(A)` — throw TypeError if register A is not a constructor.
+    /// Used at class `extends` time (ES2022 §15.7.14 step 5.f).
+    /// A-only format: A=value_reg, B=0, C=0.
+    CHKCTOR,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -592,6 +597,7 @@ case PUTLEX:     return A_BC;
         case GETPROPC2:  return ABC;
         case REQUIRE_OBJ: return ABC;
         case ITER_CLOSE: return ABC;
+        case CHKCTOR:    return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;

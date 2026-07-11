@@ -358,6 +358,49 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             if (!src_tv.is_object() || src_tv.get_heapptr() == null) break;
             HObject* source = (HObject*)src_tv.get_heapptr();
 
+            // Proxy source: CopyDataProperties via MOP (ES2022 §19.1.2.1, §10.5).
+            // [[OwnPropertyKeys]] → [[GetOwnProperty]] → [[Get]] for enumerable keys.
+            if (source.flags.exotic_proxyobj) {
+                HObject* karr;
+                if (!builtins::proxy_mop_own_keys(vm, vm.heap, source, &karr)) {
+                    TVal proxy_err = vm.heap.error_value;
+                    vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, proxy_err, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &proxy_err);
+                    }
+                    return (TVal){};
+                }
+                for (uint pi = 0; pi < karr.array_used; pi++) {
+                    TVal pel = karr.array_part()[pi];
+                    if (!pel.is_string()) continue;
+                    HString* pk = (HString*)pel.get_heapptr();
+                    builtins::ProxyDesc pd;
+                    if (!builtins::proxy_mop_get_own(vm, vm.heap, source, pk, &pd)) {
+                        TVal e2 = vm.heap.error_value;
+                        vm.heap.has_error = false;
+                        if (!vm_throw_value(vm, e2, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return vm_uncaught_error(vm, &e2);
+                        }
+                        return (TVal){};
+                    }
+                    if (!pd.found || !pd.enumerable) continue;
+                    TVal recv; recv.set_object(source);
+                    TVal pval;
+                    if (!builtins::proxy_mop_get(vm, vm.heap, source, pk, recv, &pval)) {
+                        TVal e3 = vm.heap.error_value;
+                        vm.heap.has_error = false;
+                        if (!vm_throw_value(vm, e3, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return vm_uncaught_error(vm, &e3);
+                        }
+                        return (TVal){};
+                    }
+                    if (!target.put_prop((void*)pk, pval, hobject::PROP_FLAGS_WEC)) {
+                        return VM_ERROR~;
+                    }
+                }
+                break;
+            }
+
             // Copy enumerable own dense array indices (integer-keyed properties)
             if (source.array_part() != null) {
                 char[12] digit_buf;

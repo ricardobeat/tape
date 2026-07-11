@@ -1385,12 +1385,10 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
-            // Regular function declarations are constructable per ES2015 §14.1.2 —
-            // save/restore the flag around the inner compile so nested functions
-            // inherit it. Generator functions are never constructable (§14.4) —
-            // `new` on one must throw TypeError.
+            // Regular function declarations are constructable per ES2015 §14.1.2.
+            // Generator and async functions are never constructable.
             bool saved_is_constructable = self.is_constructable;
-            self.is_constructable = !self.is_generator;
+            self.is_constructable = !self.is_generator && !hoist_is_async;
 
             self.is_async = hoist_is_async;
             // Use the byte offset of `function` captured right after expect().
@@ -1680,12 +1678,10 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             ushort func_reg = self.declare_var(name_tok2.str_value, VAR);
             self.has_local_bindings = true;
 
-            // Regular function declarations are constructable per ES2015 §14.1.2 —
-            // save/restore the flag around the inner compile so nested functions
-            // inherit it. Generator functions are never constructable (§14.4) —
-            // `new` on one must throw TypeError.
+            // Regular function declarations are constructable per ES2015 §14.1.2.
+            // Generator and async functions are never constructable.
             bool saved_is_constructable = self.is_constructable;
-            self.is_constructable = !self.is_generator;
+            self.is_constructable = !self.is_generator && !hoist_is_async;
 
             self.is_async = hoist_is_async;
             // Use the byte offset of `function` captured right after expect().
@@ -2606,6 +2602,12 @@ fn ushort? CompilerContext.function_expr(&self) {
     // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
         self.is_generator = true;
+        self.is_constructable = false;
+    }
+
+    // Async function expressions are not constructors (ES2017 §14.7.5).
+    // saved_is_async captures the pre-reset flag set by the caller for `async f()`.
+    if (saved_is_async) {
         self.is_constructable = false;
     }
 

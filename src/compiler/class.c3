@@ -263,6 +263,9 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     ushort base_reg = MAX_REGISTERS;
     if (self.match(TokenType.EXTENDS)) {
         base_reg = self.assignment_expr()!;
+        // ES2022 §15.7.14 step 5.f: if superclass is not null and not a
+        // constructor, throw TypeError BEFORE accessing .prototype.
+        self.emit_abc(Opcode.CHKCTOR, (uint)base_reg, 0, 0);
         self.has_super_binding = true;
 
         // Store the super class in an internal variable so the constructor
