@@ -993,14 +993,16 @@ fn Token? Lexer.scan_string(&self) {
                 case '\\': buf[buf_len] = '\\'; buf_len++;
 
                 case 'x':
-                    // \xHH
+                    // \xHH — Unicode codepoint U+00HH, encoded as UTF-8.
+                    // Values >= 0x80 need a 2-byte UTF-8 sequence; storing
+                    // the raw byte would produce invalid CESU-8 and cause
+                    // str_intern to emit replacement characters.
                     if (self.remaining() < 2) return LEX_ERROR~;
                     char h1 = self.advance_char();
                     char h2 = self.advance_char();
                     if (!is_hex_digit(h1) || !is_hex_digit(h2)) return LEX_ERROR~;
                     uint hval = hex_value(h1) * 16 + hex_value(h2);
-                    buf[buf_len] = (char)hval;
-                    buf_len++;
+                    buf_len = encode_utf8_to_buf(&buf, buf_len, hval);
 
                 case 'u':
                     if (self.at_end()) return LEX_ERROR~;
@@ -1560,14 +1562,15 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes)
                 case '$':  buf[buf_len] = '$';  buf_len++;  // \$ escapes dollar
 
                 case 'x':
+                    // \xHH in template literals — same UTF-8 encoding fix as
+                    // in regular string literals: the value is a Unicode codepoint.
                     if (self.remaining() < 2) { *end_char = 0; *has_escapes = true; return {}; }
                     {
                         char h1 = self.advance_char();
                         char h2 = self.advance_char();
                         if (!is_hex_digit(h1) || !is_hex_digit(h2)) { *end_char = 0; *has_escapes = true; return {}; }
                         uint hval = hex_value(h1) * 16 + hex_value(h2);
-                        buf[buf_len] = (char)hval;
-                        buf_len++;
+                        buf_len = encode_utf8_to_buf(&buf, buf_len, hval);
                     }
 
                 case 'u':

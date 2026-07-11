@@ -759,7 +759,272 @@ fn void builtin_string_proto_substr(BuiltinContext* ctx) {
     ctx.result.set_string(result);
 }
 
-/// String.prototype.toLowerCase() — ES5 §15.5.4.17 (ASCII-only)
+// ============================================================================
+// Unicode case conversion helpers
+// ============================================================================
+
+/// Decode a single Unicode codepoint from a CESU-8 string.
+/// CESU-8 stores astral codepoints as surrogate pairs, each encoded as a
+/// standalone 3-byte UTF-8 sequence.  When a high surrogate is immediately
+/// followed by a low surrogate, they are combined into the astral codepoint.
+/// Returns the codepoint and writes the byte sequence length to *seq_len.
+fn uint cesu8_decode_codepoint(char* data, uint off, uint total_len, uint* seq_len) {
+    if (off >= total_len) { *seq_len = 0; return 0; }
+    uint b0 = (uint)data[off];
+
+    // 1-byte ASCII fast path
+    if (b0 < 0x80) { *seq_len = 1; return b0; }
+
+    // 2-byte: 110xxxxx 10xxxxxx
+    if ((b0 & 0xE0) == 0xC0) {
+        if (off + 1 >= total_len) { *seq_len = 1; return b0 & 0x1F; }
+        *seq_len = 2;
+        return ((b0 & 0x1F) << 6) | ((uint)data[off + 1] & 0x3F);
+    }
+
+    // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
+    if ((b0 & 0xF0) == 0xE0) {
+        if (off + 2 >= total_len) { *seq_len = 1; return 0; }
+        uint b1 = (uint)data[off + 1];
+        uint b2 = (uint)data[off + 2];
+        uint cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+
+        // Check for surrogate pair (CESU-8 astral encoding)
+        if (cp >= 0xD800 && cp <= 0xDBFF) {
+            // High surrogate — try to find a trailing low surrogate
+            uint off2 = off + 3;
+            if (off2 + 2 < total_len) {
+                uint c0 = (uint)data[off2];
+                if ((c0 & 0xF0) == 0xE0) {
+                    uint c1 = (uint)data[off2 + 1];
+                    uint c2 = (uint)data[off2 + 2];
+                    uint cp2 = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+                    if (cp2 >= 0xDC00 && cp2 <= 0xDFFF) {
+                        // Valid surrogate pair → astral codepoint
+                        *seq_len = 6;
+                        return 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00);
+                    }
+                }
+            }
+        }
+
+        *seq_len = 3;
+        return cp;
+    }
+
+    // 4-byte (standard UTF-8 — shouldn't normally appear in CESU-8 but handle defensively)
+    if ((b0 & 0xF8) == 0xF0) {
+        if (off + 3 >= total_len) { *seq_len = 1; return 0; }
+        uint b1 = (uint)data[off + 1];
+        uint b2 = (uint)data[off + 2];
+        uint b3 = (uint)data[off + 3];
+        *seq_len = 4;
+        return ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+    }
+
+    *seq_len = 1;
+    return 0;
+}
+
+/// Encode a codepoint to CESU-8 into buf, returning bytes written.
+/// Astral codepoints (>= U+10000) are encoded as surrogate pairs,
+/// each as an independent 3-byte UTF-8 sequence.
+fn uint cesu8_encode_codepoint(uint cp, char* buf, uint buf_remaining) {
+    if (cp < 0x80) {
+        if (buf_remaining < 1) return 0;
+        buf[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        if (buf_remaining < 2) return 0;
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        if (buf_remaining < 3) return 0;
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    // Astral: encode as surrogate pair in CESU-8
+    if (buf_remaining < 6) return 0;
+    uint high = 0xD800 + ((cp - 0x10000) >> 10);
+    uint low  = 0xDC00 + ((cp - 0x10000) & 0x3FF);
+    buf[0] = (char)(0xE0 | (high >> 12));
+    buf[1] = (char)(0x80 | ((high >> 6) & 0x3F));
+    buf[2] = (char)(0x80 | (high & 0x3F));
+    buf[3] = (char)(0xE0 | (low >> 12));
+    buf[4] = (char)(0x80 | ((low >> 6) & 0x3F));
+    buf[5] = (char)(0x80 | (low & 0x3F));
+    return 6;
+}
+
+/// Decode the entire CESU-8 string into a heap-allocated uint[] of codepoints.
+/// Returns pointer to allocated array (caller must libc::free) and sets *out_n.
+fn uint* cesu8_to_codepoints(char* data, uint blen, uint* out_n) {
+    if (blen == 0) { *out_n = 0; return (uint*)libc::malloc(4); }
+    // Upper bound: each codepoint is at least 1 byte
+    uint* cps = (uint*)libc::malloc((usz)blen * 4);
+    if (cps == null) { *out_n = 0; return null; }
+    uint n = 0;
+    uint i = 0;
+    while (i < blen) {
+        uint seq_len;
+        uint cp = cesu8_decode_codepoint(data, i, blen, &seq_len);
+        if (seq_len == 0) break;
+        cps[n] = cp;
+        n++;
+        i += seq_len;
+    }
+    *out_n = n;
+    return cps;
+}
+
+// GREEK CAPITAL LETTER SIGMA codepoint — has Final_Sigma conditional mapping.
+const uint CP_SIGMA = 0x03A3;
+const uint CP_SIGMA_FINAL = 0x03C2;   // ς — final form
+const uint CP_SIGMA_LOWER = 0x03C3;   // σ — non-final form
+
+/// Determine which lowercase form of Greek Sigma to use.
+/// Per Unicode Default Case Algorithms §3.13:
+///   Final_Sigma: Σ is lowercase to ς (U+03C2) when it is directly after
+///   a Cased character (possibly surrounded by Case_Ignorable) and is NOT
+///   directly before a Cased character (possibly surrounded by Case_Ignorable).
+fn uint sigma_lower_form(uint* cps, uint n, uint idx) {
+    // Look backward for a Cased character (skip Case_Ignorable).
+    // Per Unicode §3.13 Final_Sigma: the "anchor" cased character must be
+    // Cased AND *not* Case_Ignorable (characters that are both Cased and
+    // Case_Ignorable — like U+0345 — count only as Case_Ignorable, not as
+    // the cased anchor).
+    bool preceded_by_cased = false;
+    uint j = idx;
+    while (j > 0) {
+        j--;
+        uint prev = cps[j];
+        bool prev_cased    = (unicode_bindings::unicode_is_cased(prev) != 0);
+        bool prev_ignorable = (unicode_bindings::unicode_is_case_ignorable(prev) != 0);
+        if (prev_cased && !prev_ignorable) {
+            preceded_by_cased = true;
+            break;
+        }
+        if (!prev_ignorable) {
+            break; // non-ignorable, non-cased: stops the backward scan
+        }
+        // prev is Case_Ignorable (whether cased or not): keep scanning
+    }
+    if (!preceded_by_cased) return CP_SIGMA_LOWER;
+
+    // Look forward for a Cased character (skip Case_Ignorable).
+    // Same convention as the backward scan: the "following cased" anchor must
+    // be Cased AND not Case_Ignorable.
+    bool followed_by_cased = false;
+    uint k = idx + 1;
+    while (k < n) {
+        uint next = cps[k];
+        bool next_cased     = (unicode_bindings::unicode_is_cased(next) != 0);
+        bool next_ignorable  = (unicode_bindings::unicode_is_case_ignorable(next) != 0);
+        if (next_cased && !next_ignorable) {
+            followed_by_cased = true;
+            break;
+        }
+        if (!next_ignorable) {
+            break; // non-ignorable, non-cased: stops the forward scan
+        }
+        k++;
+    }
+
+    return followed_by_cased ? CP_SIGMA_LOWER : CP_SIGMA_FINAL;
+}
+
+/// Full Unicode case conversion (toLowerCase or toUpperCase).
+/// conv_type: 1 = lowercase, 0 = uppercase.
+/// Returns a newly interned HString*, or null on OOM.
+fn HString* unicode_case_convert_str(Heap* heap, char* data, uint blen, int conv_type) {
+    if (blen == 0) {
+        return builtin_intern_string(heap, "");
+    }
+
+    // Fast path: ASCII-only string
+    if (true) {
+        bool all_ascii = true;
+        for (uint ai = 0; ai < blen; ai++) {
+            if ((uint)data[ai] >= 0x80) { all_ascii = false; break; }
+        }
+        if (all_ascii) {
+            char* out_buf = (char*)libc::malloc((usz)blen + 1);
+            if (out_buf == null) return null;
+            for (uint ai = 0; ai < blen; ai++) {
+                char c = data[ai];
+                if (conv_type == 1) { // lowercase
+                    if (c >= 'A' && c <= 'Z') c = (char)((uint)c + 32);
+                } else { // uppercase
+                    if (c >= 'a' && c <= 'z') c = (char)((uint)c - 32);
+                }
+                out_buf[ai] = c;
+            }
+            HString* result = builtin_intern_string(heap, out_buf[:blen]);
+            libc::free(out_buf);
+            return result;
+        }
+    }
+
+    // Decode CESU-8 to codepoint array
+    uint num_cps;
+    uint* cps = cesu8_to_codepoints(data, blen, &num_cps);
+    if (cps == null) return null;
+
+    // Apply case mapping: each input codepoint can expand to up to 3 output codepoints
+    uint out_max = num_cps * 3 + 1;
+    uint* out_cps = (uint*)libc::malloc((usz)out_max * 4);
+    if (out_cps == null) {
+        libc::free(cps);
+        return null;
+    }
+
+    uint out_n = 0;
+    uint[3] mapped;
+    for (uint i = 0; i < num_cps; i++) {
+        uint cp = cps[i];
+        int n_mapped;
+        if (conv_type == 1 && cp == CP_SIGMA) {
+            // Greek capital sigma: context-sensitive lowercase
+            out_cps[out_n] = sigma_lower_form(cps, num_cps, i);
+            out_n++;
+        } else {
+            n_mapped = unicode_bindings::unicode_case_conv(cp, conv_type, &mapped[0]);
+            for (int m = 0; m < n_mapped; m++) {
+                out_cps[out_n] = mapped[m];
+                out_n++;
+            }
+        }
+    }
+    libc::free(cps);
+
+    // Encode output codepoints back to CESU-8
+    // Worst case: 6 bytes per codepoint
+    usz out_bytes_max = (usz)out_n * 6 + 1;
+    char* out_bytes = (char*)libc::malloc(out_bytes_max);
+    if (out_bytes == null) {
+        libc::free(out_cps);
+        return null;
+    }
+
+    uint byte_off = 0;
+    for (uint i = 0; i < out_n; i++) {
+        uint written = cesu8_encode_codepoint(out_cps[i], out_bytes + byte_off,
+                                              (uint)(out_bytes_max - byte_off));
+        byte_off += written;
+    }
+    libc::free(out_cps);
+
+    HString* result = builtin_intern_string(heap, out_bytes[:byte_off]);
+    libc::free(out_bytes);
+    return result;
+}
+
+/// String.prototype.toLowerCase() — full Unicode case mapping (ES2024 §22.1.3.26)
 fn void builtin_string_proto_toLowerCase(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -768,22 +1033,15 @@ fn void builtin_string_proto_toLowerCase(BuiltinContext* ctx) {
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
-
-    char[256] buf;
-    usz copy_len = len < 256 ? (usz)len : 256;
-    for (usz i = 0; i < copy_len; i++) {
-        char c = data[i];
-        if (c >= 'A' && c <= 'Z') {
-            buf[i] = (char)(c + 32);
-        } else {
-            buf[i] = c;
-        }
+    HString* result = unicode_case_convert_str(ctx.heap, data, len, 1);
+    if (result == null) {
+        ctx.result.set_undefined();
+        return;
     }
-    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
     ctx.result.set_string(result);
 }
 
-/// String.prototype.toUpperCase() — ES5 §15.5.4.18 (ASCII-only)
+/// String.prototype.toUpperCase() — full Unicode case mapping (ES2024 §22.1.3.28)
 fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -792,69 +1050,22 @@ fn void builtin_string_proto_toUpperCase(BuiltinContext* ctx) {
     }
     char* data = s_hstr.get_cstr();
     uint len = s_hstr.blen;
-
-    char[256] buf;
-    usz copy_len = len < 256 ? (usz)len : 256;
-    for (usz i = 0; i < copy_len; i++) {
-        char c = data[i];
-        if (c >= 'a' && c <= 'z') {
-            buf[i] = (char)(c - 32);
-        } else {
-            buf[i] = c;
-        }
+    HString* result = unicode_case_convert_str(ctx.heap, data, len, 0);
+    if (result == null) {
+        ctx.result.set_undefined();
+        return;
     }
-    HString* result = builtin_intern_string(ctx.heap, buf[:copy_len]);
     ctx.result.set_string(result);
 }
 
-/// String.prototype.toLocaleLowerCase() — ES5 §15.5.4.17
-/// Identical to toLowerCase in default locale.
+/// String.prototype.toLocaleLowerCase() — locale-insensitive (uses Unicode default).
 fn void builtin_string_proto_toLocaleLowerCase(BuiltinContext* ctx) {
-    HString* s_hstr = string_proto_get_this(ctx);
-    if (s_hstr == null) {
-        ctx.result.set_undefined();
-        return;
-    }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
-
-    char[256] buf;
-    usz copy_len = len < 256 ? (usz)len : 256;
-    for (usz i = 0; i < copy_len; i++) {
-        char c = data[i];
-        if (c >= 'A' && c <= 'Z') {
-            buf[i] = (char)(c + 32);
-        } else {
-            buf[i] = c;
-        }
-    }
-    HString* lower = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.set_string(lower);
+    builtin_string_proto_toLowerCase(ctx);
 }
 
-/// String.prototype.toLocaleUpperCase() — ES5 §15.5.4.19
-/// Identical to toUpperCase in default locale.
+/// String.prototype.toLocaleUpperCase() — locale-insensitive (uses Unicode default).
 fn void builtin_string_proto_toLocaleUpperCase(BuiltinContext* ctx) {
-    HString* s_hstr = string_proto_get_this(ctx);
-    if (s_hstr == null) {
-        ctx.result.set_undefined();
-        return;
-    }
-    char* data = s_hstr.get_cstr();
-    uint len = s_hstr.blen;
-
-    char[256] buf;
-    usz copy_len = len < 256 ? (usz)len : 256;
-    for (usz i = 0; i < copy_len; i++) {
-        char c = data[i];
-        if (c >= 'a' && c <= 'z') {
-            buf[i] = (char)(c - 32);
-        } else {
-            buf[i] = c;
-        }
-    }
-    HString* upper = builtin_intern_string(ctx.heap, buf[:copy_len]);
-    ctx.result.set_string(upper);
+    builtin_string_proto_toUpperCase(ctx);
 }
 
 /// String.prototype.localeCompare(that) — ES5 §15.5.4.12
@@ -3029,27 +3240,22 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
         return;
     }
 
-    // ── Step 1: Convert HString (UTF-8) → uint32_t[] codepoints ─────────────
-    char[] data = s_hstr.get_data();
-    uint char_len = s_hstr.char_length();
+    // ── Step 1: Decode CESU-8 → Unicode codepoints (reassembling surrogate pairs) ──
+    char* raw_data = s_hstr.get_cstr();
+    uint blen = s_hstr.blen;
 
-    uint* src_cps = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(char_len * 4));
+    uint num_cps;
+    uint* src_cps = cesu8_to_codepoints(raw_data, blen, &num_cps);
     if (src_cps == null) {
         ctx.result.set_string(s_hstr);
         return;
     }
 
-    uint byte_off = 0;
-    for (uint i = 0; i < char_len; i++) {
-        src_cps[i] = hstring::decode_codepoint(data, byte_off);
-        byte_off += hstring::utf8_seq_len(data[byte_off]);
-    }
-
     // ── Step 2: Run Unicode normalization via libunicode ────────────────────
     int out_len = 0;
     uint* result_cps = unicode_bindings::unicode_normalize_simple(src_cps,
-                        (int)char_len, n_type, &out_len);
-    ctx.heap.free_func(ctx.heap.heap_udata, src_cps);
+                        (int)num_cps, n_type, &out_len);
+    libc::free(src_cps);
 
     if (result_cps == null || out_len < 0) {
         if (result_cps != null) libc::free(result_cps);
@@ -3064,23 +3270,10 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
         return;
     }
 
-    // ── Step 3: Compute byte length of normalized UTF-8 ─────────────────────
-    uint total_bytes = 0;
-    for (int i = 0; i < out_len; i++) {
-        uint cp = result_cps[i];
-        if (cp < 0x80) {
-            total_bytes += 1;
-        } else if (cp < 0x800) {
-            total_bytes += 2;
-        } else if (cp < 0x1_0000) {
-            total_bytes += 3;
-        } else {
-            total_bytes += 4;
-        }
-    }
-
-    // ── Step 4: Allocate and fill UTF-8 output buffer ───────────────────────
-    char* out_buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, total_bytes);
+    // ── Step 3: Encode normalized codepoints back to CESU-8 ─────────────────
+    // Worst case: 6 bytes per codepoint (astral in CESU-8)
+    usz out_bytes_max = (usz)out_len * 6 + 1;
+    char* out_buf = (char*)libc::malloc(out_bytes_max);
     if (out_buf == null) {
         libc::free(result_cps);
         ctx.result.set_string(s_hstr);
@@ -3089,26 +3282,15 @@ fn void builtin_string_proto_normalize(BuiltinContext* ctx) {
 
     uint out_off = 0;
     for (int i = 0; i < out_len; i++) {
-        char[4] cbuf;
-        uint cblen = hstring::encode_codepoint(result_cps[i], cbuf[:4]);
-        if (cblen > 0) {
-            libc::memcpy(out_buf + out_off, &cbuf, (usz)cblen);
-            out_off += cblen;
-        }
+        uint written = cesu8_encode_codepoint(result_cps[i], out_buf + out_off,
+                                              (uint)(out_bytes_max - out_off));
+        out_off += written;
     }
-
-    // Free the C-allocated codepoint buffer
     libc::free(result_cps);
 
-    // ── Step 5: Create HString from UTF-8 bytes ─────────────────────────────
-    // KNOWN GAP: normalize() decodes/re-encodes per UTF-16 code unit, so an
-    // astral character (stored as a surrogate pair) is fed to libunicode as
-    // two separate lone-surrogate "codepoints" rather than being recombined
-    // first — Unicode normalization of astral text is not spec-correct.
-    // Interning still goes through str_intern (not a hand-rolled alloc) so
-    // identity/dedup holds for the (correct, BMP-only) common case.
-    HString* result_hstr = ctx.heap.str_intern(out_buf[:total_bytes]);
-    ctx.heap.free_func(ctx.heap.heap_udata, out_buf);
+    // ── Step 4: Create HString from CESU-8 bytes ────────────────────────────
+    HString* result_hstr = ctx.heap.str_intern(out_buf[:out_off]);
+    libc::free(out_buf);
 
     if (result_hstr != null) {
         ctx.result.set_string(result_hstr);

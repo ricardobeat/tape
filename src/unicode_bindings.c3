@@ -24,6 +24,21 @@ extern fn uint* unicode_normalize_simple(uint* src, int src_len,
 extern fn int unicode_is_identifier_start(uint cp);
 extern fn int unicode_is_identifier_continue(uint cp);
 
+/*
+ * Unicode case conversion.
+ *
+ *   cp        - input codepoint
+ *   conv_type - 0 = uppercase, 1 = lowercase
+ *   out       - caller-provided uint[3] output buffer for mapped codepoints
+ *
+ * Returns the number of mapped codepoints (1–3).
+ */
+extern fn int unicode_case_conv(uint cp, int conv_type, uint* out);
+
+/* Unicode Cased / Case_Ignorable properties (needed for Final_Sigma). */
+extern fn int unicode_is_cased(uint cp);
+extern fn int unicode_is_case_ignorable(uint cp);
+
 /* Normalization form constants (matching libunicode.h) */
 const int UNICODE_NFC  = 0;
 const int UNICODE_NFD  = 1;

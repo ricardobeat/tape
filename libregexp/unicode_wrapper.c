@@ -75,3 +75,28 @@ int unicode_is_identifier_continue(uint32_t cp)
     if (cp == 0x200C || cp == 0x200D) return 1;
     return lre_is_id_continue(cp);
 }
+
+/*
+ * Unicode case conversion.
+ *
+ * Thin wrapper over lre_case_conv:
+ *   conv_type = 0 → uppercase, 1 → lowercase (matches lre_case_conv convention)
+ *
+ * Returns the number of output codepoints (1–3).  `out` must point to a
+ * uint32_t[3] buffer provided by the caller.
+ */
+int unicode_case_conv(uint32_t cp, int conv_type, uint32_t out[3])
+{
+    int n = lre_case_conv(out, cp, conv_type);
+    return n;
+}
+
+int unicode_is_cased(uint32_t cp)
+{
+    return lre_is_cased(cp);
+}
+
+int unicode_is_case_ignorable(uint32_t cp)
+{
+    return lre_is_case_ignorable(cp);
+}

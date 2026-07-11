@@ -44,6 +44,21 @@ uint32_t* unicode_normalize_simple(const uint32_t* src, int src_len,
 int unicode_is_identifier_start(uint32_t cp);
 int unicode_is_identifier_continue(uint32_t cp);
 
+/*
+ * Unicode case conversion via lre_case_conv.
+ *
+ *   cp        - input codepoint
+ *   conv_type - 0 = uppercase, 1 = lowercase
+ *   out       - output buffer for up to 3 mapped codepoints (caller provides)
+ *
+ * Returns the number of mapped codepoints (1–3).
+ */
+int unicode_case_conv(uint32_t cp, int conv_type, uint32_t out[3]);
+
+/* Unicode Cased / Case_Ignorable properties — needed for Final_Sigma. */
+int unicode_is_cased(uint32_t cp);
+int unicode_is_case_ignorable(uint32_t cp);
+
 #ifdef __cplusplus
 }
 #endif

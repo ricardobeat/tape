@@ -1503,6 +1503,12 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
                 uint var_name_idx = self.add_string_constant(name_tok2.str_value);
                 self.emit_a_bc(Opcode.DECLVAR, (uint)var_reg, var_name_idx);
+                // At global scope, var bindings are env-resident (accessed via
+                // GETVAR/PUTVAR); the register is only a temporary DECLVAR source.
+                // Free it immediately so 500+ var declarations don't exhaust the
+                // register file.  Non-global hoisting must keep the register alive
+                // as the function's actual local-variable slot.
+                if (is_global) { self.free_reg(var_reg); }
 
                 // Check for initializer or comma
                 Token? sep_opt = self.lexer.next_token();
@@ -1778,6 +1784,9 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
             uint name_idx = self.add_string_constant(name_tok2.str_value);
             self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
+            // Global function declarations: func_reg is env-resident; free the
+            // temporary register so repeated hoisting doesn't exhaust the file.
+            self.free_reg(func_reg);
 
             // Lexer is now past the function body. A completed declaration
             // ends at its `}`, so record RBRACE (a statement terminator) —
