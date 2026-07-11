@@ -285,32 +285,9 @@ fn void builtin_eval(BuiltinContext* ctx) {
     char* src_cstr = source.get_cstr();
     usz src_len = source.blen;
 
-    // Determine if this is a direct eval call and if the caller is strict.
-    // ES2020 §18.2.1.1: direct eval inherits strict mode from the enclosing context.
-    // Indirect eval never inherits strict mode.
-    bool is_caller_direct_eval = false;
-    bool caller_strict = false;
-    {
-        // Builtins run without creating a new Activation frame; the calling JS
-        // frame is at activation_count-1.
-        vm::Vm* eval_vm_pre = (vm::Vm*)ctx.vm;
-        usz ac_pre = eval_vm_pre.activation_count;
-        if (ac_pre >= 1) {
-            vm::Activation* caller_act_pre = &eval_vm_pre.activations[ac_pre - 1];
-            // Direct eval: the calling frame set ACT_FLAG_DIRECT_EVAL.
-            if ((caller_act_pre.flags & vm::ACT_FLAG_DIRECT_EVAL) != 0) {
-                is_caller_direct_eval = true;
-                if (caller_act_pre.func != null) {
-                    bytecode::CompiledFunction* cf_pre = (bytecode::CompiledFunction*)caller_act_pre.func;
-                    if (cf_pre.flags.is_strict) { caller_strict = true; }
-                }
-            }
-        }
-    }
-
     // Compile the source string as eval code
     Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
-    CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap, caller_strict);
+    CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap);
     CompiledFunction* func;
     if (try f = cf) {
         func = f;
@@ -407,83 +384,6 @@ fn void builtin_eval(BuiltinContext* ctx) {
     }
 
     // Signal the CALL handler to re-dispatch to the compiled function with 0 args
-    ctx.needs_re_dispatch = true;
-    ctx.re_nargs = 0;
-}
-
-/// __evalScript(src) — test262 host primitive.
-/// Compiles and runs `src` as a global script so that var/function declarations
-/// install non-configurable properties on the global object, matching
-/// $262.evalScript semantics (ES2020 §18.2.1 for top-level scripts).
-fn void builtin_eval_script(BuiltinContext* ctx) {
-    if (ctx.argc < 1) {
-        ctx.result.set_undefined();
-        return;
-    }
-    TVal* arg = &ctx.regs[ctx.base_reg];
-    if (!arg.is_string()) {
-        ctx.result.set_undefined();
-        return;
-    }
-    HString* source = (HString*)arg.get_heapptr();
-    char* src_cstr = source.get_cstr();
-    usz src_len = source.blen;
-
-    // Compile as global script (not eval — no last-expr return, uses DECLVAR global path)
-    Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
-    CompiledFunction*? cf = compiler::compile(&lex, ctx.heap);
-    if (catch err_cf = cf) {
-        // SyntaxError
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.syntax_err_proto;
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in evalScript");
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            TVal err_tv;
-            err_tv.set_object(err);
-            ctx.throw_value.set_object(err_tv.get_heapptr());
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
-        return;
-    }
-
-    CompiledFunction* func = cf;
-
-    // Wrap in an HObject
-    HObject*? func_obj_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
-    if (catch _err = func_obj_raw) {
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* func_obj = func_obj_raw;
-    func_obj.flags.callable = true;
-    (*func_obj.extra_ptr()).func.comp_func = func;
-    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
-
-    // Run in global env so DECLVAR writes go to global object.
-    // Use global_lex_env for lex bindings so let/const don't land on the global object.
-    (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
-    {
-        vm::Vm* es_vm = (vm::Vm*)ctx.vm;
-        EnvRecord* glex = (es_vm != null && es_vm.global_lex_env != null) ? es_vm.global_lex_env : ctx.global_env;
-        (*func_obj.extra_ptr()).func.lex_env = glex;
-    }
-
-    // Replace callee slot and re-dispatch
-    TVal func_tv;
-    func_tv.set_object(func_obj);
-    ctx.regs[ctx.base_reg - 2] = func_tv;
-
-    // this = global object
-    TVal this_tv;
-    this_tv.set_object(ctx.global_env.bindings);
-    ctx.regs[ctx.base_reg - 1] = this_tv;
-
     ctx.needs_re_dispatch = true;
     ctx.re_nargs = 0;
 }

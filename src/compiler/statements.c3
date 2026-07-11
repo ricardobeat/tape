@@ -330,38 +330,6 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
             continue;
         }
 
-        // In strict mode, block-level function declarations are block-scoped
-        // (ES2015 §14.5, Annex B.3.3 step 1: AnnexB only applies if strict is false).
-        // Collect them just like let/const so the block emits PUSH_LEX + INITTZ.
-        // Scope depth determines whether we are inside a real nested block:
-        // - For global code (scope_depth > 0): we are inside a block, not at top level.
-        // - For function code (scope_depth > 1): we are inside a nested block, not the
-        //   function body itself (the body block contributes scope_depth == 1).
-        // At lower depths, function declarations are var-hoisted, not block-scoped.
-        bool fn_is_in_block = (self.is_global && self.scope_depth > 0) ||
-                              (!self.is_global && self.scope_depth > 1);
-        if (brace_depth == 0 && self.is_strict && fn_is_in_block && tt == TokenType.FUNCTION) {
-            // Skip optional generator star
-            Token? star_opt2 = self.lexer.next_token();
-            if (catch _err_s = star_opt2) { continue; }
-            Token star_tok2 = star_opt2;
-            if (star_tok2.type != TokenType.STAR) {
-                self.lexer.pushback(star_tok2);
-            }
-            // Collect the function name
-            Token? fn_name_opt = self.lexer.next_token();
-            if (catch _err_fn = fn_name_opt) { continue; }
-            Token fn_name_tok = fn_name_opt;
-            if (fn_name_tok.type == TokenType.IDENTIFIER && fn_name_tok.str_value.len > 0) {
-                if (count < capacity) {
-                    spans[count].pos = (uint)((usz)fn_name_tok.str_value.ptr - (usz)source_base);
-                    spans[count].len = (uint)fn_name_tok.str_value.len;
-                    count++;
-                }
-            }
-            continue;
-        }
-
         // Only collect let/const at the top level of this block (depth 0).
         if (brace_depth == 0 && (tt == TokenType.LET || tt == TokenType.CONST)) {
             // Collect one or more identifier names (comma-separated).
@@ -532,8 +500,7 @@ fn void? CompilerContext.var_declaration(&self) {
             self.object_destructure(kind, is_lexical, is_const)!;
         } else {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-            // ES2020 §12.2.1 early error: binding 'eval' or 'arguments' in strict mode.
-            if (self.is_strict && is_restricted_name(name_tok.str_value)) {
+            if (is_restricted_name(name_tok.str_value)) {
                 return COMPILE_ERROR~;
             }
             ushort reg;
@@ -2769,30 +2736,6 @@ fn void? CompilerContext.switch_statement(&self) {
     self.expect(TokenType.RPAREN)!;
     self.expect(TokenType.LBRACE)!;
 
-    // Push a scope marker so that strict-mode block-level function declarations
-    // inside case/default bodies are detected as nested (scope_depth > outer).
-    uint switch_saved_scope = self.scope_depth;
-    self.push_scope_marker();
-
-    // In strict mode, function declarations inside a switch body are block-scoped
-    // (Annex B.3.3 doesn't apply when strict). Pre-scan for them and push a lex
-    // env so PUTLEX in function_declaration has somewhere to write.
-    bool switch_has_lex = false;
-    if (self.is_strict) {
-        NameSpan[MAX_PRESCAN_NAMES] sw_spans;
-        uint sw_count = self.pre_scan_lexical_decls(&sw_spans, MAX_PRESCAN_NAMES);
-        if (sw_count > 0) {
-            self.emit_simple(Opcode.PUSH_LEX);
-            self.cur_lex_depth++;
-            switch_has_lex = true;
-            for (uint si = 0; si < sw_count; si++) {
-                char[] sname = self.lexer.source[sw_spans[si].pos..sw_spans[si].pos + sw_spans[si].len - 1];
-                uint sname_idx = self.add_string_constant(sname);
-                self.emit_a_bc(Opcode.INITTZ, 0, sname_idx);
-            }
-        }
-    }
-
     // Push a "loop" for break handling (break in switch exits the switch)
     // is_loop=false so continue skips this entry.
     self.push_loop(self.code_count, false);
@@ -2931,15 +2874,6 @@ fn void? CompilerContext.switch_statement(&self) {
         self.code[ft_jump_addrs[i]] =
             bytecode::make_sabc(Opcode.JUMP, offset);
     }
-
-    // Pop the lex env pushed for strict-mode block-level function declarations.
-    if (switch_has_lex) {
-        self.emit_simple(Opcode.POP_LEX);
-        self.cur_lex_depth--;
-    }
-
-    // Pop the scope marker pushed for block-level function declarations.
-    self.pop_scope_to(switch_saved_scope);
 
     self.free_reg(disc_reg);
 }
@@ -3200,27 +3134,7 @@ fn void? CompilerContext.function_declaration(&self) {
     }
 
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-
-    // ES2015 §14.5 + Annex B.3.3: in strict mode, function declarations inside
-    // a nested block are block-scoped, not var-hoisted.
-    // AnnexB.3.3 step 1 says "If strict is false" — so in strict mode, the
-    // function is purely lex-scoped to the containing block.
-    //
-    // For global code: scope_depth 0 is top-level (already handled by
-    // hoist_global_fn_decls and skipped above), so >0 means inside a block.
-    // For function code: scope_depth 1 is the function body block itself, so
-    // >1 means inside a nested block within the function body.
-    bool is_block_scoped_fn = self.is_strict && (
-        (self.is_global && self.scope_depth > 0) ||
-        (!self.is_global && self.scope_depth > 1)
-    );
-
-    ushort func_reg;
-    if (is_block_scoped_fn) {
-        func_reg = self.alloc_reg();
-    } else {
-        func_reg = self.declare_var(name_tok.str_value, VAR);
-    }
+    ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
     // Compile the function into a nested CompiledFunction.
     // Restore is_async so compile_inner_function propagates the flag,
@@ -3240,20 +3154,14 @@ fn void? CompilerContext.function_declaration(&self) {
     // Emit CLOSURE to create the function object
     self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
 
-    // Declare the binding:
-    // - strict block-level function → PUTLEX (block-scoped, pre-initialized by INITTZ from block())
-    // - otherwise → DECLVAR (var-hoisted to var_env)
+    // Declare the binding in the immediate var_env so inner functions can find it via GETVAR
     uint name_idx = self.add_string_constant(name_tok.str_value);
-    if (is_block_scoped_fn) {
-        self.emit_a_bc(Opcode.PUTLEX, (uint)func_reg, name_idx);
+    self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
+
+    // At global scope, free the register — the function object lives in the
+    // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
+    if (self.is_global) {
         self.free_reg(func_reg);
-    } else {
-        self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
-        // At global scope, free the register — the function object lives in the
-        // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
-        if (self.is_global) {
-            self.free_reg(func_reg);
-        }
     }
 }
 

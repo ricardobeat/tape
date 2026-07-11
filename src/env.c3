@@ -217,42 +217,6 @@ fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
 }
 
-/// Declare a global function binding: writable, enumerable, non-configurable
-/// (ES2020 §8.1.1.4.16 CreateGlobalFunctionBinding with deletable=false).
-/// If the property already exists with configurable=true, redefines it as
-/// {writable:true, enumerable:true, configurable:false}. If it exists with
-/// configurable=false, only updates the value. New properties get NEC flags.
-fn bool env_declare_global_func(EnvRecord* env, void* key, TVal val) @inline {
-    HObject* obj = env.bindings;
-    int idx = obj.find_prop_idx(key);
-    if (idx >= 0) {
-        PropFlags ef = obj.get_prop_flags((uint)idx);
-        if (ef.configurable) {
-            // Redefine as non-configurable, writable, enumerable.
-            obj.set_prop_flags((uint)idx, hobject::PROP_FLAGS_NEC);
-        }
-        // Update value regardless.
-        TVal* pv = &obj.prop_values()[idx];
-        *pv = val;
-        return true;
-    }
-    return obj.put_prop(key, val, hobject::PROP_FLAGS_NEC);
-}
-
-/// Declare a global var binding: writable, enumerable, non-configurable.
-/// (ES2020 §8.1.1.4.15 CreateGlobalVarBinding with deletable=false).
-/// If the property already exists, preserves existing attributes and value.
-/// Only creates a new binding (with value=undefined) if not already present.
-fn bool env_declare_global_var(EnvRecord* env, void* key) @inline {
-    HObject* obj = env.bindings;
-    if (obj.find_prop_idx(key) >= 0) {
-        return true;  // Already declared — leave existing binding intact.
-    }
-    TVal undef;
-    undef.set_undefined();
-    return obj.put_prop(key, undef, hobject::PROP_FLAGS_NEC);
-}
-
 /// Declare a non-enumerable binding (for built-in globals per ES spec §17).
 /// Built-in properties must be { writable: true, enumerable: false, configurable: true }.
 fn bool env_declare_nonenum(EnvRecord* env, void* key, TVal val) @inline {

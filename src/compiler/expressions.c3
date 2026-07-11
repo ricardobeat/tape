@@ -223,22 +223,6 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
-    char[] lhs_getvar_name = self.last_getvar_name;
-
-    // ES2020 §12.15.1 early error: in strict mode, assigning to 'eval' or
-    // 'arguments' as an identifier is a SyntaxError.
-    if (lhs_was_getvar && self.is_strict && is_restricted_name(lhs_getvar_name)) {
-        if (g_last_err_msg[0] == 0) {
-            g_last_err_line = self.lexer.line;
-            g_last_err_col  = self.lexer.col;
-            char[] msg = "Invalid assignment target in strict mode";
-            usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
-            libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
-            g_last_err_msg[copy_len] = 0;
-        }
-        return COMPILE_ERROR~;
-    }
-
     bool lhs_was_member = self.last_was_member;
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
@@ -1990,7 +1974,6 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
                 self.last_was_getvar = true;
                 self.last_getvar_name_idx = name_idx;
-                self.last_getvar_name = id_tok.str_value;
                 return id_reg;
             }
 

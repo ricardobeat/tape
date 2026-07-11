@@ -114,7 +114,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             return (TVal){};
                         }
                         fast_var_env = arrow_lex;
-                    } else if (target_fast.needs_env() && !target_fast.is_global_fn()) {
+                    } else if (target_fast.needs_env()) {
                         // needs_env=true → the function actually accesses its scope at
                         // runtime (closures / eval / arguments / default-or-rest params /
                         // captured locals), so allocate a fresh scope object.
@@ -124,17 +124,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // bindings live purely in registers and cannot clobber the
                         // parent env. They reuse func.var_env (the parent) directly,
                         // skipping the per-call scope HObject allocation entirely.
-                        // Global-code functions (is_global=true) must also skip scope
-                        // creation so their DECLVAR writes go to the global object.
                         fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
-                        // When the function closes over the global object env, use
-                        // global_lex_env as parent so that let/const/class global bindings
-                        // are visible to closures inside (fresh_scope → global_lex_env → global_env).
-                        EnvRecord* fv_parent_fast = (*hobj_fast.extra_ptr()).func.var_env;
-                        if (vm.global_lex_env != null && fv_parent_fast == vm.global_env) {
-                            fv_parent_fast = vm.global_lex_env;
-                        }
-                        if (try fv_f = env::env_create_function_scope(vm.heap, fv_parent_fast)) { fast_var_env = fv_f; }
+                        if (try fv_f = env::env_create_function_scope(vm.heap, (*hobj_fast.extra_ptr()).func.var_env)) { fast_var_env = fv_f; }
                     } else {
                         fast_var_env = (*hobj_fast.extra_ptr()).func.var_env;
                     }
@@ -996,12 +987,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             EnvRecord* call_var_env2 = (*hobj.extra_ptr()).func.var_env;
             // Only allocate a fresh scope when the function actually uses its env
             // (see the fast-call path above and the register-resident-locals pass).
-            if (target.needs_env() && !target.is_global_fn()) {
-                EnvRecord* fv_parent2 = (*hobj.extra_ptr()).func.var_env;
-                if (vm.global_lex_env != null && fv_parent2 == vm.global_env) {
-                    fv_parent2 = vm.global_lex_env;
-                }
-                if (try fv_c2 = env::env_create_function_scope(vm.heap, fv_parent2)) { call_var_env2 = fv_c2; }
+            if (target.needs_env()) {
+                if (try fv_c2 = env::env_create_function_scope(vm.heap, (*hobj.extra_ptr()).func.var_env)) { call_var_env2 = fv_c2; }
             }
             new_act.parent = ds.act;
             new_act.func = target;

@@ -2904,7 +2904,9 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
     [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
     [BUILTIN_TA_SPECIES_GET]             = &builtin_ta_species_get,
-    [BUILTIN_EVAL_SCRIPT]                = &builtin_eval_script,
+    // evalScript: aliased to eval until the global-declaration-instantiation
+    // rework lands (plan 052); a spec evalScript runs as a global script.
+    [BUILTIN_EVAL_SCRIPT]                = &builtin_eval,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

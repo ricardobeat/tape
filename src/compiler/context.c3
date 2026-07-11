@@ -230,7 +230,6 @@ struct CompilerContext {
     // Track last identifier resolved via GETVAR (for assignment write-back)
     bool last_was_getvar;
     uint last_getvar_name_idx;
-    char[] last_getvar_name;  // Raw name string for strict-mode restriction checks
     /// Set when the last primary_expr returned a live local variable register directly.
     bool last_was_local_var;
     ushort last_local_var_reg;
