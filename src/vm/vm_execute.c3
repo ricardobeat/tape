@@ -324,6 +324,13 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                         act.flags |= ACT_FLAG_ASYNC;
                         act.async_promise = (hobject::HObject*)gs_r.async_promise;
                     }
+                    // Note: this_binding is set below (after this block).
+                    // For generator resumes via call_fn, this_val is the generator
+                    // object (from .next()), but the generator's actual 'this' is
+                    // in gs_r.this_binding. We restore it after cfn_is_gen_initial is
+                    // determined (the restore is conditional on cfn_is_gen_initial=false
+                    // and only applied for generators that use 'this' inside their body).
+                    // [Restored below in the this_binding section]
                     $if $feature(HEAP_VERIFY):
                         vm.heap.verify_roots("after_resume_restore");
                     $endif
@@ -331,24 +338,98 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             }
 
             act.bottom = frame;
-            act.retval = null;
             // Preserve any flags already set (e.g. ACT_FLAG_ASYNC for resumed async fns)
             uint preserved_flags = act.flags;
             act.flags = (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
                       | preserved_flags;
             act.max_heap_reg = 0;
             act.caller_valstack_top = frame + nregs;
-            // ES5 §10.4.3: for non-arrow, non-strict compiled functions called
-            // with undefined/null this, substitute the global object.
-            if (!target.is_arrow() && !target.is_strict()
-                && (this_val.is_undefined() || this_val.is_null())
-                && vm.global_env != null && vm.global_env.bindings != null) {
-                this_val.set_object(vm.global_env.bindings);
+            // Set this_binding. For generator resumes via call_fn where the initial
+            // call was also via call_fn (i.e. cfn_is_gen_initial was true for the
+            // creation call), the generator's saved this_binding must be restored.
+            // For all other cases, use this_val (the passed-in receiver).
+            // Set this_binding for the activation.
+            // For generator resumes via call_fn, this_val is the generator object
+            // (the receiver of .next()), but the generator's actual 'this' is saved
+            // in gs_r.this_binding. Restore it directly to avoid running the generator
+            // body with the wrong 'this' (e.g. Boolean.prototype[Symbol.iterator] needs
+            // this=true/false, not the generator object).
+            // IMPORTANT: use a raw assign (no tval_copy_ref) because act.this_binding
+            // still contains stale bits from the previous occupant of vm.activations[0].
+            // Using tval_copy_ref would incorrectly decref those stale bits.
+            if (did_resume && vm.heap.resume_gen != null) {
+                GeneratorState* gs_rb2 = vm.heap.resume_gen;
+                if (!gs_rb2.this_binding.is_undefined() && !gs_rb2.this_binding.is_null()) {
+                    // Restore the generator's saved 'this' (e.g. boolean true/false for
+                    // Boolean.prototype[Symbol.iterator] generators).
+                    act.this_binding = gs_rb2.this_binding;  // raw copy, no stale-decref
+                } else {
+                    // Generator was created with undefined/null this — apply ES5 §10.4.3.
+                    if (!target.is_arrow() && !target.is_strict()
+                        && vm.global_env != null && vm.global_env.bindings != null) {
+                        this_val.set_object(vm.global_env.bindings);
+                    }
+                    act.this_binding = this_val;
+                }
+            } else {
+                // Non-resume: ES5 §10.4.3 — substitute global object for undefined/null this.
+                if (!target.is_arrow() && !target.is_strict()
+                    && (this_val.is_undefined() || this_val.is_null())
+                    && vm.global_env != null && vm.global_env.bindings != null) {
+                    this_val.set_object(vm.global_env.bindings);
+                }
+                // Raw assign: this_val is kept alive by the caller for the duration
+                // of the call; the previous activation[0].this_binding bits are
+                // restored verbatim below, so refcounts stay balanced.
+                act.this_binding = this_val;
             }
-            // Raw assign: this_val is kept alive by the caller for the duration
-            // of the call; the previous activation[0].this_binding bits are
-            // restored verbatim below, so refcounts stay balanced.
-            act.this_binding = this_val;
+
+            // For the initial (non-resume) call to a generator function, set up
+            // gen_initial_gs / gen_initial_obj so GEN_START can find them.
+            // vm.heap.gen_initial_gs may already be set (from the inline CALL opcode)
+            // — only allocate when it isn't so we don't double-allocate.
+            void* cfn_saved_gen_initial_gs  = vm.heap.gen_initial_gs;
+            void* cfn_saved_gen_initial_obj = vm.heap.gen_initial_obj;
+            void* cfn_saved_gen_initial_rv  = vm.heap.gen_initial_retval;
+            TVal cfn_gen_result_slot; cfn_gen_result_slot.set_undefined();
+            bool cfn_is_gen_initial = false;
+            if (!did_resume && target.is_generator() && !target.is_async()
+                && vm.heap.gen_initial_gs == null) {
+                void* cfn_gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
+                if (cfn_gs_raw != null) {
+                    libc::memset(cfn_gs_raw, 0, GeneratorState::size);
+                    GeneratorState* cfn_gs = (GeneratorState*)cfn_gs_raw;
+                    cfn_gs.func = target;
+                    cfn_gs.num_regs = target.num_regs;
+                    usz cfn_regs_bytes = (usz)target.num_regs * TVal::size;
+                    void* cfn_regs_raw = (cfn_regs_bytes > 0)
+                        ? vm.heap.alloc_func(vm.heap.heap_udata, cfn_regs_bytes)
+                        : null;
+                    if (cfn_regs_bytes > 0 && cfn_regs_raw == null) {
+                        vm.heap.free_func(vm.heap.heap_udata, cfn_gs_raw);
+                    } else {
+                        if (cfn_regs_raw != null) libc::memset(cfn_regs_raw, 0, cfn_regs_bytes);
+                        cfn_gs.saved_regs = (TVal*)cfn_regs_raw;
+                        HObject*? cfn_gen_obj_raw = vm.heap.alloc_object(hobject::ObjClass.GENERATOR);
+                        if (try cfn_gen_obj = cfn_gen_obj_raw) {
+                            cfn_gen_obj.prototype = vm.heap.generator_proto;
+                            (*cfn_gen_obj.extra_ptr()).gen.generator_data = cfn_gs;
+                            vm.heap.gen_initial_gs  = cfn_gs;
+                            vm.heap.gen_initial_obj = cfn_gen_obj;
+                            // Point gen_initial_retval at our local slot so GEN_START
+                            // can write the generator object. act.retval is also set to
+                            // this slot so GEN_START's ds.act.retval check succeeds.
+                            vm.heap.gen_initial_retval = &cfn_gen_result_slot;
+                            cfn_is_gen_initial = true;
+                        } else {
+                            vm.heap.free_func(vm.heap.heap_udata, cfn_regs_raw);
+                            vm.heap.free_func(vm.heap.heap_udata, cfn_gs_raw);
+                        }
+                    }
+                }
+            }
+
+            act.retval = cfn_is_gen_initial ? &cfn_gen_result_slot : null;
 
             if (!did_resume) {
                 for (uint i = 0; i < nregs; i++) {
@@ -457,6 +538,19 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             vm.valstack_bottom = saved_valstack_bottom;
             vm.valstack_top = saved_valstack_top;
             vm.heap.resume_gen = (GeneratorState*)saved_resume_gen;  // restore after nested generator
+
+            // Restore gen_initial state in case GEN_START didn't clear it
+            // (e.g. if the body threw before reaching GEN_START).
+            vm.heap.gen_initial_gs      = cfn_saved_gen_initial_gs;
+            vm.heap.gen_initial_obj     = cfn_saved_gen_initial_obj;
+            vm.heap.gen_initial_retval  = cfn_saved_gen_initial_rv;
+
+            // For generator initial calls, the generator object was written into
+            // cfn_gen_result_slot by GEN_START and returned as halt_value.
+            if (cfn_is_gen_initial && cfn_gen_result_slot.is_object()
+                && cfn_gen_result_slot.get_heapptr() != null) {
+                result = cfn_gen_result_slot;
+            }
 
             // Drain microtasks after callback execution
             vm.heap.drain_microtasks((void*)vm);
