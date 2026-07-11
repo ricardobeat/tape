@@ -8,9 +8,9 @@
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 29,020 |
-| **Overall pass rate** | **94.3%** |
-| Total failing | 1,593 |
+| Total passing | 29,028 |
+| **Overall pass rate** | **94.4%** |
+| Total failing | 1,585 |
 | CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
 
