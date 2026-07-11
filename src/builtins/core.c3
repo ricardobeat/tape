@@ -316,8 +316,9 @@ const uint BUILTIN_PROXY                       = 420;
 const uint BUILTIN_PROXY_REVOCABLE             = 421;
 const uint BUILTIN_PROXY_REVOKE                = 422;
 const uint BUILTIN_PROXY_CALL                  = 423;
+const uint BUILTIN_TA_SPECIES_GET              = 424;
 
-const uint BUILTIN_COUNT                       = 424;
+const uint BUILTIN_COUNT                       = 425;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2901,6 +2902,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROXY_REVOCABLE]            = &builtin_proxy_revocable,
     [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
     [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
+    [BUILTIN_TA_SPECIES_GET]             = &builtin_ta_species_get,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

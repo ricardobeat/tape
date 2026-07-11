@@ -424,7 +424,9 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             TVal iter_method; iter_method.set_undefined();
             bool has_iter = false;
             if (iter_sym != null && arg_obj != null) {
-                TVal? im = arg_obj.get_prop_proto(iter_sym);
+                // Use builtins_generic_get so that a throwing getter on @@iterator propagates.
+                TVal? im = builtins_generic_get(arg_obj, iter_sym, ctx);
+                if (ctx.should_throw) return;
                 if (try v = im) {
                     if (!v.is_undefined() && !v.is_null()) {
                         iter_method = v;
@@ -446,7 +448,12 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                     return;
                 }
                 TVal iterator = heap.call_fn(ctx.vm, iter_method, null, 0, arg0);
-                if (ctx.heap.has_error) { ctx.should_throw = true; ctx.heap.has_error = false; return; }
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    return;
+                }
 
                 uint cap = 4;
                 TVal* items = (TVal*)heap.alloc_func(heap.heap_udata, (usz)cap * TVal::size);
@@ -474,7 +481,10 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                     TVal result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
                     if (ctx.heap.has_error) {
                         heap.free_func(heap.heap_udata, items);
-                        ctx.should_throw = true; ctx.heap.has_error = false; return;
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        return;
                     }
                     if (!result.is_object() || result.get_heapptr() == null) break;
                     HObject* result_obj = (HObject*)result.get_heapptr();
@@ -484,7 +494,12 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                     if (try dv = done_opt) done = builtin_to_boolean(&dv);
                     if (done) break;
 
-                    TVal? value_opt = result_obj.get_prop_proto(value_key);
+                    // Use builtins_generic_get so that throwing getters on .value propagate.
+                    TVal? value_opt = builtins_generic_get(result_obj, value_key, ctx);
+                    if (ctx.should_throw) {
+                        heap.free_func(heap.heap_udata, items);
+                        return;
+                    }
                     TVal next_value; next_value.set_undefined();
                     if (try vv = value_opt) next_value = vv;
 
@@ -1417,11 +1432,18 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     uint len = (*obj.extra_ptr()).view.byte_length >> shift;
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
+    // Spec: if len == 0 return -1 immediately, before evaluating fromIndex.
+    if (len == 0) { ctx.result.set_fastint(-1); return; }
+
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
-    double search_d = ta_val_to_number(&search_arg, ctx);
-    if (ctx.should_throw) return;
-    // NaN: strict equality never matches
+
+    // Strict equality: non-numeric searchElement can never === a stored Number.
+    bool is_numeric_srch = search_arg.is_fastint() || search_arg.is_number();
+    if (!is_numeric_srch) { ctx.result.set_fastint(-1); return; }
+
+    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
+    // NaN: strict equality never matches (NaN !== NaN).
     if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
 
     uint from = 0;
@@ -1464,8 +1486,12 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
 
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
-    double search_d = ta_val_to_number(&search_arg, ctx);
-    if (ctx.should_throw) return;
+
+    // Strict equality: non-numeric searchElement can never === a stored Number.
+    bool is_numeric_li = search_arg.is_fastint() || search_arg.is_number();
+    if (!is_numeric_li) { ctx.result.set_fastint(-1); return; }
+
+    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
     if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
 
     long from = (long)len - 1;
@@ -1504,10 +1530,19 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
     uint len = (*obj.extra_ptr()).view.byte_length >> shift;
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
+    // Spec: if len == 0 return false immediately, before evaluating fromIndex.
+    if (len == 0) { ctx.result.set_boolean(false); return; }
+
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
-    double search_d = ta_val_to_number(&search_arg, ctx);
-    if (ctx.should_throw) return;
+
+    // SameValueZero on TypedArray elements: elements are always Numbers. A non-Number
+    // searchElement can never match a stored Number via SameValueZero (type check first),
+    // so return false immediately without calling ToNumber.
+    bool is_numeric = search_arg.is_fastint() || search_arg.is_number();
+    if (!is_numeric) { ctx.result.set_boolean(false); return; }
+
+    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
     bool search_nan = (search_d != search_d);
 
     uint from = 0;
@@ -1549,13 +1584,14 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
     uint len = (*obj.extra_ptr()).view.byte_length >> shift;
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
-    // Separator
+    // Separator — ToString(separator) per spec, must propagate errors (e.g., throwing object).
     char[] sep = ",";
     HString* sep_hs = null;
     if (ctx.argc >= 1) {
         TVal sep_arg = ctx.regs[ctx.base_reg];
         if (!sep_arg.is_undefined()) {
-            sep_hs = builtin_to_string(heap, &sep_arg);
+            sep_hs = builtin_to_string_vm(ctx, &sep_arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             if (sep_hs != null) {
                 ((types::HeapHeader*)sep_hs).incref();
                 sep = sep_hs.get_data();
@@ -2331,9 +2367,182 @@ fn void builtin_ta_proto_toString(BuiltinContext* ctx) {
     builtin_ta_proto_join(ctx);
 }
 
-/// %TypedArray%.prototype.toLocaleString() — alias of toString for now.
+/// %TypedArray%.prototype.toLocaleString() — §23.2.3.28.
+/// Calls toLocaleString() on each element (as a number object) and joins with
+/// the locale-specific separator (defaults to ",").
 fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
-    builtin_ta_proto_join(ctx);
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* base = (*buf.extra_ptr()).ab.data + byte_off;
+
+    if (len == 0) {
+        HString* empty = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+        if (empty != null) ctx.result.set_string(empty);
+        return;
+    }
+
+    HString* toloc_key = builtin_intern_string(heap, "toLocaleString");
+    HString* tostr_key = builtin_intern_string(heap, "toString");
+    HString* sep_hs = null;
+    char[] sep = ",";
+
+    // Collect the element strings by invoking toLocaleString on each numeric value.
+    HString*[64] stack_strs;
+    HString** heap_strs = null;
+    HString*[] elem_strs;
+    if (len <= 64) {
+        elem_strs = stack_strs[:len];
+    } else {
+        heap_strs = (HString**)heap.alloc_func(heap.heap_udata, HString*::size * len);
+        if (heap_strs == null) { ctx.result.set_undefined(); return; }
+        elem_strs = heap_strs[:len];
+    }
+
+    uint done = 0;
+    for (uint i = 0; i < len; i++) {
+        TVal num_val = ta_load_element(base, cls, i);
+
+        // Invoke toLocaleString on the numeric value — wrap it in a Number object,
+        // look up toLocaleString on the Number prototype, and call it with num_val as this.
+        TVal invoked; invoked.set_undefined();
+        if (heap.call_fn != null && ctx.vm != null && toloc_key != null) {
+            // Look up toLocaleString on the Number prototype.
+            TVal? meth_opt;
+            if (heap.number_proto != null) {
+                meth_opt = builtins_generic_get(heap.number_proto, toloc_key, ctx);
+            }
+            if (ctx.should_throw) {
+                for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                ctx.result.set_undefined();
+                return;
+            }
+            if (try meth = meth_opt) {
+                if (meth.is_object() && meth.get_heapptr() != null &&
+                    ((HObject*)meth.get_heapptr()).is_callable()) {
+                    invoked = heap.call_fn(ctx.vm, meth, null, 0, num_val);
+                    if (heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = heap.error_value;
+                        heap.has_error = false;
+                        for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                        if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                        ctx.result.set_undefined();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ToString(invoked) — may call invoked.toString() if invoked is an object.
+        HString* es = null;
+        if (invoked.is_object() && invoked.get_heapptr() != null) {
+            HObject* inv_obj = (HObject*)invoked.get_heapptr();
+            // Try toString first, then valueOf per ToStrng -> ToPrimitive -> hint String.
+            if (heap.call_fn != null && ctx.vm != null && tostr_key != null) {
+                TVal? ts_opt = builtins_generic_get(inv_obj, tostr_key, ctx);
+                if (ctx.should_throw) {
+                    for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                    if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                    ctx.result.set_undefined();
+                    return;
+                }
+                if (try ts_meth = ts_opt) {
+                    if (ts_meth.is_object() && ts_meth.get_heapptr() != null &&
+                        ((HObject*)ts_meth.get_heapptr()).is_callable()) {
+                        TVal ts_result = heap.call_fn(ctx.vm, ts_meth, null, 0, invoked);
+                        if (heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = heap.error_value;
+                            heap.has_error = false;
+                            for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                            if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                            ctx.result.set_undefined();
+                            return;
+                        }
+                        if (!ts_result.is_object()) {
+                            es = builtin_to_string(heap, &ts_result);
+                        }
+                    }
+                }
+                // If toString not found or returned object, try valueOf.
+                if (es == null) {
+                    HString* valueof_key = builtin_intern_string(heap, "valueOf");
+                    if (valueof_key != null) {
+                        TVal? vo_opt = builtins_generic_get(inv_obj, valueof_key, ctx);
+                        if (ctx.should_throw) {
+                            for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                            if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                            ctx.result.set_undefined();
+                            return;
+                        }
+                        if (try vo_meth = vo_opt) {
+                            if (vo_meth.is_object() && vo_meth.get_heapptr() != null &&
+                                ((HObject*)vo_meth.get_heapptr()).is_callable()) {
+                                TVal vo_result = heap.call_fn(ctx.vm, vo_meth, null, 0, invoked);
+                                if (heap.has_error) {
+                                    ctx.should_throw = true;
+                                    ctx.throw_value = heap.error_value;
+                                    heap.has_error = false;
+                                    for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
+                                    if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+                                    ctx.result.set_undefined();
+                                    return;
+                                }
+                                es = builtin_to_string(heap, &vo_result);
+                            }
+                        }
+                    }
+                }
+            }
+            if (es == null) es = builtin_to_string(heap, &invoked);
+        } else {
+            es = builtin_to_string(heap, &invoked);
+        }
+        if (es == null) es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+        ((types::HeapHeader*)es).incref();
+        elem_strs[done] = es;
+        done++;
+    }
+
+    // Compute the total length of all element strings plus separators.
+    usz total_len = 0;
+    for (uint i = 0; i < done; i++) total_len += elem_strs[i].blen;
+    if (done > 1) total_len += sep.len * (usz)(done - 1);
+
+    char* rbuf = (char*)heap.alloc_func(heap.heap_udata, total_len > 0 ? total_len : 1);
+    if (rbuf == null) {
+        for (uint i = 0; i < done; i++) heap.decref((types::HeapHeader*)elem_strs[i]);
+        if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+        ctx.result.set_undefined();
+        return;
+    }
+
+    usz off = 0;
+    for (uint i = 0; i < done; i++) {
+        if (i > 0 && sep.len > 0) {
+            libc::memcpy(&rbuf[off], &sep[0], sep.len);
+            off += sep.len;
+        }
+        char[] ed = elem_strs[i].get_data();
+        if (ed.len > 0) { libc::memcpy(&rbuf[off], &ed[0], ed.len); off += ed.len; }
+        heap.decref((types::HeapHeader*)elem_strs[i]);
+    }
+    if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
+    if (heap_strs != null) heap.free_func(heap.heap_udata, heap_strs);
+
+    uint hash = heap.hash_string(rbuf[:total_len]);
+    HString*? hs_raw = hstring::hstring_alloc(heap, rbuf[:total_len], hash);
+    heap.free_func(heap.heap_udata, rbuf);
+    if (catch err2 = hs_raw) { ctx.result.set_undefined(); return; }
+    HString* result_hs = hs_raw;
+    ctx.result.set_string(result_hs);
 }
 
 // ---- %TypedArray% intrinsic abstract constructor ----
@@ -2341,6 +2550,11 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
 /// %TypedArray% abstract constructor (§22.2.1) — always throws TypeError.
 fn void builtin_typedarray_intrinsic(BuiltinContext* ctx) {
     arraybuffer_throw_type_error(ctx, "Abstract class TypedArray not directly constructable");
+}
+
+/// get %TypedArray%[@@species] — §22.2.2.4. Returns `this`.
+fn void builtin_ta_species_get(BuiltinContext* ctx) {
+    *ctx.result = ctx.this_val;
 }
 
 // ---- Static: %TypedArray%.of / %TypedArray%.from ----
@@ -2375,38 +2589,75 @@ fn hobject::ObjClass ta_ctor_class(BuiltinContext* ctx) {
     return hobject::ObjClass.INT8ARRAY;
 }
 
+/// Helper: call `construct_fn(C, args, nargs)` and validate result is a TypedArray.
+/// Sets ctx.should_throw on failure and returns null. On success returns the HObject*.
+fn HObject* ta_typed_array_create(BuiltinContext* ctx, TVal* args, uint nargs) {
+    Heap* heap = ctx.heap;
+    if (heap.construct_fn == null || ctx.vm == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArrayCreate: no constructor available");
+        return null;
+    }
+    // Copy the constructor TVal and vm pointer to locals before the call so the
+    // compiler cannot optimise away the memory read across the construct_fn
+    // invocation. Without this, O2 single-module inlining may cache ctx.this_val
+    // in a register that gets clobbered by the callee.
+    TVal ctor_val = ctx.this_val;
+    void* vm_ptr  = ctx.vm;
+    TVal result_tv = heap.construct_fn(vm_ptr, ctor_val, args, nargs);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return null;
+    }
+    if (!result_tv.is_object() || result_tv.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArrayCreate: constructor did not return an object");
+        return null;
+    }
+    HObject* result_obj = (HObject*)result_tv.get_heapptr();
+    if (!is_typed_array_class(result_obj.flags.obj_class)) {
+        arraybuffer_throw_type_error(ctx, "TypedArrayCreate: constructor did not return a TypedArray");
+        return null;
+    }
+    return result_obj;
+}
+
+/// Helper: check that ctx.this_val is a constructor; throw TypeError if not.
+fn bool ta_require_constructor(BuiltinContext* ctx) {
+    if (!ctx.this_val.is_object() || ctx.this_val.get_heapptr() == null ||
+        !((HObject*)ctx.this_val.get_heapptr()).is_constructable()) {
+        arraybuffer_throw_type_error(ctx, "TypedArray method requires a constructor as this value");
+        return false;
+    }
+    return true;
+}
+
 /// %TypedArray%.of(...items) — §23.2.2.2.
 /// Installed on %TypedArray% intrinsic; inherited by all 9 per-class ctors.
 fn void builtin_ta_of(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
-    hobject::ObjClass cls = ta_ctor_class(ctx);
 
-    HObject* ctor_proto = null;
-    if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
-        HObject* ctor_obj = (HObject*)ctx.this_val.get_heapptr();
-        HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
-        TVal? pto_tv = ctor_obj.get_prop(prototype_key);
-        if (try ptv = pto_tv) {
-            if (ptv.is_object() && ptv.get_heapptr() != null) {
-                ctor_proto = (HObject*)ptv.get_heapptr();
-            }
-        }
-    }
+    // Step 3-4: C = this; if not a constructor, throw TypeError.
+    if (!ta_require_constructor(ctx)) return;
 
     uint items_count = (uint)ctx.argc;
-    HObject* result = ta_alloc_same_class(ctx, cls, items_count);
+
+    // Step 5: targetObj = TypedArrayCreate(C, «len»).
+    TVal len_arg; len_arg.set_fastint((long)items_count);
+    HObject* result = ta_typed_array_create(ctx, &len_arg, 1);
     if (result == null) return;
 
-    if (ctor_proto != null) result.prototype = ctor_proto;
-
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
-    char* res_base = items_count > 0 ? (*res_buf.extra_ptr()).ab.data : null;
+    hobject::ObjClass cls = result.flags.obj_class;
     uint shift = ta_elem_shift(cls);
+    char* res_base = items_count > 0 ? (*res_buf.extra_ptr()).ab.data : null;
 
     for (uint i = 0; i < items_count; i++) {
         TVal item = ctx.regs[ctx.base_reg + (int)i];
-        char* dp = res_base + (i << shift);
-        ta_write_element(dp, cls, &item, ctx);
+        if (res_base != null && !ta_is_detached(result)) {
+            char* dp = res_base + (i << shift);
+            ta_write_element(dp, cls, &item, ctx);
+        }
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
     ctx.result.set_object(result);
@@ -2414,21 +2665,27 @@ fn void builtin_ta_of(BuiltinContext* ctx) {
 
 /// %TypedArray%.from(source, mapFn?, thisArg?) — §23.2.2.1.
 /// Installed on %TypedArray% intrinsic; inherited by all 9 per-class ctors.
-fn void builtin_ta_from(BuiltinContext* ctx) {
+fn void builtin_ta_from(BuiltinContext* ctx) @noinline {
     Heap* heap = ctx.heap;
-    if (ctx.argc < 1) {
-        arraybuffer_throw_type_error(ctx, "TypedArray.from requires at least one argument");
-        return;
-    }
-    TVal source = ctx.regs[ctx.base_reg];
+
+    // Step 1-2: C = this; throw TypeError if not a constructor.
+    if (!ta_require_constructor(ctx)) return;
+
+    TVal source; source.set_undefined();
+    if (ctx.argc >= 1) source = ctx.regs[ctx.base_reg];
+
+    // Step 3-4: Validate mapFn before touching the source iterator.
     bool has_mapfn = false;
     TVal mapfn; mapfn.set_undefined();
     TVal map_this; map_this.set_undefined();
     if (ctx.argc >= 2) {
         mapfn = ctx.regs[ctx.base_reg + 1];
-        if (!mapfn.is_undefined() && !mapfn.is_null()) {
-            if (!mapfn.is_object() || mapfn.get_heapptr() == null ||
-                !((HObject*)mapfn.get_heapptr()).is_callable()) {
+        if (!mapfn.is_undefined()) {
+            // Spec step 3: if mapfn is not undefined, IsCallable must be true.
+            bool mapfn_callable = mapfn.is_lightfunc() ||
+                (mapfn.is_object() && mapfn.get_heapptr() != null &&
+                 ((HObject*)mapfn.get_heapptr()).is_callable());
+            if (!mapfn_callable) {
                 arraybuffer_throw_type_error(ctx, "TypedArray.from: mapFn is not a function");
                 return;
             }
@@ -2437,27 +2694,208 @@ fn void builtin_ta_from(BuiltinContext* ctx) {
     }
     if (ctx.argc >= 3) map_this = ctx.regs[ctx.base_reg + 2];
 
-    hobject::ObjClass cls = ta_ctor_class(ctx);
+    // Step 5: usingIterator = GetMethod(source, @@iterator).
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    TVal iter_method; iter_method.set_undefined();
+    bool have_iter_method = false;
 
-    HObject* ctor_proto = null;
-    if (ctx.this_val.is_object() && ctx.this_val.get_heapptr() != null) {
-        HObject* ctor_obj2 = (HObject*)ctx.this_val.get_heapptr();
-        HString* prototype_key2 = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
-        TVal? pto_tv2 = ctor_obj2.get_prop(prototype_key2);
-        if (try ptv2 = pto_tv2) {
-            if (ptv2.is_object() && ptv2.get_heapptr() != null) {
-                ctor_proto = (HObject*)ptv2.get_heapptr();
+    if (iter_sym != null && !source.is_undefined() && !source.is_null()) {
+        HObject* src_for_iter = null;
+        if (source.is_object() && source.get_heapptr() != null) {
+            src_for_iter = (HObject*)source.get_heapptr();
+        }
+        if (src_for_iter != null) {
+            TVal? im = builtins_generic_get(src_for_iter, iter_sym, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (try imv = im) {
+                if (!imv.is_undefined() && !imv.is_null()) {
+                    iter_method = imv;
+                    have_iter_method = true;
+                }
             }
         }
     }
 
-    // Collect values from array-like (simplified: no full iterable protocol here).
+    if (have_iter_method) {
+        // === Iterator path — spec steps 6-9 ===
+        // Validate iterator method is callable.
+        bool im_callable = iter_method.is_lightfunc() ||
+            (iter_method.is_object() && iter_method.get_heapptr() != null &&
+             ((HObject*)iter_method.get_heapptr()).is_callable());
+        if (!im_callable || heap.call_fn == null || ctx.vm == null) {
+            arraybuffer_throw_type_error(ctx, "TypedArray.from: @@iterator is not callable");
+            ctx.result.set_undefined();
+            return;
+        }
+
+        // Step 6a: Invoke @@iterator to get iterator object.
+        TVal iterator = heap.call_fn(ctx.vm, iter_method, null, 0, source);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            ctx.result.set_undefined();
+            return;
+        }
+        if (!iterator.is_object() || iterator.get_heapptr() == null) {
+            arraybuffer_throw_type_error(ctx, "TypedArray.from: @@iterator did not return an object");
+            ctx.result.set_undefined();
+            return;
+        }
+        // Protect the iterator from GC: C-local TVal values are not GC roots.
+        // GC triggered from inside alloc (non-safepoint) preserves temproot objects
+        // across all sweep cycles, so set_temproot keeps the iterator alive for the
+        // duration of this builtin.
+        types::HeapHeader* iter_hdr = (types::HeapHeader*)iterator.get_heapptr();
+        iter_hdr.set_temproot();
+
+        // Collect all values from the iterator into a temporary list (IteratorToList).
+        HString* next_key  = builtin_intern_string(heap, "next");
+        HString* done_key  = builtin_intern_string(heap, "done");
+        HString* value_key = builtin_intern_string(heap, "value");
+
+        uint cap = 8;
+        TVal* items = (TVal*)heap.alloc_func(heap.heap_udata, (usz)cap * TVal::size);
+        if (items == null) { ctx.result.set_undefined(); return; }
+        uint count = 0;
+
+        while (true) {
+            HObject* iter_obj = (HObject*)iterator.get_heapptr();
+
+            TVal? next_method_opt = builtins_generic_get(iter_obj, next_key, ctx);
+            if (ctx.should_throw) {
+                heap.free_func(heap.heap_udata, items);
+                ctx.result.set_undefined();
+                return;
+            }
+            TVal next_method;
+            if (try nm = next_method_opt) { next_method = nm; }
+            else {
+                heap.free_func(heap.heap_udata, items);
+                arraybuffer_throw_type_error(ctx, "TypedArray.from: iterator has no next method");
+                return;
+            }
+            bool nm_callable = next_method.is_lightfunc() ||
+                (next_method.is_object() && next_method.get_heapptr() != null &&
+                 ((HObject*)next_method.get_heapptr()).is_callable());
+            if (!nm_callable) {
+                heap.free_func(heap.heap_udata, items);
+                arraybuffer_throw_type_error(ctx, "TypedArray.from: iterator.next is not callable");
+                return;
+            }
+
+            TVal step_result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+            if (heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
+                heap.free_func(heap.heap_udata, items);
+                ctx.result.set_undefined();
+                return;
+            }
+            if (!step_result.is_object() || step_result.get_heapptr() == null) {
+                heap.free_func(heap.heap_udata, items);
+                arraybuffer_throw_type_error(ctx, "TypedArray.from: iterator result is not an object");
+                return;
+            }
+            HObject* result_obj = (HObject*)step_result.get_heapptr();
+
+            TVal? done_opt = builtins_generic_get(result_obj, done_key, ctx);
+            if (ctx.should_throw) {
+                heap.free_func(heap.heap_udata, items);
+                ctx.result.set_undefined();
+                return;
+            }
+            bool done = false;
+            if (try dv = done_opt) done = builtin_to_boolean(&dv);
+            if (done) break;
+
+            TVal? value_opt = builtins_generic_get(result_obj, value_key, ctx);
+            if (ctx.should_throw) {
+                heap.free_func(heap.heap_udata, items);
+                ctx.result.set_undefined();
+                return;
+            }
+            TVal next_value; next_value.set_undefined();
+            if (try vv = value_opt) next_value = vv;
+
+            if (count == cap) {
+                uint new_cap = cap * 2;
+                TVal* new_items = (TVal*)heap.alloc_func(heap.heap_udata, (usz)new_cap * TVal::size);
+                if (new_items == null) {
+                    heap.free_func(heap.heap_udata, items);
+                    ctx.result.set_undefined();
+                    return;
+                }
+                libc::memcpy(new_items, items, (usz)count * TVal::size);
+                heap.free_func(heap.heap_udata, items);
+                items = new_items;
+                cap = new_cap;
+            }
+            items[count] = next_value;
+            count++;
+        }
+
+        // Step 7: TypedArrayCreate(C, «count»).
+        TVal len_arg; len_arg.set_fastint((long)count);
+        HObject* target_obj = ta_typed_array_create(ctx, &len_arg, 1);
+        if (target_obj == null) {
+            heap.free_func(heap.heap_udata, items);
+            return;
+        }
+
+        // Step 8: Write each collected value (with optional mapping).
+        hobject::ObjClass res_cls = target_obj.flags.obj_class;
+        uint res_shift = ta_elem_shift(res_cls);
+
+        for (uint k = 0; k < count; k++) {
+            TVal kvalue = items[k];
+            TVal mapped = kvalue;
+            if (has_mapfn && heap.call_fn != null && ctx.vm != null) {
+                TVal[2] map_args;
+                map_args[0] = kvalue;
+                TVal k_tv; k_tv.set_fastint((long)k);
+                map_args[1] = k_tv;
+                mapped = heap.call_fn(ctx.vm, mapfn, &map_args[0], 2, map_this);
+                if (heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                    heap.free_func(heap.heap_udata, items);
+                    ctx.result.set_undefined();
+                    return;
+                }
+            }
+
+            // Write element only if not detached (mapper may have detached the buffer).
+            if (!ta_is_detached(target_obj)) {
+                HObject* res_buf2 = (*target_obj.extra_ptr()).view.buffer;
+                char* res_base2 = (*res_buf2.extra_ptr()).ab.data + (*target_obj.extra_ptr()).view.byte_offset;
+                char* dp = res_base2 + (k << res_shift);
+                ta_write_element(dp, res_cls, &mapped, ctx);
+                if (ctx.should_throw) {
+                    heap.free_func(heap.heap_udata, items);
+                    ctx.result.set_undefined();
+                    return;
+                }
+            }
+        }
+
+        heap.free_func(heap.heap_udata, items);
+        ctx.result.set_object(target_obj);
+        return;
+    }
+
+    // === Array-like path — spec steps 10-17 ===
     HObject* src_obj = null;
     if (source.is_object() && source.get_heapptr() != null) {
         src_obj = (HObject*)source.get_heapptr();
+    } else if (source.is_undefined() || source.is_null()) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.from: source is null or undefined");
+        return;
     }
 
-    // Get length from source.length
+    // Get length from source.length.
     uint src_len = 0;
     if (src_obj != null) {
         HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
@@ -2470,35 +2908,17 @@ fn void builtin_ta_from(BuiltinContext* ctx) {
         }
     }
 
-    // Handle string as array-like of chars.
-    HString* src_str = null;
-    if (source.is_string() && source.get_heapptr() != null) {
-        src_str = (HString*)source.get_heapptr();
-        src_len = (uint)src_str.blen;
-    }
+    // TypedArrayCreate(C, «len»).
+    TVal len_arg2; len_arg2.set_fastint((long)src_len);
+    HObject* target_obj2 = ta_typed_array_create(ctx, &len_arg2, 1);
+    if (target_obj2 == null) return;
 
-    HObject* result = ta_alloc_same_class(ctx, cls, src_len);
-    if (result == null) return;
-    if (ctor_proto != null) result.prototype = ctor_proto;
-
-    HObject* res_buf = (*result.extra_ptr()).view.buffer;
-    char* res_base = src_len > 0 ? (*res_buf.extra_ptr()).ab.data : null;
-    uint shift = ta_elem_shift(cls);
+    hobject::ObjClass res_cls2 = target_obj2.flags.obj_class;
+    uint res_shift2 = ta_elem_shift(res_cls2);
 
     for (uint i = 0; i < src_len; i++) {
         TVal elem; elem.set_undefined();
-        if (src_str != null) {
-            char[] bytes = src_str.get_data();
-            char ch = i < (uint)bytes.len ? bytes[i] : 0;
-            // Produce a 1-char string so mapFn receives characters (per spec iterable semantics).
-            char[1] ch_buf; ch_buf[0] = ch;
-            HString* ch_hs = builtin_intern_string(heap, ch_buf[:1]);
-            if (ch_hs != null) {
-                elem.set_string(ch_hs);
-            } else {
-                elem.set_fastint((long)ch);
-            }
-        } else if (src_obj != null) {
+        if (src_obj != null) {
             HString* idx_key = heap.int_to_hstring((long)i);
             if (idx_key != null) {
                 TVal? ev = builtins_generic_get(src_obj, idx_key, ctx);
@@ -2508,25 +2928,30 @@ fn void builtin_ta_from(BuiltinContext* ctx) {
         }
 
         TVal final_elem = elem;
-        if (has_mapfn && ctx.heap.call_fn != null && ctx.vm != null) {
-            TVal[2] args; args[0] = elem;
-            TVal k_tv; k_tv.set_fastint((long)i);
-            args[1] = k_tv;
-            final_elem = ctx.heap.call_fn(ctx.vm, mapfn, &args[0], 2, map_this);
-            if (ctx.heap.has_error) {
+        if (has_mapfn && heap.call_fn != null && ctx.vm != null) {
+            TVal[2] args2; args2[0] = elem;
+            TVal k_tv2; k_tv2.set_fastint((long)i);
+            args2[1] = k_tv2;
+            final_elem = heap.call_fn(ctx.vm, mapfn, &args2[0], 2, map_this);
+            if (heap.has_error) {
                 ctx.should_throw = true;
-                ctx.throw_value = ctx.heap.error_value;
-                ctx.heap.has_error = false;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
                 ctx.result.set_undefined();
                 return;
             }
         }
 
-        char* dp = res_base + (i << shift);
-        ta_write_element(dp, cls, &final_elem, ctx);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        // Write element only if buffer is not detached (mapper may detach).
+        if (!ta_is_detached(target_obj2)) {
+            HObject* res_buf3 = (*target_obj2.extra_ptr()).view.buffer;
+            char* res_base3 = (*res_buf3.extra_ptr()).ab.data + (*target_obj2.extra_ptr()).view.byte_offset;
+            char* dp2 = res_base3 + (i << res_shift2);
+            ta_write_element(dp2, res_cls2, &final_elem, ctx);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
     }
-    ctx.result.set_object(result);
+    ctx.result.set_object(target_obj2);
 }
 
 // ============================================================================
@@ -2595,6 +3020,19 @@ fn bool register_typedarray_symbol_accessor(HObject* proto, Heap* heap, HString*
     func_obj.flags.callable = true;
     func_obj.flags.constructable = false;
     func_obj.prototype = heap.function_proto;
+
+    // Getter must have .length = 0 and .name as own configurable properties (§17 ECMA).
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(0);
+        func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    HString* name_key2 = builtin_intern_string(heap, "name");
+    HString* name_val2 = builtin_intern_string(heap, "get [Symbol.toStringTag]");
+    if (name_key2 != null && name_val2 != null) {
+        TVal name_tv2; name_tv2.set_string(name_val2);
+        func_obj.put_prop(name_key2, name_tv2, hobject::PROP_FLAGS_NWC);
+    }
 
     TVal getter_tv;
     getter_tv.set_object(func_obj);
@@ -2712,7 +3150,7 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     HObject* intrinsic = intr_raw;
     (*intrinsic.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TYPEDARRAY_INTRINSIC;
     intrinsic.flags.callable = true;
-    intrinsic.flags.constructable = false;
+    intrinsic.flags.constructable = true;
     intrinsic.prototype = heap.function_proto;
     heap.typedarray_intrinsic = intrinsic;
 
@@ -2783,35 +3221,34 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "at",              BUILTIN_TA_PROTO_AT))              return false;
     if (!register_string_proto_method(proto, heap, "sort",            BUILTIN_TA_PROTO_SORT))            return false;
     if (!register_string_proto_method(proto, heap, "toSorted",        BUILTIN_TA_PROTO_TO_SORTED))       return false;
-    if (!register_string_proto_method(proto, heap, "toString",        BUILTIN_TA_PROTO_TO_STRING))       return false;
+    // toString must be the same function object as Array.prototype.toString (§22.2.3.28).
+    {
+        HString* tostr_key = builtin_intern_string(heap, "toString");
+        if (tostr_key != null && heap.array_proto != null) {
+            TVal? arr_tostr = heap.array_proto.get_prop(tostr_key);
+            if (try atv = arr_tostr) {
+                proto.put_prop(tostr_key, atv, hobject::PROP_FLAGS_WC);
+            } else {
+                if (!register_string_proto_method(proto, heap, "toString", BUILTIN_TA_PROTO_TO_STRING)) return false;
+            }
+        } else {
+            if (!register_string_proto_method(proto, heap, "toString", BUILTIN_TA_PROTO_TO_STRING)) return false;
+        }
+    }
     if (!register_string_proto_method(proto, heap, "toLocaleString",  BUILTIN_TA_PROTO_TO_LOCALE_STRING)) return false;
 
-    // %TypedArray%.prototype[@@iterator] = values
+    // %TypedArray%.prototype[@@iterator] = %TypedArray%.prototype.values (same object).
+    // The spec says the @@iterator property must be the same function as .values.
     {
         HString* iter_sym = ensure_iterator_symbol(heap);
         if (iter_sym != null) {
-            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-            if (catch err = fn_raw) return false;
-            HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TA_PROTO_SYMBOL_ITERATOR;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            HString* name_key = builtin_intern_string(heap, "name");
-            HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
-            if (name_key != null && name_val != null) {
-                TVal name_tv;
-                name_tv.set_string(name_val);
-                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            HString* values_key = builtin_intern_string(heap, "values");
+            if (values_key != null) {
+                TVal? values_tv = proto.get_prop(values_key);
+                if (try vtv = values_tv) {
+                    proto.put_prop(iter_sym, vtv, hobject::PROP_FLAGS_WC);
+                }
             }
-            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-            if (len_key != null) {
-                TVal len_tv;
-                len_tv.set_fastint(0);
-                fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
-            }
-            TVal iter_tv;
-            iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         }
     }
 
@@ -2830,6 +3267,40 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     // inherit them via [[Prototype]] chain (§22.2.2.1, §22.2.2.2).
     if (!register_string_proto_method(intrinsic, heap, "of",   BUILTIN_TA_OF))   return false;
     if (!register_string_proto_method(intrinsic, heap, "from", BUILTIN_TA_FROM)) return false;
+
+    // %TypedArray%[@@species] — getter that returns `this` (§22.2.2.4).
+    {
+        HString* species_sym = ensure_species_symbol(heap);
+        if (species_sym != null) {
+            HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (try getter = getter_raw) {
+                getter.flags.callable = true;
+                getter.flags.constructable = false;
+                getter.prototype = heap.function_proto;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TA_SPECIES_GET;
+                // Set getter.name = "get [Symbol.species]"
+                HString* gname_key = builtin_intern_string(heap, "name");
+                HString* gname_val = builtin_intern_string(heap, "get [Symbol.species]");
+                if (gname_key != null && gname_val != null) {
+                    TVal gname_tv; gname_tv.set_string(gname_val);
+                    getter.put_prop(gname_key, gname_tv, hobject::PROP_FLAGS_NWC);
+                }
+                HString* glen_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+                if (glen_key != null) {
+                    TVal glen_tv; glen_tv.set_fastint(0);
+                    getter.put_prop(glen_key, glen_tv, hobject::PROP_FLAGS_NWC);
+                }
+                TVal getter_tv; getter_tv.set_object(getter);
+                TVal undef; undef.set_undefined();
+                PropFlags acc_flags;
+                acc_flags.writable = false;
+                acc_flags.enumerable = false;
+                acc_flags.configurable = true;
+                acc_flags.is_accessor = true;
+                intrinsic.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
+            }
+        }
+    }
 
     return true;
 }
