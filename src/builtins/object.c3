@@ -3379,10 +3379,22 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         ctx.throw_value.set_object(err);
         return;
     }
-    // ES2015 §19.1.2.1 step 1: ToObject(target)
+    // ES2015 §19.1.2.1 step 1: ToObject(target). Symbol values are tagged
+    // as strings internally (TAG_STRING with the HString's is_symbol flag),
+    // so is_string() returns true for them — dispatch on the symbol flag
+    // before falling into the string-wrapper path.
     HObject* downstream;
     if (downstream_val.is_object()) {
         downstream = (HObject*)downstream_val.get_heapptr();
+    } else if (downstream_val.is_string() && downstream_val.get_heapptr() != null
+               && ((HString*)downstream_val.get_heapptr()).is_symbol()) {
+        // Symbol wrapper: ObjClass.SYMBOL with [[SymbolData]] = the primitive.
+        HString* sym_hs = (HString*)downstream_val.get_heapptr();
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.SYMBOL);
+        if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
+        downstream = obj_raw;
+        downstream.prototype = ctx.heap.symbol_proto;
+        (*downstream.extra_ptr()).prim.primitive_value.set_string(sym_hs);
     } else if (downstream_val.is_string()) {
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.STRING);
         if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
@@ -3408,7 +3420,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
         downstream.prototype = ctx.heap.bool_proto;
         (*downstream.extra_ptr()).prim.primitive_value.set_boolean(downstream_val.get_boolean());
     } else {
-        // Symbol, BigInt, etc.
+        // BigInt or other — no enumerable own properties, wrap as plain.
         HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (catch err2 = obj_raw) { ctx.result.set_undefined(); return; }
         downstream = obj_raw;
@@ -3459,19 +3471,25 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
             continue;
         }
 
-        // Copy enumerable own named properties via [[Set]] per ES2015 §19.1.2.2
-        for (uint i = 0; i < src_obj.prop_count; i++) {
-            if (src_obj.get_prop_flags(i).enumerable && src_obj.prop_key_at(i) != null) {
-                void* key = src_obj.prop_key_at(i);
+        // Copy enumerable own named properties via [[Set]] per ES2015 §19.1.2.2.
+        // Per OrdinaryOwnPropertyKeys, string keys precede symbol keys — so we
+        // iterate twice: first strings, then symbols, to match spec order
+        // (test262/built-ins/Object/assign/strings-and-symbol-order.js).
+        for (uint pass = 0; pass < 2; pass++) {
+            for (uint i = 0; i < src_obj.prop_count; i++) {
+                if (!src_obj.get_prop_flags(i).enumerable || src_obj.prop_key_at(i) == null) continue;
+                HString* key = (HString*)src_obj.prop_key_at(i);
+                bool is_sym = key.flags.is_symbol;
+                if ((pass == 0 && is_sym) || (pass == 1 && !is_sym)) continue;
                 // ES2015 §19.1.2.2 step 5.c: propValue = ? Get(from, nextKey).
                 // Use [[Get]] so source getters are invoked (the raw prop slot
                 // holds the GetterSetter object, not the getter's return value).
                 TVal val;
-                if (!desc_get(ctx, src_obj, (hstring::HString*)key, &val)) {
+                if (!desc_get(ctx, src_obj, key, &val)) {
                     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                     continue;
                 }
-                if (!obj_assign_set(ctx, downstream, (hstring::HString*)key, &val)) {
+                if (!obj_assign_set(ctx, downstream, key, &val)) {
                     ctx.result.set_undefined();
                     return;
                 }
