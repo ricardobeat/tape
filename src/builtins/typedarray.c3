@@ -845,7 +845,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
                     }
                 }
             }
-            *ctx.result = ctx.this_val;
+            ctx.result.set_undefined();
             return;
         }
     }
@@ -894,7 +894,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
         ta_write_element(dp, dst_cls, &num_tv, ctx);
         if (ctx.should_throw) return;
     }
-    *ctx.result = ctx.this_val;
+    ctx.result.set_undefined();
 }
 
 // ---- subarray ----

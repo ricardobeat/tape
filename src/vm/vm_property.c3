@@ -448,8 +448,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
                         hobject::ICEntry* ic = ds.ic_base + pc_off;
                         if (ic.key == (void*)key_hstr && ic.shape_id == hobj.shape_id) {
-                            HObject* ic_owner = ic.proto == null ? hobj : (HObject*)ic.proto;
-                            if (ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
+                            HObject* ic_owner;
+                            if (ic.proto == null) {
+                                ic_owner = hobj;
+                            } else if (hobj.prototype == (HObject*)ic.proto) {
+                                ic_owner = (HObject*)ic.proto;
+                            } else {
+                                ic_owner = null;
+                            }
+                            if (ic_owner != null && ic.cached_prop_alloc == (void*)ic_owner.prop_values()) {
                                 TVal ic_val = *ic.prop_value_ptr;
                                 if (!ic_val.is_heap_allocated()) {
                                     *ra = ic_val;
@@ -796,8 +803,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 mid_val.set_undefined();                if (ds.ic_base != null) {
                     hobject::ICEntry* ic1 = ds.ic_base + pc1;
                     if (ic1.key == (void*)key1_hstr && ic1.shape_id == hobj1.shape_id) {
-                        HObject* owner1 = ic1.proto == null ? hobj1 : (HObject*)ic1.proto;
-                        if (ic1.cached_prop_alloc == (void*)owner1.prop_values()) {
+                        HObject* owner1;
+                        if (ic1.proto == null) {
+                            owner1 = hobj1;
+                        } else if (hobj1.prototype == (HObject*)ic1.proto) {
+                            owner1 = (HObject*)ic1.proto;
+                        } else {
+                            owner1 = null;
+                        }
+                        if (owner1 != null && ic1.cached_prop_alloc == (void*)owner1.prop_values()) {
                             mid_val = *ic1.prop_value_ptr;
                         }
                     }
@@ -858,8 +872,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     if (ds.ic_base != null && key2_hstr != null) {
                         hobject::ICEntry* ic2 = ds.ic_base + pc2;
                         if (ic2.key == (void*)key2_hstr && ic2.shape_id == hobj2.shape_id) {
-                            HObject* owner2 = ic2.proto == null ? hobj2 : (HObject*)ic2.proto;
-                            if (ic2.cached_prop_alloc == (void*)owner2.prop_values()) {
+                            HObject* owner2;
+                            if (ic2.proto == null) {
+                                owner2 = hobj2;
+                            } else if (hobj2.prototype == (HObject*)ic2.proto) {
+                                owner2 = (HObject*)ic2.proto;
+                            } else {
+                                owner2 = null;
+                            }
+                            if (owner2 != null && ic2.cached_prop_alloc == (void*)owner2.prop_values()) {
                                 TVal ic2_val = *ic2.prop_value_ptr;
                                 if (!ic2_val.is_heap_allocated()) {
                                     *ra2 = ic2_val;
@@ -1261,8 +1282,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     if (ds.ic_base != null && key2_hstr != null) {
                         hobject::ICEntry* ic2 = ds.ic_base + pc2;
                         if (ic2.key == (void*)key2_hstr && ic2.shape_id == hobj2.shape_id) {
-                            HObject* owner2 = ic2.proto == null ? hobj2 : (HObject*)ic2.proto;
-                            if (ic2.cached_prop_alloc == (void*)owner2.prop_values()) {
+                            HObject* owner2;
+                            if (ic2.proto == null) {
+                                owner2 = hobj2;
+                            } else if (hobj2.prototype == (HObject*)ic2.proto) {
+                                owner2 = (HObject*)ic2.proto;
+                            } else {
+                                owner2 = null;
+                            }
+                            if (owner2 != null && ic2.cached_prop_alloc == (void*)owner2.prop_values()) {
                                 TVal ic2_val = *ic2.prop_value_ptr;
                                 if (!ic2_val.is_heap_allocated()) {
                                     *ra2 = ic2_val;
