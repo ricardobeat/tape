@@ -2132,11 +2132,14 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     }
     // Set .length from builtin metadata
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
-    if (meta.arity >= 0) {
+    {
+        // Every builtin function has an own .length (ES §20.2.4.1). When the
+        // metadata arity is unknown (-1, entry missing from builtin_get_metadata)
+        // default to 0 so the property still exists as an own NWC data property.
         HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (length_str != null) {
             TVal len_tv;
-            len_tv.set_fastint((long)meta.arity);
+            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
             func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
         }
     }
@@ -2231,11 +2234,14 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     }
     // Set .length from builtin metadata
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
-    if (meta.arity >= 0) {
+    {
+        // Every builtin function has an own .length (ES §20.2.4.1). When the
+        // metadata arity is unknown (-1, entry missing from builtin_get_metadata)
+        // default to 0 so the property still exists as an own NWC data property.
         HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
         if (length_str != null) {
             TVal len_tv;
-            len_tv.set_fastint((long)meta.arity);
+            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
             func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
         }
     }

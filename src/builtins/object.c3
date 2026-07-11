@@ -887,13 +887,13 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 return;
             }
             builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_idx);
-            if (meta.arity >= 0) {
+            {
                 HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
                 if (catch err5 = desc_raw) { ctx.result.set_undefined(); return; }
                 HObject* desc = desc_raw;
                 desc.prototype = ctx.heap.object_proto;
 
-                TVal len_tv; len_tv.set_fastint((long)meta.arity);
+                TVal len_tv; len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
                 desc.put_prop(builtin_intern_string(ctx.heap, "value"), len_tv, hobject::PROP_FLAGS_WEC);
                 TVal w_tv; w_tv.set_boolean(false);
                 desc.put_prop(builtin_intern_string(ctx.heap, "writable"), w_tv, hobject::PROP_FLAGS_WEC);
@@ -903,8 +903,6 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                 desc.put_prop(builtin_intern_string(ctx.heap, "configurable"), c_tv, hobject::PROP_FLAGS_WEC);
 
                 ctx.result.set_object(desc);
-            } else {
-                ctx.result.set_undefined();
             }
             return;
         } else if (key_hstr.equals("prototype")) {
