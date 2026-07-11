@@ -1285,6 +1285,14 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 builtins::dispatch_builtin(fn_idx, &ctx);
                 if (ctx.should_throw) {
                     vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
+                } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
+                    // Initialize the derived constructor's this_binding with the
+                    // object returned by the builtin super constructor (§9.2.2).
+                    TVal* sc_result_lf = ds.regs_base + result_reg;
+                    if (sc_result_lf.is_object()) {
+                        vm.heap.tval_copy_ref(&ds.act.this_binding, sc_result_lf);
+                        ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                    }
                 }
                 return (TVal){};
             }
@@ -1314,8 +1322,105 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 return (TVal){};
             }
 
+            // Handle bound-function superclass: unwrap via bound_call, then re-dispatch.
+            if (super_hobj.callable_kind() == hobject::CallableKind.BOUND_FN) {
+                if ((*super_hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                    uint sc_bound_fn_idx = (uint)(*super_hobj.extra_ptr()).func.builtin_fn_index;
+                    {
+                        uint bound_margin = (uint)(ds.act.bottom - vm.valstack) + ds.nregs + 4;
+                        if (!ensure_valstack(vm, bound_margin)) { ra.set_undefined(); return (TVal){}; }
+                        ds.regs_base = ds.act.bottom;
+                        TVal* extended_top = ds.act.bottom + ds.nregs + 4;
+                        if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
+                    }
+                    builtins::BuiltinContext sc_bound_ctx;
+                    sc_bound_ctx.vm = vm;
+                    sc_bound_ctx.regs = vm.valstack;
+                    sc_bound_ctx.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
+                    sc_bound_ctx.argc = (ushort)nargs;
+                    sc_bound_ctx.result = ds.regs_base + result_reg;
+                    sc_bound_ctx.heap = vm.heap;
+                    sc_bound_ctx.this_val = ds.regs_base[callee_reg + 1];
+                    sc_bound_ctx.is_constructor = true;
+                    sc_bound_ctx.needs_re_dispatch = false;
+                    sc_bound_ctx.re_nargs = 0;
+                    sc_bound_ctx.global_env = vm.global_env;
+                    sc_bound_ctx.should_throw = false;
+                    sc_bound_ctx.callee_obj = super_hobj;
+                    sc_bound_ctx.new_target = new_target;
+                    builtins::dispatch_builtin(sc_bound_fn_idx, &sc_bound_ctx);
+                    ds.regs_base = ds.act.bottom;
+                    if (sc_bound_ctx.should_throw) {
+                        vm_throw_value(vm, sc_bound_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
+                        return (TVal){};
+                    }
+                    if (sc_bound_ctx.needs_re_dispatch) {
+                        // bound_call rewrote callee_reg — re-read the target
+                        super_val = ds.regs_base[callee_reg];
+                        nargs = sc_bound_ctx.re_nargs;
+                        if (super_val.is_lightfunc()) {
+                            super_hobj = null;
+                        } else if (super_val.is_object()) {
+                            super_hobj = (HObject*)super_val.get_heapptr();
+                        } else {
+                            ra.set_undefined(); return (TVal){};
+                        }
+                        // Fall through to lightfunc / BUILTIN_FN / CompiledFunction handling below
+                    } else {
+                        // Bound target was a builtin that returned directly
+                        if (env::is_tdz_sentinel(&ds.act.this_binding)) {
+                            TVal* sc_bound_result = ds.regs_base + result_reg;
+                            if (sc_bound_result.is_object()) {
+                                vm.heap.tval_copy_ref(&ds.act.this_binding, sc_bound_result);
+                                ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                            }
+                        }
+                        return (TVal){};
+                    }
+                } else {
+                    ra.set_undefined(); return (TVal){};
+                }
+            }
+
+            // Re-check for lightfunc after potential bound-function re-dispatch
+            if (super_hobj == null && super_val.is_lightfunc()) {
+                uint sc_lf_idx = (uint)(usz)super_val.get_heapptr();
+                HObject* sc_lf_proto = lightfunc_get_proto(vm, sc_lf_idx);
+                if (sc_lf_proto == null) {
+                    HString* type_str = typeof_string(vm, &super_val);
+                    vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart);
+                    return (TVal){};
+                }
+                builtins::BuiltinContext sc_lf_ctx;
+                sc_lf_ctx.vm = vm;
+                sc_lf_ctx.regs = vm.valstack;
+                sc_lf_ctx.base_reg = (ushort)((uint)(ds.act.bottom - vm.valstack) + callee_reg + 2);
+                sc_lf_ctx.argc = (ushort)nargs;
+                sc_lf_ctx.result = ds.regs_base + result_reg;
+                sc_lf_ctx.heap = vm.heap;
+                sc_lf_ctx.this_val = ds.regs_base[callee_reg + 1];
+                sc_lf_ctx.is_constructor = true;
+                sc_lf_ctx.needs_re_dispatch = false;
+                sc_lf_ctx.re_nargs = 0;
+                sc_lf_ctx.global_env = vm.global_env;
+                sc_lf_ctx.should_throw = false;
+                sc_lf_ctx.callee_obj = null;
+                sc_lf_ctx.new_target = new_target;
+                builtins::dispatch_builtin(sc_lf_idx, &sc_lf_ctx);
+                if (sc_lf_ctx.should_throw) {
+                    vm_throw_value(vm, sc_lf_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
+                } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
+                    TVal* sc_lf_result = ds.regs_base + result_reg;
+                    if (sc_lf_result.is_object()) {
+                        vm.heap.tval_copy_ref(&ds.act.this_binding, sc_lf_result);
+                        ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                    }
+                }
+                return (TVal){};
+            }
+
             // Handle builtin super constructors
-            if (super_hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
+            if (super_hobj != null && super_hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if ((*super_hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*super_hobj.extra_ptr()).func.builtin_fn_index;
                     builtins::BuiltinContext ctx;
@@ -1334,14 +1439,56 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.callee_obj = super_hobj;
                     ctx.new_target = new_target;
                     builtins::dispatch_builtin(fn_idx, &ctx);
+                    if (ctx.should_throw) {
+                        vm_throw_value(vm, ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
+                    } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
+                        // Initialize the derived constructor's this_binding with the
+                        // object returned by the builtin super constructor (§9.2.2).
+                        TVal* sc_result_bi = ds.regs_base + result_reg;
+                        if (sc_result_bi.is_object()) {
+                            vm.heap.tval_copy_ref(&ds.act.this_binding, sc_result_bi);
+                            ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                        }
+                    }
                 }
                 return (TVal){};
             }
 
+            if (super_hobj == null) { ra.set_undefined(); return (TVal){}; }
             CompiledFunction* super_target = (*super_hobj.extra_ptr()).func.comp_func;
 
+            // OrdinaryCreateFromConstructor (§9.1.13): allocate the new object
+            // using new.target.prototype. For a derived constructor, this is the
+            // first (and only) object allocation for the construct sequence.
+            // Place it in the this-slot (callee_reg+1) for the base constructor.
+            {
+                HObject*? sc_new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch _sc_err = sc_new_obj_raw) {
+                    ra.set_undefined();
+                    return (TVal){};
+                }
+                HObject* sc_new_obj = sc_new_obj_raw;
+                // OrdinaryCreateFromConstructor: set [[Prototype]] from new.target.prototype
+                if (new_target != null) {
+                    HString* proto_key_sc = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+                    TVal? proto_sc = new_target.get_prop_proto(proto_key_sc);
+                    if (try psc = proto_sc) {
+                        if (psc.is_object() && psc.get_heapptr() != null) {
+                            sc_new_obj.prototype = (HObject*)psc.get_heapptr();
+                        } else {
+                            sc_new_obj.prototype = vm.heap.object_proto;
+                        }
+                    } else {
+                        sc_new_obj.prototype = vm.heap.object_proto;
+                    }
+                }
+                TVal sc_this_tval;
+                sc_this_tval.set_object(sc_new_obj);
+                // Place in callee_reg+1 (the this-slot for SUPER_CALL's base constructor).
+                vm.heap.tval_copy_ref(&ds.regs_base[callee_reg + 1], &sc_this_tval);
+            }
+
             // Set up activation frame for superclass constructor
-            // The 'this' slot should already have new_target (set by caller)
             uint frame_start = callee_reg + 2;
             TVal* new_bottom = ds.regs_base + frame_start;
             uint needed = (uint)(new_bottom - vm.valstack) + super_target.num_regs;
@@ -1676,26 +1823,34 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 return (TVal){};
             }
 
-            // Step 1: Create new object
-            HObject*? new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-            if (catch err = new_obj_raw) {
-                ds.regs_base[result_reg].set_undefined();
-                return (TVal){};
-            }
-            HObject* new_obj = new_obj_raw;
-
-            // Step 2: Set prototype from constructor.prototype
-            HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
-            TVal? proto_val = hobj.get_prop_proto(proto_key);
-            if (try pv = proto_val) {
-                if (pv.is_object() && pv.get_heapptr() != null) {
-                    new_obj.prototype = (HObject*)pv.get_heapptr();
-                }
-            }
-
-            // Step 3: Place new object in this-slot
+            // Step 1: Create new object — skip for derived constructors, which get
+            // an uninitialized `this` until super() allocates and sets it.
+            // ES2015 §9.2.2 step 5: "derived" constructors do not OrdinaryCreateFromConstructor
+            // here; super() does it inside the base class [[Construct]].
             TVal this_tval;
-            this_tval.set_object(new_obj);
+            if (target.is_derived_ctor()) {
+                // Derived constructor: this_binding = TDZ sentinel (uninitialized).
+                // LDTHIS will throw ReferenceError; SUPER_CALL will initialize it.
+                this_tval = env::tdz_sentinel();
+            } else {
+                // Base constructor: allocate the new object now.
+                HObject*? new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err = new_obj_raw) {
+                    ds.regs_base[result_reg].set_undefined();
+                    return (TVal){};
+                }
+                HObject* new_obj = new_obj_raw;
+
+                // Set prototype from constructor.prototype (OrdinaryCreateFromConstructor).
+                HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+                TVal? proto_val = hobj.get_prop_proto(proto_key);
+                if (try pv = proto_val) {
+                    if (pv.is_object() && pv.get_heapptr() != null) {
+                        new_obj.prototype = (HObject*)pv.get_heapptr();
+                    }
+                }
+                this_tval.set_object(new_obj);
+            }
             vm.heap.tval_copy_ref(&ds.regs_base[callee_reg + 1], &this_tval);
             uint frame_start = callee_reg + 2;
             TVal* new_bottom = ds.regs_base + frame_start;
@@ -1766,7 +1921,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.retval = ds.regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT
                           | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
-                          | ACT_FLAG_THIS_OWNED;
+                          | ACT_FLAG_THIS_OWNED
+                          | (target.is_derived_ctor() ? ACT_FLAG_DERIVED : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
 

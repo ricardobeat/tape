@@ -189,13 +189,16 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
         case UNDEFINED: return h.strs[heap::BuiltinStr.UNDEFINED];
         case NULL_VAL:  return h.strs[heap::BuiltinStr.NULL_STR];
         case OBJECT: {
-            // Unwrap String/Number/Boolean wrapper objects per ToPrimitive hint string.
-            TVal prim = builtins::to_primitive_value_local(val);
+            // Full ToPrimitive (hint "string") for object keys — calls toString/valueOf,
+            // Symbol.toPrimitive, etc. Sets throw_pending on failure (§7.1.1.1 step 6).
+            TVal prim = to_primitive_value(vm, val, 1);
+            if (vm != null && vm.throw_pending) return null;
             if (prim.get_tag() != OBJECT) {
                 TVal tmp = prim;
                 return get_prop_key(vm, &tmp);
             }
-            return h.strs[heap::BuiltinStr.UNDEFINED];
+            if (vm != null) vm_set_toprimitive_error(vm);
+            return null;
         }
         default:        return h.strs[heap::BuiltinStr.UNDEFINED];
     }

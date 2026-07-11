@@ -116,6 +116,10 @@ const uint ACT_FLAG_ASYNC          = 1u << 4;
 /// Set when this_binding was incref'd via tval_copy_ref and must be
 /// decref'd when the activation is popped in handle_return.
 const uint ACT_FLAG_THIS_OWNED     = 1u << 5;
+/// Activation is a derived class constructor (extends + super() required).
+/// Used by handle_return to enforce §9.2.2 step 13.c: non-object non-undefined
+/// return value throws TypeError.
+const uint ACT_FLAG_DERIVED        = 1u << 6;
 
 // ============================================================================
 // Catcher — exception handler chain entry

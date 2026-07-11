@@ -332,6 +332,12 @@ enum Opcode : char {
     /// Pop the current lexical environment record from `act.lex_env`,
     /// restoring the parent.  Used at block exit.
     POP_LEX,
+    /// Push a new variable environment child of the current var_env.
+    /// Used when a function body needs a separate var scope from parameters
+    /// (§9.2.10 step 27: hasParameterExpressions → separate varEnv for body).
+    PUSH_VAR,
+    /// Pop the current variable environment, restoring act.var_env to parent.
+    POP_VAR,
     /// `lex_env[constants[BC]] = A`  — write a binding into the current
     /// lexical environment (for `let` declarations).  A-BC format.
     PUTLEX,
@@ -626,6 +632,8 @@ case PUTLEX:     return A_BC;
         case ENDFINALLY: return NONE;
         case PUSH_LEX:   return NONE;
         case POP_LEX:    return NONE;
+        case PUSH_VAR:   return NONE;
+        case POP_VAR:    return NONE;
         case INC:        return NONE;
         case DEC:        return NONE;
         case PUTARG:     return ABC;
@@ -838,6 +846,10 @@ bitstruct FuncFlags : uint {
     bool  is_class_ctor    : 21;
     /// Function body had a "use strict" directive.
     bool  is_strict        : 22;
+    /// Constructor is a derived class constructor (ES2015 §9.2.2 step 13.c):
+    /// `return <non-object>` in a derived constructor throws TypeError unless
+    /// the value is undefined. Set when has_super_binding is true at compile time.
+    bool  is_derived_ctor  : 23;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -976,6 +988,13 @@ macro bool CompiledFunction.is_constructable(&self) {
 /// or static-method redefinition of .prototype.
 macro bool CompiledFunction.is_class_ctor(&self) {
     return self.flags.is_class_ctor;
+}
+
+/// Returns `true` when this is a derived class constructor.  Per ES2015 §9.2.2
+/// step 13.c, returning a non-object non-undefined value from a derived
+/// constructor throws TypeError.
+macro bool CompiledFunction.is_derived_ctor(&self) {
+    return self.flags.is_derived_ctor;
 }
 
 /// Returns `true` when the function has no local bindings and the CALL fast

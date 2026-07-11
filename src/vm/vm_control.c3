@@ -122,6 +122,56 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
     }
 }
 
+/// ES2015 §9.2.11 SetFunctionName helper for CLASS_INITGET/CLASS_INITSET.
+/// If the accessor function `fn_obj` currently has an empty `.name` property,
+/// overwrite it with `prefix + key_str` (string key) or `prefix + "[desc]"`
+/// (symbol key), matching the computed-accessor name spec.
+fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, char[] prefix) {
+    if (fn_obj == null) return;
+    // Only update if current .name is the empty string (compiler-emitted
+    // placeholder for computed keys; non-computed keys already have the
+    // correct name set at compile time).
+    HString* name_key = (HString*)vm.heap.strs[heap::BuiltinStr.NAME];
+    int name_idx = fn_obj.find_prop_idx((void*)name_key);
+    if (name_idx < 0) return;
+    TVal* name_slot = &fn_obj.prop_values()[name_idx];
+    if (!name_slot.is_string()) return;
+    HString* cur_name = (HString*)name_slot.get_heapptr();
+    if (cur_name == null || cur_name.blen != 0) return;  // non-empty: already set
+
+    // Build "prefix + key_desc" in a stack buffer.
+    char[256] buf;
+    usz pos = 0;
+    for (usz i = 0; i < prefix.len && pos < 255; i++) buf[pos++] = prefix[i];
+
+    if (key_tval.is_string()) {
+        HString* key_hstr = (HString*)key_tval.get_heapptr();
+        if (key_hstr != null && key_hstr.is_symbol()) {
+            // Symbol key: append "[description]" or "" for anonymous symbols.
+            uint sym_blen = key_hstr.blen;
+            if (sym_blen > 1) {
+                // description is bytes [1 .. blen-1] after the 0xFF prefix
+                char* sym_cstr = key_hstr.get_cstr();
+                buf[pos++] = '[';
+                for (uint i = 1; i < sym_blen && pos < 254; i++) buf[pos++] = sym_cstr[i];
+                if (pos < 255) buf[pos++] = ']';
+            }
+            // anonymous Symbol(): name stays just prefix (e.g. "get ")
+        } else if (key_hstr != null) {
+            // Plain string key
+            char* kstr = key_hstr.get_cstr();
+            for (uint i = 0; i < key_hstr.blen && pos < 255; i++) buf[pos++] = kstr[i];
+        }
+    }
+
+    HString* new_name = intern_string(vm, buf[:pos]);
+    if (new_name != null) {
+        TVal new_tv;
+        new_tv.set_string(new_name);
+        vm.heap.tval_copy_ref(name_slot, &new_tv);
+    }
+}
+
 /// Sub-dispatch for CLOSURE, GETBOUND opcodes.
 fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -544,6 +594,14 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
+                // ToPropertyKey abrupt completion: propagate as throw (§14.5.14 step 9.a.i).
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
                 TVal getter_val = *rc;
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
@@ -559,6 +617,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                         hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), hobject::PROP_FLAGS_CLASS_ACCESSOR);
                     }
                 }
+                // ES2015 §14.5.14 + §9.2.11 SetFunctionName: for computed-key
+                // accessors the compiler leaves the function name empty; set it
+                // to "get <key>" or "get [desc]" (symbol) at class evaluation time.
+                if (rc.is_object() && key != null) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "get ");
+                }
             }
             return (TVal){};
         }
@@ -570,6 +634,14 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
+                // ToPropertyKey abrupt completion: propagate as throw (§14.5.14 step 9.a.i).
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
                 TVal setter_val = *rc;
                 if (key != null && hobj != null) {
                     // Check if property already exists as accessor
@@ -585,6 +657,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                         hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), hobject::PROP_FLAGS_CLASS_ACCESSOR);
                     }
                 }
+                // ES2015 §14.5.14 + §9.2.11 SetFunctionName: for computed-key
+                // accessors the compiler leaves the function name empty; set it
+                // to "set <key>" or "set [desc]" (symbol) at class evaluation time.
+                if (rc.is_object() && key != null) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "set ");
+                }
             }
             return (TVal){};
         }
@@ -597,6 +675,14 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
                 void* key = get_prop_key(vm, rb);
+                // ToPropertyKey abrupt completion: propagate as throw (§14.5.14 step 9.a.i).
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
                 if (key != null && hobj != null) {
                     int idx = hobj.find_prop_idx(key);
                     if (idx >= 0) {
@@ -611,11 +697,26 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                             nf.configurable = true;
                             nf.is_accessor = false;
                             hobj.set_prop_flags((uint)idx, nf);
+                        } else {
+                            // Non-configurable: DefinePropertyOrThrow throws TypeError
+                            // (§14.3.9 MethodDefinitionEvaluation, §10.1.6.3 ValidateAndApplyPropertyDescriptor).
+                            HString* key_hstr = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                                "Cannot redefine non-configurable property '%s'", key_hstr.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            return (TVal){};
                         }
-                        // non-configurable: do nothing (silent)
                     } else {
                         hobj.put_prop(key, *rc, hobject::PROP_FLAGS_CLASS_METHOD);
                     }
+                }
+                // ES2015 §9.2.11 SetFunctionName for computed-key methods:
+                // if the function's .name is empty, set it to the key name
+                // (string) or "[desc]" (symbol) — no prefix for plain methods.
+                if (rc.is_object() && key != null) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "");
                 }
             }
             return (TVal){};
@@ -639,6 +740,32 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
 
         case Opcode.POP_LEX: {
             // Pop the current lexical environment from the scope chain.
+            if (ds.act.lex_env != null && ds.act.lex_env.parent != null) {
+                ds.act.lex_env = ds.act.lex_env.parent;
+            }
+            return (TVal){};
+        }
+
+        case Opcode.PUSH_VAR: {
+            // Push a new declarative environment for the function body's var scope.
+            // Per §9.2.10 step 27: when hasParameterExpressions is true, body vars
+            // must not share the same environment as parameter bindings.
+            EnvRecord*? pvar_raw = env::env_create_declarative(vm.heap, ds.act.var_env);
+            if (try new_var_env = pvar_raw) {
+                ds.act.var_env = new_var_env;
+                // lex_env must also advance so PUTLEX / GETVAR resolve in the right scope
+                ds.act.lex_env = new_var_env;
+            } else {
+                return VM_ERROR~;
+            }
+            return (TVal){};
+        }
+
+        case Opcode.POP_VAR: {
+            // Restore the variable environment to its parent (undo PUSH_VAR).
+            if (ds.act.var_env != null && ds.act.var_env.parent != null) {
+                ds.act.var_env = ds.act.var_env.parent;
+            }
             if (ds.act.lex_env != null && ds.act.lex_env.parent != null) {
                 ds.act.lex_env = ds.act.lex_env.parent;
             }

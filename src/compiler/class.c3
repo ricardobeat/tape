@@ -90,7 +90,7 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
         Instruction* c = func.code;
         c[0] = bytecode::make_abc(Opcode.PUSH_LEX, 0, 0, 0);
         c[1] = bytecode::make_a_bc(Opcode.GETVAR, 1, 0);   // r1, constant idx 0
-        c[2] = bytecode::make_abc(Opcode.LDTHIS, 2, 0, 0);  // r2 = this
+        c[2] = bytecode::make_abc(Opcode.LDUNDEF, 2, 0, 0);  // r2 = placeholder (this-slot for SUPER_CALL)
         c[3] = bytecode::make_abc(Opcode.SPREAD_ARG, 3, 23, 0);  // r3.. = spread dest, r23 = count
         c[4] = bytecode::make_abc(Opcode.SUPER_CALL_S, 2, 1, 23); // result=r2, callee=r1, nargs_reg=r23
         c[5] = bytecode::make_abc(Opcode.POP_LEX, 0, 0, 0);
@@ -606,8 +606,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // Mark the constructor (explicit or default) as a class constructor:
     // non-configurable .prototype (§14.5.14 step 25) and TypeError when
     // called without `new` (§10.2.1 step 2).
+    // Derived constructors (has_super_binding) get is_derived_ctor so the VM
+    // can enforce §9.2.2 step 13.c: non-object non-undefined return → TypeError.
     if (ctor_inner_idx < self.inner_func_count) {
         self.inner_funcs[ctor_inner_idx].flags.is_class_ctor = true;
+        if (self.has_super_binding) {
+            self.inner_funcs[ctor_inner_idx].flags.is_derived_ctor = true;
+        }
     }
 
     // Retain the entire class source text on the constructor function so that
@@ -654,9 +659,21 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
     }
 
-    // If extends, set proto.__proto__ = Base.prototype
+    // If extends, set proto.__proto__ = Base.prototype (or null for `extends null`).
+    // ES2015 §15.7.14 step 5.e: if superclass is null, protoParent=null,
+    // constructorParent=%FunctionPrototype% (constructor already inherits it by default).
     if (base_reg != MAX_REGISTERS) {
         ushort base_proto_reg = self.alloc_reg();
+        // Emit a runtime null check: if (base === null) goto null_branch
+        ushort null_cond_reg = self.alloc_reg();
+        ushort null_lit_reg  = self.alloc_reg();
+        self.emit_abc(Opcode.LDNULL, (uint)null_lit_reg, 0, 0);
+        self.emit_abc(Opcode.SEQ, (uint)null_cond_reg, (uint)base_reg, (uint)null_lit_reg);
+        self.free_reg(null_lit_reg);
+        uint null_branch_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)null_cond_reg);
+        self.free_reg(null_cond_reg);
+
+        // Non-null path: base_proto_reg = Base.prototype
         {
             ushort base_proto_key_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)base_proto_key_reg, proto_name_idx));
@@ -664,8 +681,17 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             self.free_reg(base_proto_key_reg);
         }
         self.emit_abc(Opcode.SETPROTO, (uint)proto_reg, (uint)base_proto_reg, 0);
-        // ctor.__proto__ = Base (static inheritance)
+        // ctor.__proto__ = Base (static inheritance chain)
         self.emit_abc(Opcode.SETPROTO, (uint)ctor_reg, (uint)base_reg, 0);
+        uint skip_null_jump = self.emit_jump(Opcode.JUMP);
+
+        // Null path: proto.__proto__ = null; ctor.__proto__ stays %FunctionPrototype%
+        self.patch_jump(null_branch_jump);
+        self.emit_abc(Opcode.LDNULL, (uint)base_proto_reg, 0, 0);
+        self.emit_abc(Opcode.SETPROTO, (uint)proto_reg, (uint)base_proto_reg, 0);
+        // ctor does NOT inherit from null: it keeps Function.prototype (set by CLOSURE).
+
+        self.patch_jump(skip_null_jump);
         self.free_reg(base_proto_reg);
     }
 
