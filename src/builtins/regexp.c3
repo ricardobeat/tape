@@ -664,7 +664,8 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
     TVal s_tv; s_tv.set_undefined();
     if (ctx.argc > 0) s_tv = ctx.regs[ctx.base_reg];
     HString* s_hstr;
-    if (s_tv.is_string() && s_tv.get_heapptr() != null) {
+    if (s_tv.is_string() && s_tv.get_heapptr() != null
+        && !((HString*)s_tv.get_heapptr()).is_symbol()) {
         s_hstr = (HString*)s_tv.get_heapptr();
     } else {
         s_hstr = builtin_to_string_vm(ctx, &s_tv);
@@ -806,7 +807,8 @@ fn void builtin_regexp_proto_symbol_search(BuiltinContext* ctx) {
     TVal s_tv; s_tv.set_undefined();
     if (ctx.argc > 0) s_tv = ctx.regs[ctx.base_reg];
     HString* s_hstr;
-    if (s_tv.is_string() && s_tv.get_heapptr() != null) {
+    if (s_tv.is_string() && s_tv.get_heapptr() != null
+        && !((HString*)s_tv.get_heapptr()).is_symbol()) {
         s_hstr = (HString*)s_tv.get_heapptr();
     } else {
         s_hstr = builtin_to_string_vm(ctx, &s_tv);
@@ -814,17 +816,34 @@ fn void builtin_regexp_proto_symbol_search(BuiltinContext* ctx) {
         if (s_hstr == null) s_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
 
+    HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
+
+    // 4. Let previousLastIndex be ? Get(rx, "lastIndex").
+    TVal? prev_opt = builtins_generic_get(rx, li_key, ctx);
+    if (ctx.should_throw) return;
+    TVal previous_last_index; previous_last_index.set_undefined();
+    if (try p = prev_opt) { previous_last_index = p; }
+
+    // 5. If SameValue(previousLastIndex, 0) is false, Set(rx, "lastIndex", 0, true).
+    TVal zero_tv; zero_tv.set_fastint(0);
+    if (!same_value(previous_last_index, zero_tv)) {
+        if (!regexp_set_with_setter(ctx, rx, li_key, zero_tv)) return;
+    }
+
     // 6. Let result be ? RegExpExec(rx, S).
     TVal s_hstr_tv; s_hstr_tv.set_string(s_hstr);
     if (!regexp_exec_call(ctx, rx, &s_hstr_tv)) return;
     TVal result = *ctx.result;
 
-    // ES2017 §21.2.5.9 step 9 (search() always resets lastIndex to 0).
-    HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
-    TVal zero_tv; zero_tv.set_fastint(0);
-    if (!rx.put_prop((void*)li_key, zero_tv, hobject::PROP_FLAGS_WEC)) {
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex on regexp");
-        return;
+    // 7. Let currentLastIndex be ? Get(rx, "lastIndex").
+    TVal? cur_opt = builtins_generic_get(rx, li_key, ctx);
+    if (ctx.should_throw) return;
+    TVal current_last_index; current_last_index.set_undefined();
+    if (try c = cur_opt) { current_last_index = c; }
+
+    // 8. If SameValue(currentLastIndex, previousLastIndex) is false, restore it.
+    if (!same_value(current_last_index, previous_last_index)) {
+        if (!regexp_set_with_setter(ctx, rx, li_key, previous_last_index)) return;
     }
 
     if (result.is_null()) {
@@ -1338,7 +1357,8 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
     TVal s_tv; s_tv.set_undefined();
     if (ctx.argc > 0) { s_tv = ctx.regs[ctx.base_reg]; }
     HString* s_hstr;
-    if (s_tv.is_string() && s_tv.get_heapptr() != null) {
+    if (s_tv.is_string() && s_tv.get_heapptr() != null
+        && !((HString*)s_tv.get_heapptr()).is_symbol()) {
         HString* tmp_hs = (HString*)s_tv.get_heapptr();
         // Symbols cannot be converted to string — throw TypeError.
         if (tmp_hs.is_symbol()) {
@@ -1708,7 +1728,8 @@ fn void builtin_regexp_proto_symbol_matchAll(BuiltinContext* ctx) {
     TVal s_tv; s_tv.set_undefined();
     if (ctx.argc > 0) s_tv = ctx.regs[ctx.base_reg];
     HString* s_hstr;
-    if (s_tv.is_string() && s_tv.get_heapptr() != null) {
+    if (s_tv.is_string() && s_tv.get_heapptr() != null
+        && !((HString*)s_tv.get_heapptr()).is_symbol()) {
         HString* tmp = (HString*)s_tv.get_heapptr();
         if (tmp.is_symbol()) {
             builtin_throw_no_result_change(ctx, heap.type_err_proto,
