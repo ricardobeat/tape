@@ -499,7 +499,18 @@ fn void? CompilerContext.var_declaration(&self) {
             self.advance()!; // consume '{'
             self.object_destructure(kind, is_lexical, is_const)!;
         } else {
-            Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+            // Per ES2024 §13.3.1, BindingIdentifier is an Identifier or one of
+            // `yield`/`await` in non-generator / non-module contexts. We're
+            // strict-only but still support script-level `await`/`yield`.
+            Token name_tok;
+            if (next == TokenType.IDENTIFIER) {
+                name_tok = self.advance()!;
+            } else if ((next == TokenType.AWAIT && !self.is_module) ||
+                       (next == TokenType.YIELD && !self.is_generator)) {
+                name_tok = self.advance()!;
+            } else {
+                return COMPILE_ERROR~;
+            }
             if (is_restricted_name(name_tok.str_value)) {
                 return COMPILE_ERROR~;
             }

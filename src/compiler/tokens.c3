@@ -443,29 +443,51 @@ fn bool CompilerContext.match_static_modifier(&self) {
 /// Depth tracking: LPAREN/RPAREN increment/decrement a depth counter; the scan stops
 /// when a SEMICOLON is seen at depth 0, or when a RPAREN is seen at depth 0.
 fn bool CompilerContext.skip_expr_lex(&self) {
-    int depth = 0;
+    // Skip tokens until matching ')' or ';' is found at depth 0. This must
+    // additionally track function expressions (function NAME(args){body}) and
+    // braces so an arrow/function body is not mistaken for an enclosing
+    // template substitution or unbalanced paren. The function body braces are
+    // tracked separately via a depth count so that `while (function() {x;})`
+    // skips the body's `;` instead of stopping on it.
+    int paren_depth = 0;
+    int brace_depth = 0;
+    int template_depth = 0;
     for (;;) {
         Token? tok_opt = self.lexer.next_token();
         if (catch _err = tok_opt) { return false; }
         Token tok = tok_opt;
         switch (tok.type) {
             case TokenType.EOF_TOKEN: return false;
-            case TokenType.LPAREN:   depth++; continue;
-            case TokenType.LBRACKET: depth++; continue;
+            case TokenType.LPAREN:   paren_depth++; continue;
+            case TokenType.LBRACKET: paren_depth++; continue;
             case TokenType.RPAREN: {
-                if (depth == 0) {
+                if (paren_depth == 0) {
                     // Put it back via the lexer's single-token pushback
                     self.lexer.pushed_back = tok;
                     self.lexer.has_pushed_back = true;
                     return true;
                 }
-                depth--;
+                paren_depth--;
             }
             case TokenType.RBRACKET: {
-                if (depth > 0) { depth--; }
+                if (paren_depth > 0) { paren_depth--; }
+            }
+            // Function body `{...}` — keep balanced; its outer closing `}`
+            // is consumed by the brace counter. `;` inside the body must
+            // not terminate the skip.
+            case TokenType.LBRACE:    brace_depth++; continue;
+            case TokenType.RBRACE: {
+                if (brace_depth > 0) brace_depth--;
+            }
+            // Template literal substitutions — `}` inside a `${...}` is not
+            // a function-body close (matches skip_braced_block convention).
+            case TokenType.TEMPLATE_HEAD: template_depth++; continue;
+            case TokenType.TEMPLATE_MIDDLE:
+            case TokenType.TEMPLATE_TAIL: {
+                if (template_depth > 0) template_depth--;
             }
             case TokenType.SEMICOLON: {
-                if (depth == 0) {
+                if (paren_depth == 0 && brace_depth == 0 && template_depth == 0) {
                     self.lexer.pushed_back = tok;
                     self.lexer.has_pushed_back = true;
                     return true;

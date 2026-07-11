@@ -2031,8 +2031,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     bool length_valid = true;
                     uint new_len = 0;
                     if (rc.is_undefined()) {
-                        // Step 2a: undefined value throws TypeError
-                        length_valid = true; // signal to throw TypeError below
+                        // Per ES2024 §10.4.2.1 ArraySetLength: ToUint32(undefined)=0,
+                        // ToNumber(undefined)=NaN, 0 ≠ NaN → throw RangeError.
+                        length_valid = false;
                         new_len = 0;
                     } else if (rc.is_fastint()) {
                         long v = rc.get_fastint();
@@ -2050,11 +2051,61 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             new_len = (uint)raw;
                         }
                     } else {
-                        // For non-numeric values, fall through to slow path (Put → DefineOwnProperty)
-                        // so the regular [[Set]] machinery handles coercion.
-                        // We can't throw from here without breaking object property writes.
-                        length_valid = true;
-                        new_len = 0; // placeholder, will be overwritten by put_prop
+                        // Non-number primitives or objects: coerce to number per
+                        // ES2024 §10.4.2.1 ArraySetLength step 3 (ToNumber on v),
+                        // then re-validate as uint32. The slow put_prop path uses
+                        // [[DefineOwnProperty]] and never reaches here — and even
+                        // if it did, set_length would still need a number, so we
+                        // do it ourselves with proper valueOf/toString propagation.
+                        TVal conv_src = *rc;
+                        if (conv_src.is_string()) {
+                            HString* s = (HString*)conv_src.get_heapptr();
+                            if (s != null && s.is_symbol()) {
+                                if (!vm_throw_error(vm, vm.heap.type_err_proto,
+                                    "Cannot convert a Symbol value to a number",
+                                    ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                                return (TVal){};
+                            }
+                        }
+                        if (conv_src.is_object() && conv_src.get_heapptr() != null) {
+                            TVal prim = vm::to_primitive_value(vm, &conv_src, 2);
+                            if (vm.throw_pending) {
+                                TVal t = vm.throw_value;
+                                vm.throw_pending = false;
+                                if (!vm_throw_value(vm, t, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return vm_uncaught_error(vm, &t);
+                                }
+                                return (TVal){};
+                            }
+                            conv_src = prim;
+                        }
+                        // Coerce to number via the same string_to_double helper
+                        // the cast machinery uses. Boolean primitive: ToNumber
+                        // yields 0/1; null=0; undefined=NaN.
+                        double d;
+                        if (conv_src.is_boolean()) {
+                            d = conv_src.get_boolean() ? 1.0 : 0.0;
+                        } else if (conv_src.is_null()) {
+                            d = 0.0;
+                        } else if (conv_src.is_undefined()) {
+                            d = 0.0 / 0.0;  // NaN — ToUint32(0)≠NaN → RangeError below
+                        } else if (conv_src.is_fastint() || conv_src.is_number()) {
+                            d = conv_src.is_fastint() ? (double)conv_src.get_fastint()
+                                                     : conv_src.get_number();
+                        } else if (conv_src.is_string()) {
+                            d = builtins::string_to_double(&conv_src);
+                        } else {
+                            // Should have been handled above (symbols thrown, objects
+                            // converted). Fall back to NaN to surface a RangeError.
+                            d = 0.0 / 0.0;
+                        }
+                        if (d != d || d < 0.0 || d > 4294967295.0 || d != math::floor(d)) {
+                            length_valid = false;
+                        } else {
+                            new_len = (uint)d;
+                        }
                     }
                     if (!length_valid) {
                         if (!vm_throw_error(vm, vm.heap.range_err_proto, "Invalid array length", ds.act, &ds.curr_pc, &ds.needs_restart)) {
@@ -2062,15 +2113,13 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         }
                         return (TVal){};
                     }
-                    if (rc.is_undefined()) {
-                        // TypeError: undefined is not a valid length
-                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "Invalid array length: undefined", ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return VM_ERROR~;
-                        }
-                        return (TVal){};
-                    }
-                    // Only update if the value is a valid number (skip if fell through)
-                    if (rc.is_fastint() || rc.is_number()) {
+                    // Per ES2024 §10.4.2.1 ArraySetLength, undefined is coerced via
+                    // ToUint32→0 / ToNumber→NaN, and 0 ≠ NaN → RangeError. Other
+                    // primitive/object fall through to the general coercion path
+                    // below; if it produces an invalid new_len, we already threw
+                    // RangeError, so nothing extra here.
+                    bool length_coerced_ok = length_valid;
+                    if (length_coerced_ok) {
                         // Check that the length property is writable before modifying it.
                         // A non-writable array length must silently reject in sloppy mode.
                         bool len_writable = true;

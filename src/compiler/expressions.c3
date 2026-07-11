@@ -1694,6 +1694,13 @@ fn ushort? CompilerContext.new_expr(&self) {
                 ctor_reg = result;
                 self.next_reg = ctor_reg + 1;
             }
+        } else if (self.check(TokenType.LPAREN)) {
+            // Trailing call on the freshly constructed object: `new X()(args)`.
+            // Throws TypeError at runtime if X isn't callable (ES §13.3.1.1 step 10).
+            self.call_prop_obj_reg = MAX_REGISTERS;
+            ctor_reg = self.emit_call(ctor_reg)!;
+            self.last_was_member = false;
+            self.last_was_getvar = false;
         } else {
             break;
         }
@@ -2304,12 +2311,45 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
         // `await expr` — contextual keyword, only valid in async functions.
         // Emits AWAIT + LOAD_RESUME so the VM can suspend/resume at this point.
+        // In script (non-module) code, `await` is just an IdentifierName per
+        // ES2024 §13.1.1 — only the operator in async functions. Outside of
+        // an async function (and outside a module) `await` is an identifier,
+        // so handle it via the standard identifier-as-expression path:
+        // resolve as a local variable if possible, else emit GETVAR.
         case TokenType.AWAIT:
         {
-            self.advance()!;  // consume 'await'
             if (!self.is_async) {
-                return COMPILE_ERROR~;
+                Token id_tok = self.advance()!;
+                if (self.check(TokenType.ARROW)) {
+                    // `await => ...` could be an arrow function with one
+                    // identifier parameter named "await".
+                    char[][1] params_arr;
+                    params_arr[0] = id_tok.str_value;
+                    uint ident_arrow_src = self.lexer.token_start;
+                    return self.parse_arrow_function(&params_arr[0], 1, false, ident_arrow_src)!;
+                }
+                // Resolve via the standard identifier path: local var lookup,
+                // else runtime GETVAR. Same semantics as the IDENTIFIER branch.
+                self.callee_is_eval = str_eq(id_tok.str_value, "eval");
+                if (!self.is_global) {
+                    if (try var_reg = self.resolve_var(id_tok.str_value)) {
+                        self.last_was_getvar = false;
+                        self.last_was_local_var = true;
+                        self.last_local_var_reg = var_reg;
+                        return var_reg;
+                    }
+                }
+                if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    self.uses_arguments = true;
+                }
+                uint name_idx = self.add_string_constant(id_tok.str_value);
+                ushort id_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
+                self.last_was_getvar = true;
+                self.last_getvar_name_idx = name_idx;
+                return id_reg;
             }
+            self.advance()!;  // consume 'await'
             ushort operand = self.unary_expr()!;
             // AWAIT suspends the async function; LOAD_RESUME loads the settled value
             self.emit_abc(Opcode.AWAIT, (uint)operand, 0, 0);
