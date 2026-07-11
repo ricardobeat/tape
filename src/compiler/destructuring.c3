@@ -216,6 +216,58 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
 // Destructuring ASSIGNMENT (without let/const/var)
 // ============================================================================
 
+/// Scan ahead from the current `{` or `[` token to determine whether it begins
+/// a MemberExpression primary (e.g. `{}.x`, `{}[key]`, `[1,2][0]`) rather
+/// than a nested destructuring pattern.
+///
+/// Scans the raw source by creating a disposable copy of the lexer, skipping
+/// past the outermost balanced brace/bracket, then checking the token that
+/// immediately follows. Returns true if `.`, `[`, or `(` follows the closing
+/// bracket — meaning the caller should treat it as a full LHS expression
+/// rather than a nested sub-pattern.
+///
+/// The actual lexer state is never modified; the scan is purely speculative.
+fn bool CompilerContext.primary_is_member_target(&self) {
+    // Determine the open/close bracket pair from the upcoming token.
+    TokenType open_tt  = self.peek_type();
+    TokenType close_tt = (open_tt == TokenType.LBRACE)
+        ? TokenType.RBRACE : TokenType.RBRACKET;
+
+    // Make a cheap copy of the lexer so we can lex ahead without side-effects.
+    // Preserve the lexer state exactly (including any buffered lookahead and
+    // pushback tokens) so that `scan.next_token()` correctly yields the `{`
+    // or `[` that peek_type() already saw.
+    Lexer scan = *self.lexer;
+    // Also copy the compiler pushback stack, but we do not use it in this
+    // speculative scan (we go directly through the Lexer copy).  Clear
+    // pushed_back so the Lexer-level pushback is the only source.
+    scan.has_pushed_back = false;
+
+    // Consume the opening bracket.
+    Token? open_opt = scan.next_token();
+    if (catch _err1 = open_opt) return false;
+
+    // Scan past the balanced bracket pair, tracking nesting depth.
+    int depth = 1;
+    while (depth > 0) {
+        Token? t_opt = scan.next_token();
+        if (catch _err2 = t_opt) return false;
+        Token t = t_opt;
+        if (t.type == TokenType.EOF_TOKEN) return false;
+        if (t.type == open_tt)  depth++;
+        if (t.type == close_tt) depth--;
+    }
+
+    // Check what follows the closing bracket.
+    Token? next_opt = scan.next_token();
+    if (catch _err3 = next_opt) return false;
+    Token next = next_opt;
+    return (next.type == TokenType.DOT
+         || next.type == TokenType.LBRACKET
+         || next.type == TokenType.LPAREN
+         || next.type == TokenType.OPT_CHAIN);
+}
+
 /// Parse a DestructuringAssignmentTarget — any LeftHandSideExpression valid
 /// as an assignment target (§13.15.5). Returns true when the target is a
 /// member expression (`a.b`, `a[i]`, `{}[f()]`, etc.); false when it is a
@@ -370,8 +422,10 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
         if (self.match(TokenType.ELLIPSIS)) {
             in_rest = true;
 
-            // Nested rest pattern: `...[a, b]` or `...{a}`
-            if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+            // Nested rest pattern: `...[a, b]` or `...{a}` — but only when
+            // the `{`/`[` is not a MemberExpression primary like `...{}.x`.
+            if ((self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET))
+                && !self.primary_is_member_target()) {
                 bool is_obj = self.check(TokenType.LBRACE);
                 if (count < (uint)MAX_DESTRUCT_BINDS) {
                     binds[count].key_idx    = 0xFFFF;  // rest synthetic
@@ -420,8 +474,11 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
             break;
         }
 
-        // Nested pattern: `[pattern]` or `{pattern}`
-        if (self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET)) {
+        // Nested pattern: `[pattern]` or `{pattern}` — but only when the
+        // `{`/`[` is NOT the start of a MemberExpression primary such as
+        // `{}.x` or `[1][0]`. Scan ahead to distinguish the two cases.
+        if ((self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET))
+            && !self.primary_is_member_target()) {
             bool is_obj = self.check(TokenType.LBRACE);
             if (count < (uint)MAX_DESTRUCT_BINDS) {
                 binds[count].key_idx    = (uint)elem_idx;  // array index
@@ -671,7 +728,8 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                 CompiledFunction* df = self.compile_default_expr(nhs.get_data())!;
                 binds[*count - 1].default_func_idx = self.add_inner_func(df);
             }
-        } else if (self.check(TokenType.LBRACKET) || self.check(TokenType.LBRACE)) {
+        } else if ((self.check(TokenType.LBRACKET) || self.check(TokenType.LBRACE))
+                   && !self.primary_is_member_target()) {
             // Nested pattern target: `key: [..]` / `key: {..}`. Emit a synthetic
             // group whose value is source[key]; delegate the sub-pattern to the
             // param collectors (identifier leaves only, like array assign).

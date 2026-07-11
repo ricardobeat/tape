@@ -2573,6 +2573,16 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         break;
                     } else if (put_result == 0) {
+                        // Not in lex env — check var env. In strict mode, assigning
+                        // to an identifier that does not exist anywhere in the scope
+                        // chain throws ReferenceError (ES5 §11.13.1 / ES2015 §12.15.4).
+                        if (vm.current_func.is_strict() && !env::env_has(ds.act.var_env, key)) {
+                            HString* name_hstr = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "'%s' is not defined", name_hstr.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
                         env::env_put(ds.act.var_env, key, *ra);
                     }
                     vm.heap.decref_tval(ra);
