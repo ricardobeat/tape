@@ -14,17 +14,12 @@
 | CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
 
-**Remaining dstr clusters:** (1) `put-let` (8 tests) — `({x}={})` where `x` is a
-TDZ `let` must throw ReferenceError; plain `x=5` in TDZ does throw but the
-destructuring PUTVAR does not (both emit identical `PUTVAR "x"`, so the gap is
-in how the inner function's free-variable TDZ tracking differs between the LHS
-assignment path and the destructuring path — needs TDZ-analysis investigation).
-(2) `yield` inside a destructuring default (3 tests) — the shared emitter's lazy
-default thunks can't suspend the enclosing generator (needs inline defaults).
-(3) A pre-existing, unrelated bug surfaced while testing: an `async function`
-that throws synchronously (before any await) surfaces as an uncatchable
-VM_ERROR instead of rejecting its Promise — present on baseline, not from this
-work.
+**Remaining known clusters:** `yield` inside a destructuring default (3 tests) —
+the shared emitter's lazy default thunks can't suspend the enclosing generator
+(needs inline defaults). Larger open areas: yield* delegation edge cases,
+class-definition/subclass, super/this-binding, TypedArray species/from, Unicode
+identifiers (crash), Array species/proxy in flatMap. (put-let/put-const TDZ and
+async-throw-rejects-Promise — previously listed here — are now fixed.)
 
 Session 274 batch 3 — **destructuring consolidation**. Root cause of the
 recurring destructuring failures: the algorithm was implemented 3× independently
