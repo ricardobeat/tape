@@ -968,8 +968,14 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
 /// %TypedArray%.prototype.subarray(begin, end) — §23.2.3.27.
 /// Returns a new TA of the same class sharing the same ArrayBuffer.
 fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
-    HObject* obj = ta_validate(ctx);
-    if (obj == null) return;
+    // Spec §23.2.3.27: subarray validates receiver type but does NOT check detach
+    // before ToInteger(begin)/ToInteger(end) — detach is only checked by the new
+    // TA constructor (TypedArraySpeciesCreate step 4 → TypedArray(buf) step 11).
+    HObject* obj = ta_this_receiver(ctx);
+    if (obj == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray method called on incompatible receiver");
+        return;
+    }
     Heap* heap = ctx.heap;
 
     hobject::ObjClass cls = obj.flags.obj_class;
@@ -977,7 +983,8 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
     uint byte_len = (*obj.extra_ptr()).view.byte_length;
-    uint len = byte_len >> shift;
+    // When detached, treat length as 0 for index normalization.
+    uint len = (buf == null || byte_len == 0xFFFFFFFFu) ? 0 : (byte_len >> shift);
 
     TVal begin_arg; begin_arg.set_undefined();
     TVal end_arg;   end_arg.set_undefined();
