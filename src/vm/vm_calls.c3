@@ -181,12 +181,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             }
                         }
                         if (!this_src.is_heap_allocated()) {
-                            if (new_act.this_binding.is_heap_allocated()) {
-                                vm.heap.decref_tval(&new_act.this_binding);
-                            }
+                            // this_binding for the previous use of this activation slot
+                            // was already decreffed by handle_return (ACT_FLAG_THIS_OWNED).
+                            // Plain overwrite — no ownership; handle_return will not decref.
                             new_act.this_binding = *this_src;
                         } else {
                             vm.heap.tval_copy_ref(&new_act.this_binding, this_src);
+                            new_act.flags |= ACT_FLAG_THIS_OWNED;
                         }
                         (void)used_coerced;
                     }
@@ -696,6 +697,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_act_r.flags = ACT_FLAG_PREVENT_YIELD
                                     | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
                     vm.heap.tval_copy_ref(&new_act_r.this_binding, &gs.this_binding);
+                    new_act_r.flags |= ACT_FLAG_THIS_OWNED;
 
                     // Copy saved registers to valstack
                     $if $feature(HEAP_VERIFY):
@@ -859,6 +861,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 {
                     TVal raw_this_g = ds.regs_base[callee_reg + 1];
                     vm.heap.tval_copy_ref(&new_act_g.this_binding, &raw_this_g);
+                    new_act_g.flags |= ACT_FLAG_THIS_OWNED;
                 }
 
                 // Initialize the valstack registers for the new activation.
@@ -1030,6 +1033,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 }
                 vm.heap.tval_copy_ref(&new_act.this_binding, &raw_this);
             }
+            new_act.flags |= ACT_FLAG_THIS_OWNED;
 
             TVal* new_regs = new_act.bottom;
             uint new_nregs = target.num_regs;
@@ -1364,6 +1368,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.flags = ACT_FLAG_CONSTRUCT
                           | (super_target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             vm.heap.tval_copy_ref(&new_act.this_binding, &ds.regs_base[callee_reg + 1]);
+            new_act.flags |= ACT_FLAG_THIS_OWNED;
             new_act.new_target = new_target;  // Pass through new.target
 
             TVal* new_regs = new_act.bottom;
@@ -1743,7 +1748,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.bottom = new_bottom;
             new_act.retval = ds.regs_base + result_reg;
             new_act.flags = ACT_FLAG_CONSTRUCT
-                          | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
+                          | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
+                          | ACT_FLAG_THIS_OWNED;
             vm.heap.tval_copy_ref(&new_act.this_binding, &this_tval);
             new_act.new_target = hobj;  // constructor function, not instance
 

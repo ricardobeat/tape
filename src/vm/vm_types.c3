@@ -47,6 +47,21 @@ const uint MAX_CALLS        = 512;
 const uint INITIAL_VALSTACK = 1024;
 
 // ============================================================================
+// Shadow activation frame — used by vm_call_fn_impl to keep outer activations
+// visible to GC while the inner Vm.run() executes.  Linked list stored in
+// the Vm struct; frames are stack-allocated in vm_call_fn_impl.
+// ============================================================================
+
+struct ShadowActFrame {
+    /// Previous frame in the linked list (null = end of list).
+    void* prev;
+    /// Pointer to the C-stack saved_acts array in vm_call_fn_impl.
+    Activation* acts;
+    /// Number of activations saved in acts[0..count-1].
+    uint count;
+}
+
+// ============================================================================
 // Activation record (matches duk_activation in duktape)
 // ============================================================================
 
@@ -98,6 +113,9 @@ const uint ACT_FLAG_CONSTRUCT      = 1u << 1;
 const uint ACT_FLAG_PREVENT_YIELD  = 1u << 2;
 const uint ACT_FLAG_DIRECT_EVAL    = 1u << 3;
 const uint ACT_FLAG_ASYNC          = 1u << 4;
+/// Set when this_binding was incref'd via tval_copy_ref and must be
+/// decref'd when the activation is popped in handle_return.
+const uint ACT_FLAG_THIS_OWNED     = 1u << 5;
 
 // ============================================================================
 // Catcher — exception handler chain entry
@@ -186,6 +204,12 @@ struct Vm {
 
     // Debug tracing (zero overhead when false — single predicted-not-taken branch)
     bool trace;
+
+    // Linked list of shadow activation frames registered by vm_call_fn_impl
+    // so that GC can mark saved outer activations during inner Vm.run() calls.
+    // Frames are stack-allocated in vm_call_fn_impl and linked/unlinked around
+    // the inner Vm.run() invocation.
+    void* shadow_act_list;  // ShadowActFrame*
 
     // Error state
     bool has_error;

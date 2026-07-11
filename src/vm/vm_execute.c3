@@ -273,6 +273,16 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             Activation[MAX_CALLS] saved_acts;
             libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
 
+            // Zero out activation slots 1..saved_act_count-1.  The outer
+            // activations are safely stored in saved_acts.  The live slots
+            // must be cleared so that when the inner run's inline CALL writes
+            // a new this_binding into slot 1 (via tval_copy_ref), it decrefs
+            // undefined (no-op) rather than the stale global-object reference
+            // left behind by the outer activation's memcpy bits.
+            if (saved_act_count > 1) {
+                libc::memset(&vm.activations[1], 0, (usz)(saved_act_count - 1) * Activation::size);
+            }
+
             TVal* frame = true_top;
 
             // Set up activation[0] for the function
@@ -504,6 +514,16 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 }
             }
 
+            // Register saved outer activations in the shadow frame list so that GC
+            // (triggered during the inner Vm.run()) can mark their env bindings and
+            // keep them alive.  The shadow frame is stack-allocated and is valid for
+            // the lifetime of this vm_call_fn_impl invocation.
+            ShadowActFrame shadow_frame;
+            shadow_frame.prev = vm.shadow_act_list;
+            shadow_frame.acts = &saved_acts;
+            shadow_frame.count = saved_act_count;
+            vm.shadow_act_list = &shadow_frame;
+
             // Run the function via Vm.run (skip Vm.execute init — we already set up state)
             TVal? result_opt = Vm.run(vm);
             TVal result;
@@ -513,6 +533,8 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 result = vm.return_val;
             }
 
+            // Deregister the shadow frame now that the inner Vm.run() has returned.
+            vm.shadow_act_list = shadow_frame.prev;
             // If the nested run reallocated the valstack, relocate the saved
             // absolute pointers by the same delta (the saved snapshot was not
             // covered by ensure_valstack_grow's relocation pass).
@@ -691,6 +713,13 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
 
     Activation[MAX_CALLS] saved_acts;
     libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
+
+    // Zero out activation slots 1..saved_act_count-1 (same as vm_call_fn_impl):
+    // prevents tval_copy_ref in the inner run's inline CALLs from decreffing
+    // stale this_binding values left in these slots by the outer activations.
+    if (saved_act_count > 1) {
+        libc::memset(&vm.activations[1], 0, (usz)(saved_act_count - 1) * Activation::size);
+    }
 
     TVal* frame = vm.valstack_top;
     vm.activation_count = 1;
