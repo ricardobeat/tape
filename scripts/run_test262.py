@@ -96,7 +96,6 @@ SKIP_DIRS = {
     "built-ins/AbstractModuleSource",  # 8     — Stage 3
     "built-ins/SharedArrayBuffer",     # 104   — platform-dependent
     "built-ins/Atomics",               # 390   — platform-dependent
-    "built-ins/Proxy",                 # 311   — extreme complexity
     "built-ins/WeakRef",               # 29    — GC-dependent
     "built-ins/FinalizationRegistry",  # 47    — GC-dependent
     "built-ins/BigInt",                # 77    — defer
@@ -129,7 +128,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Array\.fromAsync|set-methods|promise-with-resolvers|"
     r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
     # Complex features deferred
-    r"SharedArrayBuffer|Atomics|Proxy|BigInt|WeakRef|FinalizationRegistry|"
+    r"SharedArrayBuffer|Atomics|BigInt|WeakRef|FinalizationRegistry|"
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
     # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
@@ -386,6 +385,12 @@ PHASES = [
             "built-ins/TypedArray",
             "built-ins/TypedArrayConstructors",
             "built-ins/DataView",
+        ],
+    },
+    {
+        "label": "Phase 23: Proxy",
+        "dirs": [
+            "built-ins/Proxy",
         ],
     },
 ]

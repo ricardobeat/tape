@@ -72,8 +72,21 @@ fn Vm*? vm_create(Heap* heap) {
     heap.call_fn = &vm_call_fn_impl;
     heap.construct_fn = &vm_construct_fn_impl;
     heap.microtask_after_fn = &builtins::promise_microtask_after;
+    heap.proxy_get_fn = &vm_proxy_get_bridge;
+    heap.proxy_has_fn = &vm_proxy_has_bridge;
+    heap.vm_ptr = vm;
 
     return vm;
+}
+
+/// Proxy MOP bridges — connect the hobject chain walkers to the builtins-layer
+/// proxy trap implementations (see heap.proxy_get_fn / proxy_has_fn).
+fn bool vm_proxy_get_bridge(void* vm, void* heap, void* proxy, void* key, TVal receiver, TVal* out) {
+    return builtins::proxy_mop_get(vm, (Heap*)heap, (HObject*)proxy, (HString*)key, receiver, out);
+}
+
+fn bool vm_proxy_has_bridge(void* vm, void* heap, void* proxy, void* key, bool* out) {
+    return builtins::proxy_mop_has(vm, (Heap*)heap, (HObject*)proxy, (HString*)key, out);
 }
 
 /// Destroy a VM and release all owned resources.

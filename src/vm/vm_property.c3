@@ -2095,6 +2095,30 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
 
+                        // Proxy anywhere on the prototype chain: run the full
+                        // [[Set]] (receiver = hobj) through the trap machinery.
+                        {
+                            HObject* pscan = hobj.prototype;
+                            uint pdepth = 0;
+                            while (pscan != null && pdepth < 256) {
+                                if (pscan.flags.exotic_proxyobj) {
+                                    bool sres;
+                                    TVal recv_tv; recv_tv.set_object(hobj);
+                                    if (!builtins::js_set_with_receiver(vm, vm.heap, hobj, (HString*)key, put_val, recv_tv, &sres)) {
+                                        return vm_proxy_rethrow(vm, ds);
+                                    }
+                                    if (!sres) {
+                                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'set' on proxy: trap returned falsish", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            return VM_ERROR~;
+                                        }
+                                    }
+                                    return (TVal){};
+                                }
+                                pscan = pscan.prototype;
+                                pdepth++;
+                            }
+                        }
+
                         // Property doesn't exist: check prototype for accessors
                         hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
                         if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {

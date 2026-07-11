@@ -1053,6 +1053,19 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
 
     // Resolve the property key (second argument)
     if (ctx.argc < 2) {
+        // ToPropertyKey(undefined) = "undefined" — still runs the proxy trap
+        // (and the revoked-proxy TypeError).
+        if (obj != null && obj.flags.exotic_proxyobj) {
+            HString* ukey = builtin_intern_string(ctx.heap, "undefined");
+            ProxyDesc upd;
+            if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, ukey, &upd)) { proxy_ctx_ok(ctx); return; }
+            if (!upd.found) { ctx.result.set_undefined(); return; }
+            upd.complete();
+            HObject* udesc = proxy_desc_to_object(ctx.heap, &upd);
+            if (udesc == null) { ctx.result.set_undefined(); return; }
+            ctx.result.set_object(udesc);
+            return;
+        }
         ctx.result.set_undefined();
         return;
     }

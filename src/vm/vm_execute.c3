@@ -55,6 +55,37 @@ fn EnvRecord* resolve_call_lex_env(Vm* vm, HObject* func_obj,
 }
 
 /// Implementation of Heap.call_fn — calls a JS function with N arguments through the VM.
+/// OrdinaryHasInstance chain walk, routing prototype hops through the
+/// [[GetPrototypeOf]] trap when a Proxy appears on the chain.
+/// Sets ra to true on match. Returns false when an uncaught error unwinds
+/// (caller must `return VM_ERROR~`).
+fn bool instanceof_walk_chain(Vm* vm, Dispatch* ds, HObject* start, HObject* probe, TVal* ra) {
+    HObject* cur = start;
+    uint depth = 0;
+    while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
+        if (cur == probe) { ra.set_boolean(true); return true; }
+        if (cur.flags.exotic_proxyobj) {
+            TVal next;
+            if (!builtins::proxy_mop_get_proto(vm, vm.heap, cur, &next)) {
+                TVal werr = vm.heap.error_value;
+                vm.heap.has_error = false;
+                if (!vm_throw_value(vm, werr, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    vm.heap.tval_copy_ref(&vm.return_val, &werr);
+                    vm.has_error = true;
+                    vm.heap.has_error = true;
+                    return false;
+                }
+                return true;
+            }
+            cur = next.is_object() ? (HObject*)next.get_heapptr() : null;
+        } else {
+            cur = cur.prototype;
+        }
+        depth++;
+    }
+    return true;
+}
+
 fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal this_val) {
     Vm* vm = (Vm*)vm_ptr;
     TVal undef;
@@ -1663,8 +1694,8 @@ fn TVal? Vm.run(Vm* vm) {
                 }
                 HObject* pproto_obj = (HObject*)pproto.get_heapptr();
                 HObject* pcur = (HObject*)lval.get_heapptr();
-                if (pcur.is_prototype_of(pproto_obj)) {
-                    ra.set_boolean(true);
+                if (!instanceof_walk_chain(vm, &ds, pcur, pproto_obj, ra)) {
+                    return VM_ERROR~;
                 }
                 continue;
             }
@@ -1723,8 +1754,8 @@ fn TVal? Vm.run(Vm* vm) {
 
             HObject* proto_obj = (HObject*)proto_val.get_heapptr();
             HObject* cur = (HObject*)lval.get_heapptr();
-            if (cur.is_prototype_of(proto_obj)) {
-                ra.set_boolean(true);
+            if (!instanceof_walk_chain(vm, &ds, cur, proto_obj, ra)) {
+                return VM_ERROR~;
             }
             continue;
         }

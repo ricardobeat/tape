@@ -2098,6 +2098,10 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 414: return { "TypedArray", 0 };
         case 415: return { "[Symbol.hasInstance]", 1 };
         case 416: return { "[Symbol.toPrimitive]", 1 };
+        // Proxy
+        case 420: return { "Proxy", 2 };
+        case 421: return { "revocable", 2 };
+        case 422: return { "", 0 };     // revoker function
         default: return { "", -1 };
     }
 }

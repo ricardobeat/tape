@@ -130,6 +130,25 @@ fn void ordinary_own_desc(Heap* heap, HObject* obj, HString* key, ProxyDesc* out
         out.has_configurable = true;
         return;
     }
+    // STRING exotic: lazily-materialised character indices (§10.4.3.5).
+    if (obj.flags.exotic_stringobj && !key.is_symbol() && key.is_arridx()
+        && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        uint ci = key.array_index();
+        if (prim != null && ci < prim.char_length()) {
+            uint cp = prim.char_at(ci);
+            char[4] cbuf;
+            uint cblen = hstring::encode_codepoint(cp, cbuf[:4]);
+            HString* ch = heap.str_intern(cbuf[:cblen]);
+            if (ch != null) {
+                out.found = true;
+                out.has_value = true; out.value.set_string(ch);
+                out.has_writable = true;
+                out.has_enumerable = true; out.enumerable = true;
+                out.has_configurable = true;
+            }
+        }
+    }
 }
 
 /// Own-property descriptor with proxy recursion ([[GetOwnProperty]]).
@@ -1245,6 +1264,12 @@ fn void builtin_proxy_revocable(BuiltinContext* ctx) {
     revoker.flags.callable = true;
     revoker.flags.constructable = false;
     revoker.prototype = ctx.heap.function_proto;
+    // Own props in spec order: length (0), then name ("").
+    TVal rl; rl.set_fastint(0);
+    revoker.put_prop((void*)(HString*)ctx.heap.strs[heap::BuiltinStr.LENGTH], rl, hobject::PROP_FLAGS_NWC);
+    HString* empty_name = builtin_intern_string(ctx.heap, "");
+    TVal rn; rn.set_string(empty_name);
+    revoker.put_prop(builtin_intern_string(ctx.heap, "name"), rn, hobject::PROP_FLAGS_NWC);
     HString* slot_key = ctx.heap.str_intern(PROXY_REVOKE_SLOT);
     TVal p_tv; p_tv.set_object(p);
     revoker.put_prop(slot_key, p_tv, hobject::PROP_FLAGS_NWC);

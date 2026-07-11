@@ -39,6 +39,13 @@ alias VmCallFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs, TVal this_
 /// constructor and return the resulting this.
 alias VmConstructFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs);
 
+/// Proxy MOP bridges (set by vm_create) — allow the hobject prototype-chain
+/// walkers to route through Proxy traps without a module dependency on the
+/// builtins layer.  On error the callee sets heap.has_error/error_value and
+/// returns false.
+alias ProxyGetFn = fn bool(void* vm, void* heap, void* proxy, void* key, TVal receiver, TVal* out);
+alias ProxyHasFn = fn bool(void* vm, void* heap, void* proxy, void* key, bool* out);
+
 // --- Faults ---------------------------------------------------------------
 
 faultdef HEAP_ALLOC_FAULT;
@@ -288,6 +295,10 @@ struct Heap {
     VmCallHandlerFn     call_handler_fn;
     VmCallFn            call_fn;
     VmConstructFn       construct_fn;
+    /// Proxy trap bridges + owning VM pointer (see ProxyGetFn/ProxyHasFn).
+    ProxyGetFn          proxy_get_fn;
+    ProxyHasFn          proxy_has_fn;
+    void*               vm_ptr;
     /// Callback to mark activation-record env bindings during GC (set by vm_create).
     MarkActivationsFn   mark_activations_fn;
 

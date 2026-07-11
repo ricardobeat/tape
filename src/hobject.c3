@@ -1823,6 +1823,19 @@ fn TVal? HObject.get_prop_proto(&self, void* key) {
     uint depth = 0;
 
     while (cur != null && depth < MAX_PROTO_DEPTH) {
+        // Proxy exotic anywhere on the chain: route the whole [[Get]] through
+        // the trap machinery (receiver = the original object).
+        if (cur.flags.exotic_proxyobj && _active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            if (h.proxy_get_fn != null && h.vm_ptr != null) {
+                TVal recv = types::make_object(self);
+                TVal out;
+                if (h.proxy_get_fn(h.vm_ptr, h, cur, key, recv, &out)) {
+                    return out;
+                }
+            }
+            return PROP_NOT_FOUND~;  // trap threw: error pending in heap
+        }
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
             return cur.prop_values()[idx];
@@ -2113,6 +2126,25 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
     uint depth = 0;
 
     while (cur != null && depth < MAX_PROTO_DEPTH) {
+        // Proxy exotic on the chain: for getter searches, run the full [[Get]]
+        // through the trap machinery and report the result as a data property
+        // (owner = null so inline caches are not populated).  Setter searches
+        // fall through to PROP_NOT_FOUND; [[Set]]-with-proxy-on-chain is
+        // handled by the PUTPROP proxy chain check.
+        if (cur.flags.exotic_proxyobj && want_getter && _active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            if (h.proxy_get_fn != null && h.vm_ptr != null) {
+                TVal recv = types::make_object(self);
+                TVal out;
+                if (h.proxy_get_fn(h.vm_ptr, h, cur, key, recv, &out)) {
+                    return { .kind = PropLookupKind.PROP_DATA, .data_val = out, .owner = null };
+                }
+            }
+            return { .kind = PropLookupKind.PROP_NOT_FOUND };
+        }
+        if (cur.flags.exotic_proxyobj && !want_getter) {
+            return { .kind = PropLookupKind.PROP_NOT_FOUND };
+        }
         int idx = cur.find_prop_idx(key);
         if (idx >= 0) {
             if (cur.get_prop_flags((uint)idx).is_accessor) {
@@ -2158,6 +2190,17 @@ fn bool HObject.has_prop_proto(&self, void* key) {
     uint depth = 0;
 
     while (cur != null && depth < MAX_PROTO_DEPTH) {
+        // Proxy exotic on the chain: route through the [[Has]] trap.
+        if (cur.flags.exotic_proxyobj && _active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            if (h.proxy_has_fn != null && h.vm_ptr != null) {
+                bool has;
+                if (h.proxy_has_fn(h.vm_ptr, h, cur, key, &has)) {
+                    return has;
+                }
+            }
+            return false;
+        }
         if (cur.find_prop_idx(key) >= 0) {
             return true;
         }
