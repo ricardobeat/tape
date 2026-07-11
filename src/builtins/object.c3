@@ -2216,6 +2216,25 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 }
             }
             int existing_idx = obj.find_prop_idx(p_key);
+            // ES5 §15.4.5.1 step 4: defining a valid array index >= length on an
+            // Array whose length is non-writable throws TypeError (mirrors the
+            // single-property defineProperty path).
+            if (existing_idx < 0 && obj.get_class() == hobject::ObjClass.ARRAY
+                && p_key.is_arridx()) {
+                uint dp_idx = p_key.array_index();
+                if (dp_idx >= array_get_length(obj, ctx.heap)) {
+                    HString* len_key_dp = builtin_intern_string(ctx.heap, "length");
+                    bool dp_len_wr = true;
+                    if (len_key_dp != null) {
+                        int li_dp = obj.find_prop_idx(len_key_dp);
+                        if (li_dp >= 0) dp_len_wr = obj.get_prop_flags((uint)li_dp).writable;
+                    }
+                    if (!dp_len_wr) {
+                        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot add property past a non-writable array length");
+                        return;
+                    }
+                }
+            }
             if (existing_idx < 0) {
                 if (!obj.flags.extensible) {
                     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
