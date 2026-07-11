@@ -2267,17 +2267,13 @@ fn TVal? Vm.run(Vm* vm) {
             // After a super-constructor returns (callee was CONSTRUCT, caller is DERIVED),
             // initialize the derived constructor's this_binding with the constructed object.
             // This is §9.2.2's "initialized" state — subsequent LDTHIS will succeed.
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
-                    && vm.activation_count > 0) {
-                Activation* caller_act_r = &vm.activations[vm.activation_count - 1];
-                if ((caller_act_r.flags & ACT_FLAG_DERIVED) != 0
-                        && env::is_tdz_sentinel(&caller_act_r.this_binding)) {
-                    // The result of super() is in callee_result (already written above).
-                    // Use that value (the constructed object) as the derived ctor's this.
-                    if (callee_result != null) {
-                        vm.heap.tval_copy_ref(&caller_act_r.this_binding, callee_result);
-                    }
-                }
+            if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
+                    && vm.activation_count > 0
+                    && callee_result != null && callee_result.is_object()) {
+                // The result of super() is in callee_result (already written
+                // above). The immediate caller may be an arrow or a method the
+                // arrow was invoked through — walk up to the derived ctor.
+                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
             }
 
             // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
@@ -2379,15 +2375,10 @@ fn TVal? Vm.run(Vm* vm) {
             ds.curr_pc = ds.act.curr_pc;
             ds.regs_base = ds.act.bottom;
             // After base-constructor returns, initialize the derived constructor's this_binding.
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
-                    && vm.activation_count > 0) {
-                Activation* retundef_caller = &vm.activations[vm.activation_count - 1];
-                if ((retundef_caller.flags & ACT_FLAG_DERIVED) != 0
-                        && env::is_tdz_sentinel(&retundef_caller.this_binding)) {
-                    if (callee_result != null) {
-                        vm.heap.tval_copy_ref(&retundef_caller.this_binding, callee_result);
-                    }
-                }
+            if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
+                    && vm.activation_count > 0
+                    && callee_result != null && callee_result.is_object()) {
+                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
             }
             continue;
         }

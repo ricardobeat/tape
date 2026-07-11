@@ -120,6 +120,9 @@ const uint ACT_FLAG_THIS_OWNED     = 1u << 5;
 /// Used by handle_return to enforce §9.2.2 step 13.c: non-object non-undefined
 /// return value throws TypeError.
 const uint ACT_FLAG_DERIVED        = 1u << 6;
+/// Activation was created by SUPER_CALL — on return, its constructed object
+/// initializes the pending derived-constructor this_binding up the chain.
+const uint ACT_FLAG_SUPER_CTOR     = 1u << 7;
 
 // ============================================================================
 // Catcher — exception handler chain entry

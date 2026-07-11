@@ -15,6 +15,55 @@ import std::math;
 // vm_calls — function/object/generator call dispatch
 // ============================================================================
 /// Sub-dispatch for CALL, CALL_S, CALL_PROP, SETPROTO, SUPER_CALL, SUPER_CALL_S, NEWTARGET, NEW_OBJ, NEW_OBJ_S, TAILCALL opcodes.
+/// Initialize the pending derived-constructor this_binding after super()
+/// produced the constructed object. super() may execute inside an arrow
+/// function whose activation inherited the constructor's uninitialized (TDZ)
+/// this — walk up through TDZ activations until the derived constructor
+/// itself is initialized (§9.2.2 "initialized" state).
+fn void super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
+    // Intermediate frames with a real this (e.g. an object method that
+    // invoked the super-capturing arrow) are skipped, not a stop condition;
+    // the walk ends at the first derived-constructor frame — the one whose
+    // super binding this call resolved through.
+    Activation* a = act;
+    ShadowActFrame* shadow = (ShadowActFrame*)vm.shadow_act_list;
+    while (true) {
+        if (a == null) {
+            // The chain may cross a vm_call_fn_impl boundary (e.g. super()
+            // inside an iterator .return() invoked by ITER_CLOSE). The outer
+            // activations were memcpy-saved and their live slots zeroed —
+            // continue into the saved copies; they are what gets restored.
+            if (shadow == null) break;
+            if (shadow.count == 0) { shadow = (ShadowActFrame*)shadow.prev; continue; }
+            a = &shadow.acts[shadow.count - 1];
+            shadow = (ShadowActFrame*)shadow.prev;
+        }
+        if (env::is_tdz_sentinel(&a.this_binding)) {
+            vm.heap.tval_copy_ref(&a.this_binding, constructed);
+            a.flags |= ACT_FLAG_THIS_OWNED;
+        }
+        if ((a.flags & ACT_FLAG_DERIVED) != 0) break;
+        a = a.parent;
+    }
+}
+
+/// Same boundary-crossing walk for reading: find the nearest enclosing
+/// activation (live or shadow-saved) that has a new_target.
+fn HObject* super_walk_new_target(Vm* vm, Activation* act) {
+    Activation* a = act;
+    ShadowActFrame* shadow = (ShadowActFrame*)vm.shadow_act_list;
+    while (true) {
+        if (a == null) {
+            if (shadow == null) return null;
+            if (shadow.count == 0) { shadow = (ShadowActFrame*)shadow.prev; continue; }
+            a = &shadow.acts[shadow.count - 1];
+            shadow = (ShadowActFrame*)shadow.prev;
+        }
+        if (a.new_target != null) return a.new_target;
+        a = a.parent;
+    }
+}
+
 fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
     switch (op) {
@@ -1265,7 +1314,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart);
                     return (TVal){};
                 }
-                HObject* lf_new_target = ds.act.new_target;
+                HObject* lf_new_target = super_walk_new_target(vm, ds.act);
                 if (lf_new_target == null) { ra.set_undefined(); return (TVal){}; }
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
@@ -1290,8 +1339,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     // object returned by the builtin super constructor (§9.2.2).
                     TVal* sc_result_lf = ds.regs_base + result_reg;
                     if (sc_result_lf.is_object()) {
-                        vm.heap.tval_copy_ref(&ds.act.this_binding, sc_result_lf);
-                        ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                        super_init_this_chain(vm, ds.act, sc_result_lf);
                     }
                 }
                 return (TVal){};
@@ -1312,8 +1360,9 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 return (TVal){};
             }
 
-            // Use new.target from the current activation (set by NEW_OBJ)
-            HObject* new_target = ds.act.new_target;
+            // Use new.target from the current activation (set by NEW_OBJ),
+            // walking past arrow activations that carry none.
+            HObject* new_target = super_walk_new_target(vm, ds.act);
             if (new_target == null) {
                 // Not in a constructor — new.target is undefined
                 // Fall back to simple call behavior
@@ -1371,8 +1420,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                             TVal* sc_bound_result = ds.regs_base + result_reg;
                             if (sc_bound_result.is_object()) {
-                                vm.heap.tval_copy_ref(&ds.act.this_binding, sc_bound_result);
-                                ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                                super_init_this_chain(vm, ds.act, sc_bound_result);
                             }
                         }
                         return (TVal){};
@@ -1412,8 +1460,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                     TVal* sc_lf_result = ds.regs_base + result_reg;
                     if (sc_lf_result.is_object()) {
-                        vm.heap.tval_copy_ref(&ds.act.this_binding, sc_lf_result);
-                        ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                        super_init_this_chain(vm, ds.act, sc_lf_result);
                     }
                 }
                 return (TVal){};
@@ -1446,8 +1493,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // object returned by the builtin super constructor (§9.2.2).
                         TVal* sc_result_bi = ds.regs_base + result_reg;
                         if (sc_result_bi.is_object()) {
-                            vm.heap.tval_copy_ref(&ds.act.this_binding, sc_result_bi);
-                            ds.act.flags |= ACT_FLAG_THIS_OWNED;
+                            super_init_this_chain(vm, ds.act, sc_result_bi);
                         }
                     }
                 }
@@ -1458,10 +1504,16 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             CompiledFunction* super_target = (*super_hobj.extra_ptr()).func.comp_func;
 
             // OrdinaryCreateFromConstructor (§9.1.13): allocate the new object
-            // using new.target.prototype. For a derived constructor, this is the
-            // first (and only) object allocation for the construct sequence.
-            // Place it in the this-slot (callee_reg+1) for the base constructor.
-            {
+            // using new.target.prototype — but only when the superclass is a
+            // BASE constructor. A derived superclass gets an uninitialized
+            // `this` (TDZ) and allocates in its own super() (§9.2.2 step 5);
+            // allocating here too would construct two objects and initialize
+            // the wrong one.
+            bool super_is_derived = super_target.is_derived_ctor();
+            if (super_is_derived) {
+                TVal sc_tdz = env::tdz_sentinel();
+                vm.heap.tval_copy_ref(&ds.regs_base[callee_reg + 1], &sc_tdz);
+            } else {
                 HObject*? sc_new_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                 if (catch _sc_err = sc_new_obj_raw) {
                     ra.set_undefined();
@@ -1527,7 +1579,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.curr_pc = super_target.code;
             new_act.bottom = new_bottom;
             new_act.retval = ds.regs_base + result_reg;
-            new_act.flags = ACT_FLAG_CONSTRUCT
+            new_act.flags = ACT_FLAG_CONSTRUCT | ACT_FLAG_SUPER_CTOR
+                          | (super_is_derived ? ACT_FLAG_DERIVED : 0)
                           | (super_target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
             new_act.async_promise = null;
             new_act.async_gen_state = null;
