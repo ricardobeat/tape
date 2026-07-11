@@ -97,8 +97,10 @@ fn void builtin_array_proto_at(BuiltinContext* ctx) {
     ulong len;
     if (!array_to_length(obj, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
 
-    double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
+    // Step 3: ToIntegerOrInfinity(index) — coerces via valueOf/toString and
+    // clamps NaN to 0 (ES2022 §23.1.3.1).
+    double idx_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
     if (idx < 0) idx = (long)len + idx;

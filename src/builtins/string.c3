@@ -2234,8 +2234,9 @@ fn void builtin_string_proto_at(BuiltinContext* ctx) {
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
     uint clen = s_hstr.char_length();
 
-    double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
+    // Step 4: ToIntegerOrInfinity(index) — coerces via valueOf/toString, NaN→0.
+    double idx_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
     if (idx < 0) { idx = (long)clen + idx; }
