@@ -2266,6 +2266,36 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             return (TVal){};
         }
 
+        case Opcode.GETPROP_SUPER: {
+            // super[key] / super.prop get — property lookup starts at super base (ra)
+            // but accessor getters are invoked with this = current this_binding.
+            // Format: A=result, B=super_base, C=key.
+            if (!rb.is_object()) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot read properties of non-object super base", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                return (TVal){};
+            }
+            void* gkey = get_prop_key(vm, rc);
+            if (gkey == null) { ra.set_undefined(); return (TVal){}; }
+            HObject* super_base = (HObject*)rb.get_heapptr();
+            hobject::PropLookupResult gres = super_base.get_prop_or_accessor_proto(gkey, true);
+            if (gres.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                // Use this_binding as receiver for the getter call.
+                TVal this_val = ds.act.this_binding;
+                if (invoke_getter(vm, &gres.acc, &this_val, (uint)insn.a,
+                                  ds.act, &ds.curr_pc, &ds.needs_restart, ds.regs_base)) {
+                    ds.regs_base = ds.act.bottom;
+                }
+            } else if (gres.kind == hobject::PropLookupKind.PROP_DATA) {
+                vm.heap.tval_copy_ref(ra, &gres.data_val);
+                track_heap_store(ds.act, ra, (uint)insn.a);
+            } else {
+                ra.set_undefined();
+            }
+            return (TVal){};
+        }
+
         case Opcode.DELPROP: {
             // ES5 §11.4.1: delete operator
             // A = delete B[C], where B = object, C = property key

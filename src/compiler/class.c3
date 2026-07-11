@@ -256,10 +256,17 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
     bool saved_super_is_home = self.super_is_home_object;
-    self.super_is_home_object = false;
-
     self.in_class_body = true;
     self.has_super_binding = false;
+
+    // Always declare __super__ so that any method body can resolve it via GETVAR.
+    // For `extends Base`, __super__ = Base (super_is_home_object=false, so
+    // GetSuperBase = __super__.prototype = Base.prototype).
+    // For classes without extends, __super__ = C.prototype (super_is_home_object=true,
+    // so GetSuperBase = Object.getPrototypeOf(__super__) = Object.prototype).
+    char[] super_name = "__super__";
+    ushort super_reg = self.declare_var(super_name, LET);
+    uint super_name_idx = self.add_string_constant(super_name);
 
     // Parse optional extends clause
     ushort base_reg = MAX_REGISTERS;
@@ -269,14 +276,16 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // constructor, throw TypeError BEFORE accessing .prototype.
         self.emit_abc(Opcode.CHKCTOR, (uint)base_reg, 0, 0);
         self.has_super_binding = true;
-
-        // Store the super class in an internal variable so the constructor
-        // can access it via GETVAR for super() calls.
-        char[] super_name = "__super__";
-        ushort super_reg = self.declare_var(super_name, LET);
-        uint super_name_idx = self.add_string_constant(super_name);
+        // __super__ = Base; GetSuperBase = __super__.prototype = Base.prototype
+        self.super_is_home_object = false;
         self.emit_abc(Opcode.LDREG, (uint)super_reg, (uint)base_reg, 0);
         self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
+    } else {
+        // No extends: __super__ will be set to C.prototype after proto_reg is created.
+        // GetSuperBase = GETPROTO(__super__) = Object.prototype.
+        self.super_is_home_object = true;
+        // has_super_binding remains false (super() calls are not allowed),
+        // but in_class_body = true allows super.x / super[x] syntax.
     }
 
     // Parse class body
@@ -635,6 +644,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
         self.emit_abc(Opcode.GETPROP, (uint)proto_reg, (uint)ctor_reg, (uint)proto_key_reg);
         self.free_reg(proto_key_reg);
+    }
+
+    // For classes without extends, bind __super__ = proto_reg (C.prototype).
+    // Methods use super_is_home_object=true so GetSuperBase = GETPROTO(C.prototype)
+    // = Object.prototype, matching the spec (HomeObject = C.prototype, super = Object.prototype).
+    if (base_reg == MAX_REGISTERS) {
+        self.emit_abc(Opcode.LDREG, (uint)super_reg, (uint)proto_reg, 0);
+        self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
     }
 
     // If extends, set proto.__proto__ = Base.prototype

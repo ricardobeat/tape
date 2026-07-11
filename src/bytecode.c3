@@ -264,6 +264,9 @@ enum Opcode : char {
     ENDTRY,
     /// `throw A`  — throw an exception.
     THROW,
+    /// Throw a ReferenceError with a constant pool message.
+    /// A=unused, B=msg_const_idx. Used for `delete super.x` (always ReferenceError).
+    THROW_REF,
     /// `A = <caught exception>`  — store the caught value.
     CATCH,
     /// Enter the finally block.
@@ -381,6 +384,11 @@ enum Opcode : char {
     /// at the super base (A) but accessor setters / new data properties land
     /// on the receiver.  ABC format: A=super_base_reg, B=key_reg, C=val_reg.
     PUTPROP_SUPER,
+    /// `A = B[C]` — super property get with correct receiver (§13.5.3 GetValue).
+    /// The property lookup starts at super base B with key C, but accessor getters
+    /// are invoked with `this` = current activation's this_binding, not B.
+    /// ABC format: A=result_reg, B=super_base_reg, C=key_reg.
+    GETPROP_SUPER,
     /// `A = super(B, C..C+N)` — call superclass constructor.
     /// Uses the current activation's `new.target` as the new object's constructor.
     /// ABC format: A=result_reg, B=super_ctor_reg, C=arg_count.
@@ -588,6 +596,8 @@ case PUTLEX:     return A_BC;
         case SETPROTO:   return ABC;
         case GETPROTO:   return ABC;
         case PUTPROP_SUPER: return ABC;
+        case GETPROP_SUPER: return ABC;
+        case THROW_REF:     return A_BC;
         case SUPER_CALL: return ABC;
         case SUPER_CALL_S: return ABC;
         case NEWTARGET:  return ABC;

@@ -2754,10 +2754,13 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     arrow_ctx.is_async = self.is_async;
     if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
 
-    // Propagate class context (for super expressions)
+    // Propagate class context (for super expressions).
+    // Arrow functions inherit super binding and constructability from the enclosing
+    // function — they lexically capture `this` and HomeObject from the outer scope.
     arrow_ctx.in_class_body = self.in_class_body;
     arrow_ctx.has_super_binding = self.has_super_binding;
     arrow_ctx.super_is_home_object = self.super_is_home_object;
+    arrow_ctx.is_constructable = self.is_constructable;
 
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
@@ -3196,10 +3199,13 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.is_async = self.is_async;
     if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
 
-    // Propagate class context (for super expressions)
+    // Propagate class context (for super expressions).
+    // Arrow functions inherit super binding and constructability from the enclosing
+    // function — they lexically capture `this` and HomeObject from the outer scope.
     arrow_ctx.in_class_body = self.in_class_body;
     arrow_ctx.has_super_binding = self.has_super_binding;
     arrow_ctx.super_is_home_object = self.super_is_home_object;
+    arrow_ctx.is_constructable = self.is_constructable;
 
     // Register parameters
     ushort formal_count = param_count;
