@@ -1,8 +1,31 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 276 — **95.0% reached** (29,244 pass / 30,780 executable, up from 94.9%; +48 raw this session across 5 coercion/ordering fixes; the 11 apparent losses are all the known flaky RegExp property-escapes memkills / lookBehind / TypedArray resizable-buffer tests — none touch the changed code).
+**Last Updated:** Session 276 — **95.1% reached** (29,285 pass / 30,780 executable, up from 94.9%; +89 raw across ten fixes this session, verified against ±flaky RegExp property-escapes / lookBehind / resizable-buffer noise — no real regressions).
 
-Session 276 highlights (five spec-coercion / property fixes, all committed + validated):
+Session 276 second batch (five more fixes, committed + validated):
+- **`new X().p = v` assignment ran no setter** (root-cause codegen): `new_expr`'s
+  trailing-member loop emitted GETPROP but never set `last_was_member`, so an
+  enclosing assignment saw a non-member LHS and compiled the store as a discarded
+  read — prototype setters didn't fire and the value was dropped. (`(new X()).p`
+  worked, routing via `member_expr`.) Now records member regs on a trailing
+  `.prop`/`[idx]` that isn't a call. Fixes class name-binding const/basic/expr;
+  Phase 15 +3.
+- **Array generics read TypedArray indices**: `arr_get_elem_vm`/`arr_has_prop`
+  only served ARRAY/ARGUMENTS dense + named props, so TypedArray buffer indices
+  read as absent (`[].concat(ta)`→nulls). Added an `is_typed_array_class` fast
+  path (`ta_load_element`) benefiting every array generic; concat typed-array
+  small/large pass.
+- **RegExp `@@search` lastIndex save/restore + Symbol string arg**: never read
+  rx.lastIndex (poisoned getter didn't throw) and reset to 0 after exec instead
+  of save/restore; also the Symbol-as-string fast path (shared by @@search/
+  @@match/@@split/@@replace) took a Symbol verbatim instead of throwing via
+  ToString. Symbol.search 23/23.
+- **String.prototype.slice** clamps ±Infinity args before the int cast (were
+  wrapping to garbage indices). slice 38/38.
+- **Array.prototype.slice** `end === undefined` now defaults to len (was coerced
+  to 0, returning empty). +2.
+
+Session 276 first batch (five spec-coercion / property fixes):
 - **Object.values/entries key-order + getter invocation**: emitted dense indices
   *after* named props (wrong OrdinaryOwnPropertyKeys order) and read accessor
   slots raw via `prop_values()[i]` (returning the descriptor, not the getter
@@ -53,9 +76,9 @@ Session 275 highlights (newest first; details in the session log below):
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 29,244 |
-| **Overall pass rate** | **95.0%** |
-| Total failing | 1,369 |
+| Total passing | 29,285 |
+| **Overall pass rate** | **95.1%** |
+| Total failing | 1,328 |
 | CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
 
@@ -144,4 +167,4 @@ under concurrent worker pressure (not an engine bug).
 | 271 | Array literal INITPROP undefined→named-prop; map/filter ArraySpeciesCreate; array_set_elem_ulong_checked undefined+redefine; reduce/reduceRight loop-bound snapshot; sort undefined-last; iterator keys/entries/values done-value leak + entries pair length; Object.defineProperties dense-array sync; push TypeError/RangeError. | **87.2% → 87.9%** (26,826 → 27,047 pass, +221).  Phase 3 +56; Phase 5 +48; Phase 6 +45; Phase 0-1 +39; Phase 15 +35. |
 | 272 | Two MEMKILL/crash fixes: shape use-after-free in RegExp property-escapes/generated (44 tests), plus a second crash fix. | **87.9% → 88.0%** (27,047 → 27,079 pass, +32). |
 | 273 | Dense array >65535 fix (array_size/array_used ushort→uint, put_prop dense routing); String.prototype ToPrimitive("string") coercion; isWellFormed/toWellFormed; bind name/length; frozen-array pop/shift TypeError; Function.prototype[Symbol.hasInstance]; Date[Symbol.toPrimitive]; JSON.parse -0. Then 3 parallel agents: RegExp exec/@@split/@@replace lastIndex ToLength + result coercion; for-of destructuring lazy defaults + REQUIRE_OBJ + bare-LHS PUTVAR; JSON.parse text ToString + spec reviver walk. | **88.0% → 90.6%** (27,079 → 27,879 pass, **+800**). Phase 8 1,514 → 2,030 (+516); Phase 6 +91; Phase 5 +122; Phase 14 387 → 419 (+32); Phase 3 6,368 → 6,410 (+42). |
-| 276 | Five spec coercion/ordering fixes: Object.values/entries key-order + getter [[Get]] (shared collect_own_enum_string_keys + desc_get_enum); Array/String.prototype.at ToIntegerOrInfinity index; Array.prototype[Symbol.unscopables] installed; String.prototype.repeat coerce-before-RangeError; String.prototype.lastIndexOf position ToNumber + NaN→+∞. | **94.9% → 95.0%** (29,196 → 29,244 pass, +48). Phase 3 +8; at/unscopables/repeat/lastIndexOf clusters cleared. |
+| 276 | Ten fixes over two batches. Batch 1 (coercion/ordering): Object.values/entries key-order + getter [[Get]] (shared collect_own_enum_string_keys + desc_get_enum); Array/String.prototype.at ToIntegerOrInfinity index; Array.prototype[Symbol.unscopables] installed; String.prototype.repeat coerce-before-RangeError; String.prototype.lastIndexOf position ToNumber + NaN→+∞. Batch 2: `new X().p=v` runs setters (new_expr member-LHS codegen); array generics read TypedArray buffer indices (arr_get_elem_vm/arr_has_prop); RegExp @@search lastIndex save/restore + Symbol-string-arg throw; String.slice ±Infinity clamp; Array.slice end=undefined→len. | **94.9% → 95.1%** (29,196 → 29,285 pass, +89). Phase 3 +19; Phase 6 +8; Phase 8 +17; Phase 15 +3; at/unscopables/repeat/lastIndexOf/slice/Symbol.search/concat-typed-array clusters cleared. |
