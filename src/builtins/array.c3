@@ -1429,9 +1429,9 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
         k = relative_start > (double)len ? len : (ulong)(long)relative_start;
     }
 
-    // Determine end
+    // Determine end — ES2022 §23.1.3.25 step 6: if end is undefined, use len.
     double relative_end = (double)len;
-    if (ctx.argc > 1) {
+    if (ctx.argc > 1 && !ctx.regs[ctx.base_reg + 1].is_undefined()) {
         relative_end = builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
