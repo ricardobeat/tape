@@ -1681,6 +1681,15 @@ fn void Heap.drain_gray(&self) {
                 GeneratorState* gs = (GeneratorState*)(*obj.extra_ptr()).gen.generator_data;
                 self.mark_generator_state(gs);
                 break;
+            case ObjClass.PROXY:
+                // Keep [[ProxyTarget]] and [[ProxyHandler]] alive.
+                if ((*obj.extra_ptr()).proxy.target != null) {
+                    self.mark_hobject((*obj.extra_ptr()).proxy.target);
+                }
+                if ((*obj.extra_ptr()).proxy.handler != null) {
+                    self.mark_hobject((*obj.extra_ptr()).proxy.handler);
+                }
+                break;
             case ObjClass.PROMISE:
                 // Mark the resolved value/rejection reason and the linked list
                 // of pending reaction records.

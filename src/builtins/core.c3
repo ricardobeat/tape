@@ -312,8 +312,12 @@ const uint BUILTIN_DATE_PROTO_TOPRIMITIVE      = 416;
 const uint BUILTIN_OBJECT_GETOWNPROPERTYDESCRIPTORS = 417;
 const uint BUILTIN_PROMISE_SPECIES_GETTER      = 418;
 const uint BUILTIN_ASYNC_FUNCTION              = 419;
+const uint BUILTIN_PROXY                       = 420;
+const uint BUILTIN_PROXY_REVOCABLE             = 421;
+const uint BUILTIN_PROXY_REVOKE                = 422;
+const uint BUILTIN_PROXY_CALL                  = 423;
 
-const uint BUILTIN_COUNT                       = 420;
+const uint BUILTIN_COUNT                       = 424;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2834,6 +2838,10 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_DATE_PROTO_TOPRIMITIVE]     = &builtin_date_proto_toPrimitive,
     [BUILTIN_PROMISE_SPECIES_GETTER]     = &builtin_promise_species_getter,
     [BUILTIN_ASYNC_FUNCTION]             = &builtin_async_function,
+    [BUILTIN_PROXY]                      = &builtin_proxy,
+    [BUILTIN_PROXY_REVOCABLE]            = &builtin_proxy_revocable,
+    [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
+    [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3042,6 +3050,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
     if (!register_error_builtins(global_env, heap)) return false;
+
+    // Register Proxy constructor (after Function/Error so prototypes exist)
+    if (!register_proxy_constructor(global_env, heap)) return false;
 
     // Register Boolean constructor
     if (!register_boolean_constructor(global_env, heap)) return false;

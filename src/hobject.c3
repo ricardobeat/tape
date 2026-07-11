@@ -472,6 +472,18 @@ struct HObjectRegExpStringIterator {
     uint     flags;        /// Bit 0: global flag; bit 1: done flag.
 }
 
+/// Proxy exotic object: [[ProxyTarget]] + [[ProxyHandler]].
+/// Active when obj_class == PROXY.  Both are null once the proxy is revoked.
+/// builtin_fn_index overlays HObjectFunction.builtin_fn_index so that a
+/// callable proxy dispatches through the ordinary BUILTIN_FN call path
+/// (set to the proxy call/construct builtin at creation for callable targets).
+struct HObjectProxy {
+    HObject* target;
+    HObject* handler;
+    void*    _reserved;          // keeps builtin_fn_index at the same offset as HObjectFunction
+    int      builtin_fn_index;
+}
+
 /// Boxed accessor pair (getter + setter) stored in a GC-managed HObject
 /// with ObjClass.GETTER_SETTER.  Referenced from prop_values[] slots
 /// when PropFlags.is_accessor is true.
@@ -508,6 +520,7 @@ union HObjectExtra {
     HObjectIterator              iter;
     HObjectRegExpStringIterator  regexp_iter;
     HObjectGetterSetter          gs;
+    HObjectProxy                 proxy;
     HObjectArrayBuffer           ab;
     HObjectBufferView            view;
     uint                         array_length;  // For ARRAY objects: dense-element count.
@@ -527,7 +540,7 @@ union HObjectExtra {
 /// live in the shared Shape, objects only store values.
 /// Common prefix of all HObject variants.  Every object starts with these fields,
 /// allowing the GC to walk linked lists and access shapes/properties at fixed offsets.
-/// Plain objects (OBJECT, ERROR, ARGUMENTS, PROXY) allocate only this prefix (72 bytes).
+/// Plain objects (OBJECT, ERROR, ARGUMENTS) allocate only this prefix (72 bytes).
 /// Other classes add trailing data after HObjectBase.
 ///
 /// HObject includes this via `inline HObjectBase base`, which flattens
@@ -571,7 +584,7 @@ struct HObject {
 
 /// Pool size classes — derived from actual struct sizes plus inline prop space.
 const usz INLINE_EXTRA = INLINE_PROPS * PropValue::size;
-const usz OBJ_SIZE_PLAIN = HObjectBase::size + INLINE_EXTRA;                            // OBJECT, ERROR, ARGUMENTS, PROXY
+const usz OBJ_SIZE_PLAIN = HObjectBase::size + INLINE_EXTRA;                            // OBJECT, ERROR, ARGUMENTS
 const usz OBJ_SIZE_ARRAY = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // ARRAY (array_length now in union)
 const usz OBJ_SIZE_FUNC  = HObjectBase::size + HObjectExtra::size + INLINE_EXTRA;       // FUNCTION, REGEXP, etc.
 const usz OBJ_SIZE_GS    = HObjectBase::size + HObjectGetterSetter::size;                // GETTER_SETTER (no inline props)
@@ -587,8 +600,9 @@ fn usz alloc_size_for_class(ObjClass cls) @inline {
         case ObjClass.OBJECT:
         case ObjClass.ERROR:
         case ObjClass.ARGUMENTS:
-        case ObjClass.PROXY:
             return OBJ_SIZE_PLAIN;
+        case ObjClass.PROXY:
+            return OBJ_SIZE_FUNC;
         case ObjClass.ARRAY:
             return OBJ_SIZE_ARRAY;
         case ObjClass.GETTER_SETTER:
@@ -625,7 +639,6 @@ fn void* pool_for_class(void* heap_ptr, ObjClass cls) @inline {
         case ObjClass.OBJECT:
         case ObjClass.ERROR:
         case ObjClass.ARGUMENTS:
-        case ObjClass.PROXY:
             return &h.obj_pool_plain;
         case ObjClass.ARRAY:
             return &h.obj_pool_array;
@@ -1649,6 +1662,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         obj.flags.exotic_arguments = true;
     } else if (cls == ObjClass.PROXY) {
         obj.flags.exotic_proxyobj = true;
+        (*obj.extra_ptr()).proxy.builtin_fn_index = -1;
     } else if (cls == ObjClass.GETTER_SETTER) {
         obj.prop_capacity = 0;  // no inline props for GS cells
     }
