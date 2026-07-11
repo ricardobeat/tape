@@ -1,12 +1,28 @@
 {
   "langrev": "1",
-  "warnings": [ "all" ],
-  "c-sources": [ "libregexp/libregexp.c", "libregexp/libunicode.c", "libregexp/re_wrapper.c", "libregexp/unicode_wrapper.c", "quickjs/cutils.c", "quickjs/dtoa.c", "src/dtoa_wrapper.c" ],
-  "c-include-dirs": [ "quickjs", "libregexp" ],
+  "warnings": [
+    "all"
+  ],
+  "c-sources": [
+    "libregexp/libregexp.c",
+    "libregexp/libunicode.c",
+    "libregexp/re_wrapper.c",
+    "libregexp/unicode_wrapper.c",
+    "quickjs/cutils.c",
+    "quickjs/dtoa.c",
+    "src/dtoa_wrapper.c"
+  ],
+  "c-include-dirs": [
+    "quickjs",
+    "libregexp"
+  ],
   "targets": {
     "duktape_c3": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "sources": [
+        "src",
+        "benchmarks/duktape_c3.c3"
+      ],
       "opt": "O2",
       "single-module": true,
       "fp-math": "relaxed",
@@ -15,52 +31,89 @@
     },
     "duktape_c3_debug": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "sources": [
+        "src",
+        "benchmarks/duktape_c3.c3"
+      ],
       "opt": "O2",
       "single-module": true,
       "fp-math": "relaxed",
       "panic-msg": false,
       "debug-info": "line-tables",
-      "features": [ "TRACE_VM" ]
+      "features": [
+        "TRACE_VM"
+      ]
     },
     "duktape_c3_envstrict": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/duktape_c3.c3" ],
+      "sources": [
+        "src",
+        "benchmarks/duktape_c3.c3"
+      ],
       "opt": "O0",
-      "features": [ "ENV_STRICT" ]
+      "features": [
+        "ENV_STRICT"
+      ]
     },
     "lib": {
       "type": "static-lib",
-      "sources": [ "src" ]
+      "sources": [
+        "src"
+      ]
     },
     "test_vm": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner/test_vm.c3" ],
+      "sources": [
+        "src",
+        "test_vm_runner/test_vm.c3"
+      ],
       "opt": "O2",
       "single-module": true
     },
     "batch_test_vm": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
+      "sources": [
+        "src",
+        "test_vm_runner/batch_test_vm.c3"
+      ],
       "opt": "O2",
       "single-module": true
     },
     "batch_test_vm_asan": {
       "type": "executable",
-      "sources": [ "src", "test_vm_runner/batch_test_vm.c3" ],
+      "sources": [
+        "src",
+        "test_vm_runner/batch_test_vm.c3"
+      ],
       "opt": "O0",
       "single-module": true,
       "sanitize": "address"
     },
     "test_prop": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/test_prop.c3" ],
+      "sources": [
+        "src",
+        "benchmarks/test_prop.c3"
+      ],
       "opt": "O0"
     },
     "test_closure_put": {
       "type": "executable",
-      "sources": [ "src", "benchmarks/test_closure_put.c3" ],
+      "sources": [
+        "src",
+        "benchmarks/test_closure_put.c3"
+      ],
       "opt": "O0"
+    },
+    "test_vm_asan": {
+      "type": "executable",
+      "sources": [
+        "src",
+        "test_vm_runner/test_vm.c3"
+      ],
+      "opt": "O0",
+      "single-module": true,
+      "sanitize": "address"
     }
   }
 }
