@@ -207,6 +207,11 @@ fn bool invoke_getter(Vm* vm, hobject::AccessorResult* acc,
         builtins::dispatch_builtin(fn_idx, &ctx);
         if (ctx.should_throw) {
             if (!vm_throw_value(vm, ctx.throw_value, act, curr_pc, needs_restart)) {
+                // Uncaught — mark error state so dispatch_property propagates VM_ERROR~.
+                vm.has_error = true;
+                vm.heap.has_error = true;
+                vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
+                vm.heap.tval_copy_ref(&vm.return_val, &ctx.throw_value);
                 regs_base[result_reg].set_undefined();
                 return false;
             }

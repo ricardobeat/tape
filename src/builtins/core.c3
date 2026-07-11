@@ -1679,6 +1679,7 @@ fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
             // Propagate the thrown error (TypeError from to_primitive_value).
             ctx.should_throw = true;
             ctx.throw_value = vm_ptr.throw_value;
+            vm_ptr.throw_pending = false;  // Clear so stale state doesn't re-fire.
             return 0.0 / 0.0;
         }
         if (prim.is_object()) {

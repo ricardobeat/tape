@@ -367,6 +367,11 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             } else {
                 uint n = 0;
                 if (!arraybuffer_to_index(ctx, &len_arg, &n)) return;
+                // Spec step 9: after ToInteger(length), re-check if buffer is detached.
+                if (((*arg_obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+                    arraybuffer_throw_type_error(ctx, "Cannot construct TypedArray on a detached ArrayBuffer");
+                    return;
+                }
                 view_len_bytes = n * elem_size;
                 if (off + view_len_bytes > buf_len) {
                     arraybuffer_throw_range_error(ctx, "length out of bounds");
@@ -802,6 +807,13 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
     // length, causing the range check below to fire.  Casting Infinity to uint is UB.
     uint target_offset = (off_d >= 4294967296.0) ? 0xFFFFFFFFu : (uint)(long)off_d;
 
+    // Spec step 9: after ToInteger(offset), check if target buffer is detached.
+    // valueOf() on the offset arg may have detached the buffer.
+    if (ta_is_detached(dst)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.set: target buffer is detached");
+        return;
+    }
+
     TVal source_arg; source_arg.set_undefined();
     if (ctx.argc >= 1) source_arg = ctx.regs[ctx.base_reg];
 
@@ -936,18 +948,17 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
                 if (try v = ev) elem = v;
             }
         }
-        // Convert first; then re-check detach.
+        // Convert first; then re-check detach per spec §23.2.3.24 step 23a.
+        // If buffer is detached we continue iterating (to call all getters) but skip writes.
         double d = ta_val_to_number(&elem, ctx);
         if (ctx.should_throw) return;
-        if (ta_is_detached(dst)) {
-            arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during set");
-            return;
+        if (!ta_is_detached(dst)) {
+            char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
+            // Write the pre-converted double as a TVal.
+            TVal num_tv; num_tv.set_number(d);
+            ta_write_element(dp, dst_cls, &num_tv, ctx);
+            if (ctx.should_throw) return;
         }
-        char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
-        // Write the pre-converted double as a TVal.
-        TVal num_tv; num_tv.set_number(d);
-        ta_write_element(dp, dst_cls, &num_tv, ctx);
-        if (ctx.should_throw) return;
     }
     ctx.result.set_undefined();
 }
@@ -957,8 +968,14 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
 /// %TypedArray%.prototype.subarray(begin, end) — §23.2.3.27.
 /// Returns a new TA of the same class sharing the same ArrayBuffer.
 fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
-    HObject* obj = ta_validate(ctx);
-    if (obj == null) return;
+    // Spec §23.2.3.27: subarray validates receiver type but does NOT check detach
+    // before ToInteger(begin)/ToInteger(end) — detach is only checked by the new
+    // TA constructor (TypedArraySpeciesCreate step 4 → TypedArray(buf) step 11).
+    HObject* obj = ta_this_receiver(ctx);
+    if (obj == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray method called on incompatible receiver");
+        return;
+    }
     Heap* heap = ctx.heap;
 
     hobject::ObjClass cls = obj.flags.obj_class;
@@ -966,7 +983,8 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
     uint byte_len = (*obj.extra_ptr()).view.byte_length;
-    uint len = byte_len >> shift;
+    // When detached, treat length as 0 for index normalization.
+    uint len = (buf == null || byte_len == 0xFFFFFFFFu) ? 0 : (byte_len >> shift);
 
     TVal begin_arg; begin_arg.set_undefined();
     TVal end_arg;   end_arg.set_undefined();
@@ -1103,6 +1121,12 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
     } else {
         end_d = builtin_to_integer_vm(ctx, &end_arg);
         if (ctx.should_throw) return;
+    }
+
+    // Detach check after all coercions (spec §23.2.3.7 step 14).
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during fill");
+        return;
     }
 
     uint k = ta_norm_index(start_d, len);
@@ -1684,10 +1708,16 @@ fn void builtin_ta_proto_forEach(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        // Spec: if buffer was detached by a previous callback, element reads
+        // yield undefined (do NOT break — the loop runs for the full original length).
+        TVal elem;
+        if (ta_is_detached(obj)) {
+            elem.set_undefined();
+        } else {
+            elem = ta_load_element(base, cls, i);
+        }
         ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (ta_is_detached(obj)) break;
     }
     ctx.result.set_undefined();
 }
@@ -1711,14 +1741,14 @@ fn void builtin_ta_proto_every(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (!builtin_to_boolean(&test)) {
             ctx.result.set_boolean(false);
             return;
         }
-        if (ta_is_detached(obj)) break;
     }
     ctx.result.set_boolean(true);
 }
@@ -1742,14 +1772,14 @@ fn void builtin_ta_proto_some(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
             ctx.result.set_boolean(true);
             return;
         }
-        if (ta_is_detached(obj)) break;
     }
     ctx.result.set_boolean(false);
 }
@@ -1785,7 +1815,8 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
     TVal undef_this; undef_this.set_undefined();
     for (; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, k);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, k); }
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -1800,7 +1831,6 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
-        if (ta_is_detached(obj)) break;
     }
     (*ctx.result) = acc;
 }
@@ -1838,7 +1868,8 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
     TVal undef_this; undef_this.set_undefined();
     for (; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, (uint)k);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, (uint)k); }
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -1853,7 +1884,6 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
-        if (ta_is_detached(obj)) break;
     }
     (*ctx.result) = acc;
 }
@@ -1888,13 +1918,13 @@ fn void builtin_ta_proto_map(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
         TVal mapped = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         char* dp = res_base + (i << result_shift);
         ta_write_element(dp, result_cls, &mapped, ctx);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (ta_is_detached(obj)) break;
     }
     ctx.result.set_object(result);
 }
@@ -1932,7 +1962,8 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
             ctx.result.set_undefined();
             return;
         }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem;
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) {
             if (scratch != null) heap.free_func(heap.heap_udata, scratch);
@@ -1943,7 +1974,6 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
             scratch[count] = elem;
             count++;
         }
-        if (ta_is_detached(obj)) break;
     }
 
     HObject* result = ta_species_create(ctx, obj, count);
@@ -2175,7 +2205,7 @@ fn void builtin_ta_proto_at(BuiltinContext* ctx) {
 }
 
 /// Numeric comparator for TA sort (spec §23.2.3.29.1).
-/// NaN sorts after finite values.
+/// NaN sorts after finite values; -0 sorts before +0.
 fn int ta_numeric_compare(double a, double b) {
     bool a_nan = (a != a);
     bool b_nan = (b != b);
@@ -2184,6 +2214,14 @@ fn int ta_numeric_compare(double a, double b) {
     if (b_nan) return -1;
     if (a < b) return -1;
     if (a > b) return 1;
+    // a == b: distinguish -0 from +0 per spec step 9-11.
+    // 1/(−0) = −∞, 1/(+0) = +∞
+    if (a == 0.0 && b == 0.0) {
+        double ia = 1.0 / a;
+        double ib = 1.0 / b;
+        if (ia < ib) return -1;  // a is -0 (ia=-inf), b is +0 (ib=+inf)
+        if (ia > ib) return 1;
+    }
     return 0;
 }
 
@@ -2210,7 +2248,11 @@ fn void ta_insertion_sort(double[] arr, BuiltinContext* ctx, TVal comparefn, boo
                 double rd;
                 if (res.is_fastint()) { rd = (double)res.get_fastint(); }
                 else if (res.is_number()) { rd = res.get_number(); }
-                else { rd = 0.0; }
+                else {
+                    // ToNumber on the comparefn result (may call Symbol.toPrimitive).
+                    rd = ta_val_to_number(&res, ctx);
+                    if (ctx.should_throw) return;
+                }
                 cmp = rd < 0.0 ? -1 : (rd > 0.0 ? 1 : 0);
             } else {
                 cmp = ta_numeric_compare(arr[(uint)j], key);
@@ -2274,7 +2316,10 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
 
     ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
 
-    if (!ctx.should_throw) {
+    if (!ctx.should_throw && !ta_is_detached(obj)) {
+        // Re-fetch base pointer: comparefn may have realloc'd if buffer grew, but
+        // if it's been detached we skip the writeback (data pointer is null/freed).
+        base = (*buf.extra_ptr()).ab.data + byte_off;
         for (uint i = 0; i < len; i++) {
             TVal tv; tv.set_number(scratch[i]);
             char* dp = base + (i << shift);
