@@ -2829,7 +2829,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // Pass key_src_start so the retained source span starts at the
                 // key token (or `*`, or first computed-key bracket).
                 ushort method_reg = self.function_expr_body(key_src_start)!;
-                self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
+                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
@@ -2846,7 +2846,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // Read the binding into a register, then PUTPROP as usual.
                 ushort val_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)val_reg, shorthand_name_idx));
-                self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 self.free_reg(val_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
@@ -2858,7 +2858,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 self.expect(TokenType.COLON)!;
                 ushort val_reg = self.assignment_expr()!;
-                self.emit_abc(Opcode.PUTPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 self.free_reg(val_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;

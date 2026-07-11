@@ -1902,6 +1902,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         if (exist_flags.is_accessor) {
                             // Accessor property — invoke setter
                             TVal setter_fn = hobject::hobject_access_setter(*entry);
+                            // No setter (get-only accessor) — strict-only engine:
+                            // assignment throws TypeError (§10.1.9.3 / OrdinarySet).
+                            if (!setter_fn.is_object() || setter_fn.get_heapptr() == null) {
+                                HString* nm = (HString*)key;
+                                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot set property '%s' which has only a getter", nm.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                                return (TVal){};
+                            }
                             if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
                                 HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
                                 if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
