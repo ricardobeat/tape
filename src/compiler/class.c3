@@ -304,9 +304,11 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // element's closing `}`).
         self.lexer.refresh_token_start();
 
-        // Check for static modifier
+        // Check for static modifier — only consume `static` when followed by
+        // a method name (identifier, keyword, string, number, `[`, `*`, get/set).
+        // When followed by `(`, `static` IS the method name, not a modifier.
         bool is_static = false;
-        if (self.match(TokenType.STATIC)) {
+        if (self.match_static_modifier()) {
             is_static = true;
             // Refresh so the source-start captured below is after `static`.
             self.lexer.refresh_token_start();
@@ -663,19 +665,15 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         }
 
         if (methods[mi].is_getter) {
-            self.emit_abc(Opcode.INITGET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+            self.emit_abc(Opcode.CLASS_INITGET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         } else if (methods[mi].is_setter) {
-            self.emit_abc(Opcode.INITSET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
-        } else if (methods[mi].is_static) {
-            // Static data methods use INITPROP (DefinePropertyOrThrow
-            // semantics) so they can override the constructor's auto-set
-            // properties such as .name. Per ES2015 §14.5.13, class method
-            // installation uses DefinePropertyOrThrow — this isn't [[Set]],
-            // so a non-writable existing property can be replaced if it's
-            // configurable (which .name is).
-            self.emit_abc(Opcode.INITPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+            self.emit_abc(Opcode.CLASS_INITSET, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         } else {
-            self.emit_abc(Opcode.PUTPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
+            // Both static and instance methods use CLASS_INITPROP
+            // (DefinePropertyOrThrow semantics with non-enumerable flags).
+            // Per ES2015 §14.5.14 step 9, all class methods are
+            // {writable:true, enumerable:false, configurable:true}.
+            self.emit_abc(Opcode.CLASS_INITPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         }
 
         self.free_reg(key_reg);

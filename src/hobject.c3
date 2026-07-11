@@ -279,12 +279,32 @@ const PropFlags PROP_FLAGS_WENC = {
 };
 
 /// Convenience constant: accessor property (enumerable, configurable).
-/// Used for getter/setter properties in object literals and class bodies.
+/// Used for getter/setter properties in object literals.
 const PropFlags PROP_FLAGS_ACCESSOR = {
     .writable     = false,
     .enumerable   = true,
     .configurable = true,
     .is_accessor  = true
+};
+
+/// Class accessor property: non-enumerable, configurable.
+/// Per ES2015 §14.5.14 step 9, class accessor descriptors are
+/// {enumerable:false, configurable:true}.
+const PropFlags PROP_FLAGS_CLASS_ACCESSOR = {
+    .writable     = false,
+    .enumerable   = false,
+    .configurable = true,
+    .is_accessor  = true
+};
+
+/// Class method property: writable, non-enumerable, configurable.
+/// Per ES2015 §14.5.14 step 9, class method descriptors are
+/// {writable:true, enumerable:false, configurable:true}.
+const PropFlags PROP_FLAGS_CLASS_METHOD = {
+    .writable     = true,
+    .enumerable   = false,
+    .configurable = true,
+    .is_accessor  = false
 };
 
 /// Convenience constant: non-writable, non-enumerable, configurable.

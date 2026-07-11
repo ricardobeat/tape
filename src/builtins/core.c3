@@ -871,6 +871,15 @@ fn double builtin_string_to_number(HString* hstr) {
         endptr++;
     }
 
+    // strtod accepts case-insensitive "infinity" but ES requires case-sensitive
+    if (result == double::inf || result == -double::inf) {
+        if (libc::strcmp((ZString)p, "Infinity") != 0 &&
+            libc::strcmp((ZString)p, "+Infinity") != 0 &&
+            libc::strcmp((ZString)p, "-Infinity") != 0) {
+            return double::nan;
+        }
+    }
+
     return result;
 }
 
@@ -1596,6 +1605,43 @@ fn bool is_regexp_object(TVal* val) {
     return obj.get_class() == hobject::ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null;
 }
 
+/// Full IsRegExp check per ES2015 §7.2.8 with VM access for abrupt completions.
+///
+/// Returns: 1 = is RegExp, 0 = is not RegExp, -1 = abrupt completion (throw pending).
+/// The algorithm:
+///  1. If Type(argument) is not Object, return false.
+///  2. Let isRegExp be Get(argument, @@match).
+///  3. ReturnIfAbrupt(isRegExp).
+///  4. If isRegExp is not undefined, return ToBoolean(isRegExp).
+///  5. If argument has [[RegExpMatcher]] internal slot, return true.
+///  6. Return false.
+fn int is_regexp_check_vm(BuiltinContext* ctx, TVal* val) {
+    // Step 1: If Type is not Object, return false.
+    if (!val.is_object() || val.get_heapptr() == null) return 0;
+
+    // Step 2: Let isRegExp = Get(argument, @@match).
+    HObject* obj = (HObject*)val.get_heapptr();
+    HString* match_sym = ensure_match_symbol(ctx.heap);
+    if (match_sym == null) { ctx.result.set_undefined(); return 0; }
+    TVal? match_opt = builtins_generic_get(obj, match_sym, ctx);
+    if (ctx.should_throw) return -1;
+
+    // Step 3-4: If @@match is not undefined, return ToBoolean(@@match).
+    if (try match_val = match_opt) {
+        if (!match_val.is_undefined()) {
+            return match_val.is_boolean() ? (match_val.get_boolean() ? 1 : 0) : 1;
+        }
+    }
+
+    // Step 5: If argument has [[RegExpMatcher]] internal slot, return true.
+    if (obj.get_class() == hobject::ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
+        return 1;
+    }
+
+    // Step 6: Return false.
+    return 0;
+}
+
 fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
     if (val.is_fastint()) return (double)val.get_fastint();
     if (val.is_number()) return val.get_number();
@@ -1910,8 +1956,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 175: return { "trimEnd", 0 };
         case 176: return { "codePointAt", 1 };
         case 177: return { "at", 1 };
-        case 178: return { "padStart", 2 };
-        case 179: return { "padEnd", 2 };
+        case 178: return { "padStart", 1 };
+        case 179: return { "padEnd", 1 };
         case 180: return { "lastIndexOf", 1 };
         case 181: return { "of", 0 };
         case 182: return { "fill", 1 };
@@ -2028,6 +2074,9 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 295: return { "some", 1 };
         case 296: return { "reduce", 1 };
         case 297: return { "reduceRight", 1 };
+        case 298: return { "toLocaleLowerCase", 0 };
+        case 299: return { "toLocaleUpperCase", 0 };
+        case 300: return { "localeCompare", 1 };
         case 312: return { "toString", 0 };
         case 325: return { "[Symbol.match]", 1 };
         case 326: return { "[Symbol.search]", 1 };

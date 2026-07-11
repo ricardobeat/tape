@@ -132,12 +132,17 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
 
         builtins::dispatch_builtin(fn_idx, &ctx);
         if (ctx.should_throw) {
-            // Propagate throw via vm.has_error so callers checking
-            // vm_check_call_fn_error() or ctx.heap.has_error detect it.
+            // Propagate the throw on both error channels: vm.has_error /
+            // heap.has_error for callers using vm_check_call_fn_error() or
+            // ctx.heap.has_error, and vm.throw_pending / vm.throw_value for
+            // the vm_to_string / to_primitive coercion paths.
             vm.has_error = true;
             vm.heap.has_error = true;
             vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
             vm.heap.tval_copy_ref(&vm.return_val, &ctx.throw_value);
+            vm.throw_pending = true;
+            vm.heap.tval_copy_ref(&vm.throw_value, &ctx.throw_value);
+            return undef;
         }
         return *ctx.result;
     }
@@ -2729,6 +2734,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.INITSET:
         case Opcode.INITSETI:
         case Opcode.INITPROP:
+        case Opcode.CLASS_INITGET:
+        case Opcode.CLASS_INITSET:
+        case Opcode.CLASS_INITPROP:
         case Opcode.CSVARI:
         case Opcode.PUSH_LEX:
         case Opcode.POP_LEX:

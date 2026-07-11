@@ -198,6 +198,82 @@ fn TVal builtin_arg(BuiltinContext* ctx, uint idx) {
     return undef;
 }
 
+/// Box primitive thisArg for Function.prototype.call/apply.
+/// Per ES5 §15.3.4.3/§15.3.4.4 step 1:
+///   - undefined/null → global object
+///   - primitives (boolean, number, string, symbol) → ToObject wrapper
+///   - objects (including lightfuncs) → returned as-is
+fn TVal fn_to_object_for_this(TVal val, Heap* heap, EnvRecord* global_env) {
+    // Already an object or lightfunc — return as-is
+    if (val.is_object() || val.is_lightfunc()) {
+        return val;
+    }
+    // null/undefined → global object (ES5 §15.3.4.3 step 1.c/d)
+    if (val.is_null() || val.is_undefined()) {
+        TVal result;
+        if (global_env != null && global_env.bindings != null) {
+            result.set_object(global_env.bindings);
+        } else {
+            result.set_undefined();
+        }
+        return result;
+    }
+    // Boolean → Boolean exotic object
+    if (val.is_boolean()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.BOOLEAN);
+        if (catch err = obj_raw) { TVal r; r.set_undefined(); return r; }
+        HObject* obj = obj_raw;
+        obj.prototype = heap.bool_proto;
+        (*obj.extra_ptr()).prim.primitive_value.set_boolean(val.get_boolean());
+        TVal result;
+        result.set_object(obj);
+        return result;
+    }
+    // Number/fastint → Number exotic object
+    if (val.is_number() || val.is_fastint()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.NUMBER);
+        if (catch err = obj_raw) { TVal r; r.set_undefined(); return r; }
+        HObject* obj = obj_raw;
+        obj.prototype = heap.number_proto;
+        (*obj.extra_ptr()).prim.primitive_value = val;
+        TVal result;
+        result.set_object(obj);
+        return result;
+    }
+    // String → String exotic object with .length own property
+    if (val.is_string()) {
+        HString* prim_str = (HString*)val.get_heapptr();
+        // Symbol → Symbol exotic object
+        if (prim_str != null && prim_str.is_symbol()) {
+            HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.SYMBOL);
+            if (catch err = obj_raw) { TVal r; r.set_undefined(); return r; }
+            HObject* obj = obj_raw;
+            obj.prototype = heap.symbol_proto;
+            (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+            TVal result;
+            result.set_object(obj);
+            return result;
+        }
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.STRING);
+        if (catch err = obj_raw) { TVal r; r.set_undefined(); return r; }
+        HObject* obj = obj_raw;
+        obj.flags.exotic_stringobj = true;
+        obj.prototype = heap.string_proto;
+        (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        TVal len_tv;
+        len_tv.set_fastint((long)prim_str.char_length());
+        obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NNC);
+        TVal result;
+        result.set_object(obj);
+        return result;
+    }
+    // Fallback — should not happen for valid JS values
+    TVal result;
+    result.set_undefined();
+    return result;
+}
+
 /// Function.prototype.call(thisArg, ...args)
 ///
 /// Calls `this` (the downstream function) with `thisArg` as `this` and the
@@ -235,13 +311,16 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         return;
     }
 
-    // Determine new this value
+    // Determine new this value, with ToObject boxing for primitives.
+    // ES5 §15.3.4.4 step 1: let thisArg be ToObject(thisArg).
+    // undefined/null → global object; primitives → wrapper object.
     TVal new_this;
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
         new_this.set_undefined();
     }
+    new_this = fn_to_object_for_this(new_this, ctx.heap, ctx.global_env);
 
     // Number of remaining args after thisArg
     ushort remaining = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
@@ -355,13 +434,16 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         return;
     }
 
-    // Get new this value
+    // Get new this value, with ToObject boxing for primitives.
+    // ES5 §15.3.4.3 step 1: let thisArg be ToObject(thisArg).
+    // undefined/null → global object; primitives → wrapper object.
     TVal new_this;
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
         new_this.set_undefined();
     }
+    new_this = fn_to_object_for_this(new_this, ctx.heap, ctx.global_env);
 
     // If argArray is undefined or null, call with no args
     TVal arg_array;

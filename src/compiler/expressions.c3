@@ -2578,15 +2578,25 @@ fn ushort? CompilerContext.literal_keyword(&self) {
 fn ushort? CompilerContext.object_literal(&self) {
     self.expect(TokenType.LBRACE)!;
 
+    // ES2015 §14.2.19: super.x in object literal methods resolves to
+    // Object.getPrototypeOf(homeObject).x — i.e. Object.prototype.x.
+    // We enable super access by declaring __super__ = Object in the
+    // enclosing scope before any method bodies are compiled.
+    bool saved_has_super = self.has_super_binding;
+    self.has_super_binding = true;
+
+    char[] super_name = "__super__";
+    ushort super_reg = self.declare_var(super_name, LET);
+    uint super_name_idx = self.add_string_constant(super_name);
+    // Load global Object constructor into super_reg
+    ushort obj_ctor_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)obj_ctor_reg, self.add_string_constant("Object"));
+    self.emit_abc(Opcode.LDREG, (uint)super_reg, (uint)obj_ctor_reg, 0);
+    self.free_reg(obj_ctor_reg);
+    self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
+
     ushort obj_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWOBJ, (uint)obj_reg, 0, 0);
-
-    // Track data property keys for duplicate detection in strict mode.
-    // ES5 §11.1.5: duplicate PropertyName in PropertySetData is a
-    // SyntaxError when contained in strict code.
-    char[64][16] seen_key_buf;
-    usz[16] seen_key_len;
-    usz seen_count = 0;
 
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
@@ -2748,19 +2758,6 @@ fn ushort? CompilerContext.object_literal(&self) {
                 }
 
                 // Regular property (not getter/setter)
-                // Duplicate data property check (strict mode only — strict-only engine)
-                for (usz i = 0; i < seen_count; i++) {
-                    if (str_eq(seen_key_buf[i][:seen_key_len[i]], key_tok.str_value)) {
-                        return COMPILE_ERROR~;
-                    }
-                }
-                if (seen_count < 16 && key_tok.str_value.len < 64) {
-                    for (usz j = 0; j < key_tok.str_value.len; j++) {
-                        seen_key_buf[seen_count][j] = key_tok.str_value[j];
-                    }
-                    seen_key_len[seen_count] = key_tok.str_value.len;
-                    seen_count++;
-                }
 
                 uint key_idx = self.add_string_constant(key_tok.str_value);
                 shorthand_name_idx = key_idx;  // shorthand `{ name }` = GETVAR this name
@@ -2779,21 +2776,6 @@ fn ushort? CompilerContext.object_literal(&self) {
                 }
             } else if (key_tt == TokenType.NUMBER) {
                 Token key_tok = self.advance()!;
-
-                // Duplicate data property check (strict mode only — strict-only engine).
-                // Convert number to canonical string via %.17g to match
-                // vm_number_to_string runtime behavior.
-                if (seen_count < 16) {
-                    int len = libc::snprintf(&seen_key_buf[seen_count], 64, "%.17g", key_tok.num_value);
-                    char[] num_str = seen_key_buf[seen_count][:len];
-                    for (usz i = 0; i < seen_count; i++) {
-                        if (str_eq(seen_key_buf[i][:seen_key_len[i]], num_str)) {
-                            return COMPILE_ERROR~;
-                        }
-                    }
-                    seen_key_len[seen_count] = (usz)len;
-                    seen_count++;
-                }
 
                 uint key_idx = self.add_number_constant(key_tok.num_value);
                 key_reg = self.alloc_reg();
@@ -2894,6 +2876,7 @@ fn ushort? CompilerContext.object_literal(&self) {
     }
 
     self.expect(TokenType.RBRACE)!;
+    self.has_super_binding = saved_has_super;
     return obj_reg;
 }
 

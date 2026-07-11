@@ -297,8 +297,24 @@ enum Opcode : char {
     /// `A[B] = C` — define a data property with WEC flags (overrides any
     /// existing non-writable property, since DefinePropertyOrThrow semantics
     /// allow replacement when the existing property is configurable). Used
-    /// for class static method installation.
+    /// for array literal element initialization.
     INITPROP,
+    /// Define class getter accessor: non-enumerable, configurable.
+    /// Per ES2015 §14.5.14 step 9, class accessor descriptors are
+    /// {enumerable:false, configurable:true}.
+    /// ABC format: A=object_reg, B=key_reg, C=getter_function_reg.
+    CLASS_INITGET,
+    /// Define class setter accessor: non-enumerable, configurable.
+    /// Per ES2015 §14.5.14 step 9, class accessor descriptors are
+    /// {enumerable:false, configurable:true}.
+    /// ABC format: A=object_reg, B=key_reg, C=setter_function_reg.
+    CLASS_INITSET,
+    /// Define class method: writable, non-enumerable, configurable.
+    /// Per ES2015 §14.5.14 step 9, class method descriptors are
+    /// {writable:true, enumerable:false, configurable:true}.
+    /// Uses DefinePropertyOrThrow semantics (same as INITPROP).
+    /// ABC format: A=object_reg, B=key_reg, C=value_reg.
+    CLASS_INITPROP,
     /// Create the `arguments` exotic object for the current activation.
     CSVARI,
 

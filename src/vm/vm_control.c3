@@ -537,6 +537,90 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
         case Opcode.INITSETI:
             return (TVal){};
 
+        case Opcode.CLASS_INITGET: {
+            // A=object, B=key, C=getter_function
+            // Define a getter accessor property on object A with key B.
+            // Per ES2015 §14.5.14 step 9: {enumerable:false, configurable:true}.
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = get_prop_key(vm, rb);
+                TVal getter_val = *rc;
+                if (key != null && hobj != null) {
+                    // Check if property already exists as accessor
+                    int idx = hobj.find_prop_idx(key);
+                    TVal* initget_props = hobj.prop_values();
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                        // Update existing accessor's getter
+                        hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
+                    } else {
+                        // Create new accessor property with class flags
+                        TVal undef;
+                        undef.set_undefined();
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), hobject::PROP_FLAGS_CLASS_ACCESSOR);
+                    }
+                }
+            }
+            return (TVal){};
+        }
+
+        case Opcode.CLASS_INITSET: {
+            // A=object, B=key, C=setter_function
+            // Define a setter accessor property on object A with key B.
+            // Per ES2015 §14.5.14 step 9: {enumerable:false, configurable:true}.
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = get_prop_key(vm, rb);
+                TVal setter_val = *rc;
+                if (key != null && hobj != null) {
+                    // Check if property already exists as accessor
+                    int idx = hobj.find_prop_idx(key);
+                    TVal* initset_props = hobj.prop_values();
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                        // Update existing accessor's setter
+                        hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
+                    } else {
+                        // Create new accessor property with class flags
+                        TVal undef;
+                        undef.set_undefined();
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), hobject::PROP_FLAGS_CLASS_ACCESSOR);
+                    }
+                }
+            }
+            return (TVal){};
+        }
+
+        case Opcode.CLASS_INITPROP: {
+            // A=object, B=key, C=value
+            // Define a class method property with {writable:true, enumerable:false, configurable:true}
+            // using DefinePropertyOrThrow semantics (overrides any existing configurable property).
+            // Per ES2015 §14.5.14 step 9.
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = get_prop_key(vm, rb);
+                if (key != null && hobj != null) {
+                    int idx = hobj.find_prop_idx(key);
+                    if (idx >= 0) {
+                        // Existing property — if configurable, replace it.
+                        hobject::PropFlags ef = hobj.get_prop_flags((uint)idx);
+                        if (ef.configurable) {
+                            TVal put_val = *rc;
+                            vm.heap.tval_copy_ref(&hobj.prop_values()[idx], &put_val);
+                            hobject::PropFlags nf;
+                            nf.writable = true;
+                            nf.enumerable = false;
+                            nf.configurable = true;
+                            nf.is_accessor = false;
+                            hobj.set_prop_flags((uint)idx, nf);
+                        }
+                        // non-configurable: do nothing (silent)
+                    } else {
+                        hobj.put_prop(key, *rc, hobject::PROP_FLAGS_CLASS_METHOD);
+                    }
+                }
+            }
+            return (TVal){};
+        }
+
         case Opcode.CSVARI:
             return (TVal){};
 

@@ -369,10 +369,19 @@ fn void builtin_string_proto_toString(BuiltinContext* ctx) {
             return;
         }
     } else if (this_val.is_string()) {
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — thisStringValue throws TypeError for Symbol.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return;
+        }
         ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.set_undefined();
+    // Per ES2015 §21.1.3.27 step 1-3: thisStringValue throws TypeError for non-String values
+    builtin_throw(ctx, ctx.heap.type_err_proto,
+        "String.prototype.toString requires that 'this' be a String");
 }
 
 /// String.prototype.data.valueOf — returns the wrapped string primitive
@@ -386,10 +395,19 @@ fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
             return;
         }
     } else if (this_val.is_string()) {
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — thisStringValue throws TypeError for Symbol.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return;
+        }
         ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.set_undefined();
+    // Per ES2015 §21.1.3.28 step 1-3: thisStringValue throws TypeError for non-String values
+    builtin_throw(ctx, ctx.heap.type_err_proto,
+        "String.prototype.valueOf requires that 'this' be a String");
 }
 
 // ============================================================================
@@ -1972,6 +1990,14 @@ fn void builtin_string_proto_includes(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.7 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.includes must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
@@ -2020,6 +2046,14 @@ fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.18 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.startsWith must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
@@ -2062,6 +2096,14 @@ fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.6 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.endsWith must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
