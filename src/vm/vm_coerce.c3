@@ -373,8 +373,31 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
             }
             return (HString*)h.strs[heap::BuiltinStr.OBJECT_OBJECT];
         }
-        case LIGHTFUNC:
+        case LIGHTFUNC: {
+            // ES2019 §19.2.3.5: ToString on a built-in function must return a
+            // NativeFunction string. Invoke Function.prototype.toString with
+            // the lightfunc as `this` so the existing builtin handles naming.
+            if (vm != null && vm.heap.call_fn != null) {
+                HString* to_str_key = (HString*)h.strs[heap::BuiltinStr.TO_STRING];
+                if (to_str_key != null) {
+                    TVal lf_tv = *val;
+                    // Lightfuncs inherit from Function.prototype; get toString there.
+                    if (h.function_proto != null) {
+                        if (try toString_fn = h.function_proto.get_prop(to_str_key)) {
+                            if (toString_fn.is_lightfunc()) {
+                                TVal result = h.call_fn(vm, toString_fn, null, 0, lf_tv);
+                                if (!vm_check_call_fn_error(vm)) {
+                                    if (try rs = vm_to_string(vm, &result)) return rs;
+                                }
+                                // If the call failed, clear error and fall through to fallback.
+                                vm.heap.has_error = false;
+                            }
+                        }
+                    }
+                }
+            }
             return (HString*)h.strs[heap::BuiltinStr.FUNCTION_STR];
+        }
         default:
             return (HString*)h.strs[heap::BuiltinStr.UNDEFINED];
     }

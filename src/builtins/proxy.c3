@@ -1356,6 +1356,33 @@ fn void builtin_proxy_call(BuiltinContext* ctx) {
         // No trap: forward to the target.
         if (ctx.is_constructor) {
             if (heap.construct_fn == null) { ctx.result.set_undefined(); return; }
+            // ES2020 §10.5.2 step 5: Construct(target, args, newTarget) where newTarget is
+            // the original proxy (p). Our construct_fn does not accept a separate newTarget
+            // argument, so we must simulate GetPrototypeFromConstructor(p, "%ObjectPrototype%")
+            // here before forwarding. That step does Get(p, "prototype"), which triggers the
+            // proxy's [[Get]] trap — if that trap revokes p, the subsequent GetFunctionRealm(p)
+            // would throw (revoked proxy). We replicate that check explicitly:
+            HString* proto_key_str = builtin_intern_string(heap, "prototype");
+            if (proto_key_str != null) {
+                TVal proto_val; proto_val.set_undefined();
+                if (!js_get(ctx.vm, heap, p, proto_key_str, &proto_val)) {
+                    // js_get set heap.has_error
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                    ctx.result.set_undefined();
+                    return;
+                }
+                // If prototype is not an Object, GetFunctionRealm(p) is called.
+                // Per §7.3.22 step 4a: if p is a Proxy and its [[ProxyHandler]] is null, throw.
+                if (!proto_val.is_object() || proto_val.get_heapptr() == null) {
+                    if (proxy_handler(p) == null) {
+                        builtin_throw(ctx, heap.type_err_proto,
+                            "Cannot perform 'construct' on a proxy that has been revoked");
+                        return;
+                    }
+                }
+            }
             *ctx.result = heap.construct_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc);
         } else {
             if (heap.call_fn == null) { ctx.result.set_undefined(); return; }
