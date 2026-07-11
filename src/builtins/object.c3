@@ -1585,15 +1585,9 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         return;
     }
     TVal key_val = ctx.regs[ctx.base_reg + 1];
-    HString* key_hstr;
-    if (key_val.is_string()) {
-        // Covers both regular strings and Symbol keys (STRING tag + is_symbol flag).
-        key_hstr = (HString*)key_val.get_heapptr();
-    } else {
-        key_hstr = builtin_to_string_vm(ctx, &key_val);
-        if (ctx.should_throw) return;
-        if (key_hstr == null) { ctx.result.set_undefined(); return; }
-    }
+    HString* key_hstr = builtin_to_property_key_vm(ctx, &key_val);
+    if (ctx.should_throw) return;
+    if (key_hstr == null) { ctx.result.set_undefined(); return; }
     void* key = key_hstr;
 
     // Step 3: Check Attributes is Object
@@ -3295,7 +3289,7 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
         ctx.result.set_boolean(false);
         return;
     }
-    HString* key = builtin_to_string_vm(ctx, &prop_val);
+    HString* key = builtin_to_property_key_vm(ctx, &prop_val);
     if (key == null) {
         ctx.result.set_boolean(false);
         return;
@@ -3875,7 +3869,7 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
     } else {
         arg.set_undefined();
     }
-    HString* key = builtin_to_string_vm(ctx, &arg);
+    HString* key = builtin_to_property_key_vm(ctx, &arg);
     if (key == null) {
         // Propagate exception if ToPropertyKey threw
         if (ctx.should_throw) return;
@@ -3950,7 +3944,7 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
     } else {
         arg.set_undefined();
     }
-    HString* key = builtin_to_string_vm(ctx, &arg);
+    HString* key = builtin_to_property_key_vm(ctx, &arg);
     if (key == null) {
         if (ctx.should_throw) return;
         ctx.result.set_boolean(false);

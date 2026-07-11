@@ -842,9 +842,17 @@ fn double builtin_string_to_number(HString* hstr) {
         return double::nan;
     }
 
-    // strtod accepts case-insensitive "infinity" but ES requires exact case
+    // strtod accepts case-insensitive "infinity" text, but ES only allows the
+    // exact "Infinity" spelling. Distinguish text-Infinity from numeric overflow
+    // (e.g. "10e10000" legitimately overflows to Infinity): overflow input
+    // begins with a digit or '.', whereas Infinity text begins with a letter
+    // after the optional sign. Only reject a wrong-case Infinity *spelling*.
     if (result == double::inf || result == -double::inf) {
-        if (libc::strcmp((ZString)p, "Infinity") != 0 &&
+        char* q = p;
+        if (q[0] == '+' || q[0] == '-') q++;
+        bool is_inf_text = (q[0] == 'i' || q[0] == 'I');
+        if (is_inf_text &&
+            libc::strcmp((ZString)p, "Infinity") != 0 &&
             libc::strcmp((ZString)p, "+Infinity") != 0 &&
             libc::strcmp((ZString)p, "-Infinity") != 0) {
             return double::nan;
@@ -1685,6 +1693,37 @@ fn HString* builtin_to_string_vm(BuiltinContext* ctx, TVal* val) {
         return builtin_to_string(ctx.heap, &prim);
     }
     return builtin_to_string(ctx.heap, val);
+}
+
+/// ToPropertyKey (ES §7.1.19): like ToString but a Symbol is a valid property
+/// key and passes through unchanged (Symbols are HString with is_symbol()).
+/// Use this — not builtin_to_string_vm — anywhere a value is being coerced to a
+/// property key (defineProperty, hasOwn, getOwnPropertyDescriptor, in, etc.),
+/// since ToString(Symbol) throws TypeError but a Symbol key must not.
+fn HString* builtin_to_property_key_vm(BuiltinContext* ctx, TVal* val) {
+    if (val.is_string()) {
+        // Covers both plain strings and Symbols (is_symbol HStrings).
+        return (HString*)val.get_heapptr();
+    }
+    // Object key: ToPrimitive(key, "string"); if that yields a Symbol, the
+    // Symbol IS the property key (ToPropertyKey, §7.1.19) — do not ToString it.
+    if (val.is_object() && ctx.vm != null) {
+        Vm* vm_ptr = (Vm*)ctx.vm;
+        TVal prim = vm::to_primitive_value(vm_ptr, val, 1);  // hint "string"
+        if (vm_ptr.throw_pending) {
+            ctx.should_throw = true;
+            ctx.throw_value = vm_ptr.throw_value;
+            vm_ptr.throw_pending = false;
+            return null;
+        }
+        if (prim.is_string()) {
+            // Plain string or Symbol — both are valid keys, pass through.
+            return (HString*)prim.get_heapptr();
+        }
+        if (prim.is_object()) return null;
+        return builtin_to_string(ctx.heap, &prim);
+    }
+    return builtin_to_string_vm(ctx, val);
 }
 
 // ============================================================================
