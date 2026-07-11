@@ -342,6 +342,19 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         }
     }
 
+    // Plain member assignment must not evaluate the LHS property read —
+    // only the object and key are evaluated (§13.15.2).  Drop the GETPROP
+    // emitted while parsing the target so getters / proxy [[Get]] traps
+    // don't run as a side effect.  Compound/logical assignments keep the
+    // read (they genuinely need the old value).
+    if (is_assign && lhs_was_member && self.code_count > 0) {
+        Instruction lhs_last = self.code[self.code_count - 1];
+        if (lhs_last.op == Opcode.GETPROP && (ushort)lhs_last.a == left
+            && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
+            self.code_count--;
+        }
+    }
+
     // Compile right-hand side
     ushort right = self.assignment_expr()!;
 

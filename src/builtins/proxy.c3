@@ -824,6 +824,23 @@ fn uint ordinary_own_keys(Heap* heap, HObject* obj, HString*** buf_out) {
     HString** buf = (HString**)heap.alloc_func(heap.heap_udata, (usz)cap * (usz)void*::size);
     if (buf == null) { *buf_out = null; return 0; }
     uint n = 0;
+    // STRING exotic: character indices are own properties.
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) {
+            uint clen = prim.char_length();
+            if (cap < clen + obj.prop_count + 4) {
+                heap.free_func(heap.heap_udata, buf);
+                cap = clen + obj.prop_count + 4;
+                buf = (HString**)heap.alloc_func(heap.heap_udata, (usz)cap * (usz)void*::size);
+                if (buf == null) { *buf_out = null; return 0; }
+            }
+            for (uint i = 0; i < clen && n < cap; i++) {
+                HString* k = heap.int_to_hstring((long)i);
+                if (k != null) buf[n++] = k;
+            }
+        }
+    }
     // Dense array part (ascending; holes are undefined sentinels)
     if (obj.array_part() != null) {
         for (uint i = 0; i < obj.array_used && n < cap; i++) {
@@ -1104,6 +1121,16 @@ fn bool proxy_mop_set_proto(void* vm, Heap* heap, HObject* proxy, TVal proto, bo
             return true;
         }
         HObject* new_proto = proto.is_object() ? (HObject*)proto.get_heapptr() : null;
+        // OrdinarySetPrototypeOf cycle check (§10.1.2.1 step 8): reject a
+        // prototype chain that would loop back to the target.
+        HObject* cyc = new_proto;
+        uint cdepth = 0;
+        while (cyc != null && cdepth < 256) {
+            if (cyc == target) { *res = false; return true; }
+            if (cyc.flags.exotic_proxyobj) break;  // spec stops the walk at non-ordinary objects
+            cyc = cyc.prototype;
+            cdepth++;
+        }
         target.prototype = new_proto;
         *res = true;
         return true;

@@ -130,7 +130,7 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                                 HString* lastindex_key = intern_string(vm, "lastIndex");
                                 TVal lastindex_tv;
                                 lastindex_tv.set_fastint(0);
-                                obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WEC);
+                                obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WENC);
                                 ra.set_object(obj);
                                 track_heap_store(ds.act, ra, (uint)insn.a);
                             } else {

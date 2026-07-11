@@ -145,7 +145,14 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
     // Case 2: HObject with builtin_fn_index — dispatch via BuiltinContext
     if (func.is_object() && func.get_heapptr() != null) {
         HObject* hobj = (HObject*)func.get_heapptr();
-        if (hobj != null && hobj.is_callable() && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
+        hobject::CallableKind fn_kind = (hobj != null && hobj.is_callable())
+            ? hobj.callable_kind() : hobject::CallableKind.OTHER;
+        // BOUND_FN also dispatches through its builtin (bound_call), which
+        // re-targets via needs_re_dispatch below.
+        if (hobj != null && hobj.is_callable()
+            && (fn_kind == hobject::CallableKind.BUILTIN_FN
+                || (fn_kind == hobject::CallableKind.BOUND_FN
+                    && (*hobj.extra_ptr()).func.builtin_fn_index >= 0))) {
             uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
 
             // Builtins may modify callee/this via base_reg-2 and base_reg-1.
@@ -1711,7 +1718,10 @@ fn TVal? Vm.run(Vm* vm) {
                     if (hasinst_callable) {
                         // Call @@hasInstance with this=rval, arg=lval
                         TVal result = vm.heap.call_fn(vm, hasinst_fn, &lval, 1, rval);
-                        if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                        if (vm_check_call_fn_error(vm)) {
+                            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                            continue;
+                        }
                         ra.set_boolean(builtins::builtin_to_boolean(&result));
                         continue;
                     }
@@ -1737,7 +1747,10 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal this_for_getter;
                 this_for_getter.set_object(rfunc);
                 proto_val = vm.heap.call_fn(vm, acc.accessor_fn, null, 0, this_for_getter);
-                if (vm_check_call_fn_error(vm)) return VM_ERROR~;
+                if (vm_check_call_fn_error(vm)) {
+                            if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                            continue;
+                        }
             } else {
                 proto_val = get_prop_with_proto(rfunc, proto_key_str);
             }

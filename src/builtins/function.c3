@@ -1027,10 +1027,24 @@ fn void builtin_function_proto_hasInstance(BuiltinContext* ctx) {
         return;
     }
 
-    // Step 6: walk V's prototype chain looking for P.
+    // Step 6: walk V's prototype chain looking for P, routing hops through
+    // the [[GetPrototypeOf]] trap when a Proxy appears on the chain.
     HObject* p_obj = (HObject*)proto_val.get_heapptr();
     HObject* v_obj = (HObject*)v_val.get_heapptr();
-    ctx.result.set_boolean(v_obj.is_prototype_of(p_obj));
+    uint wdepth = 0;
+    bool matched = false;
+    while (v_obj != null && wdepth < 256) {
+        if (v_obj == p_obj) { matched = true; break; }
+        if (v_obj.flags.exotic_proxyobj) {
+            TVal next;
+            if (!proxy_mop_get_proto(ctx.vm, ctx.heap, v_obj, &next)) { proxy_ctx_ok(ctx); return; }
+            v_obj = next.is_object() ? (HObject*)next.get_heapptr() : null;
+        } else {
+            v_obj = v_obj.prototype;
+        }
+        wdepth++;
+    }
+    ctx.result.set_boolean(matched);
 }
 
 /// Function.prototype[@@species] getter — ES6 §19.2.4.7

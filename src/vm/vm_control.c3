@@ -176,9 +176,7 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         // resulting constructor's .prototype to be non-configurable so
                         // that `class C { static ['prototype']() {} }` throws TypeError
                         // (the static-method-non-configurable-err test262 case).
-                        hobject::PropFlags proto_pflags = template.is_class_ctor()
-                            ? hobject::PROP_FLAGS_WENC
-                            : hobject::PROP_FLAGS_WEC;
+                        hobject::PropFlags proto_pflags = hobject::PROP_FLAGS_WENC;  // §10.2.5: writable, non-enum, non-config
                         HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try proto_obj = proto_obj_raw) {
                             if (template.is_generator() && vm.heap.generator_proto != null) {
