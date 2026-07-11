@@ -100,6 +100,14 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
         ctx.callee_obj = null;
 
         builtins::dispatch_builtin(fn_idx, &ctx);
+        if (ctx.should_throw) {
+            // Propagate throw from builtin into the vm error state so
+            // callers using vm_check_call_fn_error() detect it.
+            vm.has_error = true;
+            vm.heap.has_error = true;
+            vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
+            vm.heap.tval_copy_ref(&vm.return_val, &ctx.throw_value);
+        }
         return *ctx.result;
     }
 
@@ -139,6 +147,10 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             builtins::dispatch_builtin(fn_idx, &ctx);
 
             if (ctx.should_throw) {
+                vm.has_error = true;
+                vm.heap.has_error = true;
+                vm.heap.tval_copy_ref(&vm.heap.error_value, &ctx.throw_value);
+                vm.heap.tval_copy_ref(&vm.return_val, &ctx.throw_value);
                 vm.throw_pending = true;
                 vm.heap.tval_copy_ref(&vm.throw_value, &ctx.throw_value);
                 return undef;

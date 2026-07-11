@@ -645,26 +645,26 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
         if (s_hstr == null) s_hstr = builtin_intern_string(ctx.heap, "undefined");
     }
 
-    // 4-5. Let global be ToBoolean(? Get(rx, "global")).
-    HString* global_key = builtin_intern_string(ctx.heap, "global");
-    TVal? g_opt = builtins_generic_get(rx, global_key, ctx);
+    // 4. Let flags be ? ToString(? Get(rx, "flags")).
+    // 5. Parse "g" and "u"/"v" from flags (spec steps 5-6).
+    // Reading "flags" once avoids triggering "global"/"unicode" getters (which tests poison).
+    HString* flags_key_m = builtin_intern_string(ctx.heap, "flags");
+    TVal? flags_opt_m = builtins_generic_get(rx, flags_key_m, ctx);
     if (ctx.should_throw) return;
+    TVal flags_tv_m; flags_tv_m.set_undefined();
+    if (try fvm = flags_opt_m) { flags_tv_m = fvm; }
+    HString* flags_hstr_m = builtin_to_string_vm(ctx, &flags_tv_m);
+    if (ctx.should_throw) return;
+    if (flags_hstr_m == null) { flags_hstr_m = builtin_intern_string(ctx.heap, ""); }
     bool global_flag = false;
-    if (try gv = g_opt) { global_flag = builtin_to_boolean(&gv); }
-
-    // 6. Let fullUnicode be ToBoolean(? Get(rx, "unicode")) ||
-    //    ToBoolean(? Get(rx, "unicodeSets"))  — ES2023 §21.2.5.6 step 6.
-    //    The `v` flag sets .unicodeSets; both enable surrogate-pair advancement.
-    HString* unicode_key = builtin_intern_string(ctx.heap, "unicode");
-    TVal? u_opt = builtins_generic_get(rx, unicode_key, ctx);
-    if (ctx.should_throw) return;
     bool full_unicode = false;
-    if (try uv = u_opt) { full_unicode = builtin_to_boolean(&uv); }
-    if (!full_unicode) {
-        HString* us_key = builtin_intern_string(ctx.heap, "unicodeSets");
-        TVal? us_opt = builtins_generic_get(rx, us_key, ctx);
-        if (ctx.should_throw) return;
-        if (try usv = us_opt) { full_unicode = builtin_to_boolean(&usv); }
+    {
+        char* fc = flags_hstr_m.get_cstr();
+        usz flen = flags_hstr_m.blen;
+        for (usz i = 0; i < flen; i++) {
+            if (fc[i] == 'g') global_flag = true;
+            if (fc[i] == 'u' || fc[i] == 'v') full_unicode = true;
+        }
     }
 
     if (!global_flag) {
@@ -679,13 +679,10 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
     }
 
     // 8. global === true
-    // 8.a. Set(rx, "lastIndex", 0, true).
+    // 8.a. Perform ? Set(rx, "lastIndex", 0, true) — throws TypeError if non-writable.
     HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
     TVal zero_tv; zero_tv.set_fastint(0);
-    if (!rx.put_prop((void*)li_key, zero_tv, hobject::PROP_FLAGS_WEC)) {
-        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex on regexp");
-        return;
-    }
+    if (!regexp_set_with_setter(ctx, rx, li_key, zero_tv)) return;
 
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) { ctx.result.set_null(); return; }
@@ -734,14 +731,15 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
         // thisIndex is a UTF-16 code unit count; convert to byte offset to
         // call advance_string_index_byte_len, then back to code units.
         if (match_str.blen == 0) {
-            // ToLength(? Get(rx, "lastIndex"))
+            // 8.g.i. Let thisIndex be ? ToLength(? Get(rx, "lastIndex")).
             TVal? li_opt = builtins_generic_get(rx, li_key, ctx);
             if (ctx.should_throw) return;
-            long this_index = 0;
-            if (try lv = li_opt) {
-                if (lv.is_fastint()) { this_index = lv.get_fastint(); }
-                else if (lv.is_number()) { this_index = (long)lv.get_number(); }
-            }
+            TVal li_raw; li_raw.set_fastint(0);
+            if (try lv = li_opt) { li_raw = lv; }
+            double this_d = builtin_to_integer_vm(ctx, &li_raw);
+            if (ctx.should_throw) return;
+            if (this_d < 0.0) this_d = 0.0;
+            long this_index = (long)this_d;
             char* input = s_hstr.get_cstr();
             int input_len = (int)s_hstr.blen;
             // Convert char-unit index → byte offset, compute the byte advance,
@@ -752,10 +750,8 @@ fn void builtin_regexp_proto_symbol_match(BuiltinContext* ctx) {
             uint new_byte_off = byte_off + (uint)adv_bytes;
             long next_index = (long)hstring::compute_charlen(input[:new_byte_off]);
             TVal next_tv; next_tv.set_fastint(next_index);
-            if (!rx.put_prop((void*)li_key, next_tv, hobject::PROP_FLAGS_WEC)) {
-                builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot set lastIndex on regexp");
-                return;
-            }
+            // 8.g.iii. Perform ? Set(rx, "lastIndex", nextIndex, true).
+            if (!regexp_set_with_setter(ctx, rx, li_key, next_tv)) return;
         }
         // continue loop
     }

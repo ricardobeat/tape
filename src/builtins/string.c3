@@ -933,6 +933,54 @@ fn void builtin_string_proto_trim(BuiltinContext* ctx) {
 
 /// String.prototype.split(separator, limit) — ES5 §15.5.4.14
 fn void builtin_string_proto_split(BuiltinContext* ctx) {
+    // Step 1: Let O be ? RequireObjectCoercible(this value).
+    TVal this_tv = ctx.regs[ctx.base_reg - 1];
+    if (this_tv.is_undefined() || this_tv.is_null()) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,
+            "String.prototype method called on incompatible value");
+        return;
+    }
+
+    TVal sep_tv; sep_tv.set_undefined();
+    if (ctx.argc > 0) sep_tv = ctx.regs[ctx.base_reg];
+
+    // Step 2: If separator is neither undefined nor null, check @@split.
+    // Use builtins_generic_get to invoke accessor getters (propagating throws).
+    if (!sep_tv.is_null() && !sep_tv.is_undefined()) {
+        if (sep_tv.is_object() && sep_tv.get_heapptr() != null) {
+            HObject* sep_obj = (HObject*)sep_tv.get_heapptr();
+            HString* split_sym = ensure_split_symbol(ctx.heap);
+            if (split_sym != null) {
+                TVal? splitter_opt = builtins_generic_get(sep_obj, split_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try splitter = splitter_opt) {
+                    if (!splitter.is_undefined() && !splitter.is_null()) {
+                        if (splitter.is_lightfunc() ||
+                            (splitter.is_object() && splitter.get_heapptr() != null &&
+                             ((HObject*)splitter.get_heapptr()).is_callable())) {
+                            // Call splitter(O, limit) — O is the raw this value (not ToString'd),
+                            // limit is the original argument (not coerced).
+                            TVal[2] fn_args;
+                            fn_args[0] = this_tv;
+                            fn_args[1] = (ctx.argc > 1) ? ctx.regs[ctx.base_reg + 1] : (TVal){ };
+                            if (ctx.argc <= 1) fn_args[1].set_undefined();
+                            TVal splitter_this = sep_tv;
+                            TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, splitter_this);
+                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            *ctx.result = res;
+                            return;
+                        } else {
+                            // GetMethod: non-callable @@split throws TypeError.
+                            arr_throw_type_error(ctx, "Symbol.split is not callable");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Let S be ? ToString(O).
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
         ctx.result.set_undefined();
@@ -950,18 +998,60 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
 
-    // ── ES5 §15.5.4.14 step 1: convert limit FIRST via ToUint32 ────
+    // If separator is undefined, return [string] — but the limit=0 case
+    // (§22.1.3.21 step 10: if lim = 0, return an empty array) takes precedence.
+    if (sep_tv.is_undefined()) {
+        bool undef_limit_zero = false;
+        if (ctx.argc > 1) {
+            TVal lim_arg0 = ctx.regs[ctx.base_reg + 1];
+            if (!lim_arg0.is_undefined()) {
+                double lim0 = builtin_to_number_vm(ctx, &lim_arg0);
+                if (ctx.should_throw) return;
+                // ToUint32: NaN/±0/±Inf → 0.
+                if (lim0 != lim0 || lim0 == 0.0 || lim0 == double::inf || lim0 == -double::inf) {
+                    undef_limit_zero = true;
+                } else {
+                    double two32u = 4294967296.0;
+                    double nu = lim0 - math::floor(lim0 / two32u) * two32u;
+                    if (nu < 0.0) nu += two32u;
+                    undef_limit_zero = ((uint)nu == 0);
+                }
+            }
+        }
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        if (undef_limit_zero) {
+            TVal len_val0; len_val0.set_fastint(0);
+            arr.put_prop(len_key, len_val0, hobject::PROP_FLAGS_WEC);
+            ctx.result.set_object(arr);
+            return;
+        }
+        TVal elem;
+        elem.set_string(s_hstr);
+        HString* zero_key = builtin_intern_string(ctx.heap, "0");
+        arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
+        TVal len_val;
+        len_val.set_fastint(1);
+        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(arr);
+        return;
+    }
+
+    // For RegExp separator, delegate to @@split on the regexp (which will call
+    // RegExp.prototype[@@split]), or fall through to the built-in regexp path.
+    // For other separators: step 4 = ToString(separator) — must happen before limit=0 check.
+    TVal* sep_val = &sep_tv;
+
+    // Compute limit via ToUint32 — done here, after the @@split check.
+    // spec step 17: If limit is undefined, let lim = 2^32-1; else let lim = ? ToUint32(limit).
     uint limit = 0xFFFFFFFF;  // 2^32 - 1
-    if (ctx.argc > 1) {
-        TVal limit_arg = ctx.regs[ctx.base_reg + 1];
-        // Per spec, if limit is undefined, use 2^32 - 1 (the default).
+    {
+        TVal limit_arg; limit_arg.set_undefined();
+        if (ctx.argc > 1) limit_arg = ctx.regs[ctx.base_reg + 1];
         if (!limit_arg.is_undefined()) {
-            // ToUint32: convert via ToNumber first (calls valueOf), then to uint32
             double limit_num = builtin_to_number_vm(ctx, &limit_arg);
-            // Apply ToUint32: NaN→0, ±Infinity→0, then floor(mod(2^32))
-            if (limit_num != limit_num) {  // NaN
-                limit = 0;
-            } else if (limit_num == 0.0 || limit_num == double::inf || limit_num == -double::inf) {
+            if (ctx.should_throw) return;
+            if (limit_num != limit_num || limit_num == 0.0 ||
+                limit_num == double::inf || limit_num == -double::inf) {
                 limit = 0;
             } else {
                 double two32 = 4294967296.0;
@@ -972,67 +1062,18 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         }
     }
 
-    // Step 3: If lim = 0, return empty array
-    if (limit == 0) {
-        TVal len_val; len_val.set_fastint(0);
-        HString* len_key = builtin_intern_string(ctx.heap, "length");
-        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
-        ctx.result.set_object(arr);
-        return;
-    }
-
-    // If separator is undefined, return [string]
-    if (ctx.argc == 0 || ctx.regs[ctx.base_reg].is_undefined()) {
-        TVal elem;
-        elem.set_string(s_hstr);
-        HString* zero_key = builtin_intern_string(ctx.heap, "0");
-        arr.put_prop(zero_key, elem, hobject::PROP_FLAGS_WEC);
-        TVal len_val;
-        len_val.set_fastint(1);
-        HString* len_key = builtin_intern_string(ctx.heap, "length");
-        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
-        ctx.result.set_object(arr);
-        return;
-    }
-
-    TVal* sep_val = &ctx.regs[ctx.base_reg];
-
-    // ── Check for @@split protocol (ES6 §21.1.3.17 step 2) ───────────────
-    if (!sep_val.is_null() && !sep_val.is_undefined()) {
-        if (sep_val.is_object() && sep_val.get_heapptr() != null) {
-            HObject* sep_obj = (HObject*)sep_val.get_heapptr();
-            HString* split_sym = ensure_split_symbol(ctx.heap);
-            if (split_sym != null) {
-                if (try splitter = sep_obj.get_prop_proto(split_sym)) {
-                    if (splitter.is_lightfunc() ||
-                        (splitter.is_object() && splitter.get_heapptr() != null &&
-                         ((HObject*)splitter.get_heapptr()).is_callable())) {
-                        TVal[2] fn_args;
-                        fn_args[0].set_string(s_hstr);  // O
-                        // limit is already computed; pass it as the second argument
-                        if (ctx.argc > 1) {
-                            fn_args[1] = ctx.regs[ctx.base_reg + 1];
-                        } else {
-                            fn_args[1].set_undefined();
-                        }
-                        TVal this_val = ctx.regs[ctx.base_reg];
-                        TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                        *ctx.result = res;
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
     // ── RegExp separator ─────────────────────────────────────────────────
     if (is_regexp_object(sep_val)) {
+        if (limit == 0) {
+            TVal lv0; lv0.set_fastint(0);
+            HString* lk0 = builtin_intern_string(ctx.heap, "length");
+            arr.put_prop(lk0, lv0, hobject::PROP_FLAGS_WEC);
+            ctx.result.set_object(arr);
+            return;
+        }
         HObject* rx = (HObject*)sep_val.get_heapptr();
         char* input = data;
         int input_len = (int)len;
-
-        // limit already computed via ToUint32 above
 
         HString* li_key = builtin_intern_string(ctx.heap, "lastIndex");
         TVal zero_tv; zero_tv.set_fastint(0);
@@ -1133,14 +1174,22 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
         return;
     }
 
-    // ── String separator ─────────────────────────────────────────────────
+    // ── String separator: ToString(separator) — must happen before limit=0 check ──
     HString* sep_hstr = builtin_to_string_vm(ctx, sep_val);
+    if (ctx.should_throw) return;
     if (sep_hstr == null) {
         ctx.result.set_undefined();
         return;
     }
 
-    // limit already computed via ToUint32 above
+    // limit=0 check after separator is stringified
+    if (limit == 0) {
+        TVal len_val; len_val.set_fastint(0);
+        HString* len_key0 = builtin_intern_string(ctx.heap, "length");
+        arr.put_prop(len_key0, len_val, hobject::PROP_FLAGS_WEC);
+        ctx.result.set_object(arr);
+        return;
+    }
 
     char* sep_data = sep_hstr.get_cstr();
     uint sep_len = sep_hstr.blen;
@@ -1372,27 +1421,37 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     int input_len = (int)s_hstr.blen;
 
     // ── Check for @@replace protocol (ES6 §21.1.3.14 step 2) ─────────────
+    // Step 2: If searchValue is neither undefined nor null, GetMethod(searchValue, @@replace).
+    // Use builtins_generic_get so accessor/getter properties are invoked (propagating throws).
     if (ctx.argc >= 1 && !search_val.is_null() && !search_val.is_undefined()) {
         if (search_val.is_object() && search_val.get_heapptr() != null) {
             HObject* search_obj = (HObject*)search_val.get_heapptr();
             HString* replace_sym = ensure_replace_symbol(ctx.heap);
             if (replace_sym != null) {
-                if (try replacer = search_obj.get_prop_proto(replace_sym)) {
-                    if (replacer.is_lightfunc() ||
-                        (replacer.is_object() && replacer.get_heapptr() != null &&
-                         ((HObject*)replacer.get_heapptr()).is_callable())) {
-                        TVal[2] fn_args;
-                        fn_args[0].set_string(s_hstr);  // O
-                        if (ctx.argc > 1) {
-                            fn_args[1] = ctx.regs[ctx.base_reg + 1];  // replaceValue
+                TVal? replacer_opt = builtins_generic_get(search_obj, replace_sym, ctx);
+                if (ctx.should_throw) return;
+                if (try replacer = replacer_opt) {
+                    if (!replacer.is_undefined() && !replacer.is_null()) {
+                        if (replacer.is_lightfunc() ||
+                            (replacer.is_object() && replacer.get_heapptr() != null &&
+                             ((HObject*)replacer.get_heapptr()).is_callable())) {
+                            TVal[2] fn_args;
+                            fn_args[0].set_string(s_hstr);  // O
+                            if (ctx.argc > 1) {
+                                fn_args[1] = ctx.regs[ctx.base_reg + 1];  // replaceValue
+                            } else {
+                                fn_args[1].set_undefined();
+                            }
+                            TVal this_val = ctx.regs[ctx.base_reg];
+                            TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
+                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            *ctx.result = res;
+                            return;
                         } else {
-                            fn_args[1].set_undefined();
+                            // GetMethod: if not callable, throw TypeError.
+                            arr_throw_type_error(ctx, "Symbol.replace is not callable");
+                            return;
                         }
-                        TVal this_val = ctx.regs[ctx.base_reg];
-                        TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                        *ctx.result = res;
-                        return;
                     }
                 }
             }
@@ -1583,9 +1642,7 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
     }
 
     // ── String searchValue ──────────────────────────────────────────────
-    // ES6 §21.1.3.14 step 5: ToString(searchValue) — must call user-defined
-    // toString on objects. Use the VM-aware variant so toString can throw
-    // and propagate the exception.
+    // Step 5: Let searchString be ? ToString(searchValue).
     HString* search_hstr = builtin_to_string_vm(ctx, search_val);
     if (ctx.should_throw) return;
     if (search_hstr == null) {
@@ -1593,20 +1650,29 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         return;
     }
 
-    TVal replace_val_str = ctx.argc > 1 ? ctx.regs[ctx.base_reg + 1] : (TVal){ };
-    if (ctx.argc < 2) { replace_val_str.set_undefined(); }
-
+    // Step 6: Let functionalReplace = IsCallable(replaceValue).
     bool str_replace_is_fn = false;
+    TVal replace_val_str; replace_val_str.set_undefined();
     if (ctx.argc > 1) {
-        TVal* rv = &ctx.regs[ctx.base_reg + 1];
-        if (rv.is_lightfunc()) {
+        replace_val_str = ctx.regs[ctx.base_reg + 1];
+        if (replace_val_str.is_lightfunc()) {
             str_replace_is_fn = true;
-        } else if (rv.is_object() && rv.get_heapptr() != null &&
-                   ((HObject*)rv.get_heapptr()).is_callable()) {
+        } else if (replace_val_str.is_object() && replace_val_str.get_heapptr() != null &&
+                   ((HObject*)replace_val_str.get_heapptr()).is_callable()) {
             str_replace_is_fn = true;
         }
     }
 
+    // Step 7: If !functionalReplace, let replaceValue = ? ToString(replaceValue).
+    // This must happen BEFORE searching (spec step 7 precedes step 8).
+    HString* replace_str_precomp = null;
+    if (!str_replace_is_fn) {
+        replace_str_precomp = builtin_to_string_vm(ctx, &replace_val_str);
+        if (ctx.should_throw) return;
+        if (replace_str_precomp == null) replace_str_precomp = builtin_intern_string(ctx.heap, "undefined");
+    }
+
+    // Step 8: Search for first occurrence of searchString.
     char* search_data = search_hstr.get_cstr();
     uint search_len = search_hstr.blen;
 
@@ -1633,22 +1699,20 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         fn_args[1].set_fastint((long)found_pos);
         fn_args[2].set_string(s_hstr);
         TVal this_val; this_val.set_undefined();
-        TVal fn_val = ctx.regs[ctx.base_reg + 1];
-        TVal res = ctx.heap.call_fn(ctx.vm, fn_val, &fn_args[0], 3, this_val);
+        TVal res = ctx.heap.call_fn(ctx.vm, replace_val_str, &fn_args[0], 3, this_val);
         if (ctx.heap.has_error) { ctx.should_throw = true; return; }
         replace_str = builtin_to_string_vm(ctx, &res);
         if (ctx.should_throw) return;
         if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
+        replace_str = builtin_replace_substitute(ctx.heap, replace_str,
+            input, input_len, found_pos, found_pos + (int)search_len,
+            null, null, 0);
+        if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "");
     } else {
-        HString* replace_hstr;
-        if (ctx.argc > 1) {
-            replace_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg + 1]);
-            if (ctx.should_throw) return;
-        } else {
-            replace_hstr = builtin_intern_string(ctx.heap, "undefined");
-        }
-        if (replace_hstr == null) { ctx.result.set_undefined(); return; }
-        replace_str = replace_hstr;
+        replace_str = builtin_replace_substitute(ctx.heap, replace_str_precomp,
+            input, input_len, found_pos, found_pos + (int)search_len,
+            null, null, 0);
+        if (replace_str == null) replace_str = replace_str_precomp;
     }
 
     char* replace_data = replace_str.get_cstr();
