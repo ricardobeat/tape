@@ -3245,41 +3245,47 @@ fn HObject* alloc_builtin_fn(Heap* heap, uint fn_index, char[] name, int length)
 /// files. Installed only by the test harness binaries — never part of the
 /// default engine globals.
 fn bool register_test262_host(EnvRecord* global_env, Heap* heap) {
-    HObject* es_fn = alloc_builtin_fn(heap, BUILTIN_EVAL_SCRIPT, "evalScript", 1);
-    HObject* detach_fn = alloc_builtin_fn(heap, BUILTIN_DETACH_ARRAYBUFFER, "detachArrayBuffer", 1);
-    if (es_fn == null || detach_fn == null) return false;
-
-    TVal es_tv;
-    es_tv.set_object(es_fn);
-    TVal detach_tv;
-    detach_tv.set_object(detach_fn);
+    // Every allocated object is declared on the global env (a GC root)
+    // before the next allocation — an allocation-triggered GC would
+    // otherwise collect the not-yet-reachable objects.
+    HString* es_key = builtin_intern_string(heap, "__evalScript");
+    HString* d_hidden_key = builtin_intern_string(heap, "__detachArrayBuffer");
+    HString* h262_key = builtin_intern_string(heap, "$262");
+    HString* d_key = builtin_intern_string(heap, "detachArrayBuffer");
+    HString* e_key = builtin_intern_string(heap, "evalScript");
+    HString* g_key = builtin_intern_string(heap, "global");
+    if (es_key == null || d_hidden_key == null || h262_key == null
+        || d_key == null || e_key == null || g_key == null) return false;
 
     // __evalScript(src) — runs src as a global script so that var/function
     // declarations become non-configurable global properties (unlike eval()
     // which creates a fresh declarative env).
-    HString* es_key = builtin_intern_string(heap, "__evalScript");
-    if (es_key != null) env::env_declare_nonenum(global_env, es_key, es_tv);
-    HString* d_hidden_key = builtin_intern_string(heap, "__detachArrayBuffer");
-    if (d_hidden_key != null) env::env_declare_nonenum(global_env, d_hidden_key, detach_tv);
+    HObject* es_fn = alloc_builtin_fn(heap, BUILTIN_EVAL_SCRIPT, "evalScript", 1);
+    if (es_fn == null) return false;
+    TVal es_tv;
+    es_tv.set_object(es_fn);
+    env::env_declare_nonenum(global_env, es_key, es_tv);
 
-    HString* h262_key = builtin_intern_string(heap, "$262");
+    HObject* detach_fn = alloc_builtin_fn(heap, BUILTIN_DETACH_ARRAYBUFFER, "detachArrayBuffer", 1);
+    if (detach_fn == null) return false;
+    TVal detach_tv;
+    detach_tv.set_object(detach_fn);
+    env::env_declare_nonenum(global_env, d_hidden_key, detach_tv);
+
     HObject*? h262_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
-    if (h262_key == null) return false;
     if (catch err = h262_raw) return false;
     HObject* h262 = h262_raw;
     h262.prototype = heap.object_proto;
-    HString* d_key = builtin_intern_string(heap, "detachArrayBuffer");
-    HString* e_key = builtin_intern_string(heap, "evalScript");
-    HString* g_key = builtin_intern_string(heap, "global");
-    if (d_key != null) h262.put_prop(d_key, detach_tv, hobject::PROP_FLAGS_WC);
-    if (e_key != null) h262.put_prop(e_key, es_tv, hobject::PROP_FLAGS_WC);
-    if (g_key != null && global_env.bindings != null) {
+    TVal h262_tv;
+    h262_tv.set_object(h262);
+    env::env_declare_nonenum(global_env, h262_key, h262_tv);
+
+    h262.put_prop(d_key, detach_tv, hobject::PROP_FLAGS_WC);
+    h262.put_prop(e_key, es_tv, hobject::PROP_FLAGS_WC);
+    if (global_env.bindings != null) {
         TVal g_tv;
         g_tv.set_object(global_env.bindings);
         h262.put_prop(g_key, g_tv, hobject::PROP_FLAGS_WC);
     }
-    TVal h262_tv;
-    h262_tv.set_object(h262);
-    env::env_declare_nonenum(global_env, h262_key, h262_tv);
     return true;
 }
