@@ -876,6 +876,15 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
     } else if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
         if (obj.is_callable()) {
+            // ES2019 §19.2.3.5: callable Proxy objects have no source text —
+            // return a NativeFunction-style string without touching the proxy's
+            // internal slots (which hold proxy data, not function data).
+            if (obj.flags.exotic_proxyobj) {
+                HString* result = builtin_intern_string(ctx.heap, "function () { [native code] }");
+                ctx.result.set_string(result);
+                return;
+            }
+
             // Compiled JS functions retain their original source text (ES2019
             // §19.2.3.5 / Function.prototype.toString) — if the compiler kept it,
             // return that exact text instead of the [native code] placeholder.
