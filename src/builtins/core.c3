@@ -2903,11 +2903,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROXY_REVOCABLE]            = &builtin_proxy_revocable,
     [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
     [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
-<<<<<<< HEAD
     [BUILTIN_TA_SPECIES_GET]             = &builtin_ta_species_get,
-=======
     [BUILTIN_EVAL_SCRIPT]                = &builtin_eval_script,
->>>>>>> worktree-agent-aea76d13571a3f9bd
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
