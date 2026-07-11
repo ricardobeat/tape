@@ -273,6 +273,19 @@ fn void? CompilerContext.parse_directives(&self) {
 /// afterwards.
 ///
 /// Returns the number of variable names found (0 to MAX_PRESCAN_NAMES).
+/// TDZ-initialize top-level let/const declarations at program/eval scope so
+/// that accessing or assigning to them before their declaration throws a
+/// ReferenceError, matching block scope. Mirrors the INITTZ pass in block().
+fn void CompilerContext.hoist_lexical_tdz(&self) {
+    NameSpan[MAX_PRESCAN_NAMES] spans;
+    uint n = self.pre_scan_lexical_decls(&spans, MAX_PRESCAN_NAMES);
+    for (uint i = 0; i < n; i++) {
+        char[] name = self.lexer.source[spans[i].pos..spans[i].pos + spans[i].len - 1];
+        uint name_idx = self.add_string_constant(name);
+        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+    }
+}
+
 /// Each name's position in the source text is stored in `spans` so the
 /// caller can reconstruct the `char[]` slice from `lexer.source`.
 fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capacity) {

@@ -56,6 +56,7 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
+    ctx.hoist_lexical_tdz();
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
@@ -117,6 +118,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
+    ctx.hoist_lexical_tdz();
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
@@ -209,6 +211,7 @@ fn CompiledFunction*? compile_module(Lexer* lex, void* heap, char[] module_name,
     lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
+    ctx.hoist_lexical_tdz();
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
