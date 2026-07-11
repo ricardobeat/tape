@@ -4246,33 +4246,18 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
         "(){if(this==null)throw new TypeError('toLocaleString called on null or undefined');var O=Object(this);var len=O.length>>>0;if(len>>>0!==len)len=0;var separator=\",\";var elements=[];for(var k=0;k<len;k++){if(k in O){var nextElement=O[k];var s=(nextElement===null||nextElement===void 0)?\"\":nextElement.toLocaleString();elements.push(s)}}return elements.join(separator)}", 0)) return false;
 
     // Register Array.prototype[@@iterator] (ES6 §22.1.3.30)
+    // Per spec, @@iterator must be the *same function object* as .values.
     {
         HString* iter_sym = ensure_iterator_symbol(heap);
         if (iter_sym != null) {
-            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-            if (catch err = fn_raw) return false;
-            HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_PROTO_SYMBOL_ITER;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            // Set .name
-            HString* name_key = builtin_intern_string(heap, "name");
-            HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
-            if (name_key != null && name_val != null) {
-                TVal name_tv;
-                name_tv.set_string(name_val);
-                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            HString* values_key = builtin_intern_string(heap, "values");
+            if (values_key != null) {
+                TVal? values_tv = proto.get_prop(values_key);
+                if (try values_func = values_tv) {
+                    // Set @@iterator to the same function as .values
+                    proto.put_prop(iter_sym, values_func, hobject::PROP_FLAGS_WC);
+                }
             }
-            // Set .length = 0
-            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-            if (len_key != null) {
-                TVal len_tv;
-                len_tv.set_fastint(0);
-                fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
-            }
-            TVal iter_tv;
-            iter_tv.set_object(fn_obj);
-            proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
         }
     }
 

@@ -100,6 +100,13 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
         ctx.callee_obj = null;
 
         builtins::dispatch_builtin(fn_idx, &ctx);
+
+        if (ctx.should_throw) {
+            vm.throw_pending = true;
+            vm.heap.tval_copy_ref(&vm.throw_value, &ctx.throw_value);
+            return undef;
+        }
+
         return *ctx.result;
     }
 
@@ -2585,6 +2592,9 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.INITSET:
         case Opcode.INITSETI:
         case Opcode.INITPROP:
+        case Opcode.CLASS_INITGET:
+        case Opcode.CLASS_INITSET:
+        case Opcode.CLASS_INITPROP:
         case Opcode.CSVARI:
         case Opcode.PUSH_LEX:
         case Opcode.POP_LEX:

@@ -49,6 +49,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 if (hobj_fast != null && hobj_fast.is_callable() && hobj_fast.callable_kind() == hobject::CallableKind.COMPILED_FN) {
                     CompiledFunction* target_fast = (*hobj_fast.extra_ptr()).func.comp_func;
                     if (target_fast == null) { ds.regs_base[result_reg].set_undefined(); break; }
+                    // ES2015 §9.2.1 step 1: class constructors cannot be called without 'new'
+                    if (target_fast.is_class_ctor()) {
+                        char[256] name_buf;
+                        uint copy_len = target_fast.name_len < 255 ? target_fast.name_len : 255;
+                        libc::memcpy(&name_buf, target_fast.name_ptr, copy_len);
+                        name_buf[copy_len] = 0;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Class constructor %s cannot be invoked without 'new'", &name_buf[0], ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    }
                     if (!target_fast.is_generator()) {
 
                     // Async function: create Promise before entering body
@@ -596,6 +607,18 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             } else {
                 // Not a compiled function — result should already be set by the handler
                 ds.regs_base[result_reg].set_undefined();
+                return (TVal){};
+            }
+
+            // ES2015 §9.2.1 step 1: class constructors cannot be called without 'new'
+            if (target.is_class_ctor()) {
+                char[256] name_buf;
+                uint copy_len = target.name_len < 255 ? target.name_len : 255;
+                libc::memcpy(&name_buf, target.name_ptr, copy_len);
+                name_buf[copy_len] = 0;
+                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Class constructor %s cannot be invoked without 'new'", &name_buf[0], ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
                 return (TVal){};
             }
 

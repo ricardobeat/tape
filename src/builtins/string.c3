@@ -369,10 +369,19 @@ fn void builtin_string_proto_toString(BuiltinContext* ctx) {
             return;
         }
     } else if (this_val.is_string()) {
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — thisStringValue throws TypeError for Symbol.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return;
+        }
         ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.set_undefined();
+    // Per ES2015 §21.1.3.27 step 1-3: thisStringValue throws TypeError for non-String values
+    builtin_throw(ctx, ctx.heap.type_err_proto,
+        "String.prototype.toString requires that 'this' be a String");
 }
 
 /// String.prototype.data.valueOf — returns the wrapped string primitive
@@ -386,10 +395,19 @@ fn void builtin_string_proto_valueOf(BuiltinContext* ctx) {
             return;
         }
     } else if (this_val.is_string()) {
+        HString* hs = (HString*)this_val.get_heapptr();
+        // Symbols stored as tagged strings — thisStringValue throws TypeError for Symbol.
+        if (hs != null && hs.is_symbol()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Cannot convert a Symbol value to a string");
+            return;
+        }
         ctx.result.set_string(this_val.get_heapptr());
         return;
     }
-    ctx.result.set_undefined();
+    // Per ES2015 §21.1.3.28 step 1-3: thisStringValue throws TypeError for non-String values
+    builtin_throw(ctx, ctx.heap.type_err_proto,
+        "String.prototype.valueOf requires that 'this' be a String");
 }
 
 // ============================================================================
@@ -1000,23 +1018,28 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
             HObject* sep_obj = (HObject*)sep_val.get_heapptr();
             HString* split_sym = ensure_split_symbol(ctx.heap);
             if (split_sym != null) {
-                if (try splitter = sep_obj.get_prop_proto(split_sym)) {
-                    if (splitter.is_lightfunc() ||
-                        (splitter.is_object() && splitter.get_heapptr() != null &&
-                         ((HObject*)splitter.get_heapptr()).is_callable())) {
-                        TVal[2] fn_args;
-                        fn_args[0].set_string(s_hstr);  // O
-                        // limit is already computed; pass it as the second argument
-                        if (ctx.argc > 1) {
-                            fn_args[1] = ctx.regs[ctx.base_reg + 1];
-                        } else {
-                            fn_args[1].set_undefined();
+                TVal? splitter_opt = builtins_generic_get(sep_obj, split_sym, ctx);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (try splitter = splitter_opt) {
+                    // GetMethod: null or undefined → fall through.
+                    if (!splitter.is_undefined() && !splitter.is_null()) {
+                        if (splitter.is_lightfunc() ||
+                            (splitter.is_object() && splitter.get_heapptr() != null &&
+                             ((HObject*)splitter.get_heapptr()).is_callable())) {
+                            TVal[2] fn_args;
+                            fn_args[0].set_string(s_hstr);  // O
+                            // limit is already computed; pass it as the second argument
+                            if (ctx.argc > 1) {
+                                fn_args[1] = ctx.regs[ctx.base_reg + 1];
+                            } else {
+                                fn_args[1].set_undefined();
+                            }
+                            TVal this_val = ctx.regs[ctx.base_reg];
+                            TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, this_val);
+                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            *ctx.result = res;
+                            return;
                         }
-                        TVal this_val = ctx.regs[ctx.base_reg];
-                        TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                        *ctx.result = res;
-                        return;
                     }
                 }
             }
@@ -1374,22 +1397,27 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
             HObject* search_obj = (HObject*)search_val.get_heapptr();
             HString* replace_sym = ensure_replace_symbol(ctx.heap);
             if (replace_sym != null) {
-                if (try replacer = search_obj.get_prop_proto(replace_sym)) {
-                    if (replacer.is_lightfunc() ||
-                        (replacer.is_object() && replacer.get_heapptr() != null &&
-                         ((HObject*)replacer.get_heapptr()).is_callable())) {
-                        TVal[2] fn_args;
-                        fn_args[0].set_string(s_hstr);  // O
-                        if (ctx.argc > 1) {
-                            fn_args[1] = ctx.regs[ctx.base_reg + 1];  // replaceValue
-                        } else {
-                            fn_args[1].set_undefined();
+                TVal? replacer_opt = builtins_generic_get(search_obj, replace_sym, ctx);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (try replacer = replacer_opt) {
+                    // GetMethod: null or undefined → fall through.
+                    if (!replacer.is_undefined() && !replacer.is_null()) {
+                        if (replacer.is_lightfunc() ||
+                            (replacer.is_object() && replacer.get_heapptr() != null &&
+                             ((HObject*)replacer.get_heapptr()).is_callable())) {
+                            TVal[2] fn_args;
+                            fn_args[0].set_string(s_hstr);  // O
+                            if (ctx.argc > 1) {
+                                fn_args[1] = ctx.regs[ctx.base_reg + 1];  // replaceValue
+                            } else {
+                                fn_args[1].set_undefined();
+                            }
+                            TVal this_val = ctx.regs[ctx.base_reg];
+                            TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
+                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            *ctx.result = res;
+                            return;
                         }
-                        TVal this_val = ctx.regs[ctx.base_reg];
-                        TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
-                        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
-                        *ctx.result = res;
-                        return;
                     }
                 }
             }
@@ -1909,6 +1937,14 @@ fn void builtin_string_proto_includes(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.7 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.includes must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
@@ -1957,6 +1993,14 @@ fn void builtin_string_proto_startsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.18 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.startsWith must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
@@ -1999,6 +2043,14 @@ fn void builtin_string_proto_endsWith(BuiltinContext* ctx) {
 
     HString* search_hstr;
     if (ctx.argc > 0) {
+        // ES6 §21.1.3.6 step 3-6: IsRegExp(searchString) → throw TypeError
+        int regexp_check = is_regexp_check_vm(ctx, &ctx.regs[ctx.base_reg]);
+        if (regexp_check < 0) { ctx.result.set_undefined(); return; }
+        if (regexp_check == 1) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "First argument to String.prototype.endsWith must not be a RegExp");
+            return;
+        }
         search_hstr = builtin_to_string_vm(ctx, &ctx.regs[ctx.base_reg]);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     } else {
@@ -2038,8 +2090,11 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    double count_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (count_d < 0 || math::is_inf(count_d) || math::is_nan(count_d)) {
+    double count_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    // ToInteger(NaN) = 0, ToInteger(+Infinity) = +Infinity, ToInteger(-Infinity) = -Infinity.
+    // After ToInteger, only negative values and Infinity are invalid.
+    if (count_d < 0 || math::is_inf(count_d)) {
         // Throw RangeError per ES6 §21.1.3.14 step 4.
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
@@ -2167,8 +2222,8 @@ fn void builtin_string_proto_at(BuiltinContext* ctx) {
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
     uint clen = s_hstr.char_length();
 
-    double idx_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (math::is_nan(idx_d)) { ctx.result.set_undefined(); return; }
+    double idx_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
     long idx = (long)idx_d;
     if (idx < 0) { idx = (long)clen + idx; }
@@ -2311,8 +2366,23 @@ fn void builtin_string_proto_lastIndexOf(BuiltinContext* ctx) {
     }
     if (search_hstr == null) { ctx.result.set_fastint(-1); return; }
 
-    double pos_d = (ctx.argc > 1) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg + 1]) : (double)clen;
-    if (math::is_nan(pos_d) || pos_d < 0) { pos_d = 0; }
+    // ES5 §15.5.4.8 step 4-5: ToNumber(position), then if NaN use len.
+    double pos_d;
+    if (ctx.argc > 1) {
+        TVal* pos_arg = &ctx.regs[ctx.base_reg + 1];
+        double num_pos = builtin_to_number_vm(ctx, pos_arg);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        // Step 5: if numPos is NaN, let pos be len.
+        if (math::is_nan(num_pos)) {
+            pos_d = (double)clen;
+        } else {
+            pos_d = builtin_to_integer_vm(ctx, pos_arg);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
+    } else {
+        pos_d = (double)clen;
+    }
+    if (pos_d < 0) { pos_d = 0; }
     if (pos_d > (double)clen) { pos_d = (double)clen; }
     // For lastIndexOf, search from min(pos, clen) backwards, in code units.
     int start_units = (int)(long)pos_d;

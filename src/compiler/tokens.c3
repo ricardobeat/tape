@@ -318,6 +318,111 @@ fn bool CompilerContext.match_async_method_prefix(&self) {
     return true;  // `async` stays consumed
 }
 
+/// Detect the `static` modifier in class bodies: only consume `static` as a
+/// modifier when it is followed by a token that can start a method definition
+/// (identifier, keyword, string, number, `[` computed key, `*` generator,
+/// or the `get`/`set` accessor prefixes followed by a property name).
+/// When followed by `(`, `;`, `,`, `}` etc., `static` is the method name
+/// itself, NOT a modifier.
+/// Returns true and consumes the `static` token if it is a modifier;
+/// otherwise leaves the input untouched and returns false.
+fn bool CompilerContext.match_static_modifier(&self) {
+    if (self.peek_type() != TokenType.STATIC) return false;
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    // Peek the following token WITHOUT consuming it — on a true result the
+    // method name (and everything after) must remain unconsumed so that
+    // compile_inner_function, which builds a fresh context reading the shared
+    // lexer directly, still sees it (compiler-context pushbacks would be
+    // invisible to the inner context).
+    Token next_tok;
+    if (self.pushback_count > 0) {
+        next_tok = self.pushback_stack[self.pushback_count - 1];
+    } else {
+        Token? peek_opt = self.lexer.peek();
+        if (catch _e = peek_opt) {
+            self.pushback(cur);
+            return false;
+        }
+        next_tok = peek_opt;
+    }
+    if (next_tok.line != cur.line) {
+        // [no LineTerminator here] between `static` and the method name.
+        self.pushback(cur);
+        return false;
+    }
+    // `get` and `set` are identifiers that can be accessor prefixes.
+    // `get static()` means a getter named "static" (NOT a static getter),
+    // so we must peek past `get`/`set` to see if there's a property name.
+    if (next_tok.type == TokenType.IDENTIFIER) {
+        // Check if this identifier is "get" or "set" followed by a property name.
+        bool is_accessor = (next_tok.str_value.len == 3
+            && next_tok.str_value[0] == 'g'
+            && next_tok.str_value[1] == 'e'
+            && next_tok.str_value[2] == 't')
+            || (next_tok.str_value.len == 3
+            && next_tok.str_value[0] == 's'
+            && next_tok.str_value[1] == 'e'
+            && next_tok.str_value[2] == 't');
+        if (is_accessor) {
+            // `get`/`set` as accessor prefix: peek at the token AFTER `get`/`set`.
+            // If it's followed by a property name token, `static` is a modifier
+            // (e.g. `static get foo()`).  If it's followed by `(`, `;`, `,`, `}`,
+            // then `get`/`set` is a plain method name, and `static` is also
+            // a method name — NOT a modifier (e.g. `get static()`).
+            Token after_accessor;
+            if (self.pushback_count > 1) {
+                after_accessor = self.pushback_stack[self.pushback_count - 2];
+            } else {
+                // Advance past the `get`/`set` token in the lexer to peek further.
+                Token? acc_opt = self.advance();
+                if (catch _e = acc_opt) {
+                    self.pushback(cur);
+                    return false;
+                }
+                Token acc_tok = acc_opt;
+                Token? peek2_opt;
+                if (self.pushback_count > 0) {
+                    peek2_opt = self.pushback_stack[self.pushback_count - 1];
+                } else {
+                    peek2_opt = self.lexer.peek();
+                }
+                // Put back the `get`/`set` token
+                self.pushback(acc_tok);
+                if (catch _e = peek2_opt) {
+                    self.pushback(cur);
+                    return false;
+                }
+                after_accessor = peek2_opt;
+            }
+            bool accessor_has_prop_name = after_accessor.type == TokenType.IDENTIFIER
+                || after_accessor.type == TokenType.STRING
+                || after_accessor.type == TokenType.NUMBER
+                || after_accessor.type == TokenType.LBRACKET
+                || lexer::keyword_to_string(after_accessor.type).len > 0;
+            if (!accessor_has_prop_name) {
+                // `get()` or `set()` — accessor prefix with NO property name,
+                // so `static` is a method name, not a modifier.
+                self.pushback(cur);
+                return false;
+            }
+            // `static get foo()` — `static` is a modifier.  Fall through.
+        }
+    }
+    bool starts_name = next_tok.type == TokenType.IDENTIFIER
+        || next_tok.type == TokenType.STRING
+        || next_tok.type == TokenType.NUMBER
+        || next_tok.type == TokenType.LBRACKET
+        || next_tok.type == TokenType.STAR
+        || lexer::keyword_to_string(next_tok.type).len > 0;
+    if (!starts_name) {
+        self.pushback(cur);
+        return false;
+    }
+    return true;  // `static` stays consumed as modifier
+}
+
 /// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
 /// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
 /// Used by loop rotation to skip over the for-loop increment without emitting code.
