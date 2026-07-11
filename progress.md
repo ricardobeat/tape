@@ -1,6 +1,28 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 275 — **94.9% reached** (29,196 pass / 30,780 executable, up from 92.6%; +~800 this session, zero net regressions).
+**Last Updated:** Session 276 — **95.0% reached** (29,244 pass / 30,780 executable, up from 94.9%; +48 raw this session across 5 coercion/ordering fixes; the 11 apparent losses are all the known flaky RegExp property-escapes memkills / lookBehind / TypedArray resizable-buffer tests — none touch the changed code).
+
+Session 276 highlights (five spec-coercion / property fixes, all committed + validated):
+- **Object.values/entries key-order + getter invocation**: emitted dense indices
+  *after* named props (wrong OrdinaryOwnPropertyKeys order) and read accessor
+  slots raw via `prop_values()[i]` (returning the descriptor, not the getter
+  result). Refactored keys/values/entries onto one shared ordered key-collector
+  (`collect_own_enum_string_keys`) + `desc_get_enum` ([[Get]] with String-exotic
+  char fallback); keys snapshotted before any getter runs. Phase 3 +8 (remaining
+  values/entries fails need Proxy + mid-enum enumerability re-check).
+- **Array/String.prototype.at index coercion**: both used
+  `builtin_to_number_getdouble` (no valueOf, no throw-propagation) so
+  `a.at({valueOf(){return 1}})` returned undefined. Now ToIntegerOrInfinity via
+  `builtin_to_integer_vm`. +6.
+- **Array.prototype[Symbol.unscopables]**: was entirely absent. Installed the
+  ES2023 null-proto list ({writable:false, enumerable:false, configurable:true}).
+  +4.
+- **String.prototype.repeat**: coercion must run (and possibly throw) *before* the
+  RangeError range check; a count object coercing to 0 wrongly threw. Now
+  `builtin_to_integer_vm` first. repeat 16/16.
+- **String.prototype.lastIndexOf**: `position` didn't run valueOf / propagate its
+  throw, and mapped NaN→0 instead of NaN→+∞ (search from the end). Now
+  `builtin_to_number_vm` + NaN→clen. lastIndexOf 25/25.
 
 Session 275 highlights (newest first; details in the session log below):
 - Every builtin function has an own `.length` (default 0 when metadata arity
@@ -26,14 +48,14 @@ Session 275 highlights (newest first; details in the session log below):
   ArrayBind/ObjBind structs removed. Phase 14 for-of 461→497.
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040 for the subset definition).
 
-## Summary (full run, session 275, 2026-07-10)
+## Summary (full run, session 276, 2026-07-11)
 
 | Metric | Value |
 |---|---|
 | Pass + Fail + CE (executable) | 30,780 |
-| Total passing | 29,196 |
-| **Overall pass rate** | **94.9%** |
-| Total failing | 1,417 |
+| Total passing | 29,244 |
+| **Overall pass rate** | **95.0%** |
+| Total failing | 1,369 |
 | CE unexpected (parser bugs) | 164 |
 | Skipped | 14,032 |
 
@@ -122,3 +144,4 @@ under concurrent worker pressure (not an engine bug).
 | 271 | Array literal INITPROP undefined→named-prop; map/filter ArraySpeciesCreate; array_set_elem_ulong_checked undefined+redefine; reduce/reduceRight loop-bound snapshot; sort undefined-last; iterator keys/entries/values done-value leak + entries pair length; Object.defineProperties dense-array sync; push TypeError/RangeError. | **87.2% → 87.9%** (26,826 → 27,047 pass, +221).  Phase 3 +56; Phase 5 +48; Phase 6 +45; Phase 0-1 +39; Phase 15 +35. |
 | 272 | Two MEMKILL/crash fixes: shape use-after-free in RegExp property-escapes/generated (44 tests), plus a second crash fix. | **87.9% → 88.0%** (27,047 → 27,079 pass, +32). |
 | 273 | Dense array >65535 fix (array_size/array_used ushort→uint, put_prop dense routing); String.prototype ToPrimitive("string") coercion; isWellFormed/toWellFormed; bind name/length; frozen-array pop/shift TypeError; Function.prototype[Symbol.hasInstance]; Date[Symbol.toPrimitive]; JSON.parse -0. Then 3 parallel agents: RegExp exec/@@split/@@replace lastIndex ToLength + result coercion; for-of destructuring lazy defaults + REQUIRE_OBJ + bare-LHS PUTVAR; JSON.parse text ToString + spec reviver walk. | **88.0% → 90.6%** (27,079 → 27,879 pass, **+800**). Phase 8 1,514 → 2,030 (+516); Phase 6 +91; Phase 5 +122; Phase 14 387 → 419 (+32); Phase 3 6,368 → 6,410 (+42). |
+| 276 | Five spec coercion/ordering fixes: Object.values/entries key-order + getter [[Get]] (shared collect_own_enum_string_keys + desc_get_enum); Array/String.prototype.at ToIntegerOrInfinity index; Array.prototype[Symbol.unscopables] installed; String.prototype.repeat coerce-before-RangeError; String.prototype.lastIndexOf position ToNumber + NaN→+∞. | **94.9% → 95.0%** (29,196 → 29,244 pass, +48). Phase 3 +8; at/unscopables/repeat/lastIndexOf clusters cleared. |
