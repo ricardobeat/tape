@@ -2105,8 +2105,12 @@ fn void builtin_string_proto_repeat(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) { ctx.result.set_undefined(); return; }
 
-    double count_d = (ctx.argc > 0) ? builtin_to_number_getdouble(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
-    if (count_d < 0 || math::is_inf(count_d) || math::is_nan(count_d)) {
+    // Step 3: ToIntegerOrInfinity(count) — runs valueOf/toString and throws for
+    // Symbol/BigInt *before* the RangeError range check (ES2022 §22.1.3.16).
+    double count_d = (ctx.argc > 0) ? builtin_to_integer_vm(ctx, &ctx.regs[ctx.base_reg]) : 0.0;
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    // Step 4: RangeError if count < 0 or count is +∞ (NaN already clamped to 0).
+    if (count_d < 0 || math::is_inf(count_d)) {
         // Throw RangeError per ES6 §21.1.3.14 step 4.
         HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
         if (try err = err_raw) {
