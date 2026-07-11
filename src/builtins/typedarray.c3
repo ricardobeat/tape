@@ -2198,7 +2198,7 @@ fn void builtin_ta_proto_at(BuiltinContext* ctx) {
 }
 
 /// Numeric comparator for TA sort (spec §23.2.3.29.1).
-/// NaN sorts after finite values.
+/// NaN sorts after finite values; -0 sorts before +0.
 fn int ta_numeric_compare(double a, double b) {
     bool a_nan = (a != a);
     bool b_nan = (b != b);
@@ -2207,6 +2207,14 @@ fn int ta_numeric_compare(double a, double b) {
     if (b_nan) return -1;
     if (a < b) return -1;
     if (a > b) return 1;
+    // a == b: distinguish -0 from +0 per spec step 9-11.
+    // 1/(−0) = −∞, 1/(+0) = +∞
+    if (a == 0.0 && b == 0.0) {
+        double ia = 1.0 / a;
+        double ib = 1.0 / b;
+        if (ia < ib) return -1;  // a is -0 (ia=-inf), b is +0 (ib=+inf)
+        if (ia > ib) return 1;
+    }
     return 0;
 }
 
@@ -2233,7 +2241,11 @@ fn void ta_insertion_sort(double[] arr, BuiltinContext* ctx, TVal comparefn, boo
                 double rd;
                 if (res.is_fastint()) { rd = (double)res.get_fastint(); }
                 else if (res.is_number()) { rd = res.get_number(); }
-                else { rd = 0.0; }
+                else {
+                    // ToNumber on the comparefn result (may call Symbol.toPrimitive).
+                    rd = ta_val_to_number(&res, ctx);
+                    if (ctx.should_throw) return;
+                }
                 cmp = rd < 0.0 ? -1 : (rd > 0.0 ? 1 : 0);
             } else {
                 cmp = ta_numeric_compare(arr[(uint)j], key);
@@ -2297,7 +2309,10 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
 
     ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
 
-    if (!ctx.should_throw) {
+    if (!ctx.should_throw && !ta_is_detached(obj)) {
+        // Re-fetch base pointer: comparefn may have realloc'd if buffer grew, but
+        // if it's been detached we skip the writeback (data pointer is null/freed).
+        base = (*buf.extra_ptr()).ab.data + byte_off;
         for (uint i = 0; i < len; i++) {
             TVal tv; tv.set_number(scratch[i]);
             char* dp = base + (i << shift);
