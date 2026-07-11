@@ -783,7 +783,9 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
         arraybuffer_throw_range_error(ctx, "TypedArray.set: offset is negative");
         return;
     }
-    uint target_offset = (uint)(long)off_d;
+    // Clamp Infinity / very large doubles to a sentinel that exceeds any TypedArray
+    // length, causing the range check below to fire.  Casting Infinity to uint is UB.
+    uint target_offset = (off_d >= 4294967296.0) ? 0xFFFFFFFFu : (uint)(long)off_d;
 
     TVal source_arg; source_arg.set_undefined();
     if (ctx.argc >= 1) source_arg = ctx.regs[ctx.base_reg];
@@ -803,7 +805,8 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
             uint src_len = (*src_obj.extra_ptr()).view.byte_length >> src_shift;
             uint src_byte_off = (*src_obj.extra_ptr()).view.byte_offset;
 
-            if (src_len + target_offset > dst_len) {
+            // Use 64-bit addition to detect overflow of src_len + target_offset.
+            if ((ulong)src_len + (ulong)target_offset > (ulong)dst_len) {
                 arraybuffer_throw_range_error(ctx, "TypedArray.set: source is too large");
                 return;
             }
@@ -850,15 +853,21 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
         }
     }
 
-    // Array-like source path
-    HObject* src_arr = null;
-    if (source_arg.is_object() && source_arg.get_heapptr() != null) {
-        src_arr = (HObject*)source_arg.get_heapptr();
+    // Array-like source path — spec step 14: Let src be ? ToObject(array).
+    // Primitives are coerced to wrapper objects; null/undefined throw TypeError.
+    if (source_arg.is_null() || source_arg.is_undefined()) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.set: cannot convert undefined or null to object");
+        return;
+    }
+    HObject* src_arr = arr_to_object(source_arg, heap);
+    if (src_arr == null) {
+        arraybuffer_throw_type_error(ctx, "TypedArray.set: ToObject failed");
+        return;
     }
 
     HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
     TVal len_tv; len_tv.set_fastint(0);
-    if (src_arr != null) {
+    {
         TVal? lv = builtins_generic_get(src_arr, length_key, ctx);
         if (ctx.should_throw) return;
         if (try v = lv) len_tv = v;
@@ -866,20 +875,51 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
     double src_len_d = builtin_to_integer_vm(ctx, &len_tv);
     if (ctx.should_throw) return;
     if (src_len_d < 0.0) src_len_d = 0.0;
-    uint src_len = (uint)(long)src_len_d;
+    // LengthOfArrayLike may return a very large number; cap to uint range.
+    uint src_len = (src_len_d >= 4294967296.0) ? 0xFFFFFFFFu : (uint)(long)src_len_d;
 
-    if (src_len + target_offset > dst_len) {
+    if ((ulong)src_len + (ulong)target_offset > (ulong)dst_len) {
         arraybuffer_throw_range_error(ctx, "TypedArray.set: source is too large");
         return;
     }
 
+    // Detect exotic String wrapper created by ToObject from a string primitive.
+    // Its indexed character properties are served lazily from the underlying
+    // HString rather than being stored as named props; builtins_generic_get
+    // would miss them.  We pull them out directly here.
+    bool src_is_string_exotic = src_arr.flags.exotic_stringobj
+        && (*src_arr.extra_ptr()).prim.primitive_value.is_string();
+    HString* src_prim_str = null;
+    if (src_is_string_exotic) {
+        src_prim_str = (HString*)(*src_arr.extra_ptr()).prim.primitive_value.get_heapptr();
+    }
+
     for (uint i = 0; i < src_len; i++) {
-        HString* idx_key = heap.int_to_hstring((long)i);
         TVal elem; elem.set_undefined();
-        if (idx_key != null && src_arr != null) {
-            TVal? ev = builtins_generic_get(src_arr, idx_key, ctx);
-            if (ctx.should_throw) return;
-            if (try v = ev) elem = v;
+        if (src_is_string_exotic && src_prim_str != null) {
+            // Serve char at index i from the underlying string.
+            char[] data = src_prim_str.get_data();
+            usz byte_start = 0; usz byte_end = src_prim_str.blen; usz ch_idx = 0;
+            for (usz bi = 0; bi < src_prim_str.blen && ch_idx <= (usz)i; bi++) {
+                if (ch_idx == (usz)i) { byte_start = bi; }
+                if ((data[bi] & 0xC0) != 0x80) { ch_idx++; }
+                if (ch_idx > (usz)i) { byte_end = bi + 1; break; }
+            }
+            if (byte_start < byte_end) {
+                usz copy_len = byte_end - byte_start;
+                char[8] one;
+                if (copy_len >= one.len) copy_len = one.len - 1;
+                for (usz j = 0; j < copy_len; j++) { one[j] = data[byte_start + j]; }
+                HString*? ch_raw = builtin_intern_string(heap, one[:copy_len]);
+                if (try ch = ch_raw) { elem.set_string(ch); }
+            }
+        } else {
+            HString* idx_key = heap.int_to_hstring((long)i);
+            if (idx_key != null) {
+                TVal? ev = builtins_generic_get(src_arr, idx_key, ctx);
+                if (ctx.should_throw) return;
+                if (try v = ev) elem = v;
+            }
         }
         // Convert first; then re-check detach.
         double d = ta_val_to_number(&elem, ctx);
@@ -1180,12 +1220,15 @@ fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
         char* src_data = (*src_buf.extra_ptr()).ab.data + byte_off + (k << shift);
         char* dst_data = (*result_buf.extra_ptr()).ab.data + result_byte_off;
 
-        if (result_cls == cls) {
-            // Same element type: bulk copy.
+        uint result_shift = ta_elem_shift(result_cls);
+        if (result_cls == cls && result_buf != src_buf) {
+            // Same element type, disjoint buffers: bulk copy is safe.
             libc::memcpy(dst_data, src_data, (usz)(count << shift));
         } else {
-            // Different element types: element-by-element conversion.
-            uint result_shift = ta_elem_shift(result_cls);
+            // Either different types, or same buffer (shared between src and result
+            // via species constructor): element-by-element copy per spec step 14g.
+            // For same-buffer cases the spec requires reading each src element before
+            // writing to dst (which may overlap), so element-by-element is required.
             for (uint i = 0; i < count; i++) {
                 TVal v = ta_load_element(src_data, cls, i);
                 char* dp = dst_data + (i << result_shift);

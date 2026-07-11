@@ -3037,13 +3037,25 @@ fn HObject* arr_to_object(TVal val, Heap* heap) {
         }
         return null;
     }
-    // String → String wrapper with indexed properties
+    // String or Symbol → respective wrapper object.
+    // Symbol primitives share the is_string() TVal tag; distinguish via is_symbol().
     if (val.is_string()) {
+        HString* prim_str = (HString*)val.get_heapptr();
+        if (prim_str != null && prim_str.is_symbol()) {
+            // Symbol → Symbol wrapper (no exotic properties; no length).
+            HObject*? sym_raw = heap.alloc_object(hobject::ObjClass.SYMBOL);
+            if (try sym_obj = sym_raw) {
+                sym_obj.prototype = heap.symbol_proto;
+                (*sym_obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
+                return sym_obj;
+            }
+            return null;
+        }
+        // Regular string → String wrapper with indexed properties.
         HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.STRING);
         if (try obj = obj_raw) {
             obj.flags.exotic_stringobj = true;
             obj.prototype = heap.string_proto;
-            HString* prim_str = (HString*)val.get_heapptr();
             (*obj.extra_ptr()).prim.primitive_value.set_string(prim_str);
             HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
             TVal len_tv;
