@@ -211,52 +211,14 @@ fn void builtin_object(BuiltinContext* ctx) {
     ctx.result.set_object(obj);
 }
 
-/// Object.keys(obj) — ES5 §15.2.3.14
-/// Returns an array of an object's own enumerable property names.
-fn void builtin_object_keys(BuiltinContext* ctx) {
-    if (ctx.argc < 1) {
-        ctx.result.set_undefined();
-        return;
-    }
-    TVal arg = ctx.regs[ctx.base_reg];
-    // ES5 §15.2.3.14 / ES2015 §19.1.2.16: throw TypeError for null/undefined,
-    // use ToObject wrapper for primitives
-    if (arg.is_null() || arg.is_undefined()) {
-        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.keys called on non-object");
-        return;
-    }
-    HObject* obj;
-    if (arg.is_object()) {
-        obj = (HObject*)arg.get_heapptr();
-    } else {
-        // ToObject wrapper for primitives
-        if (!builtin_to_object(ctx, arg)) {
-            ctx.result.set_undefined();
-            return;
-        }
-        obj = (HObject*)ctx.result.get_heapptr();
-    }
-    // Allocate result array
-    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-    if (catch err = arr_raw) {
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* arr = arr_raw;
-    arr.prototype = ctx.heap.array_proto;
-    uint idx = 0;
-
-    // Collect keys into a temporary buffer, then write them into the result
-    // array as named properties (using put_prop with string index keys) so
-    // that hasOwnProperty("0"), getOwnPropertyDescriptor("0"), and
-    // for-in + result[stringKey] all work correctly on the result array.
-
-    // Maximum number of keys we'll collect
-    uint max_keys = obj.prop_count + obj.array_size + 32;
-    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
-    if (key_buf == null) { ctx.result.set_undefined(); return; }
+/// Collects an object's own enumerable String-keyed property names into
+/// `key_buf` in spec order (EnumerableOwnPropertyNames / OrdinaryOwnPropertyKeys):
+/// integer indices ascending, then String keys in insertion order.  Symbol keys
+/// are excluded.  Returns the number of keys written.  `key_buf` must have room
+/// for at least `obj.prop_count + obj.array_size + string_char_length` entries.
+/// Shared by Object.keys/values/entries so their orderings stay identical.
+fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString** key_buf) {
     uint key_count = 0;
-    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
     // STRING exotic: integer indices [0, clen) are enumerable own properties
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
@@ -264,7 +226,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         if (prim != null) {
             for (uint i = 0; i < prim.char_length(); i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
-                if (k == null) { ctx.result.set_undefined(); return; }
+                if (k == null) return key_count;
                 key_buf[key_count++] = k;
             }
         }
@@ -320,7 +282,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
-            if (key.is_symbol()) continue;  // Object.keys returns only String keys
+            if (key.is_symbol()) continue;  // only String keys
             if (key.is_arridx()) continue;
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             if (obj.flags.exotic_array && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
@@ -335,10 +297,59 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
                 if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
             }
             HString* key = ctx.heap.int_to_hstring((long)i);
-            if (key == null) { ctx.result.set_undefined(); return; }
+            if (key == null) return key_count;
             key_buf[key_count++] = key;
         }
     }
+    return key_count;
+}
+
+/// Object.keys(obj) — ES5 §15.2.3.14
+/// Returns an array of an object's own enumerable property names.
+fn void builtin_object_keys(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal arg = ctx.regs[ctx.base_reg];
+    // ES5 §15.2.3.14 / ES2015 §19.1.2.16: throw TypeError for null/undefined,
+    // use ToObject wrapper for primitives
+    if (arg.is_null() || arg.is_undefined()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.keys called on non-object");
+        return;
+    }
+    HObject* obj;
+    if (arg.is_object()) {
+        obj = (HObject*)arg.get_heapptr();
+    } else {
+        // ToObject wrapper for primitives
+        if (!builtin_to_object(ctx, arg)) {
+            ctx.result.set_undefined();
+            return;
+        }
+        obj = (HObject*)ctx.result.get_heapptr();
+    }
+    // Allocate result array
+    HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* arr = arr_raw;
+    arr.prototype = ctx.heap.array_proto;
+    uint idx = 0;
+
+    // Collect keys into a temporary buffer, then write them into the result
+    // array as named properties (using put_prop with string index keys) so
+    // that hasOwnProperty("0"), getOwnPropertyDescriptor("0"), and
+    // for-in + result[stringKey] all work correctly on the result array.
+
+    // Maximum number of keys we'll collect
+    uint max_keys = obj.prop_count + obj.array_size + 32;
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
 
     // Write collected keys into the result array as named properties.
     // Using put_prop with string index keys ensures hasOwnProperty("0"),
@@ -1334,6 +1345,27 @@ fn bool desc_get(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal*
     // PROP_DATA
     *out = res.data_val;
     return true;
+}
+
+/// [[Get]] for Object.values/entries enumeration: like desc_get, but also serves
+/// the lazily-materialised indexed character properties of a String exotic object
+/// (which don't live in the property table and so aren't found by desc_get).
+fn bool desc_get_enum(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal* out) {
+    if (obj.flags.exotic_stringobj && key.is_arridx()
+        && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        uint ci = key.array_index();
+        if (prim != null && ci < prim.char_length()) {
+            uint bstart = prim.char_offset_to_byte_offset(ci);
+            uint bend = prim.char_offset_to_byte_offset(ci + 1);
+            char[] data = prim.get_data();
+            HString*? ch = builtin_intern_string(ctx.heap, data[bstart:bend - bstart]);
+            if (try c = ch) { out.set_string(c); return true; }
+            out.set_undefined();
+            return true;
+        }
+    }
+    return desc_get(ctx, obj, key, out);
 }
 
 /// Perform `[[Set]]` of `key` = `val` on `obj` with Throw=true (Object.assign
@@ -2915,99 +2947,40 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // Count enumerable own properties
-    uint count = 0;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
-            && !((HString*)obj.prop_key_at(i)).is_symbol()) count++;
-    }
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) count++;
-    }
-    // STRING exotic: integer indices [0, char_length) are enumerable own
-    // properties served lazily via the exotic_stringobj flag.
-    uint stringobj_len = 0;
-    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
-        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        if (prim != null) stringobj_len = prim.char_length();
-        count += stringobj_len;
-    }
-    // Allocate result array
+    // Snapshot the ordered enumerable String keys first, then [[Get]] each — so
+    // getters that mutate the object mid-enumeration don't affect the key set
+    // (ES2017 §7.3.21 / §19.1.2.5).
+    uint max_keys = obj.prop_count + obj.array_size + 32;
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
     uint idx = 0;
-    // STRING exotic indices first (matches Object.keys ordering and matches
-    // the spec enumeration of indexed character properties).
-    if (stringobj_len > 0) {
-        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        char* data = prim.get_cstr();
-        for (uint i = 0; i < stringobj_len; i++) {
-            HString* key_s = ctx.heap.int_to_hstring((long)i);
-            if (key_s == null) continue;
-            // Build single-character string value.
-            char[2] ch_buf;
-            ch_buf[0] = data[i];
-            ch_buf[1] = 0;
-            HString* ch_hstr = builtin_intern_string(ctx.heap, ch_buf[:1]);
-            TVal ch_val; ch_val.set_string(ch_hstr);
-            // Append [key, value] pair
-            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-            if (catch err_ex = pair_raw) continue;
-            HObject* pair = pair_raw;
-            pair.prototype = ctx.heap.array_proto;
-            TVal key_tv; key_tv.set_string(key_s);
-            array_set_elem(pair, 0, key_tv, ctx.heap);
-            array_set_elem(pair, 1, ch_val, ctx.heap);
-            TVal len_tv; len_tv.set_fastint(2);
-            HString* len_key = builtin_intern_string(ctx.heap, "length");
-            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-            TVal pair_tv; pair_tv.set_object(pair);
-            array_set_elem(arr, idx, pair_tv, ctx.heap);
-            idx++;
+    for (uint i = 0; i < key_count; i++) {
+        HString* key = key_buf[i];
+        TVal val;
+        if (!desc_get_enum(ctx, obj, key, &val)) {
+            if (ctx.should_throw) { return; }
+            continue;
         }
-    }
-    // Named properties → [key, value] pairs
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
-            && !((HString*)obj.prop_key_at(i)).is_symbol()) {
-            HString* key = (HString*)obj.prop_key_at(i);
-            // Create pair array [key, value]
-            HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-            if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
-            HObject* pair = pair_raw;
-            pair.prototype = ctx.heap.array_proto;
-            TVal key_tv; key_tv.set_string(key);
-            array_set_elem(pair, 0, key_tv, ctx.heap);
-            array_set_elem(pair, 1, obj.prop_values()[i], ctx.heap);
-            TVal len_tv; len_tv.set_fastint(2);
-            HString* len_key = builtin_intern_string(ctx.heap, "length");
-            pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
-            TVal pair_tv; pair_tv.set_object(pair);
-            array_set_elem(arr, idx, pair_tv, ctx.heap);
-            idx++;
-        }
-    }
-    // Dense array indices → [key, value] pairs
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            HString* key_s = ctx.heap.int_to_hstring((long)i);
-            if (key_s == null) continue;
-            HObject*? pair_raw2 = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
-            if (catch err6 = pair_raw2) continue;
-            HObject* pair2 = pair_raw2;
-            pair2.prototype = ctx.heap.array_proto;
-            TVal key_tv2; key_tv2.set_string(key_s);
-            array_set_elem(pair2, 0, key_tv2, ctx.heap);
-            array_set_elem(pair2, 1, obj.array_part()[i], ctx.heap);
-            TVal len_tv2; len_tv2.set_fastint(2);
-            HString* len_key2 = builtin_intern_string(ctx.heap, "length");
-            pair2.put_prop(len_key2, len_tv2, hobject::PROP_FLAGS_WEC);
-            TVal pair_tv2; pair_tv2.set_object(pair2);
-            array_set_elem(arr, idx, pair_tv2, ctx.heap);
-            idx++;
-        }
+        HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err4 = pair_raw) { ctx.result.set_undefined(); return; }
+        HObject* pair = pair_raw;
+        pair.prototype = ctx.heap.array_proto;
+        TVal key_tv; key_tv.set_string(key);
+        array_set_elem(pair, 0, key_tv, ctx.heap);
+        array_set_elem(pair, 1, val, ctx.heap);
+        TVal len_tv; len_tv.set_fastint(2);
+        HString* len_key = builtin_intern_string(ctx.heap, "length");
+        pair.put_prop(len_key, len_tv, hobject::PROP_FLAGS_WEC);
+        TVal pair_tv; pair_tv.set_object(pair);
+        array_set_elem(arr, idx, pair_tv, ctx.heap);
+        idx++;
     }
     // Set .length on result array
     TVal rlen_tv; rlen_tv.set_fastint((long)idx);
@@ -3039,74 +3012,31 @@ fn void builtin_object_values(BuiltinContext* ctx) {
         if (!builtin_to_object(ctx, arg)) { ctx.result.set_undefined(); return; }
         obj = (HObject*)ctx.result.get_heapptr();
     }
-    // Count enumerable own properties
-    uint count = 0;
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) count++;
-    }
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) count++;
-    }
-    // String exotic: integer indices [0, char_length) are own enumerable
-    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
-        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        if (prim != null) count += prim.char_length();
-    }
-    // Allocate result array
+    // Snapshot the ordered enumerable String keys first (EnumerableOwnProperties
+    // step 3 gathers keys), then [[Get]] each — so getters that mutate the object
+    // during enumeration don't affect the key set (ES2017 §7.3.21 / §19.1.2.22).
+    uint max_keys = obj.prop_count + obj.array_size + 32;
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+    uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err3 = arr_raw) { ctx.result.set_undefined(); return; }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
     uint idx = 0;
-    // Named properties
-    for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null
-            && !((HString*)obj.prop_key_at(i)).is_symbol()) {
-            array_set_elem(arr, idx, obj.prop_values()[i], ctx.heap);
-            idx++;
+    for (uint i = 0; i < key_count; i++) {
+        TVal val;
+        if (!desc_get_enum(ctx, obj, key_buf[i], &val)) {
+            // Either the key was deleted by a prior getter (skip) or the getter
+            // threw (should_throw set by desc_get — propagate).
+            if (ctx.should_throw) { return; }
+            continue;
         }
+        array_set_elem(arr, idx, val, ctx.heap);
+        idx++;
     }
-    // Dense array indices
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            array_set_elem(arr, idx, obj.array_part()[i], ctx.heap);
-            idx++;
-        }
-    }
-    // String exotic: serve indexed character properties lazily
-    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
-        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        if (prim != null) {
-            usz blen = prim.blen;
-            char[] data = prim.get_data();
-            usz byte_pos = 0;
-            uint ch_idx = 0;
-            while (byte_pos < blen && ch_idx < prim.char_length()) {
-                usz char_start = byte_pos;
-                // Single-byte ASCII fast path: top 2 bits are 00, not 10.
-                if (byte_pos < blen && (data[byte_pos] & 0x80) == 0) {
-                    byte_pos++;
-                } else {
-                    // Multi-byte UTF-8: count continuation bytes (top 2 bits == 10).
-                    byte_pos++;  // skip the leading byte
-                    while (byte_pos < blen && (data[byte_pos] & 0xC0) == 0x80) { byte_pos++; }
-                }
-                char[8] one;
-                usz copy_len = byte_pos - char_start;
-                if (copy_len >= one.len) copy_len = one.len - 1;
-                for (usz j = 0; j < copy_len; j++) { one[j] = data[char_start + j]; }
-                one[copy_len] = 0;
-                HString*? ch_raw = builtin_intern_string(ctx.heap, one[:copy_len]);
-                if (try ch = ch_raw) {
-                    TVal ch_tv; ch_tv.set_string(ch);
-                    array_set_elem(arr, idx, ch_tv, ctx.heap);
-                    idx++;
-                }
-                ch_idx++;
-            }
-        }
-    }
-    // Set .length
     TVal rlen_tv; rlen_tv.set_fastint((long)idx);
     HString* rlen_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(rlen_key, rlen_tv, hobject::PROP_FLAGS_WEC);
