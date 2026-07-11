@@ -697,8 +697,17 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                             nf.configurable = true;
                             nf.is_accessor = false;
                             hobj.set_prop_flags((uint)idx, nf);
+                        } else {
+                            // Non-configurable: DefinePropertyOrThrow throws TypeError
+                            // (§14.3.9 MethodDefinitionEvaluation, §10.1.6.3 ValidateAndApplyPropertyDescriptor).
+                            HString* key_hstr = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                                "Cannot redefine non-configurable property '%s'", key_hstr.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            return (TVal){};
                         }
-                        // non-configurable: do nothing (silent)
                     } else {
                         hobj.put_prop(key, *rc, hobject::PROP_FLAGS_CLASS_METHOD);
                     }
