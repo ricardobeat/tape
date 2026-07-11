@@ -311,16 +311,15 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
         return;
     }
 
-    // Determine new this value, with ToObject boxing for primitives.
-    // ES5 §15.3.4.4 step 1: let thisArg be ToObject(thisArg).
-    // undefined/null → global object; primitives → wrapper object.
+    // Strict-only engine: thisArg is passed through unchanged (ES5 §15.3.4.4
+    // entry 1 applies only to sloppy callees — no global substitution, no
+    // primitive boxing; the callee's own ToObject coercion throws as needed).
     TVal new_this;
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
         new_this.set_undefined();
     }
-    new_this = fn_to_object_for_this(new_this, ctx.heap, ctx.global_env);
 
     // Number of remaining args after thisArg
     ushort remaining = (ctx.argc > 0) ? (ushort)(ctx.argc - 1) : 0;
@@ -437,13 +436,13 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
     // Get new this value, with ToObject boxing for primitives.
     // ES5 §15.3.4.3 step 1: let thisArg be ToObject(thisArg).
     // undefined/null → global object; primitives → wrapper object.
+    // Strict-only engine: thisArg passes through unchanged (see call above).
     TVal new_this;
     if (ctx.argc > 0) {
         new_this = builtin_arg(ctx, 0);
     } else {
         new_this.set_undefined();
     }
-    new_this = fn_to_object_for_this(new_this, ctx.heap, ctx.global_env);
 
     // If argArray is undefined or null, call with no args
     TVal arg_array;

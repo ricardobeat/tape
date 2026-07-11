@@ -290,6 +290,7 @@ fn bool CompilerContext.match_async_method_prefix(&self) {
     // lexer directly, still sees it (compiler-context pushbacks would be
     // invisible to the inner context).
     Token next_tok;
+    uint next_src_start = 0xFFFFFFFF;
     if (self.pushback_count > 0) {
         next_tok = self.pushback_stack[self.pushback_count - 1];
     } else {
@@ -299,6 +300,10 @@ fn bool CompilerContext.match_async_method_prefix(&self) {
             return false;
         }
         next_tok = peek_opt;
+        // The peek stored the element's source start — record it so the
+        // class compiler can retain source text that begins at the method
+        // (excluding `static`, per §14.6/§19.2.3.5 method source retention).
+        next_src_start = self.lexer.lookahead_token_start;
     }
     if (next_tok.line != cur.line) {
         // [no LineTerminator here] between `async` and the method name.
@@ -327,6 +332,7 @@ fn bool CompilerContext.match_async_method_prefix(&self) {
 /// Returns true and consumes the `static` token if it is a modifier;
 /// otherwise leaves the input untouched and returns false.
 fn bool CompilerContext.match_static_modifier(&self) {
+    self.static_elem_src_start = 0xFFFFFFFF;
     if (self.peek_type() != TokenType.STATIC) return false;
     Token? cur_opt = self.advance();
     if (catch _e = cur_opt) return false;
@@ -337,6 +343,7 @@ fn bool CompilerContext.match_static_modifier(&self) {
     // lexer directly, still sees it (compiler-context pushbacks would be
     // invisible to the inner context).
     Token next_tok;
+    uint next_src_start = 0xFFFFFFFF;
     if (self.pushback_count > 0) {
         next_tok = self.pushback_stack[self.pushback_count - 1];
     } else {
@@ -346,6 +353,10 @@ fn bool CompilerContext.match_static_modifier(&self) {
             return false;
         }
         next_tok = peek_opt;
+        // The peek stored the element's source start — record it so the
+        // class compiler can retain source text that begins at the method
+        // (excluding `static`, per §14.6/§19.2.3.5 method source retention).
+        next_src_start = self.lexer.lookahead_token_start;
     }
     if (next_tok.line != cur.line) {
         // [no LineTerminator here] between `static` and the method name.
@@ -420,6 +431,7 @@ fn bool CompilerContext.match_static_modifier(&self) {
         self.pushback(cur);
         return false;
     }
+    self.static_elem_src_start = next_src_start;
     return true;  // `static` stays consumed as modifier
 }
 

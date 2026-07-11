@@ -2242,6 +2242,30 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             }
             return (TVal){};
 
+        case Opcode.PUTPROP_SUPER: {
+            // super.x = v — [[Set]] on the super base with receiver = this.
+            if (!ra.is_object()) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot set property on non-object super base", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                return (TVal){};
+            }
+            void* skey = get_prop_key(vm, rb);
+            if (skey == null) { return (TVal){}; }
+            HObject* super_base = (HObject*)ra.get_heapptr();
+            bool sres;
+            if (!builtins::js_set_with_receiver(vm, vm.heap, super_base, (HString*)skey, *rc, ds.act.this_binding, &sres)) {
+                return vm_proxy_rethrow(vm, ds);
+            }
+            if (!sres) {
+                // Strict-only engine: failed [[Set]] throws.
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot assign to read only property", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+            }
+            return (TVal){};
+        }
+
         case Opcode.DELPROP: {
             // ES5 §11.4.1: delete operator
             // A = delete B[C], where B = object, C = property key

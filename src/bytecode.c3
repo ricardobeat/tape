@@ -371,6 +371,16 @@ enum Opcode : char {
     /// to object B (used for `extends` to set `Derived.prototype.__proto__`).
     /// ABC format: A=derived_obj_reg, B=proto_reg.
     SETPROTO,
+    /// `A = GetPrototypeOf(B)` — read the internal [[Prototype]] of object B
+    /// (routing through the Proxy [[GetPrototypeOf]] trap when B is a proxy).
+    /// Yields null for a null prototype and undefined for non-object B.
+    /// ABC format: A=dst_reg, B=obj_reg.
+    GETPROTO,
+    /// `A[B] = C` with receiver = the current `this` binding — the store form
+    /// of `super.x = v` (§13.15.2 SetSuperProperty): the property walk starts
+    /// at the super base (A) but accessor setters / new data properties land
+    /// on the receiver.  ABC format: A=super_base_reg, B=key_reg, C=val_reg.
+    PUTPROP_SUPER,
     /// `A = super(B, C..C+N)` — call superclass constructor.
     /// Uses the current activation's `new.target` as the new object's constructor.
     /// ABC format: A=result_reg, B=super_ctor_reg, C=arg_count.
@@ -576,6 +586,8 @@ case PUTLEX:     return A_BC;
         case CALL_S:     return ABC;
         case OBJSPRD:    return ABC;
         case SETPROTO:   return ABC;
+        case GETPROTO:   return ABC;
+        case PUTPROP_SUPER: return ABC;
         case SUPER_CALL: return ABC;
         case SUPER_CALL_S: return ABC;
         case NEWTARGET:  return ABC;

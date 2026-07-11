@@ -1184,6 +1184,28 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             return (TVal){};
         }
 
+        case Opcode.GETPROTO: {
+            // A = GetPrototypeOf(B) — proxy-aware prototype read for `super`
+            // in object-literal methods (HomeObject semantics).
+            if (!rb.is_object()) {
+                ra.set_undefined();
+                return (TVal){};
+            }
+            HObject* pobj = (HObject*)rb.get_heapptr();
+            if (pobj == null) { ra.set_undefined(); return (TVal){}; }
+            TVal proto_out;
+            if (!builtins::object_get_proto(vm, vm.heap, pobj, &proto_out)) {
+                TVal gp_err = vm.heap.error_value;
+                vm.heap.has_error = false;
+                if (!vm_throw_value(vm, gp_err, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &gp_err);
+                }
+                return (TVal){};
+            }
+            vm.heap.tval_copy_ref(ra, &proto_out);
+            return (TVal){};
+        }
+
         case Opcode.SUPER_CALL:
         case Opcode.SUPER_CALL_S: {
             // A = super(B, args...) — call superclass constructor

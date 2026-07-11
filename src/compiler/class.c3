@@ -255,6 +255,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // Save state for restoration after class body
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
+    bool saved_super_is_home = self.super_is_home_object;
+    self.super_is_home_object = false;
 
     self.in_class_body = true;
     self.has_super_binding = false;
@@ -317,8 +319,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // Capture source start for Function.prototype.toString (ES2019 §19.2.3.5).
         // Per spec, the class method's source text does NOT include the `static`
         // keyword — it starts at the method-kind prefix (`get`/`set`/`*`/`async`)
-        // or directly at the property name.
+        // or directly at the property name.  After a static modifier the lexer's
+        // token_start may already point past a pushed-back `get`/`set` token, so
+        // prefer the element start recorded by match_static_modifier.
         uint class_elem_src_start = self.lexer.token_start;
+        if (is_static && self.static_elem_src_start != 0xFFFFFFFF) {
+            class_elem_src_start = self.static_elem_src_start;
+        }
 
         // ES2015 §14.4: generator-method shorthand — `*m() { yield ... }`.
         // Save the generator + async flags; they are only overridden right
@@ -587,6 +594,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         ctor_inner_idx = self.add_inner_func(ctor_func);
     }
 
+    // Mark the constructor (explicit or default) as a class constructor:
+    // non-configurable .prototype (§14.5.14 step 25) and TypeError when
+    // called without `new` (§10.2.1 step 2).
+    if (ctor_inner_idx < self.inner_func_count) {
+        self.inner_funcs[ctor_inner_idx].flags.is_class_ctor = true;
+    }
+
     // Retain the entire class source text on the constructor function so that
     // Function.prototype.toString returns the full `class ... { }` text when
     // called on the class (ES2019 §19.2.3.5 / §14.6.3 ClassDefinitionEvaluation).
@@ -685,6 +699,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // Restore class body state
     self.in_class_body = saved_in_class_body;
     self.has_super_binding = saved_has_super;
+    self.super_is_home_object = saved_super_is_home;
 
     return ctor_reg;
 }

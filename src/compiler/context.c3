@@ -242,6 +242,9 @@ struct CompilerContext {
     bool last_was_member;
     ushort last_member_obj_reg;
     ushort last_member_prop_reg;
+    /// True when the recorded member expression is a `super.x` / `super[x]`
+    /// reference — its store form must use PUTPROP_SUPER (receiver = this).
+    bool last_member_is_super;
 
     /// Set when the current expression used optional chaining (?.).
     /// Results of optional chains are never valid assignment targets.
@@ -286,6 +289,14 @@ struct CompilerContext {
     // Class-related tracking
     bool is_constructable;      // true when compiling a class constructor
     bool in_class_body;         // true when parsing a class body (enables super)
+    /// True when the current `__super__` binding holds the HomeObject itself
+    /// (object-literal methods) rather than a superclass constructor (class
+    /// bodies).  Selects GETPROTO- vs .prototype-based `super.x` emission.
+    bool super_is_home_object;
+    /// Source offset of the class element following a consumed `static`
+    /// modifier (0xFFFFFFFF when unknown). Set by match_static_modifier so the
+    /// class compiler can retain method source text that excludes `static`.
+    uint static_elem_src_start;
     bool has_super_binding;     // true when class has extends (super() available)
 
     // Generator tracking
@@ -1315,10 +1326,11 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.num_regs = self.max_reg;
     func.flags.has_rest = self.has_rest;
     func.flags.is_constructable = self.is_constructable;
-    // Class constructors get non-configurable .prototype per ES2015 §14.5.14.
-    // in_class_body is set while parsing the class body (which contains the
-    // constructor method) and is_constructable is set for that method.
-    func.flags.is_class_ctor = self.is_constructable && self.in_class_body;
+    // is_class_ctor is NOT derived here: ordinary function expressions nested
+    // inside class methods also compile with in_class_body set (for super),
+    // so any heuristic on compiler state over-matches.  The class compiler
+    // stamps the flag directly on the constructor's CompiledFunction
+    // (make_default_constructor and the explicit-ctor path in class.c3).
     func.flags.is_generator = self.is_generator;
     func.flags.is_async = self.is_async;
     func.flags.is_arrow = self.is_arrow;

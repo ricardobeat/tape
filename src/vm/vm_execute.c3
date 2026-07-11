@@ -1965,6 +1965,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.GETPROPC:
         case Opcode.GETPROPC2:
         case Opcode.PUTPROP:
+        case Opcode.PUTPROP_SUPER:
         case Opcode.DELPROP:
             if (catch err = dispatch_property(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
@@ -1985,6 +1986,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.CALL_S:
         case Opcode.CALL_PROP:
         case Opcode.SETPROTO:
+        case Opcode.GETPROTO:
         case Opcode.SUPER_CALL:
         case Opcode.SUPER_CALL_S:
         case Opcode.NEWTARGET:

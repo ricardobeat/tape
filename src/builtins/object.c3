@@ -4111,7 +4111,12 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
                 if (!proxy_ctx_ok(ctx)) return;
                 return;
             }
-            if (is_arr) class_name = "Array";
+            if (is_arr) {
+                class_name = "Array";
+            } else if (obj.is_callable()) {
+                // §20.1.3.6 step 6: callable → builtinTag "Function".
+                class_name = "Function";
+            }
             // Fall through to @@toStringTag lookup below.
         } else {
         switch (obj.get_class()) {

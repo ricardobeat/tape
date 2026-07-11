@@ -226,6 +226,8 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     bool lhs_was_member = self.last_was_member;
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
+    // super.x stores go through PUTPROP_SUPER (receiver = this, §13.15.2).
+    Opcode member_store_op = self.last_member_is_super ? Opcode.PUTPROP_SUPER : Opcode.PUTPROP;
 
     // Peek for a literal-1 RHS: `<var> -= 1` → DEC.
     // The `+= 1` optimization (INC) was removed because it bypasses ADD's
@@ -271,7 +273,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
             ushort right = self.assignment_expr()!;
             if (lhs_was_member) {
-                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
                 self.free_reg(lhs_member_prop);
                 self.free_reg(lhs_member_obj);
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
@@ -291,7 +293,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
             ushort right = self.assignment_expr()!;
             if (lhs_was_member) {
-                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
                 self.free_reg(lhs_member_prop);
                 self.free_reg(lhs_member_obj);
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
@@ -325,7 +327,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             // Nullish — evaluate RHS and assign
             ushort right = self.assignment_expr()!;
             if (lhs_was_member) {
-                self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+                self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
                 self.free_reg(lhs_member_prop);
                 self.free_reg(lhs_member_obj);
                 self.emit_abc(Opcode.LDREG, (uint)la_result, (uint)right, 0);
@@ -361,7 +363,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     if (is_assign) {
         if (lhs_was_member) {
             // Member expression assignment: obj.prop = right
-            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
+            self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
             self.free_reg(lhs_member_prop);
             self.free_reg(lhs_member_obj);
             self.free_reg(right);
@@ -413,7 +415,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         // precedence over any stale `lhs_was_getvar` from an inner
         // identifier resolution (e.g. `globalC[0] += 5`).
         if (lhs_was_member) {
-            self.emit_abc(Opcode.PUTPROP, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)left);
+            self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)left);
             self.free_reg(lhs_member_prop);
             self.free_reg(lhs_member_obj);
         } else if (lhs_was_getvar) {
@@ -1613,6 +1615,7 @@ fn ushort? CompilerContext.new_expr(&self) {
                 // Keep obj (ctor_reg) and prop_reg alive; assignment_expr frees
                 // them after emitting the store (mirrors member_expr's lhs path).
                 self.last_was_member = true;
+            self.last_member_is_super = false;
                 self.last_member_obj_reg = ctor_reg;
                 self.last_member_prop_reg = prop_reg;
                 self.call_prop_obj_reg = ctor_reg;
@@ -1637,6 +1640,7 @@ fn ushort? CompilerContext.new_expr(&self) {
                 ctor_reg = self.emit_call(ctor_reg)!;
             } else {
                 self.last_was_member = true;
+            self.last_member_is_super = false;
                 self.last_member_obj_reg = ctor_reg;
                 self.last_member_prop_reg = idx_reg;
                 self.call_prop_obj_reg = ctor_reg;
@@ -1694,6 +1698,7 @@ fn ushort? CompilerContext.member_expr(&self) {
             // the result register sits on top of the stack and free_reg is a
             // no-op for registers below the top.
             self.last_was_member = true;
+            self.last_member_is_super = false;
             self.last_member_obj_reg = obj;
             self.last_member_prop_reg = prop_reg;
 
@@ -1756,6 +1761,7 @@ fn ushort? CompilerContext.member_expr(&self) {
 
             // See DOT branch above for why we always track the member.
             self.last_was_member = true;
+            self.last_member_is_super = false;
             self.last_member_obj_reg = obj;
             self.last_member_prop_reg = idx_reg;
 
@@ -2394,36 +2400,51 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 ushort super_ctor_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
 
-                // Get super.prototype
-                uint proto_name_idx = self.add_string_constant("prototype");
-                ushort proto_key_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
-                ushort super_proto_reg = self.alloc_reg();
-                self.emit_abc(Opcode.GETPROP, (uint)super_proto_reg, (uint)super_ctor_reg, (uint)proto_key_reg);
-                self.free_reg(proto_key_reg);
-                self.free_reg(super_ctor_reg);
+                ushort super_proto_reg;
+                if (self.super_is_home_object) {
+                    // Object-literal method: __super__ holds the HomeObject —
+                    // super base = GetPrototypeOf(homeObject), read at call time.
+                    super_proto_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
+                    self.free_reg(super_ctor_reg);
+                } else {
+                    // Class method: __super__ holds the superclass constructor —
+                    // super base = superclass.prototype.
+                    uint proto_name_idx = self.add_string_constant("prototype");
+                    ushort proto_key_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)proto_key_reg, proto_name_idx));
+                    super_proto_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.GETPROP, (uint)super_proto_reg, (uint)super_ctor_reg, (uint)proto_key_reg);
+                    self.free_reg(proto_key_reg);
+                    self.free_reg(super_ctor_reg);
+                }
 
-                // Now parse the property access
+                // Now parse the property access.  Record the member info so an
+                // enclosing assignment can store through PUTPROP_SUPER; the
+                // base/key registers stay live and are freed by the shared
+                // member-expression cleanup (or the assignment emitter).
                 ushort result;
+                ushort super_key_reg;
                 if (self.match(TokenType.DOT)) {
                     char[] prop_str = self.read_property_name()!;
                     uint prop_idx = self.add_string_constant(prop_str);
-                    ushort prop_key_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_key_reg, prop_idx));
+                    super_key_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)super_key_reg, prop_idx));
                     result = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)prop_key_reg);
-                    self.free_reg(prop_key_reg);
+                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
                 } else {
                     // super[expr]
                     self.advance()!;  // consume '['
-                    ushort key_reg = self.expression()!;
+                    super_key_reg = self.expression()!;
                     self.expect(TokenType.RBRACKET)!;
                     result = self.alloc_reg();
-                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)key_reg);
-                    self.free_reg(key_reg);
+                    self.emit_abc(Opcode.GETPROP, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
                 }
 
-                self.free_reg(super_proto_reg);
+                self.last_was_member = true;
+                self.last_member_obj_reg = super_proto_reg;
+                self.last_member_prop_reg = super_key_reg;
+                self.last_member_is_super = true;
 
                 // For super method calls (super.m() / super[s]()), the this-binding
                 // must be the current instance, not the prototype. Emit LDTHIS into a
@@ -2578,25 +2599,22 @@ fn ushort? CompilerContext.literal_keyword(&self) {
 fn ushort? CompilerContext.object_literal(&self) {
     self.expect(TokenType.LBRACE)!;
 
-    // ES2015 §14.2.19: super.x in object literal methods resolves to
-    // Object.getPrototypeOf(homeObject).x — i.e. Object.prototype.x.
-    // We enable super access by declaring __super__ = Object in the
-    // enclosing scope before any method bodies are compiled.
+    // ES2015 §14.3.9: super.x in object literal methods resolves to
+    // GetPrototypeOf(homeObject).x at call time.  Bind __super__ to the
+    // literal object itself (the HomeObject); super.x emission then reads
+    // the prototype dynamically via GETPROTO (see super_is_home_object),
+    // so a later Object.setPrototypeOf on the literal is observed.
     bool saved_has_super = self.has_super_binding;
+    bool saved_super_is_home = self.super_is_home_object;
     self.has_super_binding = true;
-
-    char[] super_name = "__super__";
-    ushort super_reg = self.declare_var(super_name, LET);
-    uint super_name_idx = self.add_string_constant(super_name);
-    // Load global Object constructor into super_reg
-    ushort obj_ctor_reg = self.alloc_reg();
-    self.emit_a_bc(Opcode.GETVAR, (uint)obj_ctor_reg, self.add_string_constant("Object"));
-    self.emit_abc(Opcode.LDREG, (uint)super_reg, (uint)obj_ctor_reg, 0);
-    self.free_reg(obj_ctor_reg);
-    self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
+    self.super_is_home_object = true;
 
     ushort obj_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWOBJ, (uint)obj_reg, 0, 0);
+    // The __super__ binding costs a register, so it is created lazily on the
+    // first concise method / accessor — plain data literals skip it entirely
+    // (large array-of-literal initialisers would otherwise exhaust registers).
+    bool super_bound = false;
 
     if (!self.check(TokenType.RBRACE)) {
         for (;;) {
@@ -2740,6 +2758,13 @@ fn ushort? CompilerContext.object_literal(&self) {
                     // not inherit the enclosing function's kind.
                     self.is_generator = false;
                     self.is_async = false;
+                    if (!super_bound) {
+                        ushort sup_reg = self.declare_var("__super__", LET);
+                        uint sup_name_idx = self.add_string_constant("__super__");
+                        self.emit_abc(Opcode.LDREG, (uint)sup_reg, (uint)obj_reg, 0);
+                        self.emit_a_bc(Opcode.PUTLEX, (uint)sup_reg, sup_name_idx);
+                        super_bound = true;
+                    }
                     ushort accessor_reg = self.function_expr_body(key_src_start)!;
                     if (is_obj_getter) {
                         self.emit_abc(Opcode.INITGET, (uint)obj_reg, (uint)key_reg, (uint)accessor_reg);
@@ -2832,6 +2857,13 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.is_async = is_async_method;
                 // Pass key_src_start so the retained source span starts at the
                 // key token (or `*`, or first computed-key bracket).
+                if (!super_bound) {
+                    ushort sup_reg = self.declare_var("__super__", LET);
+                    uint sup_name_idx = self.add_string_constant("__super__");
+                    self.emit_abc(Opcode.LDREG, (uint)sup_reg, (uint)obj_reg, 0);
+                    self.emit_a_bc(Opcode.PUTLEX, (uint)sup_reg, sup_name_idx);
+                    super_bound = true;
+                }
                 ushort method_reg = self.function_expr_body(key_src_start)!;
                 self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
@@ -2877,6 +2909,7 @@ fn ushort? CompilerContext.object_literal(&self) {
 
     self.expect(TokenType.RBRACE)!;
     self.has_super_binding = saved_has_super;
+    self.super_is_home_object = saved_super_is_home;
     return obj_reg;
 }
 

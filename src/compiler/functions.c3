@@ -2073,6 +2073,7 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     // Propagate class context (for super expressions)
     def_ctx.in_class_body = self.in_class_body;
     def_ctx.has_super_binding = self.has_super_binding;
+    def_ctx.super_is_home_object = self.super_is_home_object;
 
     // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
     // anonymous function/arrow/class/generator expression, the resulting
@@ -2125,6 +2126,7 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
     key_ctx.lexer.set_strict(true);
     key_ctx.in_class_body = self.in_class_body;
     key_ctx.has_super_binding = self.has_super_binding;
+    key_ctx.super_is_home_object = self.super_is_home_object;
 
     key_ctx.emit_simple(Opcode.PUSH_LEX);
     ushort expr_reg = key_ctx.assignment_expr()!;
@@ -2164,6 +2166,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Propagate class context (for super expressions)
     inner_ctx.in_class_body = self.in_class_body;
     inner_ctx.has_super_binding = self.has_super_binding;
+    inner_ctx.super_is_home_object = self.super_is_home_object;
     // Propagate constructable flag: super() only valid in constructors
     inner_ctx.is_constructable = self.is_constructable;
 
@@ -2754,6 +2757,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     // Propagate class context (for super expressions)
     arrow_ctx.in_class_body = self.in_class_body;
     arrow_ctx.has_super_binding = self.has_super_binding;
+    arrow_ctx.super_is_home_object = self.super_is_home_object;
 
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
@@ -3195,6 +3199,7 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Propagate class context (for super expressions)
     arrow_ctx.in_class_body = self.in_class_body;
     arrow_ctx.has_super_binding = self.has_super_binding;
+    arrow_ctx.super_is_home_object = self.super_is_home_object;
 
     // Register parameters
     ushort formal_count = param_count;
