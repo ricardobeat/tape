@@ -336,6 +336,14 @@ struct CompilerContext {
     // GETVAR, so the register-locals env-elision must not fire.
     bool has_captured_local;
 
+    // When true, function_declaration() stores its binding via PUTLEX into
+    // the current (innermost) lex_env instead of DECLVAR into var_env. Set
+    // around compiling a switch CaseBlock's case/default statements so a
+    // function/generator/async-function declared directly in a clause is
+    // scoped to the switch (ES2015 §14.12 BlockDeclarationInstantiation)
+    // rather than leaking to the enclosing function/global scope.
+    bool force_lexical_fn_decl;
+
     // --- Capture pre-scan (plan 045) ---
     // Names referenced inside nested callable bodies, collected by
     // pre_scan_captures before the body compiles; declare_var marks matching

@@ -376,6 +376,170 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
     return count;
 }
 
+/// Pre-scan tokens in the current switch CaseBlock to find all lexically
+/// scoped declarations directly inside case/default clauses: `let`/`const`
+/// bindings, `class` declarations, and (non-strict-hoisted) `function`/
+/// `function*`/`async function` declarations at the top level of the
+/// CaseBlock (brace depth 0, excluding nested blocks).
+///
+/// ES2015 §14.12 CaseBlock has its own lexical scope (BlockDeclarationInstantiation),
+/// so all of these names must be TDZ-initialized/scoped to the switch, exactly
+/// like block()'s treatment of let/const — this just widens the name set to
+/// match everything CaseBlockEvaluation's BlockDeclarationInstantiation collects.
+///
+/// Saves and restores the lexer state so normal parsing can proceed afterwards.
+/// Returns the number of names found (0 to MAX_PRESCAN_NAMES).
+fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, uint capacity) {
+    // --- Save lexer state ---
+    uint saved_pos    = self.lexer.pos;
+    uint saved_line   = self.lexer.line;
+    uint saved_col    = self.lexer.col;
+    Token saved_cur   = self.lexer.current;
+    Token saved_look  = self.lexer.lookahead;
+    bool  saved_haslk = self.lexer.has_lookahead;
+    Token saved_push  = self.lexer.pushed_back;
+    bool  saved_haspb = self.lexer.has_pushed_back;
+    bool  saved_slt   = self.lexer.seen_line_term;
+
+    char* source_base = &self.lexer.source[0];
+
+    uint     count       = 0;
+    uint     brace_depth = 0;
+
+    while (count < capacity) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) {
+            break;
+        }
+        Token tok = tok_opt;
+        TokenType tt = tok.type;
+
+        if (tt == TokenType.EOF_TOKEN) {
+            break;
+        }
+
+        if (tt == TokenType.LBRACE) {
+            brace_depth++;
+            continue;
+        }
+
+        if (tt == TokenType.RBRACE) {
+            if (brace_depth == 0) {
+                break;   // end of the CaseBlock we are scanning
+            }
+            brace_depth--;
+            continue;
+        }
+
+        if (brace_depth != 0) {
+            continue;
+        }
+
+        // let/const: collect one or more comma-separated identifier names.
+        if (tt == TokenType.LET || tt == TokenType.CONST) {
+            for (;;) {
+                Token? name_opt = self.lexer.next_token();
+                if (catch _err2 = name_opt) {
+                    break;
+                }
+                Token name_tok = name_opt;
+                if (name_tok.type != TokenType.IDENTIFIER) {
+                    break;
+                }
+                if (count < capacity) {
+                    spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                    spans[count].len = (uint)name_tok.str_value.len;
+                    count++;
+                }
+                Token? sep_opt = self.lexer.next_token();
+                if (catch _err3 = sep_opt) {
+                    break;
+                }
+                Token sep = sep_opt;
+                if (sep.type != TokenType.COMMA) {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // class Name { ... } — collect the binding name.
+        if (tt == TokenType.CLASS) {
+            Token? name_opt = self.lexer.next_token();
+            if (catch _err4 = name_opt) {
+                break;
+            }
+            Token name_tok = name_opt;
+            if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
+                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                spans[count].len = (uint)name_tok.str_value.len;
+                count++;
+            }
+            continue;
+        }
+
+        // async function [*] Name (...) { ... } — only when "async" is
+        // immediately followed by "function" (contextual keyword check).
+        if (tt == TokenType.IDENTIFIER &&
+            tok.str_value.len == 5 &&
+            tok.str_value[0] == 'a' && tok.str_value[1] == 's' &&
+            tok.str_value[2] == 'y' && tok.str_value[3] == 'n' &&
+            tok.str_value[4] == 'c') {
+            Token? peek_opt = self.lexer.next_token();
+            if (catch _err5 = peek_opt) {
+                break;
+            }
+            Token peek_tok = peek_opt;
+            if (peek_tok.type != TokenType.FUNCTION) {
+                // Not `async function` — this identifier is a plain expression
+                // token; nothing further to do here (statement parsing handles it).
+                continue;
+            }
+            // Fall through to the FUNCTION handling below via tok=peek_tok.
+            tt = TokenType.FUNCTION;
+        } else if (tt != TokenType.FUNCTION) {
+            continue;
+        }
+
+        // function [*] Name (...) { ... } — collect the binding name.
+        {
+            Token? star_opt = self.lexer.next_token();
+            if (catch _err6 = star_opt) {
+                break;
+            }
+            Token star_tok = star_opt;
+            Token name_tok;
+            if (star_tok.type == TokenType.STAR) {
+                Token? name_opt = self.lexer.next_token();
+                if (catch _err7 = name_opt) {
+                    break;
+                }
+                name_tok = name_opt;
+            } else {
+                name_tok = star_tok;
+            }
+            if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
+                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                spans[count].len = (uint)name_tok.str_value.len;
+                count++;
+            }
+        }
+    }
+
+    // --- Restore lexer state ---
+    self.lexer.pos             = saved_pos;
+    self.lexer.line            = saved_line;
+    self.lexer.col             = saved_col;
+    self.lexer.current         = saved_cur;
+    self.lexer.lookahead       = saved_look;
+    self.lexer.has_lookahead   = saved_haslk;
+    self.lexer.pushed_back     = saved_push;
+    self.lexer.has_pushed_back = saved_haspb;
+    self.lexer.seen_line_term  = saved_slt;
+
+    return count;
+}
+
 /// Parse a block: { statement* }
 /// If `check_directives` is true, checks for "use strict" directive prologue at the start.
 fn void? CompilerContext.block(&self, bool check_directives) {
@@ -2776,8 +2940,53 @@ fn void? CompilerContext.switch_statement(&self) {
     self.expect(TokenType.LBRACE)!;
 
     // Push a "loop" for break handling (break in switch exits the switch)
-    // is_loop=false so continue skips this entry.
+    // is_loop=false so continue skips this entry. This captures
+    // cur_lex_depth BEFORE the CaseBlock's own lexical scope below, so a
+    // `break` correctly POP_LEXes past the CaseBlock scope on its way out.
     self.push_loop(self.code_count, false);
+
+    // ES2015 §14.12 / §13.12.9: CaseBlockEvaluation runs against a fresh
+    // lexical environment (blockEnv) produced by BlockDeclarationInstantiation
+    // over the CaseBlock — let/const/class/hoisted-function declarations made
+    // directly in any case/default clause are scoped to the switch and must
+    // not leak into the enclosing scope. This mirrors block()'s handling of
+    // `{ ... }` blocks exactly, just with a wider pre-scan (block() only
+    // needs let/const because class/function declarations there are already
+    // handled by their own scoping — switch's CaseBlock is the one place
+    // those additionally need confining).
+    uint saved_switch_scope_depth = self.scope_depth;
+    self.push_scope_marker();
+
+    NameSpan[MAX_PRESCAN_NAMES] switch_lex_spans;
+    uint num_switch_lex = self.pre_scan_switch_lexical_decls(&switch_lex_spans, MAX_PRESCAN_NAMES);
+
+    bool switch_has_lex = num_switch_lex > 0;
+    if (switch_has_lex) {
+        self.emit_simple(Opcode.PUSH_LEX);
+        self.cur_lex_depth++;
+    }
+
+    // TDZ-initialize every lexical declaration found by the pre-scan, exactly
+    // like block()'s INITTZ pass, so accessing any of these names before their
+    // declaration (or from outside the switch after it ends) throws a
+    // ReferenceError instead of resolving to an outer binding.
+    for (uint i = 0; i < num_switch_lex; i++) {
+        char[] name = self.lexer.source[switch_lex_spans[i].pos..switch_lex_spans[i].pos + switch_lex_spans[i].len - 1];
+        uint name_idx = self.add_string_constant(name);
+        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+
+        // Mark any outer scope_stack entry with the same name as captured so
+        // the compiler emits GETVAR instead of LDREG for it — without this, a
+        // register-cached outer value would bypass the TDZ sentinel we just
+        // installed in the new lex_env.
+        for (uint j = 0; j < saved_switch_scope_depth; j++) {
+            if (str_eq(self.scope_stack[j].name, name)) {
+                self.scope_stack[j].is_captured = true;
+                self.has_captured_local = true;
+                break;
+            }
+        }
+    }
 
     // ES6 §13.12.9: CaseBlockEvaluation's initial value is V=undefined.
     // In eval mode, reset eval_acc_reg so a switch with no matching case
@@ -2794,6 +3003,15 @@ fn void? CompilerContext.switch_statement(&self) {
     bool has_default = false;
     uint default_body_idx = 0;
     bool default_not_last = false;
+
+    // While compiling case/default bodies, function/generator/async-function
+    // declarations found by the pre-scan above must bind into the switch's
+    // own lex_env (PUTLEX) rather than the enclosing var_env (DECLVAR) — see
+    // force_lexical_fn_decl's doc comment.
+    bool saved_force_lexical_fn_decl = self.force_lexical_fn_decl;
+    if (switch_has_lex) {
+        self.force_lexical_fn_decl = true;
+    }
 
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         if (self.match(TokenType.CASE)) {
@@ -2875,6 +3093,8 @@ fn void? CompilerContext.switch_statement(&self) {
         }
     }
 
+    self.force_lexical_fn_decl = saved_force_lexical_fn_decl;
+
     self.expect(TokenType.RBRACE)!;
 
     // If default is not last, emit a redirect for the 'no match' path at the
@@ -2886,10 +3106,31 @@ fn void? CompilerContext.switch_statement(&self) {
         // break jumps will be patched past this redirect by pop_loop
     }
 
-    // Patch break jumps to end of switch (after redirect if any)
+    // Pop the CaseBlock's lexical scope, removing any let/const/class/function
+    // bindings declared directly in a case/default clause. This must sit at
+    // the address every "falls off the end" control-flow path converges on —
+    // the last body's fall-through jump AND the "no match, no default" path
+    // both target end_addr, so end_addr must point AT this POP_LEX (not past
+    // it) or those paths would skip it entirely and leak the binding.
+    // `break` unwinds past this scope separately via push_loop's
+    // saved_lex_depth (see push_loop above), then jumps to end_addr itself —
+    // executing this POP_LEX again would be wrong, so pop_loop's break jumps
+    // are patched to AFTER this POP_LEX instead (see below).
+    uint pop_lex_addr = self.code_count;
+    if (switch_has_lex) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+    self.pop_scope_to(saved_switch_scope_depth);
+
+    uint after_pop_lex_addr = self.code_count;
+
+    // Patch break jumps to just after the POP_LEX (break already unwound the
+    // CaseBlock's lex scope itself before jumping, so it must not execute
+    // this POP_LEX a second time).
     self.pop_loop();
 
-    uint end_addr = self.code_count;
+    uint end_addr = switch_has_lex ? pop_lex_addr : after_pop_lex_addr;
 
     // Patch the 'no match' redirect to the default body
     if (redirect_addr > 0) {
@@ -3193,9 +3434,17 @@ fn void? CompilerContext.function_declaration(&self) {
     // Emit CLOSURE to create the function object
     self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
 
-    // Declare the binding in the immediate var_env so inner functions can find it via GETVAR
     uint name_idx = self.add_string_constant(name_tok.str_value);
-    self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
+    if (self.force_lexical_fn_decl) {
+        // Inside a switch CaseBlock: scope this declaration to the switch's
+        // own lex_env (installed by switch_statement's PUSH_LEX) instead of
+        // the function-scoped var_env, so it disappears when the switch's
+        // POP_LEX runs — matching BlockDeclarationInstantiation (§14.12).
+        self.emit_a_bc(Opcode.PUTLEX, (uint)func_reg, name_idx);
+    } else {
+        // Declare the binding in the immediate var_env so inner functions can find it via GETVAR
+        self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
+    }
 
     // At global scope, free the register — the function object lives in the
     // environment via GETVAR/PUTVAR, not in a register-cached scope slot.
