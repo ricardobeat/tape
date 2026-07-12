@@ -74,6 +74,13 @@ struct DestructBind {
     // decouples the store decision from is_local_var_reg register-number guessing
     // (a fresh temp can collide with reserved low registers like r0).
     bool   assign_needs_putvar;
+    // Deferred member-target evaluation: for for-of destructuring, the target
+    // evaluation code (e.g. {}[thrower()]) must run AFTER the inner iterator
+    // is opened by emit_destruct_bindings. The bytecode emitted during
+    // collect_arr_assign_binds is saved here, NOPped out, and re-emitted
+    // inside emit_destruct_bindings before PUTPROP.
+    Instruction[16] deferred_code;
+    uint deferred_code_count;
 }
 
 /// Check if a candidate param name already exists in the seen-params table.
@@ -940,6 +947,15 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                         iter_count++;
                         self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
                     }
+                    // Re-emit deferred member-target evaluation code BEFORE
+                    // IteratorStep, per ES2022 §13.15.5.6: the target lref is
+                    // evaluated before IteratorStep, so any throw here triggers
+                    // IteratorClose on the already-opened inner iterator.
+                    if (binds[di].is_member_target && binds[di].deferred_code_count > 0) {
+                        for (uint di2 = 0; di2 < binds[di].deferred_code_count; di2++) {
+                            self.emit(binds[di].deferred_code[di2]);
+                        }
+                    }
                     self.emit_destruct_iter_next(&iter_states[iter_idx], bind_reg);
                 }
             }
@@ -980,9 +996,9 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     self.emit_var_store(bind_reg, ni, is_lexical, is_const);
                 case ASSIGN_TARGET:
                     // Member-expression targets (e.g. [obj.x] = v) use PUTPROP
-                    // rather than PUTVAR. The object and key registers were
-                    // captured during pattern parsing (before the RHS iterator
-                    // was set up) to preserve lref-before-GetValue order.
+                    // rather than PUTVAR. The deferred target evaluation code was
+                    // already re-emitted before IteratorStep (ES2022 §13.15.5.6),
+                    // so here we just do the assignment.
                     if (binds[di].is_member_target) {
                         self.emit_abc(Opcode.PUTPROP,
                             (uint)binds[di].member_obj_reg,

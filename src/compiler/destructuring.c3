@@ -511,7 +511,14 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
             ushort tgt_obj  = 0xFFFF;
             ushort tgt_key  = 0xFFFF;
             uint   tgt_name = 0xFFFFFFFF;
+
+            // For member targets, save and NOP the evaluation bytecode so it
+            // can be re-emitted inside emit_destruct_bindings (after the inner
+            // iterator is opened). This ensures correct IteratorClose when the
+            // target evaluation throws in for-of destructuring (ES2022 §13.15.5.6).
+            uint pre_eval_code = self.code_count;
             bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+            uint eval_code_count = self.code_count - pre_eval_code;
 
             if (count < (uint)MAX_DESTRUCT_BINDS) {
                 binds[count].name_idx          = tgt_name;
@@ -524,6 +531,15 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 binds[count].member_obj_reg    = tgt_obj;
                 binds[count].member_prop_reg   = tgt_key;
                 binds[count].name_len          = 0;
+                // Save and NOP the target evaluation bytecode for deferred emission.
+                binds[count].deferred_code_count = 0;
+                if (is_member && eval_code_count > 0 && eval_code_count <= 16) {
+                    for (uint i = 0; i < eval_code_count; i++) {
+                        binds[count].deferred_code[i] = self.code[pre_eval_code + i];
+                        self.code[pre_eval_code + i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                    }
+                    binds[count].deferred_code_count = (uint)eval_code_count;
+                }
                 count++;
             }
 
