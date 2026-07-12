@@ -420,22 +420,15 @@ fn NegPhase negative_phase(char[] src) {
 /// execute; tests with imports are compiled only (the worker does not run the
 /// module resolve/link pipeline). Return codes match exec_js: 0 ok, 1 runtime
 /// error, 2 compile error.
-fn int exec_js_module(Vm* v, Heap* hp, char[] src) {
-    esm::ModuleDef*? mod_opt = esm::heap_ensure_module(hp, "__test262_module__");
-    if (catch err = mod_opt) { return 1; }
-    esm::ModuleDef* mod = mod_opt;
-
-    Lexer lx = lexer::lexer_init(src, hp);
-    CompiledFunction*? f = compiler::compile_module(&lx, hp, "__test262_module__", mod);
-    if (catch err = f) {
-        io::eprintfn("  COMPILE ERROR (module)");
-        return 2;  // 2 = compile error — negative-parse module tests want this
-    }
-    if (catch err = v.execute(f)) {
-        io::eprintfn("  RUNTIME ERROR (module, compiled ok)");
-        return 1;
-    }
-    return 0;
+// Run a `flags: [module]` test through the full ESM pipeline (resolve -> link
+// -> evaluate) so module-only rules apply AND relative imports (`./x.js`)
+// resolve against the test file's directory. `test_path` must be the module
+// file's path; the harness globals (Test262Error, assert, ...) are already
+// installed on vm.global_env, and module envs are parented to it, so they
+// remain visible inside the module. Return codes match exec_js: 0 ok, 1
+// runtime throw (value in heap.error_value), 2 load/compile/link error.
+fn int exec_js_module(Vm* v, Heap* hp, char[] test_path) {
+    return esm::run_module_file(hp, v, test_path);
 }
 
 fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[] property_helper_src) {
@@ -519,7 +512,10 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     // maps a COMPILE_ERROR on a `negative: phase: parse` test to a pass.
     bool module_test = is_module_test(src);
     NegPhase neg = negative_phase(src);
-    int src_rc = module_test ? exec_js_module(v, hp, exec_src) : exec_js(v, hp, exec_src);
+    // Module tests go through the ESM pipeline by PATH (so relative imports
+    // resolve against the test file's dir); script tests run the augmented
+    // source string directly.
+    int src_rc = module_test ? exec_js_module(v, hp, test_path) : exec_js(v, hp, exec_src);
 
     // `negative: phase: runtime` tests expect the *execution* to throw, and
     // (in this corpus, all 40 of them) have no local try/assert.throws — they

@@ -362,12 +362,20 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
 
 /// Link a module: resolve import bindings from source modules' envs.
 /// Phase 1 (initial): import bindings are copied at link time.
-fn bool link_module(Heap* heap, ModuleDef* mod) {
+fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
     if (mod.status == ModuleStatus.LINKED || mod.status == ModuleStatus.EVALUATED) return true;
+    // LINKING means we're already linking this module further up the call
+    // stack — a dependency cycle (including a self-import). Treat it as done to
+    // break the recursion; its env exists and bindings resolve once the
+    // outermost link_module completes. Without this a cyclic import recurses
+    // until the C stack overflows (SIGSEGV).
+    if (mod.status == ModuleStatus.LINKING) return true;
     mod.status = ModuleStatus.LINKING;
 
-    // Create module env (declarative)
-    EnvRecord*? env_opt = env::env_create_declarative(heap, null);
+    // Create module env (declarative), parented to the global env so that
+    // globals (Object, print, Error, ...) resolve via the scope chain from
+    // inside module code.
+    EnvRecord*? env_opt = env::env_create_declarative(heap, global_env);
     if (catch err = env_opt) return false;
     mod.env = env_opt;
 
@@ -377,7 +385,7 @@ fn bool link_module(Heap* heap, ModuleDef* mod) {
         if (rme.resolved == null) continue;
         ModuleDef* dep = (ModuleDef*)rme.resolved;
         if (dep.status != ModuleStatus.LINKED && dep.status != ModuleStatus.EVALUATED) {
-            if (!link_module(heap, dep)) return false;
+            if (!link_module(heap, dep, global_env)) return false;
         }
     }
 
@@ -584,6 +592,48 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
     mod.status = ModuleStatus.EVALUATED;
     call_on_module_evaluated(heap, mod);
     return true;
+}
+
+// ============================================================================
+// Top-level entry point
+// ============================================================================
+
+/// Load, link, and evaluate a module program given its file path.
+///
+/// `path` is used both to read the top-level module source and as the base
+/// name against which relative imports (`./x.js`) are resolved, so it must be
+/// the module file's real path (absolute or relative to cwd). Drives the full
+/// resolve -> link -> evaluate pipeline.
+///
+/// Return values (an int rather than a fault so the caller can distinguish
+/// the failure kind, mirroring the worker's exec_js contract):
+///   0 = evaluated successfully
+///   1 = a runtime error was thrown during evaluation of the module or one of
+///       its dependencies. The thrown value is left in `heap.error_value` so
+///       the caller (e.g. the test harness) can inspect its type.
+///   2 = the module (or a dependency) failed to load/compile/link.
+fn int run_module_file(Heap* heap, Vm* vm, char[] path) {
+    // Reading + compiling + recursively resolving dependencies. A failure here
+    // is a load/compile/link error (rc 2), not a thrown runtime value.
+    ModuleDef*? mod_opt = resolve_module(heap, path, "");
+    if (catch err = mod_opt) { return 2; }
+    ModuleDef* mod = mod_opt;
+
+    if (!link_module(heap, mod, vm.global_env)) { return 2; }
+
+    // Evaluation. execute_module returns false when the module body (or a
+    // dependency's body) throws; the thrown value persists in heap.error_value
+    // (the uncaught-error unwind copies it there). Distinguish "threw at
+    // runtime" (rc 1, error_value populated) from a structural failure.
+    heap.error_value.set_undefined();
+    heap.has_error = false;
+    if (!execute_module(heap, vm, mod)) {
+        if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+            return 1;  // a value was thrown during evaluation
+        }
+        return 2;  // structural evaluation failure with no thrown value
+    }
+    return 0;
 }
 
 // ============================================================================
