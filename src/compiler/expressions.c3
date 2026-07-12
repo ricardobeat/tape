@@ -2673,6 +2673,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
             return re_reg;
         }
 
+        // `new MemberExpression` — e.g. `new Foo()`, `new new RegExp`.
+        // Grammar: MemberExpression includes `new MemberExpression Arguments`,
+        // so `new` can appear in any primary/member position and chains.
+        case TokenType.NEW:
+            return self.new_expr()!;
+
         default:
             // Check for literal keywords
             if (tt == TokenType.LET) {
