@@ -3305,6 +3305,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.PUSH_VAR:
         case Opcode.POP_VAR:
         case Opcode.REQUIRE_OBJ:
+        case Opcode.CHKOBJ:
         case Opcode.ITER_CLOSE:
         case Opcode.CHKCTOR:
             if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }

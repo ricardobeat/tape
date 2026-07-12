@@ -551,6 +551,11 @@ enum Opcode : char {
     /// Used for destructuring binding patterns.
     REQUIRE_OBJ,
 
+    /// Require that the value in register A is an Object (Type(result) === Object).
+    /// Throws TypeError if the value is not an object (primitives, null, undefined).
+    /// Used by for-of to validate the .next() result (ES2022 §14.7.5.6 step 3.b).
+    CHKOBJ,
+
     /// IteratorClose: if the value in A is an object and has a callable
     /// `.return` method, call it with this = A and discard the result. Used
     /// after a pattern walk so destructuring of partially-exhausted
@@ -659,6 +664,7 @@ case PUTLEX:     return A_BC;
         case GETPROPC2:  return ABC;
         case REQUIRE_OBJ: return ABC;
         case ITER_CLOSE: return ABC;
+        case CHKOBJ:     return ABC;
         case CHKCTOR:    return ABC;
 
         // Everything else: standard A, B, C
