@@ -1425,4 +1425,10 @@ struct ClassMethod {
     bool   is_getter;
     bool   is_setter;
     uint   computed_key_inner_idx;  // MAX_INNER_FUNCS = not computed
+    // When the enclosing context is a generator/async, computed keys that
+    // contain yield/await must be compiled inline (not as a separate inner
+    // function) so they interact with the enclosing generator/async.
+    // Sentinel value 0xFFFFFFFE means "key expression compiled inline;
+    // computed_key_reg holds the result register."
+    uint   computed_key_reg;        // register holding inline key result (0xFFFF = none)
 }
