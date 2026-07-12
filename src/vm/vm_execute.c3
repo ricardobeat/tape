@@ -1034,8 +1034,206 @@ fn bool? Vm.execute_module_async(Vm* vm, CompiledFunction* func, EnvRecord* env)
 /// in that case the thrown value / rejection reason is left in
 /// heap.error_value. Faults only on hard setup failure.
 fn bool? Vm.execute_module_nested(Vm* vm, CompiledFunction* func, EnvRecord* env) {
-    // Placeholder: replaced by the re-entrancy implementation.
-    return vm.execute_module_async(func, env);
+    uint nregs = func.num_regs;
+
+    // Compute the true top of the current (topmost live) activation's
+    // register file. vm.valstack_top is NOT updated for inline JS-to-JS
+    // calls, so it may point below the caller's full register space; the
+    // nested module frame must be placed above that to avoid overlap.
+    TVal* true_top = vm.valstack_top;
+    if (vm.activation_count > 0) {
+        Activation* cur_act = &vm.activations[vm.activation_count - 1];
+        CompiledFunction* cur_func = (CompiledFunction*)cur_act.func;
+        if (cur_func != null) {
+            TVal* act_top = cur_act.bottom + cur_func.num_regs;
+            if (act_top > true_top) true_top = act_top;
+        }
+    }
+
+    // Grow the valstack first (while activation_count is still the
+    // caller's, so ensure_valstack_grow relocates all live pointers). The
+    // module frame is placed above all live caller registers.
+    uint true_used = (uint)(true_top - vm.valstack);
+    if (true_top + nregs > vm.valstack_end) {
+        if (!ensure_valstack_grow(vm, true_used + nregs - (uint)(vm.valstack_top - vm.valstack))) {
+            return VM_ERROR~;
+        }
+        // Recompute true_top after potential realloc
+        if (vm.activation_count > 0) {
+            Activation* cur_act2 = &vm.activations[vm.activation_count - 1];
+            CompiledFunction* cur_func2 = (CompiledFunction*)cur_act2.func;
+            if (cur_func2 != null) {
+                TVal* act_top2 = cur_act2.bottom + cur_func2.num_regs;
+                true_top = (act_top2 > vm.valstack_top) ? act_top2 : vm.valstack_top;
+            } else {
+                true_top = vm.valstack_top;
+            }
+        } else {
+            true_top = vm.valstack_top;
+        }
+    }
+
+    // Save current VM state (after potential realloc).
+    uint saved_act_count = vm.activation_count;
+    TVal* saved_valstack_bottom = vm.valstack_bottom;
+    TVal* saved_valstack_top = vm.valstack_top;
+    TVal* saved_valstack = vm.valstack;
+    CompiledFunction* saved_current_func = vm.current_func;
+    void* saved_resume_gen = vm.heap.resume_gen;
+
+    Activation[MAX_CALLS] saved_acts;
+    libc::memcpy(&saved_acts, &vm.activations, saved_act_count * Activation::size);
+
+    // Zero out activation slots 1..saved_act_count-1 (same as
+    // vm_call_fn_impl). The outer activations are safely stored in
+    // saved_acts; the live slots must be cleared so that if the nested
+    // run's inline CALL writes a new this_binding into a slot, it decrefs
+    // undefined (no-op) rather than the stale reference left behind by the
+    // memcpy'd-out outer activation.
+    if (saved_act_count > 1) {
+        libc::memset(&vm.activations[1], 0, (usz)(saved_act_count - 1) * Activation::size);
+    }
+
+    bool is_async_body = func.is_async();
+    HObject* mod_promise = null;
+    if (is_async_body) {
+        // Allocate the module evaluation Promise up front, before touching
+        // activation state, so top-level await can suspend into it and RET
+        // can settle it. On failure no VM state has been modified yet.
+        HObject*? prom_raw = vm.heap.alloc_object(hobject::ObjClass.PROMISE);
+        if (catch err = prom_raw) return err~;
+        mod_promise = prom_raw;
+        mod_promise.prototype = vm.heap.promise_proto;
+        builtins::promise_init(mod_promise);
+        // Pin it across the evaluation + microtask drain so GC can't sweep
+        // it (transient — released before returning).
+        mod_promise.as_header().incref();
+    }
+
+    TVal* frame = true_top;
+
+    Activation* act = &vm.activations[0];
+    vm.activation_count = 1;
+    act.func = func;
+    act.parent = null;
+    act.var_env = env;
+    act.lex_env = env;
+    act.cat = null;
+    act.curr_pc = func.code;
+    act.async_gen_state = null;
+    act.bottom = frame;
+    act.retval = null;
+    act.max_heap_reg = 0;
+    act.caller_valstack_top = frame + nregs;
+    act.flags = (func.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
+    if (is_async_body) {
+        act.flags |= ACT_FLAG_ASYNC;
+        act.async_promise = mod_promise;
+    } else {
+        act.async_promise = null;
+    }
+
+    TVal this_val;
+    if (vm.global_env != null && vm.global_env.bindings != null) {
+        this_val.set_object(vm.global_env.bindings);
+    } else {
+        this_val.set_undefined();
+    }
+    // Raw assign: the slot still holds stale bits from the memcpy'd-out
+    // outer activation (see the zeroing comment above), so a tval_copy_ref
+    // here would incorrectly decref garbage.
+    act.this_binding = this_val;
+
+    for (uint i = 0; i < nregs; i++) {
+        frame[i].set_undefined();
+    }
+    vm.valstack_top = frame + nregs;
+    vm.valstack_bottom = frame;
+    vm.current_func = func;
+    // The nested body must not accidentally match the caller's pending
+    // resume state.
+    vm.heap.resume_gen = null;
+
+    // Register saved outer activations in the shadow frame list so that GC
+    // (triggered during the inner Vm.run() or the microtask drain below)
+    // can mark their env bindings and keep them alive. The shadow frame is
+    // stack-allocated and valid for the lifetime of this call.
+    ShadowActFrame shadow_frame;
+    shadow_frame.prev = vm.shadow_act_list;
+    shadow_frame.acts = &saved_acts;
+    shadow_frame.count = saved_act_count;
+    vm.shadow_act_list = &shadow_frame;
+
+    TVal? run_res = Vm.run(vm);
+    bool run_faulted = false;
+    if (catch err = run_res) {
+        run_faulted = true;
+    }
+
+    if (is_async_body) {
+        // Clear a synchronous throw: for an async body a thrown value must
+        // reject the promise (which RET/the unwind already did), not
+        // remain a live VM fault.
+        vm.has_error = false;
+        vm.heap.has_error = false;
+
+        // Drive microtasks until the module promise settles (or the queue
+        // drains). drain_microtasks resumes suspended async activations
+        // via reactions.
+        for (uint guard = 0; guard < 100000; guard++) {
+            if (builtins::promise_get_state(mod_promise, builtins::PROMISE_PENDING)
+                != builtins::PROMISE_PENDING) break;
+            if (vm.heap.microtask_count == 0) break;
+            vm.heap.drain_microtasks((void*)vm);
+        }
+    }
+
+    // Deregister the shadow frame now that the inner run (and any drains)
+    // have finished.
+    vm.shadow_act_list = shadow_frame.prev;
+
+    // If the nested run reallocated the valstack, relocate the saved
+    // absolute pointers by the same delta (the saved snapshot was not
+    // covered by ensure_valstack_grow's relocation pass).
+    long reloc = (char*)vm.valstack - (char*)saved_valstack;
+    if (reloc != 0) {
+        saved_valstack_bottom = (TVal*)((char*)saved_valstack_bottom + reloc);
+        saved_valstack_top = (TVal*)((char*)saved_valstack_top + reloc);
+        for (uint i = 0; i < saved_act_count; i++) {
+            saved_acts[i].bottom = (TVal*)((char*)saved_acts[i].bottom + reloc);
+            if (saved_acts[i].retval != null) {
+                saved_acts[i].retval = (TVal*)((char*)saved_acts[i].retval + reloc);
+            }
+            if (saved_acts[i].caller_valstack_top != null) {
+                saved_acts[i].caller_valstack_top = (TVal*)((char*)saved_acts[i].caller_valstack_top + reloc);
+            }
+        }
+    }
+
+    // Restore VM state (caller registers were never touched).
+    vm.activation_count = saved_act_count;
+    vm.current_func = saved_current_func;
+    libc::memcpy(&vm.activations, &saved_acts, saved_act_count * Activation::size);
+    vm.valstack_bottom = saved_valstack_bottom;
+    vm.valstack_top = saved_valstack_top;
+    vm.heap.resume_gen = (GeneratorState*)saved_resume_gen;
+
+    if (is_async_body) {
+        // Inspect the settled promise while it is still pinned.
+        bool rejected = builtins::promise_get_state(mod_promise, builtins::PROMISE_PENDING)
+                        == builtins::PROMISE_REJECTED;
+        if (rejected) {
+            TVal reason = builtins::promise_get_result(mod_promise);
+            vm.heap.tval_copy_ref(&vm.heap.error_value, &reason);
+            vm.heap.has_error = true;
+        }
+        vm.heap.decref(mod_promise.as_header());
+        return !rejected;
+    }
+
+    // Sync body: if the run faulted, the uncaught-error unwind already
+    // copied the thrown value into vm.heap.error_value.
+    return !run_faulted;
 }
 
 /// Execute the bytecode dispatch loop. Assumes activation stack and registers
