@@ -233,6 +233,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.GETPROPC2.ordinal]    = "GETPROPC2",
     [Opcode.GETPROPC_CACHED.ordinal] = "GETPROPC_CACHED",
     [Opcode.REQUIRE_OBJ.ordinal] = "REQUIRE_OBJ",
+    [Opcode.CHKOBJ.ordinal]      = "CHKOBJ",
     [Opcode.ITER_CLOSE.ordinal]  = "ITER_CLOSE",
     [Opcode.CHKCTOR.ordinal]     = "CHKCTOR",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",

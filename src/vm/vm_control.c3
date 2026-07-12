@@ -397,7 +397,7 @@ fn TVal? dispatch_iterator(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 }
 
 
-/// Sub-dispatch for NOP, DEBUGGER, BREAK, CONTINUE, INITGET, INITSET, INITSETI, CSVARI, PUSH_LEX, POP_LEX, REQUIRE_OBJ opcodes.
+/// Sub-dispatch for NOP, DEBUGGER, BREAK, CONTINUE, INITGET, INITSET, INITSETI, CSVARI, PUSH_LEX, POP_LEX, REQUIRE_OBJ, CHKOBJ opcodes.
 fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
     switch (op) {
@@ -783,24 +783,49 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             return (TVal){};
         }
 
+        case Opcode.CHKOBJ: {
+            // Throw TypeError if the value in register A is not an Object.
+            // Used by for-of to validate the .next() result (ES2022 §14.7.5.6 step 3.b).
+            if (!ra.is_object() || ra.get_heapptr() == null) {
+                vm_throw_error(vm, vm.heap.type_err_proto,
+                    "Iterator result is not an object",
+                    ds.act, &ds.curr_pc, &ds.needs_restart);
+            }
+            return (TVal){};
+        }
+
         case Opcode.ITER_CLOSE: {
-            // IteratorClose (ES2015 §13.3.3.8): if the value in A is an
+            // IteratorClose (ES2022 §7.4.6): if the value in A is an
             // object with a callable `.return` method, call it with
             // this = A. Discards the result; any error from `.return()`
             // propagates as a normal throw. If A is not an object, or
             // has no `.return` method, do nothing (per spec).
+            //
+            // B field encodes the completion type:
+            //   B=0 — non-throw completion (break / return / exhaustion):
+            //         propagate errors from .return access (TypeError if
+            //         non-callable) and from .return() call.
+            //   B=1 — throw completion (body threw):
+            //         suppress all errors from .return access / call; the
+            //         original throw takes precedence (§7.4.6 steps 6,8).
+            bool is_throw_completion = (insn.b == 1);
+
             if (!ra.is_object() || ra.get_heapptr() == null) return (TVal){};
             HObject* iter = (HObject*)ra.get_heapptr();
             HString* ret_key = intern_string(vm, "return");
-            TVal? ret_opt = iter.get_prop_proto(ret_key);
-            if (catch _e = ret_opt) return (TVal){};
-            TVal ret_method = ret_opt;
-            if (!ret_method.is_object()) return (TVal){};
-            HObject* rm_obj = (HObject*)ret_method.get_heapptr();
-            if (rm_obj == null || !rm_obj.is_callable()) return (TVal){};
-            TVal this_arg; this_arg.set_object(iter);
-            TVal ret_result = vm.heap.call_fn(vm, ret_method, null, 0, this_arg);
+
+            // Use get_with_accessors to properly invoke accessor getters
+            // (ES2022 §7.4.6 step 4: GetMethod calls GetV which invokes getters).
+            hobject::PropLookupResult ret_lookup = iter.get_with_accessors(ret_key);
+
+            // If .return accessor threw during access, propagate for non-throw,
+            // suppress for throw completion.
             if (vm.has_error) {
+                if (is_throw_completion) {
+                    vm.has_error = false;
+                    vm.heap.has_error = false;
+                    return (TVal){};
+                }
                 TVal thrown = vm.return_val;
                 vm.has_error = false;
                 vm.heap.has_error = false;
@@ -809,8 +834,105 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                 }
                 return (TVal){};
             }
-            // ES2015 §7.4.6 step 5: IteratorClose result must be an Object
+
+            // Not found or undefined — no close needed.
+            if (ret_lookup.kind == hobject::PropLookupKind.PROP_NOT_FOUND) {
+                return (TVal){};
+            }
+
+            TVal ret_method;
+            if (ret_lookup.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                // Accessor property: invoke the getter to get the actual value.
+                hobject::AccessorResult acc = ret_lookup.acc;
+                if (acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
+                    HObject* getter = (HObject*)acc.accessor_fn.get_heapptr();
+                    if (getter.is_callable()) {
+                        TVal this_arg; this_arg.set_object(iter);
+                        ret_method = vm.heap.call_fn(vm, acc.accessor_fn, null, 0, this_arg);
+                        if (vm.has_error) {
+                            if (is_throw_completion) {
+                                vm.has_error = false;
+                                vm.heap.has_error = false;
+                                return (TVal){};
+                            }
+                            TVal thrown = vm.return_val;
+                            vm.has_error = false;
+                            vm.heap.has_error = false;
+                            if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return vm_uncaught_error(vm, &thrown);
+                            }
+                            return (TVal){};
+                        }
+                    } else {
+                        ret_method = acc.accessor_fn;
+                    }
+                } else {
+                    // Getter returned non-object (null / undefined) — treat as undefined.
+                    return (TVal){};
+                }
+            } else {
+                ret_method = ret_lookup.data_val;
+            }
+
+            // If result is undefined or null, no close needed (§7.4.6 step 5).
+            if (ret_method.is_nullish()) return (TVal){};
+
+            // Must be callable (§7.4.6 step 4: GetMethod checks IsCallable).
+            if (!ret_method.is_object() || ret_method.get_heapptr() == null) {
+                if (is_throw_completion) return (TVal){};
+                // Non-throw: throw TypeError for non-callable .return.
+                HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try te = te_raw) {
+                    te.prototype = vm.heap.type_err_proto;
+                    HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* ms = intern_string(vm, "Iterator .return is not a function");
+                    TVal mv; mv.set_string(ms);
+                    te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+                    TVal tv; tv.set_object(te);
+                    if (!vm_throw_value(vm, tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &tv);
+                    }
+                }
+                return (TVal){};
+            }
+            HObject* rm_obj = (HObject*)ret_method.get_heapptr();
+            if (rm_obj == null || !rm_obj.is_callable()) {
+                if (is_throw_completion) return (TVal){};
+                HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try te = te_raw) {
+                    te.prototype = vm.heap.type_err_proto;
+                    HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    HString* ms = intern_string(vm, "Iterator .return is not a function");
+                    TVal mv; mv.set_string(ms);
+                    te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+                    TVal tv; tv.set_object(te);
+                    if (!vm_throw_value(vm, tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &tv);
+                    }
+                }
+                return (TVal){};
+            }
+
+            // Call .return() (§7.4.6 step 7).
+            TVal this_arg; this_arg.set_object(iter);
+            TVal ret_result = vm.heap.call_fn(vm, ret_method, null, 0, this_arg);
+            if (vm.has_error) {
+                if (is_throw_completion) {
+                    vm.has_error = false;
+                    vm.heap.has_error = false;
+                    return (TVal){};
+                }
+                TVal thrown = vm.return_val;
+                vm.has_error = false;
+                vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
+            // ES2022 §7.4.6 step 8: result must be an Object.
             if (!ret_result.is_object() || ret_result.get_heapptr() == null) {
+                if (is_throw_completion) return (TVal){};
                 HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
                 if (try te = te_raw) {
                     te.prototype = vm.heap.type_err_proto;

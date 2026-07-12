@@ -2348,6 +2348,9 @@ fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, 
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
+    // Validate .next() result is an Object (ES2022 §14.7.5.6 step 3.b).
+    self.emit_abc(Opcode.CHKOBJ, (uint)result_reg, 0, 0);
+
     ushort done_key_reg = self.alloc_reg();
     ushort done_reg = self.alloc_reg();
     self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
@@ -2365,6 +2368,12 @@ fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, 
     self.free_reg(done_key_reg);
     self.free_reg(result_reg);
 
+    // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
+    // Wrap the assignment + body in TRY/CATCH so that any abrupt completion
+    // calls IteratorClose before propagating.
+    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
+    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
+
     // Re-parse and re-compile the member LHS from source, then store the
     // per-iteration value into it via PUTPROP. This must happen after the
     // iterator-result registers above are freed (their reg slots are
@@ -2373,11 +2382,36 @@ fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, 
 
     self.statement()!;
 
+    // Normal path: end the try region and jump over the catch block.
+    self.emit_simple(Opcode.ENDTRY);
+    uint jump_over = self.emit_jump(Opcode.JUMP);
+
+    // Catch block: called on any abrupt completion (throw, etc.).
+    uint catch_target = self.code_count;
+    ushort err_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+
+    // Call IteratorClose (throw variant — suppress .return errors).
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
+
+    // Re-throw the original error.
+    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+    self.free_reg(err_reg);
+
+    // Patch the jump to skip the catch block.
+    self.patch_jump(jump_over);
+
+    // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
+    uint catch_off = catch_target - iter_try_addr;
+    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+
     self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
     int back_offset = (int)loop_start - (int)self.code_count - 1;
     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
     self.patch_jump(exit_jump);
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
     self.pop_loop();
 
     self.free_reg(callee_this_reg);
