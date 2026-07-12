@@ -410,6 +410,13 @@ struct Lexer {
     bool strict_mode;
     /// True if a line terminator was skipped between the previous and next token.
     bool seen_line_term;
+    /// True when, since the start of source or the most recent real line
+    /// terminator, only whitespace and/or comments have been produced (i.e.
+    /// no real token has appeared yet on the current line). Persists across
+    /// `skip_whitespace_and_comments` calls so it correctly reflects
+    /// same-line token history; used to gate AnnexB `-->` HTMLCloseComment,
+    /// which is only a comment-starter at the beginning of a line.
+    bool at_line_start;
     void* heap;
 
     char[4096] ident_buf;
@@ -434,6 +441,7 @@ fn Lexer lexer_init(char[] source, void* heap) {
     lex.has_pushed_back = false;
     lex.strict_mode = true;
     lex.seen_line_term = false;
+    lex.at_line_start = true;
     lex.heap = heap;
     return lex;
 }
@@ -447,6 +455,7 @@ fn void Lexer.reset(&self, char[] source) {
     self.current = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.lookahead = make_token(TokenType.EOF_TOKEN, 1, 1);
     self.has_lookahead = false;
+    self.at_line_start = true;
     self.token_start = 0;
     self.lookahead_token_start = 0;
     self.has_pushed_back = false;
@@ -561,9 +570,20 @@ fn uint Lexer.remaining(&self) {
 // ============================================================================
 
 /// Skip whitespace, line terminators, single-line comments (//),
-/// and multi-line comments (/* ... */).
+/// multi-line comments (/* ... */), and AnnexB §B.1.3 HTML-like comments
+/// (`<!--` and `-->`).
+///
+/// NOTE: HTML-like comments are script-only per the spec (they must be a
+/// SyntaxError in module code). The lexer has no reachable module/script
+/// flag, so this is applied unconditionally to all source. See the task
+/// report for this limitation.
 fn void Lexer.skip_whitespace_and_comments(&self) {
     self.seen_line_term = false;
+    // `self.at_line_start` persists across calls: it reflects whether, since
+    // the start of source or the most recent real line terminator, only
+    // whitespace and/or comments have been seen (i.e. no real token has
+    // started on the current line yet). This gates `-->` (HTMLCloseComment):
+    // it is only a comment-starter at the beginning of a line.
     while (!self.at_end()) {
         char c = self.peek_char();
 
@@ -575,9 +595,13 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
                 self.line++;
                 self.col = 1;
                 self.seen_line_term = true;
+                self.at_line_start = true;
             } else {
                 self.advance_char();
-                if (c == '\n' || c == '\r') self.seen_line_term = true;
+                if (c == '\n' || c == '\r') {
+                    self.seen_line_term = true;
+                    self.at_line_start = true;
+                }
             }
             continue;
         }
@@ -591,6 +615,7 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
                 self.line++;
                 self.col = 1;
                 self.seen_line_term = true;
+                self.at_line_start = true;
                 continue;
             }
         }
@@ -612,13 +637,53 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
         if (c == '/' && self.peek_char_at(1) == '*') {
             self.pos += 2;
             self.col += 2;
+            bool comment_had_newline = false;
             while (!self.at_end()) {
                 if (self.peek_char() == '*' && self.peek_char_at(1) == '/') {
                     self.pos += 2;
                     self.col += 2;
                     break;
                 }
+                char bc = self.peek_char();
+                if (bc == '\n' || bc == '\r') comment_had_newline = true;
                 self.advance_char();
+            }
+            // A block comment that itself contains a line terminator counts
+            // as a line boundary for the purposes of allowing a following
+            // `-->` HTMLCloseComment, even though it does not set
+            // `seen_line_term` (ASI only cares about real line terminators).
+            if (comment_had_newline) self.at_line_start = true;
+            continue;
+        }
+
+        // AnnexB §B.1.3 SingleLineHTMLOpenComment: `<!--` starts a
+        // single-line comment anywhere it appears.
+        if (c == '<' && self.peek_char_at(1) == '!' &&
+            self.peek_char_at(2) == '-' && self.peek_char_at(3) == '-') {
+            self.pos += 4;
+            self.col += 4;
+            while (!self.at_end()) {
+                char cc = self.peek_char();
+                if (cc == '\n' || cc == '\r') break;
+                self.pos++;
+                self.col++;
+            }
+            continue;
+        }
+
+        // AnnexB §B.1.3 SingleLineHTMLCloseComment: `-->` starts a
+        // single-line comment, but only when it occurs at the start of a
+        // line (optionally preceded by whitespace and/or comments since the
+        // last real line terminator, or since the start of source).
+        if (self.at_line_start && c == '-' && self.peek_char_at(1) == '-' &&
+            self.peek_char_at(2) == '>') {
+            self.pos += 3;
+            self.col += 3;
+            while (!self.at_end()) {
+                char cc = self.peek_char();
+                if (cc == '\n' || cc == '\r') break;
+                self.pos++;
+                self.col++;
             }
             continue;
         }
@@ -633,6 +698,7 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
             }
         }
 
+        self.at_line_start = false;
         break;
     }
 }
