@@ -758,6 +758,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     for (uint i = 0; i < new_nregs_r; i++) {
                         vm.heap.tval_copy_ref(&new_regs_r[i], &gs.saved_regs[i]);
                     }
+                    // If yield fired inside a non-generator inner function
+                    // (default expression thunk), place the resume value into
+                    // the call result register so the code after CALL sees it.
+                    if (gs.pending_resume_reg != 0xFFFF && gs.pending_resume_reg < new_nregs_r) {
+                        vm.heap.tval_copy_ref(&new_regs_r[gs.pending_resume_reg], &gs.resume_value);
+                        gs.pending_resume_reg = 0xFFFF;
+                    }
                     $if $feature(HEAP_VERIFY):
                         vm.heap.verify_roots("after_call_resume_restore");
                     $endif
@@ -831,6 +838,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 }
                 GeneratorState* gs = (GeneratorState*)gs_raw;
                 libc::memset(gs_raw, 0, GeneratorState::size);
+                gs.pending_resume_reg = 0xFFFF;
 
                 gs.func = target;
                 gs.num_regs = target.num_regs;

@@ -2160,6 +2160,12 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     // Strict-only engine: always strict
     def_ctx.lexer.set_strict(true);
 
+    // Propagate generator context so yield is accepted inside default
+    // expressions of generator functions (e.g. [x = yield] = []).
+    // The default thunk itself is NOT a generator — it's a regular function
+    // whose body may contain yield that suspends the *enclosing* generator.
+    def_ctx.is_generator = self.is_generator;
+
     // Propagate class context (for super expressions)
     def_ctx.in_class_body = self.in_class_body;
     def_ctx.has_super_binding = self.has_super_binding;
@@ -2190,6 +2196,13 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     def_ctx.emit_simple(Opcode.POP_LEX);
 
     CompiledFunction* func = def_ctx.finish()!;
+
+    // The default expression thunk is NOT a generator function itself — it's
+    // a regular zero-arg function that may contain yield expressions which
+    // suspend the *enclosing* generator. Clear the is_generator flag set by
+    // finish() (propagated from the enclosing context) so the VM's CALL
+    // handler treats it as a normal function call, not a generator creation.
+    func.flags.is_generator = false;
 
     // If the default expression references 'arguments', clear the thunk's
     // flag (prevent VM from creating a thunk-specific arguments object that
