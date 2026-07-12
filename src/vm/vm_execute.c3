@@ -2436,6 +2436,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.ARRSPRD:
         case Opcode.OBJSPRD:
         case Opcode.SPREAD_ARG:
+        case Opcode.FWD_ARGS:
             if (catch err = dispatch_objects(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 
@@ -3308,6 +3309,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.CHKOBJ:
         case Opcode.ITER_CLOSE:
         case Opcode.CHKCTOR:
+        case Opcode.CHK_PROT:
             if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 

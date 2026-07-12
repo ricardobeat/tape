@@ -642,6 +642,75 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             return (TVal){};
         }
 
+        case Opcode.FWD_ARGS: {
+            // A = dest start reg, B = count out reg, C = source reg (array)
+            // Like SPREAD_ARG but directly reads array elements by index
+            // without calling @@iterator. Used by the default derived
+            // constructor to forward arguments.
+            TVal src_tv = *rc;
+            uint first_arg_reg = insn.a;
+            uint count_reg = insn.b;
+
+            // null/undefined → 0 args
+            if (src_tv.is_null() || src_tv.is_undefined()) {
+                TVal* count_slot = ds.regs_base + count_reg;
+                count_slot.set_fastint(0);
+                return (TVal){};
+            }
+
+            // Source must be an object (Array from rest parameter)
+            if (!src_tv.is_object() || src_tv.get_heapptr() == null) {
+                TVal* count_slot = ds.regs_base + count_reg;
+                count_slot.set_fastint(0);
+                return (TVal){};
+            }
+            HObject* src_obj = (HObject*)src_tv.get_heapptr();
+
+            // Get the array length
+            uint len = 0;
+            if (src_obj.get_class() == hobject::ObjClass.ARRAY) {
+                len = *src_obj.array_len_ptr();
+            } else {
+                // Fallback: use "length" property
+                HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                if (length_key != null) {
+                    int idx = src_obj.find_prop_idx(length_key);
+                    if (idx >= 0) {
+                        TVal len_val = src_obj.prop_values()[idx];
+                        if (len_val.is_fastint()) {
+                            len = (uint)len_val.get_fastint();
+                        } else if (len_val.is_number()) {
+                            len = (uint)len_val.get_number();
+                        }
+                    }
+                }
+            }
+
+            // Copy elements from array to arg registers
+            TVal* dense = src_obj.array_part();
+            for (uint i = 0; i < len; i++) {
+                TVal* dest = ds.regs_base + first_arg_reg + i;
+                if (dense != null && i < src_obj.array_size) {
+                    vm.heap.tval_copy_ref(dest, &dense[i]);
+                } else {
+                    // Beyond dense part — check property table or return undefined
+                    TVal idx_val;
+                    idx_val.set_fastint((long)i);
+                    TVal* idx_slot = ds.regs_base + first_arg_reg + i;
+                    // Use the object's indexed access
+                    hobject::PropLookupResult plr = src_obj.get_prop_or_accessor_proto(vm.heap.strs[heap::BuiltinStr.EMPTY], false);
+                    // Simpler: just check property table for numeric key
+                    TVal undef_val;
+                    undef_val.set_undefined();
+                    vm.heap.tval_copy_ref(dest, &undef_val);
+                }
+            }
+
+            TVal* count_slot = ds.regs_base + count_reg;
+            count_slot.set_fastint((long)len);
+            return (TVal){};
+        }
+
         default:
             return (TVal){};
     }

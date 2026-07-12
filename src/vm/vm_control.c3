@@ -980,6 +980,21 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             return (TVal){};
         }
 
+        case Opcode.CHK_PROT: {
+            // ES2015 §14.5.14 step 5.g.ii-iv: after Get(superclass, "prototype"),
+            // throw TypeError if the result is neither Object nor Null.
+            // Used for `class P extends Proxy {}` (Proxy.prototype is undefined).
+            bool ok = ra.is_null() || (ra.is_object() && ra.get_heapptr() != null);
+            if (!ok) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto,
+                        "Class extends value prototype is not an object or null",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+            }
+            return (TVal){};
+        }
+
         default:
             return (TVal){};
     }
