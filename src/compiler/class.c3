@@ -156,18 +156,13 @@ fn void? CompilerContext.class_declaration(&self) {
     // Push the classScope (child of current lex_env).
     self.emit_simple(Opcode.PUSH_LEX);
 
-    // Initialize the immutable className binding with undefined as a TDZ-like
-    // placeholder.  PUTLEX_C stores the value AND marks the binding non-writable.
-    // The binding is later overwritten with the constructor — PUTLEX_C on an
-    // existing entry just re-stores the value (put_prop is overwrite-in-place),
-    // which matches spec step 14's "InitializeReferencedBinding" semantics on
-    // an uninitialized immutable binding.
-    {
-        ushort tmp_reg = self.alloc_reg();
-        self.emit_abc(Opcode.LDUNDEF, (uint)tmp_reg, 0, 0);
-        self.emit_a_bc(Opcode.PUTLEX_C, (uint)tmp_reg, class_name_idx);
-        self.free_reg(tmp_reg);
-    }
+    // Create the immutable className binding as TDZ (temporal dead zone).
+    // INITTZ marks the binding as uninitialized so that any access before
+    // the constructor is stored (below) throws ReferenceError.  This is
+    // required by ES2015 §14.5.14 step 3: the extends clause is evaluated
+    // while the class name binding is still uninitialized, so
+    // `class x extends x {}` correctly throws ReferenceError.
+    self.emit_a_bc(Opcode.INITTZ, 0, class_name_idx);
 
     // Parse extends clause and class body.  Methods CLOSURE here, capturing
     // classScope as their lex_env so the class name resolves to the
@@ -235,14 +230,10 @@ fn ushort? CompilerContext.class_expression(&self) {
     if (has_name) {
         self.emit_simple(Opcode.PUSH_LEX);
 
-        // Initialize the immutable className binding with undefined
-        // (PUTLEX_C marks it non-writable → PUTVAR throws TypeError).
-        {
-            ushort tmp_reg = self.alloc_reg();
-            self.emit_abc(Opcode.LDUNDEF, (uint)tmp_reg, 0, 0);
-            self.emit_a_bc(Opcode.PUTLEX_C, (uint)tmp_reg, class_name_idx);
-            self.free_reg(tmp_reg);
-        }
+        // Create the immutable className binding as TDZ (temporal dead zone).
+        // INITTZ marks the binding as uninitialized so that any access before
+        // the constructor is stored (below) throws ReferenceError.
+        self.emit_a_bc(Opcode.INITTZ, 0, class_name_idx);
     }
 
     // Parse extends clause and class body.
