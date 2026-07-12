@@ -410,6 +410,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 if (cfn_gs_raw != null) {
                     libc::memset(cfn_gs_raw, 0, GeneratorState::size);
                     GeneratorState* cfn_gs = (GeneratorState*)cfn_gs_raw;
+                    cfn_gs.pending_resume_reg = 0xFFFF;
                     cfn_gs.func = target;
                     cfn_gs.num_regs = target.num_regs;
                     usz cfn_regs_bytes = (usz)target.num_regs * TVal::size;

@@ -225,6 +225,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 if (gs_raw == null) break;
                 GeneratorState* gs = (GeneratorState*)gs_raw;
                 libc::memset(gs_raw, 0, GeneratorState::size);
+                gs.pending_resume_reg = 0xFFFF;
 
                 CompiledFunction* cur_func = (CompiledFunction*)ds.act.func;
 
@@ -347,16 +348,66 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // a stale reference on the next resume.
                 if (vm.heap.resume_gen == gs) { vm.heap.resume_gen = null; }
 
+                // Find the activation that owns this generator state.
+                // When yield appears inside a non-generator inner function
+                // (e.g. a default expression thunk [x = yield]), ds.act is the
+                // inner function's activation, not the generator's. Walk up the
+                // activation chain to find the generator's frame and pop any
+                // intervening activations.
+                Activation* gen_act = ds.act;
+                if (ds.act.async_gen_state == null) {
+                    // Current activation is not the generator — walk parents.
+                    Activation* walk = ds.act.parent;
+                    while (walk != null) {
+                        if (walk.async_gen_state == gs) {
+                            gen_act = walk;
+                            break;
+                        }
+                        walk = walk.parent;
+                    }
+                }
+
+                // Pop activations above the generator's activation.
+                // The generator's activation is the one we'll save state from.
+                while (vm.activation_count > 0) {
+                    Activation* top = &vm.activations[vm.activation_count - 1];
+                    if (top == gen_act) break;
+                    vm.activation_count--;
+                }
+
+                // Save current state from the generator's activation.
+                // When yield appears inside a non-generator inner function
+                // (e.g. a default expression thunk [x = yield]), ds.act is the
+                // inner function's activation, not the generator's. Use the
+                // generator's activation for all saved state.
+
+                // The saved PC must point into the generator's bytecode, not
+                // the inner function's bytecode. gen_act.curr_pc was set by
+                // the CALL opcode to the instruction after the call site in
+                // the generator's code — that's where execution should resume.
+                //
+                // However, the CALL that invoked the default thunk never
+                // completed (the thunk yielded instead of returning). We must
+                // record the call result register so that when the generator
+                // resumes, the resume value (.next(val)) is placed into the
+                // correct slot for the code after the CALL to read.
+                if (ds.act.async_gen_state == null && gen_act != ds.act) {
+                    // Yield inside a non-generator inner function — record the
+                    // call result register for the resume path.
+                    Instruction call_insn = gen_act.curr_pc[-1];
+                    gs.pending_resume_reg = (uint)call_insn.a;
+                }
+
                 // Save current state
-                TVal* regs_base_r = ds.act.bottom;
+                TVal* regs_base_r = gen_act.bottom;
                 for (uint i = 0; i < gs.num_regs; i++) {
                     vm.heap.tval_copy_ref(&gs.saved_regs[i], &regs_base_r[i]);
                 }
-                gs.saved_pc = ds.curr_pc;  // ds.curr_pc already points past YIELD
-                gs.var_env = ds.act.var_env;
-                gs.lex_env = ds.act.lex_env;
-                gs.cat = ds.act.cat;
-                vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
+                gs.saved_pc = gen_act.curr_pc;
+                gs.var_env = gen_act.var_env;
+                gs.lex_env = gen_act.lex_env;
+                gs.cat = gen_act.cat;
+                vm.heap.tval_copy_ref(&gs.this_binding, &gen_act.this_binding);
                 gs.state = GEN_SUSPENDED_YIELD;
 
                 $if $feature(HEAP_VERIFY):

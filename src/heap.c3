@@ -139,6 +139,11 @@ struct GeneratorState {
     uint delegated_index;     // current index in delegation loop
     // async state
     void* async_promise;      // HObject* — the async function's outer Promise (null for generators)
+    // yield-through state: when yield fires inside a non-generator inner
+    // function (e.g. a default expression thunk), the resume value must be
+    // placed into a specific register in the generator's frame on resume.
+    // 0xFFFF means unused.
+    uint pending_resume_reg;
 }
 
 // --- Heap struct ----------------------------------------------------------
