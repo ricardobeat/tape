@@ -627,6 +627,13 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
             while (!self.at_end()) {
                 char cc = self.peek_char();
                 if (cc == '\n' || cc == '\r') break;
+                // U+2028 / U+2029 (UTF-8: E2 80 A8 / E2 80 A9) also
+                // terminate single-line comments.
+                if (cc == (char)0xE2 && self.remaining() >= 3) {
+                    char cn1 = self.source[self.pos + 1];
+                    char cn2 = self.source[self.pos + 2];
+                    if (cn1 == (char)0x80 && (cn2 == (char)0xA8 || cn2 == (char)0xA9)) break;
+                }
                 self.pos++;
                 self.col++;
             }
@@ -665,6 +672,13 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
             while (!self.at_end()) {
                 char cc = self.peek_char();
                 if (cc == '\n' || cc == '\r') break;
+                // U+2028 / U+2029 (UTF-8: E2 80 A8 / E2 80 A9) also
+                // terminate single-line comments.
+                if (cc == (char)0xE2 && self.remaining() >= 3) {
+                    char cn1 = self.source[self.pos + 1];
+                    char cn2 = self.source[self.pos + 2];
+                    if (cn1 == (char)0x80 && (cn2 == (char)0xA8 || cn2 == (char)0xA9)) break;
+                }
                 self.pos++;
                 self.col++;
             }
@@ -682,6 +696,13 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
             while (!self.at_end()) {
                 char cc = self.peek_char();
                 if (cc == '\n' || cc == '\r') break;
+                // U+2028 / U+2029 (UTF-8: E2 80 A8 / E2 80 A9) also
+                // terminate single-line comments.
+                if (cc == (char)0xE2 && self.remaining() >= 3) {
+                    char cn1 = self.source[self.pos + 1];
+                    char cn2 = self.source[self.pos + 2];
+                    if (cn1 == (char)0x80 && (cn2 == (char)0xA8 || cn2 == (char)0xA9)) break;
+                }
                 self.pos++;
                 self.col++;
             }
