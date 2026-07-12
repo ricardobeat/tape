@@ -2705,7 +2705,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 }
 
 /// Parse a function expression: function name?(...) { ... }
-fn ushort? CompilerContext.function_expr(&self) {
+fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     self.expect(TokenType.FUNCTION)!;
     // Capture the byte offset of `function` — used by Function.prototype.toString
     // for ES2019 §19.2.3.5 source-text retention.
@@ -2715,7 +2715,11 @@ fn ushort? CompilerContext.function_expr(&self) {
     bool saved_is_generator = self.is_generator;
     self.is_generator = false;
 
-    // Save and reset async state
+    // Save the enclosing async flag — it must survive this expression (a
+    // module body's or async function's flag is read by finish()). The
+    // expression's own async-ness comes from the is_async_expr parameter
+    // (set by the `async function` expression caller), never from the
+    // enclosing flag.
     bool saved_is_async = self.is_async;
     self.is_async = false;
 
@@ -2735,8 +2739,7 @@ fn ushort? CompilerContext.function_expr(&self) {
     }
 
     // Async function expressions are not constructors (ES2017 §14.7.5).
-    // saved_is_async captures the pre-reset flag set by the caller for `async f()`.
-    if (saved_is_async) {
+    if (is_async_expr) {
         self.is_constructable = false;
     }
 
@@ -2768,15 +2771,14 @@ fn ushort? CompilerContext.function_expr(&self) {
         self.inferred_name_len = 0;
     }
 
-    // Compile the function body into a sub-context.
-    // Restore is_async so compile_inner_function propagates the flag,
-    // then immediately reset to prevent nested functions from inheriting it.
-    self.is_async = saved_is_async;
+    // Compile the function body into a sub-context with the expression's own
+    // async flag, then restore the enclosing one.
+    self.is_async = is_async_expr;
     // Use the byte offset of `function` captured right after expect() above.
     CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit, fexpr_src_start)!;
-    self.is_async = false;
+    self.is_async = saved_is_async;
 
-    // Restore generator flag (async already reset above)
+    // Restore generator flag
     self.is_generator = saved_is_generator;
     // Restore constructable flag
     self.is_constructable = saved_is_constructable;
@@ -2835,13 +2837,16 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self, uint src_start = 
     // If primary_expr set pending_async_arrow_src before consuming `async` and
     // re-entering, override the caller's src_start so the retained source text
     // begins at `async` rather than `(` (ES2019 §19.2.3.5).
-    uint effective_src_start = (self.pending_async_arrow_src != 0xFFFFFFFF)
+    // The marker doubles as the async signal: it is set exactly when
+    // primary_expr consumed `async` in front of this arrow.
+    bool arrow_is_async = self.pending_async_arrow_src != 0xFFFFFFFF;
+    uint effective_src_start = arrow_is_async
         ? self.pending_async_arrow_src
         : src_start;
     self.pending_async_arrow_src = 0xFFFFFFFF;
 
     // Create inner CompiledFunction for the arrow
-    CompiledFunction* inner = self.compile_arrow_inner_reparse(effective_src_start)!;
+    CompiledFunction* inner = self.compile_arrow_inner_reparse(effective_src_start, arrow_is_async)!;
 
     if (arrow_name.len > 0) {
         char* name_heap = (char*)libc::malloc((usz)arrow_name.len + 1);
@@ -2864,7 +2869,7 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self, uint src_start = 
 /// Compile an inner arrow function by re-parsing params from source.
 /// The lexer is positioned right after '(' when called. This function
 /// parses '(params) => body', handling defaults, rest params, etc.
-fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint src_start = 0xFFFFFFFF) {
+fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint src_start = 0xFFFFFFFF, bool is_async_arrow = false) {
     // Create a new CompilerContext for the arrow function
     CompilerContext arrow_ctx;
     arrow_ctx.init(self.lexer, self.heap);
@@ -2875,9 +2880,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     // Arrow functions use the parent scope — no fresh env needed.
     arrow_ctx.is_arrow = true;
 
-    // Propagate async: `async (params) => ...` bodies must run resumably
-    // like async functions (AWAIT is only valid in an is_async context).
-    arrow_ctx.is_async = self.is_async;
+    // `async (params) => ...` bodies must run resumably like async functions
+    // (AWAIT is only valid in an is_async context). The flag comes from the
+    // explicit async marker on this arrow, never from the enclosing body —
+    // a plain arrow inside an async function or TLA module is synchronous.
+    arrow_ctx.is_async = is_async_arrow;
     if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
 
     // Propagate class context (for super expressions).
@@ -3281,11 +3288,14 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
     // If primary_expr recorded the `async` keyword's position before
     // consuming it and re-entering (async arrow form `async param => body`),
     // use that offset so toString() starts at `async` (ES2019 §19.2.3.5).
-    uint effective_src_start = (self.pending_async_arrow_src != 0xFFFFFFFF)
+    // The marker doubles as the async signal: it is set exactly when
+    // primary_expr consumed `async` in front of this arrow.
+    bool arrow_is_async = self.pending_async_arrow_src != 0xFFFFFFFF;
+    uint effective_src_start = arrow_is_async
         ? self.pending_async_arrow_src
         : src_start;
     self.pending_async_arrow_src = 0xFFFFFFFF;
-    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest, effective_src_start)!;
+    CompiledFunction* inner = self.compile_arrow_inner(params, param_count, has_rest, effective_src_start, arrow_is_async)!;
 
     // Set the function's display name from the inferred source. This is a
     // non-binding name (no lexical scope entry) — only the name property.
@@ -3309,7 +3319,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
 
 /// Compile an inner arrow function given its parameter names.
 /// Arrow functions have `is_arrow = true`, lexical `this`, and no `.prototype`.
-fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count, bool has_rest, uint src_start = 0xFFFFFFFF) {
+fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params, ushort param_count, bool has_rest, uint src_start = 0xFFFFFFFF, bool is_async_arrow = false) {
     // Create a new CompilerContext for the arrow function
     CompilerContext arrow_ctx;
     arrow_ctx.init(self.lexer, self.heap);
@@ -3320,9 +3330,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     // Arrow functions use the parent scope — no fresh env needed.
     arrow_ctx.is_arrow = true;
 
-    // Propagate async: `async (params) => ...` bodies must run resumably
-    // like async functions (AWAIT is only valid in an is_async context).
-    arrow_ctx.is_async = self.is_async;
+    // `async (params) => ...` bodies must run resumably like async functions
+    // (AWAIT is only valid in an is_async context). The flag comes from the
+    // explicit async marker on this arrow, never from the enclosing body —
+    // a plain arrow inside an async function or TLA module is synchronous.
+    arrow_ctx.is_async = is_async_arrow;
     if (arrow_ctx.is_async) arrow_ctx.is_generator = true;
 
     // Propagate class context (for super expressions).

@@ -1928,13 +1928,10 @@ fn ushort? CompilerContext.primary_expr(&self) {
             // Check for arrow function: IDENTIFIER ARROW => single param
             {
                 // Detect `async function ...` expression: consume the async
-                // identifier and delegate to function_expr with is_async set.
+                // identifier and delegate to function_expr.
                 if (self.peek_type() == TokenType.IDENTIFIER &&
                     self.match_async_function()) {
-                    self.is_async = true;
-                    ushort r = self.function_expr()!;
-                    self.is_async = false;
-                    return r;
+                    return self.function_expr(true)!;
                 }
 
                 // Detect async arrow functions: `async x => ...` or
@@ -1952,10 +1949,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 if (self.check(TokenType.IDENTIFIER) && self.is_async_arrow_lookahead()) {
                     uint async_src = pre_check_src;
                     self.advance()!;  // consume 'async'
-                    self.is_async = true;
+                    // The arrow parsers read pending_async_arrow_src as the
+                    // async signal; is_async is left alone so the enclosing
+                    // body's flag (async function or TLA module) survives.
                     self.pending_async_arrow_src = async_src;
                     ushort r = self.primary_expr()!;
-                    self.is_async = false;
                     self.pending_async_arrow_src = 0xFFFFFFFF;
                     return r;
                 }
