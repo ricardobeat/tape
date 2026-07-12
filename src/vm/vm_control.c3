@@ -219,15 +219,21 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     len_val.set_fastint((long)template.num_formals);
                     func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
 
-                    // Arrow and async functions don't get a .prototype property
-                    // (ES6 §14.2.16, ES2017 §14.7.5: async functions are not constructors)
-                    if (!template.is_arrow() && !template.is_async()) {
-                        // ES5 §13.2: create .prototype property (plain object with .constructor).
-                        // For class constructors, ES2015 §14.5.14 step 25 requires the
-                        // resulting constructor's .prototype to be non-configurable so
-                        // that `class C { static ['prototype']() {} }` throws TypeError
-                        // (the static-method-non-configurable-err test262 case).
-                        hobject::PropFlags proto_pflags = hobject::PROP_FLAGS_WENC;  // §10.2.5: writable, non-enum, non-config
+                    // Only constructable functions get a .prototype property.
+                    // Arrow functions, async functions, and class methods are
+                    // not constructable and must not have .prototype (ES6 §14.2.16,
+                    // ES2017 §14.7.5, ES2015 §14.3.9 — DefineMethod creates
+                    // functions without .prototype).
+                    if (template.is_constructable()) {
+                        // ES5 §13.2.2 step 15: create .prototype property on the function
+                        // (plain object with .constructor).  For regular functions the
+                        // flags are {writable:true, enumerable:false, configurable:false}.
+                        // For class constructors ES2015 §14.5.14 step 25 requires
+                        // {writable:false, enumerable:false, configurable:false} so
+                        // that `class C { static ['prototype']() {} }` throws TypeError.
+                        hobject::PropFlags proto_pflags = template.is_class_ctor()
+                            ? hobject::PROP_FLAGS_NNC   // non-writable, non-enumerable, non-configurable
+                            : hobject::PROP_FLAGS_WENC;  // writable, non-enumerable, non-configurable
                         HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                         if (try proto_obj = proto_obj_raw) {
                             if (template.is_generator() && vm.heap.generator_proto != null) {
@@ -238,10 +244,11 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             } else {
                                 proto_obj.prototype = vm.heap.object_proto;
                                 // Set .constructor on the prototype object
+                                // ES5 §13.2.2 step 17: {writable:true, enumerable:false, configurable:true}
                                 HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
                                 TVal constr_val;
                                 constr_val.set_object(func_obj);
-                                proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WEC);
+                                proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WC);
                             }
                             // Set .prototype on the function
                             HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];

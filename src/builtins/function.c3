@@ -170,7 +170,8 @@ fn void builtin_function(BuiltinContext* ctx) {
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
         proto_tv.set_object(proto);
-        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WC);
+        // ES5 §15.3.2.1 step 12: .prototype is {writable:true, enumerable:false, configurable:false}
+        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WENC);
     }
 
     // Set function length from the compiled function's formal parameter count.
