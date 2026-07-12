@@ -122,7 +122,18 @@ fn void? CompilerContext.class_declaration(&self) {
     self.lexer.refresh_token_start();
     uint class_decl_src_start = self.lexer.token_start;
     self.expect(TokenType.CLASS)!;
-    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+    // Per ES2024 §15.7.1, BindingIdentifier may be `await` (in non-module)
+    // or `yield` (in non-generator). Accept these contextual keywords.
+    Token name_tok;
+    TokenType name_tt = self.peek_type();
+    if (name_tt == TokenType.IDENTIFIER) {
+        name_tok = self.advance()!;
+    } else if ((name_tt == TokenType.AWAIT && !self.is_module) ||
+               (name_tt == TokenType.YIELD && !self.is_generator)) {
+        name_tok = self.advance()!;
+    } else {
+        return COMPILE_ERROR~;
+    }
 
     // ES6 §14.5.14 Runtime Semantics: ClassDefinitionEvaluation creates a
     // fresh lexical environment (classScope) as a child of the current
@@ -190,7 +201,11 @@ fn ushort? CompilerContext.class_expression(&self) {
     uint class_name_idx = 0;
     ushort name_reg = MAX_REGISTERS;
     bool has_name = false;
-    if (self.check(TokenType.IDENTIFIER)) {
+    TokenType class_name_tt = self.peek_type();
+    bool is_valid_class_name = (class_name_tt == TokenType.IDENTIFIER) ||
+        (class_name_tt == TokenType.AWAIT && !self.is_module) ||
+        (class_name_tt == TokenType.YIELD && !self.is_generator);
+    if (is_valid_class_name) {
         Token name_tok = self.advance()!;
         name = name_tok.str_value;
         // For named class expressions, track the name on the scope stack so
