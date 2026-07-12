@@ -2602,6 +2602,16 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Collect names captured by nested callables (plan 045).
     inner_ctx.pre_scan_captures();
 
+    // Per ES2015 §9.2.10 step 27: when hasParameterExpressions is true,
+    // a separate VariableEnvironment is needed for the function body so
+    // that closures created by default parameter expressions do not have
+    // visibility of var declarations in the function body.
+    // PUSH_VAR creates a new var_env (and lex_env) child of the current
+    // var_env, isolating body vars from the parameter scope.
+    if (inner_has_func_lex) {
+        inner_ctx.emit_simple(Opcode.PUSH_VAR);
+    }
+
     // Hoist var and function declarations to the top of the inner function scope.
     inner_ctx.hoist_decls(false)!;
 
@@ -2611,7 +2621,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // exact source span (without trailing whitespace / line-terminators).
     uint inner_body_end_pos = inner_ctx.lexer.pos;
 
-    // Pop the function-level lexical scope
+    // Pop the body's variable scope (undo PUSH_VAR)
+    if (inner_has_func_lex) {
+        inner_ctx.emit_simple(Opcode.POP_VAR);
+    }
+
+    // Pop the function-level lexical scope (undo PUSH_LEX for parameter TDZ)
     if (inner_has_func_lex) {
         inner_ctx.emit_simple(Opcode.POP_LEX);
     }
