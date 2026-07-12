@@ -343,6 +343,8 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
         return MODULE_ERROR~;
     }
     mod.func = func_opt;
+    mod.func.filename_ptr = normalized.ptr;
+    mod.func.filename_len = (uint)normalized.len;
 
     // 6. Notify host
     call_on_module_loaded(heap, mod);
@@ -586,8 +588,26 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
     // await is async: run it through the async path so `await` suspends and
     // the module's evaluation promise drives to settlement. A rejection (e.g.
     // `await Promise.reject(e)`) surfaces `e` in heap.error_value.
+    //
+    // heap.current_module_name tracks the module whose body is currently
+    // running, so that relative specifiers in a dynamic import() issued from
+    // within the body (and not otherwise attributable via vm.current_func)
+    // resolve against the right base. Restore the previous value on every
+    // exit path.
+    char[] saved_module_name = heap.current_module_name;
+    heap.current_module_name = mod.module_name;
+    defer heap.current_module_name = saved_module_name;
+
     if (mod.func != null) {
-        if (mod.func.is_async()) {
+        if (vm.run_depth > 0) {
+            // The VM is mid-dispatch (this execute_module call was reached
+            // from a dynamic import() handled inline). execute_module_async
+            // and execute_in_env take over activations[0]/valstack[0] and are
+            // unsafe to call here; execute_module_nested is re-entrant.
+            bool? ok = vm.execute_module_nested(mod.func, mod.env);
+            if (catch err = ok) return false;
+            if (!ok) return false;  // rejected — reason is in heap.error_value
+        } else if (mod.func.is_async()) {
             bool? ok = vm.execute_module_async(mod.func, mod.env);
             if (catch err = ok) return false;
             if (!ok) return false;  // rejected — reason is in heap.error_value
@@ -668,11 +688,78 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
     builtins::promise_init(prom);
     prom.as_header().incref();  // caller-owned reference
 
-    // Placeholder: reject unconditionally until the resolution/evaluation
-    // implementation lands.
+    // Duplicate the specifier into heap-owned memory: the incoming slice
+    // aliases a JS string's buffer, which can be collected while the
+    // ModuleDef caches the normalized name derived from it.
+    void* dup_raw = heap.alloc_func(heap.heap_udata, specifier.len);
+    if (dup_raw == null) {
+        TVal oom_reason = module_type_error(heap, "out of memory resolving module specifier");
+        builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &oom_reason, heap);
+        builtins::promise_trigger_reactions(prom, heap, (void*)vm);
+        TVal oom_result;
+        oom_result.set_object(prom);
+        return oom_result;
+    }
+    if (specifier.len > 0) libc::memcpy(dup_raw, specifier.ptr, specifier.len);
+    char[] dup_spec = ((char*)dup_raw)[:specifier.len];
+
+    // Base name for relative resolution: the currently executing function's
+    // filename when it has one, else the module whose body is currently
+    // running (maintained by execute_module around body runs).
+    char[] base_name = {};
+    if (vm.current_func != null) base_name = vm.current_func.get_filename();
+    if (base_name.len == 0) base_name = heap.current_module_name;
+
     TVal reason;
-    reason.set_undefined();
-    builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &reason, heap);
+    bool rejected = false;
+
+    ModuleDef* mod = null;
+    ModuleDef*? mod_opt = resolve_module(heap, dup_spec, base_name);
+    if (catch err = mod_opt) {
+        reason = module_type_error(heap, "cannot resolve module");
+        rejected = true;
+    } else {
+        mod = mod_opt;
+    }
+
+    if (!rejected) {
+        if (!link_module(heap, mod, vm.global_env)) {
+            reason = module_type_error(heap, "cannot link module");
+            rejected = true;
+        }
+    }
+
+    if (!rejected) {
+        heap.has_error = false;
+        heap.error_value.set_undefined();
+        bool ok = execute_module(heap, vm, mod);
+        if (!ok) {
+            if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+                reason = heap.error_value;
+            } else {
+                reason = module_type_error(heap, "module evaluation failed");
+            }
+            rejected = true;
+        }
+    }
+
+    if (rejected) {
+        builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &reason, heap);
+        builtins::promise_trigger_reactions(prom, heap, (void*)vm);
+        TVal result;
+        result.set_object(prom);
+        return result;
+    }
+
+    HObject*? ns_opt = build_namespace_object(heap, mod);
+    TVal fulfill_val;
+    if (catch err = ns_opt) {
+        fulfill_val = module_type_error(heap, "cannot build module namespace object");
+        builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &fulfill_val, heap);
+    } else {
+        fulfill_val.set_object(ns_opt);
+        builtins::promise_settle(prom, 1, &fulfill_val, heap);
+    }
     builtins::promise_trigger_reactions(prom, heap, (void*)vm);
 
     TVal result;
@@ -683,6 +770,32 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Build a TypeError value with the given message, for rejecting a dynamic
+/// import promise. On allocation failure returns an undefined TVal — a
+/// degraded rejection reason is acceptable since the promise is still
+/// rejected.
+fn TVal module_type_error(Heap* heap, char[] msg) {
+    TVal result;
+    HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err = err_raw) {
+        result.set_undefined();
+        return result;
+    }
+    HObject* err = err_raw;
+    err.prototype = heap.type_err_proto;
+    HString* msg_str = heap.str_intern(msg);
+    if (msg_str != null) {
+        TVal msg_val;
+        msg_val.set_string(msg_str);
+        HString* msg_key = heap.str_intern("message");
+        if (msg_key != null) {
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+    }
+    result.set_object(err);
+    return result;
+}
 
 /// Resolve an export name to the local binding name in a module's exports table.
 /// For most exports local_name == export_name, but for `export default <expr>`
