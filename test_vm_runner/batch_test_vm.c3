@@ -24,6 +24,7 @@
 module batch_test_vm;
 
 import duktape::compiler;
+import duktape::esm;
 import duktape::vm;
 import duktape::heap;
 import duktape::env;
@@ -211,6 +212,114 @@ fn bool is_async_test(char[] src) {
     return false;
 }
 
+/// Detect if test source has `flags: [module]` in its frontmatter.
+/// Module code changes parse-time semantics (e.g. `await` is always reserved,
+/// top-level `import`/`export` are allowed, the body is implicitly strict),
+/// so `flags: [module]` tests must be compiled via compile_module — not the
+/// plain script path — or negative-parse module tests silently "pass" as
+/// scripts.
+fn bool is_module_test(char[] src) {
+    usz scan_end = src.len < 4096 ? src.len : (usz)4096;
+    usz i = 0;
+    // Find "flags:" within the frontmatter
+    while (i + 6 < scan_end) {
+        if (src[i] == 'f' && src[i+1] == 'l' && src[i+2] == 'a' && src[i+3] == 'g'
+            && src[i+4] == 's' && src[i+5] == ':') {
+            i += 6;
+            break;
+        }
+        i++;
+    }
+    if (i + 6 >= scan_end) return false;
+    // Look for "module" within the brackets
+    while (i + 6 < scan_end && src[i] != ']') {
+        if (src[i] == 'm' && src[i+1] == 'o' && src[i+2] == 'd' && src[i+3] == 'u'
+            && src[i+4] == 'l' && src[i+5] == 'e') {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+/// Negative-test phase, extracted from `negative:\n  phase: <p>` frontmatter.
+enum NegPhase : int {
+    NONE,     // not a negative test
+    PARSE,    // negative: phase: parse   — a compile/parse error is expected
+    RUNTIME,  // negative: phase: runtime — a runtime throw is expected
+}
+
+/// Parse the `negative:` frontmatter block and return its declared phase.
+///
+/// Runtime-negative tests are the dangerous case: many (all 40 in the corpus)
+/// have NO local try/assert.throws — the comment in e.g.
+/// eval-code/direct/strict-caller-global.js explicitly says they *rely on the
+/// negative frontmatter* to assert the error. Without inverting the verdict,
+/// the worker scores a correct throw as FAIL and a (buggy) non-throw as PASS —
+/// i.e. it rewards implementing the reverse of the spec. run_one_test() uses
+/// this to invert the runtime-negative verdict.
+fn NegPhase negative_phase(char[] src) {
+    usz scan_end = src.len < 8192 ? src.len : (usz)8192;
+    // Find "negative:" in the frontmatter.
+    usz i = 0;
+    bool found = false;
+    while (i + 9 < scan_end) {
+        if (src[i] == 'n' && src[i+1] == 'e' && src[i+2] == 'g' && src[i+3] == 'a'
+            && src[i+4] == 't' && src[i+5] == 'i' && src[i+6] == 'v' && src[i+7] == 'e'
+            && src[i+8] == ':') {
+            i += 9;
+            found = true;
+            break;
+        }
+        i++;
+    }
+    if (!found) return NegPhase.NONE;
+    // Find "phase:" after "negative:" — scan a bounded window (the YAML block).
+    usz block_end = i + 256 < scan_end ? i + 256 : scan_end;
+    while (i + 6 < block_end) {
+        if (src[i] == 'p' && src[i+1] == 'h' && src[i+2] == 'a' && src[i+3] == 's'
+            && src[i+4] == 'e' && src[i+5] == ':') {
+            i += 6;
+            // Skip spaces
+            while (i < block_end && (src[i] == ' ' || src[i] == '\t')) { i++; }
+            if (i + 5 <= block_end && src[i] == 'p' && src[i+1] == 'a' && src[i+2] == 'r'
+                && src[i+3] == 's' && src[i+4] == 'e') {
+                return NegPhase.PARSE;
+            }
+            if (i + 7 <= block_end && src[i] == 'r' && src[i+1] == 'u' && src[i+2] == 'n'
+                && src[i+3] == 't' && src[i+4] == 'i' && src[i+5] == 'm' && src[i+6] == 'e') {
+                return NegPhase.RUNTIME;
+            }
+            return NegPhase.NONE;
+        }
+        i++;
+    }
+    return NegPhase.NONE;
+}
+
+/// Compile+run a `flags: [module]` test through the ESM parse path so that
+/// module-only syntax rules apply. Self-contained module tests (no imports)
+/// execute; tests with imports are compiled only (the worker does not run the
+/// module resolve/link pipeline). Return codes match exec_js: 0 ok, 1 runtime
+/// error, 2 compile error.
+fn int exec_js_module(Vm* v, Heap* hp, char[] src) {
+    esm::ModuleDef*? mod_opt = esm::heap_ensure_module(hp, "__test262_module__");
+    if (catch err = mod_opt) { return 1; }
+    esm::ModuleDef* mod = mod_opt;
+
+    Lexer lx = lexer::lexer_init(src, hp);
+    CompiledFunction*? f = compiler::compile_module(&lx, hp, "__test262_module__", mod);
+    if (catch err = f) {
+        io::eprintfn("  COMPILE ERROR (module)");
+        return 2;  // 2 = compile error — negative-parse module tests want this
+    }
+    if (catch err = v.execute(f)) {
+        io::eprintfn("  RUNTIME ERROR (module, compiled ok)");
+        return 1;
+    }
+    return 0;
+}
+
 fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[] property_helper_src) {
     char[]? source = file::load_temp((String)test_path);
     if (catch err = source) { return 1; }
@@ -285,7 +394,33 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     }
     defer if (strict_buf != null) { libc::free(strict_buf); }
 
-    int src_rc = exec_js(v, hp, exec_src);
+    // `flags: [module]` tests must be parsed as ES modules so module-only
+    // rules apply (e.g. `await` reserved, top-level import/export). Otherwise
+    // a negative-parse module test would compile fine as a script and never
+    // surface its expected SyntaxError. The python runner's categorize_ce()
+    // maps a COMPILE_ERROR on a `negative: phase: parse` test to a pass.
+    bool module_test = is_module_test(src);
+    NegPhase neg = negative_phase(src);
+    int src_rc = module_test ? exec_js_module(v, hp, exec_src) : exec_js(v, hp, exec_src);
+
+    // `negative: phase: runtime` tests expect the *execution* to throw, and
+    // (in this corpus, all 40 of them) have no local try/assert.throws — they
+    // rely entirely on this frontmatter. Invert the verdict: a throw is the
+    // pass. Without this the worker rewards implementing the reverse of the
+    // spec (a non-throwing bug scores PASS). A compile error (src_rc==2) is
+    // NOT the declared phase, so it still fails — parse-vs-runtime matters.
+    if (neg == NegPhase.RUNTIME) {
+        if (src_rc == 2) {
+            io::eprintfn("  FAIL: runtime-negative test threw at parse time, not runtime");
+            return 1;  // wrong phase — a real mismatch, not the expected error
+        }
+        if (src_rc == 1) {
+            return 0;  // expected runtime throw — pass
+        }
+        io::eprintfn("  FAIL: runtime-negative test completed without throwing");
+        return 1;  // ran clean but was required to throw — fail (was a false PASS)
+    }
+
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 
