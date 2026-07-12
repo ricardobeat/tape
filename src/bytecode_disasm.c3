@@ -178,6 +178,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.ENDTRY.ordinal]      = "ENDTRY",
     [Opcode.THROW.ordinal]       = "THROW",
     [Opcode.THROW_REF.ordinal]   = "THROW_REF",
+    [Opcode.THROW_SYNTAX.ordinal] = "THROW_SYNTAX",
     [Opcode.CATCH.ordinal]       = "CATCH",
     [Opcode.FINALLY.ordinal]     = "FINALLY",
     [Opcode.ENDFINALLY.ordinal]  = "ENDFINALLY",

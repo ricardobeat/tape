@@ -211,6 +211,10 @@ fn CompiledFunction*? compile_module(Lexer* lex, void* heap, char[] module_name,
     lex.seen_line_term  = saved_slt;
 
     // Parse statements until EOF
+    // Note: module top-level `let`/`const` bindings live in the Module
+    // Environment Record, not the Global Environment Record, so the
+    // restricted-global SyntaxError check inside hoist_lexical_tdz is
+    // skipped for modules (ctx.is_module) — this call cannot actually fail.
     ctx.hoist_lexical_tdz();
     while (!ctx.is_at_end()) {
         ctx.statement()!;

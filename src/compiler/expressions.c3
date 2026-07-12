@@ -913,7 +913,11 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     // INC/DEC handlers below clear these after consuming the LHS info.
 
     TokenType tt = self.peek_type();
-    if (tt == TokenType.INC) {
+    // ES5 §7.9.1 restricted productions: no LineTerminator is allowed between
+    // the operand and a postfix ++/--. If one is present, ASI forces a
+    // semicolon here, so ++/-- belongs to the *next* statement instead.
+    bool nl_before_postfix_op = self.lexer.seen_line_term;
+    if (tt == TokenType.INC && !nl_before_postfix_op) {
         if (self.last_was_optional_chain) {
             return COMPILE_ERROR~;
         }
@@ -955,7 +959,7 @@ fn ushort? CompilerContext.postfix_expr(&self) {
         return saved;
     }
 
-    if (tt == TokenType.DEC) {
+    if (tt == TokenType.DEC && !nl_before_postfix_op) {
         if (self.last_was_optional_chain) {
             return COMPILE_ERROR~;
         }
@@ -2703,28 +2707,15 @@ fn ushort? CompilerContext.primary_expr(&self) {
 }
 
 /// Parse literal keyword values (true, false, null, undefined).
+///
+/// true/false/null/undefined are tokenized as IDENTIFIER tokens and handled
+/// directly in `primary_expr`'s IDENTIFIER case, so this function is only
+/// reached when `primary_expr`'s default case sees a token that cannot start
+/// any expression (e.g. EOF, a stray operator with no operand). That is a
+/// syntax error, not a valid empty expression — silently emitting `undefined`
+/// here previously masked things like a lone `++`/`+` at end of input.
 fn ushort? CompilerContext.literal_keyword(&self) {
-    TokenType tt = self.peek_type();
-    self.advance()!;
-
-    ushort reg = self.alloc_reg();
-
-    // Map certain keyword tokens to load instructions
-    // The lexer produces these as keyword token types
-    // We need to check the str_value for true/false/null/undefined
-    // But those aren't separate token types in our lexer, so handle via
-    // the token type directly:
-
-    // Actually, looking at the lexer, true/false/null/undefined are
-    // tokenized as IDENTIFIER tokens. Let's handle the case where
-    // we reach here with an unexpected token.
-    switch (tt) {
-        default:
-            // Emit LDUNDEF as a fallback for unrecognized primary expressions
-            self.emit_abc(Opcode.LDUNDEF, (uint)reg, 0, 0);
-    }
-
-    return reg;
+    return self.fail("unexpected token in expression")~;
 }
 
 /// Parse object literal: { key: value, ... }
