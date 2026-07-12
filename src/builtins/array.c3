@@ -213,7 +213,10 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
                         ctx.result.set_undefined(); return;
                     }
                 }
-                array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
+                // ES2022 §23.1.3.3 step 17.e.iii: Set(O, toKey, fromVal, true).
+                if (!array_set_elem_ulong_set(ctx, obj, to_idx, elem)) {
+                    ctx.result.set_undefined(); return;
+                }
             } else if (!ctx.should_throw) {
                 if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
                     ctx.result.set_undefined(); return;
@@ -244,7 +247,10 @@ fn void builtin_array_proto_copyWithin(BuiltinContext* ctx) {
                         ctx.result.set_undefined(); return;
                     }
                 }
-                array_set_elem_ulong(obj, to_idx, elem, ctx.heap);
+                // ES2022 §23.1.3.3 step 17.e.iii: Set(O, toKey, fromVal, true).
+                if (!array_set_elem_ulong_set(ctx, obj, to_idx, elem)) {
+                    ctx.result.set_undefined(); return;
+                }
             } else if (!ctx.should_throw) {
                 if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
                     ctx.result.set_undefined(); return;
@@ -469,7 +475,14 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
         }
     }
 
-    array_set_length_ulong(result, n, ctx.heap, ctx.vm);
+    // ES2019 §22.1.3.11: FlattenIntoArray does NOT explicitly set length.
+    // For ARRAY class, update the internal length to match the written
+    // elements so the length property reflects the actual element count.
+    // For non-ARRAY results (e.g. from a custom species constructor),
+    // do not set length — the spec does not call for it.
+    if (result.get_class() == hobject::ObjClass.ARRAY) {
+        array_set_length_ulong(result, n, ctx.heap, ctx.vm);
+    }
     ctx.result.set_object(result);
 }
 
@@ -1380,7 +1393,10 @@ fn void builtin_array_proto_push(BuiltinContext* ctx) {
     // Step 5: write each element (spec uses Set, which walks proto chain).
     for (ushort i = 0; i < ctx.argc; i++) {
         TVal arg = ctx.regs[ctx.base_reg + i];
-        array_set_elem_ulong(obj, len + i, arg, ctx.heap);
+        if (!array_set_elem_ulong_set(ctx, obj, len + (ulong)i, arg)) {
+            ctx.result.set_undefined();
+            return;
+        }
     }
 
     // Step 6: Set(O, "length", new_len, true) — throws if length is not writable.
@@ -1840,27 +1856,11 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         return;
     }
 
-    // ES2022 §23.1.3.28 step 9: ArraySpeciesCreate / ArrayCreate rejects
-    // actualDeleteCount > 2^32-1 with a RangeError. Throw before mutating
-    // anything so the host can detect the failure.
-    if (actual_delete_count > 0xFFFFFFFFUL) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.range_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, "Invalid array length");
-            if (msg_str != null) {
-                TVal msg_val; msg_val.set_string(msg_str);
-                HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
-            }
-            ctx.should_throw = true;
-            ctx.throw_value.set_object(err);
-        }
-        ctx.result.set_undefined();
-        return;
-    }
-
     // Create result array with deleted items via ArraySpeciesCreate.
+    // Note: the RangeError for actualDeleteCount > 2^32-1 is thrown by
+    // ArrayCreate inside ArraySpeciesCreate (when no species constructor is
+    // provided), NOT here. When a species constructor IS provided, it
+    // receives the raw length and handles it.
     HObject* result = array_species_create_result(ctx, obj, actual_delete_count);
     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     if (result == null) { ctx.result.set_undefined(); return; }
@@ -1886,13 +1886,21 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
         for (ulong k = 0; k < shift_len; k++) {
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
             TVal elem;
-            if (arr_has_prop(obj, actual_start + actual_delete_count + k, ctx.heap)) {
-                if (arr_get_elem_vm(obj, actual_start + actual_delete_count + k, ctx.heap, ctx, &elem)) {
+            ulong from_idx = actual_start + actual_delete_count + k;
+            ulong to_idx = actual_start + item_count + k;
+            if (arr_has_prop(obj, from_idx, ctx.heap)) {
+                if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
                     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-                    if (!array_set_elem_ulong_checked(ctx, obj, actual_start + item_count + k, elem)) {
+                    if (!array_set_elem_ulong_checked(ctx, obj, to_idx, elem)) {
                         ctx.result.set_undefined();
                         return;
                     }
+                }
+            } else {
+                // ES2022 §23.1.3.28 step 15.b.v: DeletePropertyOrThrow(O, to).
+                if (!array_delete_elem_ulong_checked(ctx, obj, to_idx)) {
+                    ctx.result.set_undefined();
+                    return;
                 }
             }
         }
@@ -1922,6 +1930,12 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
                         ctx.result.set_undefined();
                         return;
                     }
+                }
+            } else {
+                // ES2022 §23.1.3.28 step 16.b.v: DeletePropertyOrThrow(O, to).
+                if (!array_delete_elem_ulong_checked(ctx, obj, to)) {
+                    ctx.result.set_undefined();
+                    return;
                 }
             }
         }
@@ -3696,10 +3710,18 @@ fn bool array_set_elem_ulong_set(BuiltinContext* ctx, HObject* obj, ulong idx, T
         if (obj.get_class() == hobject::ObjClass.ARRAY && val.is_undefined()) {
             obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
         } else {
-            obj.set_array_idx((uint)idx, val);
-        }
-        if (know_current_len && idx >= current_len) {
-            array_set_length_ulong(obj, idx + 1, ctx.heap);
+            // Try dense array first; fall back to named property when the
+            // dense part can't grow (e.g. index >= 2^31).
+            if (obj.set_array_idx((uint)idx, val)) {
+                // Dense write succeeded — auto-grow length.
+                if (know_current_len && idx >= current_len) {
+                    array_set_length_ulong(obj, idx + 1, ctx.heap);
+                }
+                return true;
+            }
+            // Dense write failed — store as named property (sparse array).
+            // Do NOT auto-grow length here; the caller is responsible.
+            obj.put_prop(key, val, hobject::PROP_FLAGS_WEC);
         }
         return true;
     }
