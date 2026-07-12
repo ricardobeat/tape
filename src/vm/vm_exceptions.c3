@@ -95,6 +95,27 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             return (TVal){};
         }
 
+        case Opcode.THROW_SYNTAX: {
+            // Throw a SyntaxError with a constant-pool message string.
+            // Format: A=unused, B=msg_const_idx (A_BC encoding). Used for
+            // GlobalDeclarationInstantiation checks that must surface as a
+            // runtime throw (ES6+ §15.1.8), e.g. a top-level `let`/`const`
+            // colliding with a restricted global name.
+            uint bc = insn.get_bc();
+            TVal msg_tv = ds.constants[bc];
+            char[] msg_str = "Invalid or unexpected token";
+            if (msg_tv.is_string()) {
+                hstring::HString* hs = (hstring::HString*)msg_tv.get_heapptr();
+                msg_str = hs.get_data();
+            }
+            if (!vm_throw_error(vm, vm.heap.syntax_err_proto, msg_str, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                vm.has_error = true;
+                vm.heap.has_error = true;
+                return VM_ERROR~;
+            }
+            return (TVal){};
+        }
+
         case Opcode.CATCH: {
             // Read the thrown exception from the nearest catcher
             Catcher* cat = (Catcher*)ds.act.cat;

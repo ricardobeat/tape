@@ -267,6 +267,12 @@ enum Opcode : char {
     /// Throw a ReferenceError with a constant pool message.
     /// A=unused, B=msg_const_idx. Used for `delete super.x` (always ReferenceError).
     THROW_REF,
+    /// Throw a SyntaxError with a constant pool message.
+    /// A=unused, B=msg_const_idx. Used for GlobalDeclarationInstantiation
+    /// checks (ES6+ §15.1.8) that must surface as a *runtime* throw rather
+    /// than a compile-time failure — e.g. a top-level `let`/`const` colliding
+    /// with a restricted global name (`undefined`, `NaN`, `Infinity`).
+    THROW_SYNTAX,
     /// `A = <caught exception>`  — store the caught value.
     CATCH,
     /// Enter the finally block.
@@ -604,6 +610,7 @@ case PUTLEX:     return A_BC;
         case PUTPROP_SUPER: return ABC;
         case GETPROP_SUPER: return ABC;
         case THROW_REF:     return A_BC;
+        case THROW_SYNTAX:  return A_BC;
         case SUPER_CALL: return ABC;
         case SUPER_CALL_S: return ABC;
         case NEWTARGET:  return ABC;

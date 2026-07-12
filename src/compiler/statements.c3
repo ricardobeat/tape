@@ -276,11 +276,50 @@ fn void? CompilerContext.parse_directives(&self) {
 /// TDZ-initialize top-level let/const declarations at program/eval scope so
 /// that accessing or assigning to them before their declaration throws a
 /// ReferenceError, matching block scope. Mirrors the INITTZ pass in block().
+/// Names of "restricted global" properties: they exist on the global object
+/// as non-configurable, non-writable bindings. Per ES6+ §15.1.8
+/// (GlobalDeclarationInstantiation) step 5.c-d, a top-level `let`/`const`
+/// declaration whose name collides with one of these must throw a
+/// SyntaxError — HasRestrictedGlobalProperty(name) is true for them.
+const String[3] RESTRICTED_GLOBAL_NAMES = { "undefined", "NaN", "Infinity" };
+
+fn bool is_restricted_global_name(char[] name) {
+    foreach (String restricted : RESTRICTED_GLOBAL_NAMES) {
+        if (name.len == restricted.len) {
+            bool eq = true;
+            for (usz i = 0; i < name.len; i++) {
+                if (name[i] != restricted[i]) { eq = false; break; }
+            }
+            if (eq) return true;
+        }
+    }
+    return false;
+}
+
 fn void CompilerContext.hoist_lexical_tdz(&self) {
     NameSpan[MAX_PRESCAN_NAMES] spans;
     uint n = self.pre_scan_lexical_decls(&spans, MAX_PRESCAN_NAMES);
     for (uint i = 0; i < n; i++) {
         char[] name = self.lexer.source[spans[i].pos..spans[i].pos + spans[i].len - 1];
+        // Only Script/eval top-level lexical declarations collide with the
+        // global object's restricted properties (HasRestrictedGlobalProperty,
+        // ES6+ §15.1.8). Module top-level `let`/`const` bindings instead live
+        // in the Module Environment Record, which has no such restriction —
+        // so this check is skipped for modules even though they are
+        // `is_global` (they get their own top-level env, see entry.c3).
+        //
+        // GlobalDeclarationInstantiation is a *runtime* step (it runs right
+        // before the top-level code executes, not during parsing), so a
+        // collision must be a runtime SyntaxError throw, not a compile-time
+        // failure — emit THROW_SYNTAX as the very first instruction instead
+        // of calling self.fail(). Only the first colliding name is reported
+        // (matches "throw on first collision found" semantics); no further
+        // TDZ inits are emitted since the throw preempts all of them.
+        if (self.is_global && !self.is_module && is_restricted_global_name(name)) {
+            uint msg_idx = self.add_string_constant("Identifier is a restricted global and cannot be declared with let/const");
+            self.emit_a_bc(Opcode.THROW_SYNTAX, 0, msg_idx);
+            return;
+        }
         uint name_idx = self.add_string_constant(name);
         self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
     }

@@ -2918,6 +2918,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.ENDTRY:
         case Opcode.THROW:
         case Opcode.THROW_REF:
+        case Opcode.THROW_SYNTAX:
         case Opcode.CATCH:
         case Opcode.FINALLY:
         case Opcode.ENDFINALLY:
