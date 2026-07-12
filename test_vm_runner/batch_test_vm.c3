@@ -31,6 +31,7 @@ import duktape::env;
 import duktape::lexer;
 import duktape::types;
 import duktape::bytecode;
+import duktape::hobject;
 import duktape::hstring;
 import duktape::builtins;
 import std::io;
@@ -244,9 +245,121 @@ fn bool is_module_test(char[] src) {
 
 /// Negative-test phase, extracted from `negative:\n  phase: <p>` frontmatter.
 enum NegPhase : int {
-    NONE,     // not a negative test
-    PARSE,    // negative: phase: parse   — a compile/parse error is expected
-    RUNTIME,  // negative: phase: runtime — a runtime throw is expected
+    NONE,        // not a negative test
+    PARSE,       // negative: phase: parse      — a compile/parse (early) error is expected
+    RESOLUTION,  // negative: phase: resolution — a module-resolution error is expected
+    RUNTIME,     // negative: phase: runtime    — a runtime throw is expected
+}
+
+/// Extract the `type:` (expected error constructor name) from the `negative:`
+/// frontmatter block into `out`. Returns the length written, 0 if absent.
+/// Per test262 INTERPRETING.md, a negative test passes only if the thrown
+/// exception's constructor name matches this `type`.
+fn usz negative_type(char[] src, char[] out) {
+    usz scan_end = src.len < 8192 ? src.len : (usz)8192;
+    usz i = 0;
+    bool found = false;
+    while (i + 9 < scan_end) {
+        if (src[i] == 'n' && src[i+1] == 'e' && src[i+2] == 'g' && src[i+3] == 'a'
+            && src[i+4] == 't' && src[i+5] == 'i' && src[i+6] == 'v' && src[i+7] == 'e'
+            && src[i+8] == ':') { i += 9; found = true; break; }
+        i++;
+    }
+    if (!found) return 0;
+    usz block_end = i + 256 < scan_end ? i + 256 : scan_end;
+    while (i + 5 < block_end) {
+        if (src[i] == 't' && src[i+1] == 'y' && src[i+2] == 'p' && src[i+3] == 'e'
+            && src[i+4] == ':') {
+            i += 5;
+            while (i < block_end && (src[i] == ' ' || src[i] == '\t')) { i++; }
+            usz start = i;
+            while (i < block_end && (
+                (src[i] >= 'A' && src[i] <= 'Z') || (src[i] >= 'a' && src[i] <= 'z')
+                || (src[i] >= '0' && src[i] <= '9') || src[i] == '_')) { i++; }
+            usz n = i - start;
+            if (n == 0 || n > out.len) return 0;
+            for (usz k = 0; k < n; k++) { out[k] = src[start + k]; }
+            return n;
+        }
+        i++;
+    }
+    return 0;
+}
+
+/// Does the thrown value's constructor name match `expected`?  Builtin error
+/// types are matched by walking the prototype chain against the heap's error
+/// prototypes (robust against a missing/renamed `.name`). Anything else
+/// (Test262Error, custom errors) is matched by reading the object's `name`
+/// own/inherited property. Returns true on match.
+fn bool thrown_type_matches(Vm* v, Heap* hp, char[] expected) {
+    // The uncaught-error unwind clears vm.throw_value/throw_pending, but the
+    // thrown value persists in heap.error_value — read it from there. (v is
+    // kept in the signature for symmetry with the rest of the harness API.)
+    TVal thrown_val = hp.error_value;
+    if (!thrown_val.is_object()) {
+        // A thrown primitive (string/number) has no constructor name to match.
+        // The corpus's runtime-negatives all throw Error objects, so treat a
+        // primitive throw as a non-match (fails the type check).
+        return false;
+    }
+    HObject* thrown = (HObject*)thrown_val.get_heapptr();
+    if (thrown == null) return false;
+
+    // Map expected builtin-error name → its prototype, then chain-walk.
+    HObject* want_proto = null;
+    if (compiler::str_eq(expected, "TypeError"))      { want_proto = hp.type_err_proto; }
+    else if (compiler::str_eq(expected, "RangeError"))     { want_proto = hp.range_err_proto; }
+    else if (compiler::str_eq(expected, "ReferenceError")) { want_proto = hp.ref_err_proto; }
+    else if (compiler::str_eq(expected, "SyntaxError"))    { want_proto = hp.syntax_err_proto; }
+    else if (compiler::str_eq(expected, "EvalError"))      { want_proto = hp.eval_err_proto; }
+    else if (compiler::str_eq(expected, "URIError"))       { want_proto = hp.uri_err_proto; }
+
+    if (want_proto != null) {
+        HObject* cur = thrown.prototype;
+        for (uint guard = 0; guard < 64 && cur != null; guard++) {
+            if (cur == want_proto) return true;
+            cur = cur.prototype;
+        }
+        // Might still match by name (e.g. a subclass); fall through to name check.
+    }
+
+    // Per INTERPRETING.md the match is against the *constructor's* name, so
+    // read thrown.constructor.name. This is what catches user error types like
+    // Test262Error, whose instances have no own/inherited `name` property but
+    // whose constructor function is named. Also covers builtin errors that
+    // didn't match a proto above (e.g. subclasses).
+    char[] ctor_key = "constructor";
+    uint ch = hp.hash_string(ctor_key);
+    HString*? cks = hp.str_table_lookup(ctor_key, ch);
+    HObject* ctor = null;
+    if (try ck = cks) {
+        HObject* cur = thrown;
+        for (uint guard = 0; guard < 64 && cur != null; guard++) {
+            int idx = cur.find_prop_idx(ck);
+            if (idx >= 0) {
+                TVal cv = cur.prop_values()[idx];
+                if (cv.is_object() && cv.get_heapptr() != null) { ctor = (HObject*)cv.get_heapptr(); }
+                break;
+            }
+            cur = cur.prototype;
+        }
+    }
+    if (ctor != null) {
+        char[] name_key = "name";
+        uint nh = hp.hash_string(name_key);
+        HString*? nks = hp.str_table_lookup(name_key, nh);
+        if (try nk = nks) {
+            int nidx = ctor.find_prop_idx(nk);
+            if (nidx >= 0) {
+                TVal nv = ctor.prop_values()[nidx];
+                if (nv.is_string() && nv.get_heapptr() != null) {
+                    HString* ns = (HString*)nv.get_heapptr();
+                    if (ns.equals(expected)) return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 /// Parse the `negative:` frontmatter block and return its declared phase.
@@ -285,6 +398,11 @@ fn NegPhase negative_phase(char[] src) {
             if (i + 5 <= block_end && src[i] == 'p' && src[i+1] == 'a' && src[i+2] == 'r'
                 && src[i+3] == 's' && src[i+4] == 'e') {
                 return NegPhase.PARSE;
+            }
+            if (i + 10 <= block_end && src[i] == 'r' && src[i+1] == 'e' && src[i+2] == 's'
+                && src[i+3] == 'o' && src[i+4] == 'l' && src[i+5] == 'u' && src[i+6] == 't'
+                && src[i+7] == 'i' && src[i+8] == 'o' && src[i+9] == 'n') {
+                return NegPhase.RESOLUTION;
             }
             if (i + 7 <= block_end && src[i] == 'r' && src[i+1] == 'u' && src[i+2] == 'n'
                 && src[i+3] == 't' && src[i+4] == 'i' && src[i+5] == 'm' && src[i+6] == 'e') {
@@ -405,20 +523,33 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
 
     // `negative: phase: runtime` tests expect the *execution* to throw, and
     // (in this corpus, all 40 of them) have no local try/assert.throws — they
-    // rely entirely on this frontmatter. Invert the verdict: a throw is the
-    // pass. Without this the worker rewards implementing the reverse of the
-    // spec (a non-throwing bug scores PASS). A compile error (src_rc==2) is
-    // NOT the declared phase, so it still fails — parse-vs-runtime matters.
+    // rely entirely on this frontmatter. Per test262 INTERPRETING.md a negative
+    // test passes only if it throws AND the thrown exception's constructor name
+    // matches the declared `type` AND the error occurs at the declared phase.
+    // Invert the verdict accordingly. Without this the worker rewards
+    // implementing the reverse of the spec (a non-throwing bug scores PASS, or
+    // a throw of the *wrong* type — e.g. the annexB HTML-comment tests that
+    // threw ReferenceError instead of the expected error — scores PASS).
     if (neg == NegPhase.RUNTIME) {
         if (src_rc == 2) {
-            io::eprintfn("  FAIL: runtime-negative test threw at parse time, not runtime");
+            io::eprintfn("  FAIL: runtime-negative threw at parse time, not runtime");
             return 1;  // wrong phase — a real mismatch, not the expected error
         }
-        if (src_rc == 1) {
-            return 0;  // expected runtime throw — pass
+        if (src_rc == 0) {
+            io::eprintfn("  FAIL: runtime-negative completed without throwing");
+            return 1;  // ran clean but was required to throw (was a false PASS)
         }
-        io::eprintfn("  FAIL: runtime-negative test completed without throwing");
-        return 1;  // ran clean but was required to throw — fail (was a false PASS)
+        // src_rc == 1: it threw at runtime. Now enforce the type match.
+        char[64] tbuf;
+        usz tn = negative_type(src, tbuf[..]);
+        if (tn == 0) {
+            return 0;  // no declared type — a runtime throw alone suffices
+        }
+        if (thrown_type_matches(v, hp, tbuf[:tn])) {
+            return 0;  // threw the expected error type at runtime — pass
+        }
+        io::eprintfn("  FAIL: runtime-negative threw wrong error type (wanted %s)", (String)tbuf[:tn]);
+        return 1;  // threw, but not the declared type — fail
     }
 
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
