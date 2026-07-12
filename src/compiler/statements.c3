@@ -170,7 +170,19 @@ fn void? CompilerContext.statement(&self) {
         case TokenType.CLASS:
             self.class_declaration()!;
         case TokenType.IMPORT:
-            self.import_declaration()!;
+        {
+            // `import(...)` at statement level is a dynamic-import expression
+            // statement, not an import declaration. Consume `import` to peek
+            // at the following token, then push it back for either path.
+            Token import_tok = self.advance()!;
+            bool is_dynamic = self.peek_type() == TokenType.LPAREN;
+            self.lexer.pushback(import_tok);
+            if (is_dynamic) {
+                self.expression_statement()!;
+            } else {
+                self.import_declaration()!;
+            }
+        }
         case TokenType.EXPORT:
             self.export_declaration()!;
         case TokenType.SEMICOLON:
@@ -199,9 +211,7 @@ fn void? CompilerContext.statement(&self) {
                     id_tok.str_value[2] == 'y' && id_tok.str_value[3] == 'n' &&
                     id_tok.str_value[4] == 'c') {
                     // id_tok was `async`; next token is `function`
-                    self.is_async = true;
-                    self.function_declaration()!;
-                    self.is_async = false;
+                    self.function_declaration(true)!;
                     break;
                 }
 
@@ -3500,7 +3510,7 @@ fn void? CompilerContext.expression_statement(&self) {
 /// Parse a function declaration (hoisted).
 /// This is called during normal statement parsing for function declarations
 /// that were NOT hoisted during the pre-scan phase.
-fn void? CompilerContext.function_declaration(&self) {
+fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false) {
     self.expect(TokenType.FUNCTION)!;
     // Capture the byte offset of the `function` keyword before any subsequent
     // consume (identifier / star) clobbers lexer.token_start. Used downstream
@@ -3553,8 +3563,10 @@ fn void? CompilerContext.function_declaration(&self) {
     bool saved_is_generator = self.is_generator;
     self.is_generator = false;
 
-    // Save and reset async state: nested function declarations
-    // inside an async function do not inherit the async flag.
+    // Save the enclosing function's async flag — it must survive this
+    // declaration (finish() reads it when the enclosing body completes).
+    // The declaration's own async-ness comes from the is_async_decl
+    // parameter, never from the enclosing flag.
     bool saved_is_async = self.is_async;
     self.is_async = false;
 
@@ -3574,21 +3586,20 @@ fn void? CompilerContext.function_declaration(&self) {
     }
 
     // Async functions are not constructors (ES2017 §14.7.5 — no [[Construct]]).
-    if (self.is_async) {
+    if (is_async_decl) {
         self.is_constructable = false;
     }
 
     Token name_tok = self.expect(TokenType.IDENTIFIER)!;
     ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
-    // Compile the function into a nested CompiledFunction.
-    // Restore is_async so compile_inner_function propagates the flag,
-    // then immediately reset to prevent nested functions from inheriting it.
-    self.is_async = saved_is_async;
+    // Compile the function into a nested CompiledFunction with the
+    // declaration's own async flag, then restore the enclosing one.
+    self.is_async = is_async_decl;
     CompiledFunction* inner = self.compile_inner_function(name_tok.str_value, false, fn_kw_start)!;
-    self.is_async = false;
+    self.is_async = saved_is_async;
 
-    // Restore generator flag (async already reset above)
+    // Restore generator flag
     self.is_generator = saved_is_generator;
     // Restore constructable flag (arrow fns/methods strip it via their own save/restore)
     self.is_constructable = saved_is_constructable;

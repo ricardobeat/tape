@@ -1261,6 +1261,16 @@ fn void CompilerContext.skip_expression(&self) {
 /// Pre-scan function body for var and function declarations and emit hoisted
 /// bytecode so they are available before any statements run.
 fn void? CompilerContext.hoist_decls(&self, bool is_global) {
+    // self.is_async doubles as the "saw `async function`" latch between loop
+    // iterations below. It must start clear — otherwise, inside an async
+    // function's body, the enclosing flag would mark every hoisted plain
+    // `function` declaration as async — and the enclosing function's flag
+    // must survive this pass (it is read by finish() when the enclosing
+    // body's compilation completes).
+    bool enclosing_is_async = self.is_async;
+    self.is_async = false;
+    defer self.is_async = enclosing_is_async;
+
     // --- Save lexer state (for final restore) ---
     uint saved_pos    = self.lexer.pos;
     uint saved_line   = self.lexer.line;
@@ -1558,6 +1568,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 /// before any statements are compiled. This implements function declaration
 /// hoisting as per ES5 §10.2.1.1.
 fn void? CompilerContext.hoist_global_fn_decls(&self) {
+    // See hoist_decls: self.is_async is the between-iteration `async function`
+    // latch; start it clear and restore the enclosing value (e.g. a module
+    // body's top-level-await flag set by compile_module) on exit.
+    bool enclosing_is_async = self.is_async;
+    self.is_async = false;
+    defer self.is_async = enclosing_is_async;
+
     // --- Save lexer state (for final restore) ---
     uint saved_pos    = self.lexer.pos;
     uint saved_line   = self.lexer.line;

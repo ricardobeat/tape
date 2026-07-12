@@ -209,9 +209,11 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                             ds.curr_pc = ds.act.curr_pc;
                             ds.regs_base = ds.act.bottom;
                         } else {
-                            // Not async — propagate error to caller
-                            vm.has_error = true;
-                            vm.heap.has_error = true;
+                            // Not an async frame (or its promise is missing):
+                            // an uncaught rejected await terminates execution.
+                            // Restarting here would rerun the frame from its
+                            // stale saved pc and loop forever.
+                            return vm_uncaught_error(vm, &reason);
                         }
                     }
                     ds.needs_restart = true;

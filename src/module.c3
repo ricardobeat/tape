@@ -373,6 +373,11 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
     // outermost link_module completes. Without this a cyclic import recurses
     // until the C stack overflows (SIGSEGV).
     if (mod.status == ModuleStatus.LINKING) return true;
+    // EVALUATING means the module's body is currently running (a dynamic
+    // import of a module that is mid-evaluation, e.g. a self-import).
+    // Re-linking would replace the live mod.env under the running body and
+    // downgrade the status so the body re-executes. It is already linked.
+    if (mod.status == ModuleStatus.EVALUATING) return true;
     mod.status = ModuleStatus.LINKING;
 
     // Create module env (declarative), parented to the global env so that
