@@ -581,11 +581,20 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         env::env_declare(mod.env, export_key, val);
     }
 
-    // Execute module body in its own env
+    // Execute module body in its own env. A module compiled with top-level
+    // await is async: run it through the async path so `await` suspends and
+    // the module's evaluation promise drives to settlement. A rejection (e.g.
+    // `await Promise.reject(e)`) surfaces `e` in heap.error_value.
     if (mod.func != null) {
-        TVal? res = vm.execute_in_env(mod.func, mod.env);
-        if (catch err = res) {
-            return false;
+        if (mod.func.is_async()) {
+            bool? ok = vm.execute_module_async(mod.func, mod.env);
+            if (catch err = ok) return false;
+            if (!ok) return false;  // rejected — reason is in heap.error_value
+        } else {
+            TVal? res = vm.execute_in_env(mod.func, mod.env);
+            if (catch err = res) {
+                return false;
+            }
         }
     }
 

@@ -925,6 +925,102 @@ fn TVal? Vm.execute_in_env(Vm* vm, CompiledFunction* func, EnvRecord* env) {
     return result;
 }
 
+/// Execute a module body that may contain top-level await, as an async
+/// activation. Allocates the module's evaluation Promise, marks the entry
+/// activation ACT_FLAG_ASYNC, runs the body (which suspends on top-level
+/// `await` via the same machinery as async functions), then drives the
+/// microtask queue until the promise settles.
+///
+/// Returns true if the module evaluated to completion (promise fulfilled or
+/// still pending with an empty queue — treated as success). Returns false if
+/// the module's evaluation promise REJECTED; in that case the rejection reason
+/// is left in heap.error_value so the caller surfaces it as the module's
+/// uncaught error. Returns a fault only on hard setup failure.
+fn bool? Vm.execute_module_async(Vm* vm, CompiledFunction* func, EnvRecord* env) {
+    // Allocate the module evaluation Promise up front so top-level await can
+    // suspend into it and RET can settle it.
+    HObject*? prom_raw = vm.heap.alloc_object(hobject::ObjClass.PROMISE);
+    if (catch err = prom_raw) return err~;
+    HObject* mod_promise = prom_raw;
+    mod_promise.prototype = vm.heap.promise_proto;
+    builtins::promise_init(mod_promise);
+    // Pin it across the evaluation + microtask drain so GC can't sweep it
+    // (transient — released before returning).
+    mod_promise.as_header().incref();
+
+    Activation* entry_act = &vm.activations[0];
+    vm.activation_count = 1;
+
+    entry_act.func = func;
+    entry_act.parent = null;
+    entry_act.var_env = env;
+    entry_act.lex_env = env;
+    entry_act.cat = null;
+    entry_act.curr_pc = func.code;
+    entry_act.bottom = vm.valstack;
+    entry_act.retval = null;
+    entry_act.flags = ACT_FLAG_ASYNC;
+    if (func.has_direct_eval()) {
+        entry_act.flags |= ACT_FLAG_DIRECT_EVAL;
+    }
+    entry_act.async_promise = mod_promise;
+    entry_act.async_gen_state = null;
+
+    TVal this_val;
+    if (vm.global_env != null && vm.global_env.bindings != null) {
+        this_val.set_object(vm.global_env.bindings);
+    } else {
+        this_val.set_undefined();
+    }
+    vm.heap.tval_copy_ref(&entry_act.this_binding, &this_val);
+
+    uint nregs = func.num_regs;
+    if (!ensure_valstack(vm, nregs)) {
+        vm.heap.decref(mod_promise.as_header());
+        return VM_ERROR~;
+    }
+    for (uint i = 0; i < nregs; i++) {
+        vm.valstack[i].set_undefined();
+    }
+    vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
+    vm.valstack_bottom = vm.valstack;
+    entry_act.caller_valstack_top = vm.valstack_top;
+
+    vm.current_func = func;
+
+    // Run the body. If it completes synchronously, RET settles mod_promise
+    // (fulfilled) or a throw rejects it. If it suspends on top-level await,
+    // Vm.run returns and the reactions run during the drain below, eventually
+    // settling mod_promise.
+    (void)Vm.run(vm);
+    // Clear a synchronous throw: for an async body a thrown value must reject
+    // the promise (which RET/the unwind already did), not remain a live VM
+    // fault, so the drain and the caller see a settled promise instead.
+    vm.has_error = false;
+    vm.heap.has_error = false;
+
+    // Drive microtasks until the module promise settles (or the queue drains).
+    // drain_microtasks resumes suspended async activations via reactions.
+    for (uint guard = 0; guard < 100000; guard++) {
+        if (builtins::promise_get_state(mod_promise, builtins::PROMISE_PENDING)
+            != builtins::PROMISE_PENDING) break;
+        if (vm.heap.microtask_count == 0) break;
+        vm.heap.drain_microtasks((void*)vm);
+    }
+
+    // Inspect the settled promise while it is still pinned.
+    bool rejected = builtins::promise_get_state(mod_promise, builtins::PROMISE_PENDING)
+                    == builtins::PROMISE_REJECTED;
+    if (rejected) {
+        TVal reason = builtins::promise_get_result(mod_promise);
+        vm.heap.tval_copy_ref(&vm.heap.error_value, &reason);
+        vm.heap.has_error = true;
+    }
+
+    vm.heap.decref(mod_promise.as_header());
+    return !rejected;
+}
+
 /// Execute the bytecode dispatch loop. Assumes activation stack and registers
 /// are already set up by the caller.
 fn TVal? Vm.run(Vm* vm) {
@@ -939,6 +1035,15 @@ fn TVal? Vm.run(Vm* vm) {
             break;
         }
         ds.needs_restart = false;
+
+        // A restart with no remaining activation means the top-level frame
+        // just unwound (e.g. an uncaught throw in a top-level async/module
+        // body: vm_throw_value settles the promise, pops to count 0, and
+        // requests a restart to "resume the caller" — but there is no caller).
+        // Halt cleanly instead of indexing activations[-1].
+        if (vm.activation_count == 0) {
+            return vm.return_val;
+        }
 
         ds.act = &vm.activations[vm.activation_count - 1];
         vm.current_func = (CompiledFunction*)ds.act.func;
