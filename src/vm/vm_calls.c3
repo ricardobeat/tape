@@ -1180,7 +1180,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     }
                     uint zero_start = undef_limit > nargs ? undef_limit : nargs;
                     if (zero_start < new_nregs) {
-                        libc::memset(&new_regs[zero_start], 0, (usz)(new_nregs - zero_start) * TVal::size);
+                        zero_regs_undefined(new_regs, zero_start, new_nregs);
                     }
                 }
             }
