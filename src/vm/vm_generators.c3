@@ -357,7 +357,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // activation chain to find the generator's frame and pop any
                 // intervening activations.
                 Activation* gen_act = ds.act;
-                if (ds.act.async_gen_state == null) {
+                if (ds.act.func != gs.func) {
                     // Current activation is not the generator — walk parents.
                     Activation* walk = ds.act.parent;
                     while (walk != null) {
@@ -405,7 +405,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 for (uint i = 0; i < gs.num_regs; i++) {
                     vm.heap.tval_copy_ref(&gs.saved_regs[i], &regs_base_r[i]);
                 }
-                gs.saved_pc = gen_act.curr_pc;
+                gs.saved_pc = (gen_act == ds.act) ? ds.curr_pc : gen_act.curr_pc;
                 gs.var_env = gen_act.var_env;
                 gs.lex_env = gen_act.lex_env;
                 gs.cat = gen_act.cat;
