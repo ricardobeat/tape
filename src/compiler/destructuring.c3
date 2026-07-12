@@ -657,7 +657,14 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     self.free_regs_to((ushort)(rhs_reg + 1));
 
     // Destructuring assignment evaluates to the RHS value.
-    return rhs_reg;
+    // Copy rhs_reg to a fresh temp so the outer assignment's free_reg(right)
+    // doesn't clobber a live variable register.  Without this, a pattern like
+    //   result = [x = yield] = vals
+    // frees vals's register (rhs_reg) after LDREG, and the subsequent
+    // statement's register allocator reuses it, corrupting the variable.
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)rhs_reg, 0);
+    return result_reg;
 }
 
 /// Parse object destructuring assignment: {a, b: c, x = default} = rhs
@@ -860,5 +867,9 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
     }
 
     self.free_regs_to((ushort)(rhs_reg + 1));
-    return rhs_reg;
+    // Copy rhs_reg to a fresh temp so the outer assignment's free_reg(right)
+    // doesn't clobber a live variable register (same fix as array_destructure_assign).
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)result_reg, (uint)rhs_reg, 0);
+    return result_reg;
 }
