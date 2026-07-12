@@ -366,6 +366,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         bool is_getter = false;
         bool is_setter = false;
 
+        // Track when method_name comes from a NUMBER token so the key constant
+        // uses the numeric value (converted to string at runtime) instead of the
+        // raw token text (e.g. "0x10" instead of "16").
+        bool method_name_is_number = false;
+        double method_name_num_value = 0.0;
+
         // Check for computed key [expr]
         bool has_computed_key = false;
         uint computed_key_inner_idx = 0xFFFFFFFF;
@@ -447,6 +453,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                         method_name = self.advance()!;
                     } else if (self.check(TokenType.NUMBER)) {
                         method_name = self.advance()!;
+                        method_name_is_number = true;
+                        method_name_num_value = method_name.num_value;
                     } else {
                         return COMPILE_ERROR~;
                     }
@@ -509,6 +517,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             method_name = self.advance()!;
         } else if (self.check(TokenType.NUMBER)) {
             method_name = self.advance()!;
+            method_name_is_number = true;
+            method_name_num_value = method_name.num_value;
         } else {
             return COMPILE_ERROR~;
         }
@@ -597,6 +607,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             methods[method_count].is_static = is_static;
             methods[method_count].is_getter = is_getter;
             methods[method_count].is_setter = is_setter;
+            methods[method_count].name_is_number = method_name_is_number;
+            methods[method_count].name_num_value = method_name_num_value;
             methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
             methods[method_count].computed_key_reg = (uint)computed_key_reg;
             if (is_static && method_name.str_value == "name") {
@@ -748,7 +760,15 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             self.emit_abc(Opcode.CALL, (uint)key_reg, (uint)key_reg, 0);
             self.free_reg(this_slot);
         } else {
-            uint key_idx = self.add_string_constant(methods[mi].name);
+            // Non-computed key: use the stored name.  For NUMBER tokens, emit a
+            // number constant so the runtime get_prop_key() converts it to the
+            // proper string representation (e.g. 0x10 → "16").
+            uint key_idx;
+            if (methods[mi].name_is_number) {
+                key_idx = self.add_number_constant(methods[mi].name_num_value);
+            } else {
+                key_idx = self.add_string_constant(methods[mi].name);
+            }
             key_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
         }
