@@ -1578,6 +1578,7 @@ fn void? CompilerContext.for_statement(&self) {
                 // the destructuring store writes the actual value.
                 uint loop_start = self.code_count;
                 self.push_loop(loop_start, true);
+                self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
 
                 bool has_lex_destr = is_lexical && bind_count > 0;
                 if (has_lex_destr) {
@@ -1606,6 +1607,14 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
                 self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
 
+                // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
+                // Wrap the destructuring + body in TRY/CATCH so that any abrupt
+                // completion (throw from destructuring, body, etc.) calls
+                // IteratorClose on the for-of iterator before propagating.
+                // B=1: throw completion — suppress errors from .return access/call.
+                uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
+                uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
+
                 // ── Destructure the yielded value via the shared emitter ──
                 // RequireObjectCoercible (ES2015 §13.3.3.6): an object pattern
                 // rejects a null/undefined source even when empty, matching the
@@ -1631,6 +1640,34 @@ fn void? CompilerContext.for_statement(&self) {
 
                 self.statement()!;
 
+                // Normal path: end the try region and jump over the catch block.
+                self.emit_simple(Opcode.ENDTRY);
+                uint jump_over = self.emit_jump(Opcode.JUMP);
+
+                // Catch block: called on any abrupt completion (throw, etc.).
+                uint catch_target = self.code_count;
+                ushort err_reg = self.alloc_reg();
+                self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+
+                // Unwind per-iter env if present, then call IteratorClose.
+                if (has_lex_destr) {
+                    self.emit_simple(Opcode.POP_LEX);
+                    self.cur_lex_depth--;
+                }
+                self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
+
+                // Re-throw the original error.
+                self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+                self.free_reg(err_reg);
+
+                // Patch the jump to skip the catch block.
+                self.patch_jump(jump_over);
+
+                // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
+                uint catch_off = catch_target - iter_try_addr;
+                self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+                self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+
                 // Per-iter env epilogue: pop before the back-edge.
                 // For continue: the continue statement's own POP_LEX unwinds
                 // cur_lex_depth back to the per-iter level, so continue lands
@@ -1646,11 +1683,14 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
                 self.patch_jump(exit_jump);
-                // Exit path (done=true): pop per-iter env pushed at loop_start.
+                // Exit path (done=true): pop per-iter env pushed at loop_start,
+                // then emit the exhaustion ITER_CLOSE before pop_loop so
+                // break-patch targets land after this.
                 if (has_lex_destr) {
                     self.emit_simple(Opcode.POP_LEX);
                     self.cur_lex_depth--;
                 }
+                self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
                 self.pop_loop();
 
                 self.free_reg(callee_this_reg);
@@ -2485,6 +2525,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     // ── Loop ──
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
+    self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
 
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
@@ -2501,6 +2542,15 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
     self.free_reg(value_key_reg);
     self.free_reg(result_reg);
+
+    // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
+    // Wrap the destructuring + body in TRY/CATCH so that any abrupt completion
+    // (throw from destructuring, body, etc.) calls IteratorClose on the
+    // outer for-of iterator before propagating.  B=1: throw completion —
+    // suppress errors from .return access/call (the original throw takes
+    // precedence, per ES2022 §7.4.6 steps 6,8).
+    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
+    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
 
     // ── Destructure the yielded value via the shared emitter ──
     // RequireObjectCoercible for object patterns (rejects null/undefined even
@@ -2527,10 +2577,36 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     // Compile body
     self.statement()!;
 
+    // Normal path: end the try region and jump over the catch block.
+    self.emit_simple(Opcode.ENDTRY);
+    uint jump_over = self.emit_jump(Opcode.JUMP);
+
+    // Catch block: called on any abrupt completion (throw, etc.).
+    uint catch_target = self.code_count;
+    ushort err_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+
+    // Call IteratorClose (throw variant — suppress .return errors).
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
+
+    // Re-throw the original error.
+    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+    self.free_reg(err_reg);
+
+    // Patch the jump to skip the catch block.
+    self.patch_jump(jump_over);
+
+    // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
+    uint catch_off = catch_target - iter_try_addr;
+    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
     int back_offset = (int)loop_start - (int)self.code_count - 1;
     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
     self.patch_jump(exit_jump);
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
     self.pop_loop();
 
     self.free_reg(callee_this_reg);
