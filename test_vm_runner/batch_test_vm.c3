@@ -514,8 +514,18 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     NegPhase neg = negative_phase(src);
     // Module tests go through the ESM pipeline by PATH (so relative imports
     // resolve against the test file's dir); script tests run the augmented
-    // source string directly.
-    int src_rc = module_test ? exec_js_module(v, hp, test_path) : exec_js(v, hp, exec_src);
+    // source string directly. Scripts still get the test path as the base
+    // for relative dynamic-import specifiers (heap.current_module_name is
+    // the fallback base when the running function carries no filename).
+    int src_rc;
+    if (module_test) {
+        src_rc = exec_js_module(v, hp, test_path);
+    } else {
+        // Stays set through the trailing microtask drains (deferred imports);
+        // Heap.reset clears it before the next test.
+        hp.current_module_name = test_path;
+        src_rc = exec_js(v, hp, exec_src);
+    }
 
     // `negative: phase: runtime` tests expect the *execution* to throw, and
     // (in this corpus, all 40 of them) have no local try/assert.throws — they
