@@ -2275,10 +2275,37 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
         case TokenType.YIELD:
         {
-            self.advance()!;  // consume 'yield'
             if (!self.is_generator) {
-                return self.fail("'yield' is only valid inside a generator function")~;
+                // Outside generators, `yield` is just an identifier per
+                // ES2024 §13.1.1. Handle it via the standard identifier
+                // path — same pattern as the AWAIT case when !is_async.
+                Token id_tok = self.advance()!;
+                if (self.check(TokenType.ARROW)) {
+                    char[][1] params_arr;
+                    params_arr[0] = id_tok.str_value;
+                    uint ident_arrow_src = self.lexer.token_start;
+                    return self.parse_arrow_function(&params_arr[0], 1, false, ident_arrow_src)!;
+                }
+                self.callee_is_eval = str_eq(id_tok.str_value, "eval");
+                if (!self.is_global) {
+                    if (try var_reg = self.resolve_var(id_tok.str_value)) {
+                        self.last_was_getvar = false;
+                        self.last_was_local_var = true;
+                        self.last_local_var_reg = var_reg;
+                        return var_reg;
+                    }
+                }
+                if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    self.uses_arguments = true;
+                }
+                uint name_idx = self.add_string_constant(id_tok.str_value);
+                ushort id_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
+                self.last_was_getvar = true;
+                self.last_getvar_name_idx = name_idx;
+                return id_reg;
             }
+            self.advance()!;  // consume 'yield'
             // Check for yield* (delegating yield)
             bool is_delegate = false;
             if (self.match(TokenType.STAR)) {
@@ -3273,6 +3300,10 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
+    // Step 5.b: If Type(nextResult) is not Object, throw TypeError
+    // (ES2022 §14.7.5.6 step 3.b).
+    self.emit_abc(Opcode.CHKOBJ, (uint)result_reg, 0, 0);
+
     // Step 6: Extract .done
     //   done_key = LDCONST "done"
     //   done = GETPROP result, done_key
@@ -3290,7 +3321,23 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
 
-    // Step 8: Assign to loop variable
+    // Free loop-iteration temps (reverse order — stack discipline)
+    self.free_reg(val_reg);
+    self.free_reg(value_key_reg);
+    self.free_reg(done_reg);
+    self.free_reg(done_key_reg);
+    self.free_reg(result_reg);
+
+    // ── IteratorClose-on-error guard (ES2022 §14.7.5.6 steps g.i–iii) ──
+    // Wrap the assignment + body in TRY/CATCH so that any abrupt completion
+    // (throw from the body, assignment error, etc.) calls IteratorClose
+    // before propagating.  B=1: throw completion — suppress errors from
+    // .return access/call (the original throw takes precedence).
+    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
+    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
+
+    // Step 8: Assign to loop variable (inside TRY so assignment errors
+    // trigger IteratorClose).
     self.emit_abc(Opcode.LDREG, (uint)loop_var, (uint)val_reg, 0);
 
     if (is_bare) {
@@ -3298,13 +3345,6 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     } else {
         self.emit_var_store(loop_var, name_idx, is_lexical, is_const);
     }
-
-    // Free loop-iteration temps (reverse order — stack discipline)
-    self.free_reg(val_reg);
-    self.free_reg(value_key_reg);
-    self.free_reg(done_reg);
-    self.free_reg(done_key_reg);
-    self.free_reg(result_reg);
 
     // Step 9: Body
     // In eval mode, reset eval_acc_reg at the start of each iteration body.
@@ -3315,10 +3355,40 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     }
     self.statement()!;
 
-    // Per-iteration env epilogue: pop this iteration's env before the back-jump.
-    // For continue: the continue statement's own POP_LEX unwinds cur_lex_depth back
-    // to saved_lex_depth (the per-iter level is included), so continue lands on the
-    // JUMP below rather than on this POP_LEX (avoids a double-pop).
+    // Normal path: end the try region and jump over the catch block.
+    self.emit_simple(Opcode.ENDTRY);
+    uint jump_over = self.emit_jump(Opcode.JUMP);
+
+    // Catch block: called on any abrupt completion (throw, etc.).
+    uint catch_target = self.code_count;
+    ushort err_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+
+    // Unwind per-iter env if present, then call IteratorClose (throw variant).
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
+
+    // Re-throw the original error.
+    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+    self.free_reg(err_reg);
+
+    // Patch the jump to skip the catch block.
+    self.patch_jump(jump_over);
+
+    // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
+    uint catch_off = catch_target - iter_try_addr;
+    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+    // Jump slot (NOP): finally_offset = 0.
+    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+
+    // Per-iteration env epilogue (normal path): pop this iteration's env before
+    // the back-jump.  For continue: the continue statement's own POP_LEX
+    // unwinds cur_lex_depth back to saved_lex_depth (the per-iter level is
+    // included), so continue lands on the JUMP below rather than on this
+    // POP_LEX (avoids a double-pop).
     if (needs_per_iter_env) {
         self.emit_simple(Opcode.POP_LEX);
         self.cur_lex_depth--;

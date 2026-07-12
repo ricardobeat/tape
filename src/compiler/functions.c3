@@ -1015,8 +1015,10 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         // Call IteratorClose for each active iterator.  The ITER_CLOSE opcode
         // is a no-op when method_reg is undefined (iterator already exhausted),
         // so emitting it unconditionally is safe.
+        // B=1: throw completion — suppress errors from .return access/call
+        // (the original throw takes precedence, per ES2022 §7.4.6 steps 6,8).
         for (uint i = 0; i < iter_count; i++) {
-            self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 0, 0);
+            self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 1, 0);
         }
 
         // Re-throw the original error.
@@ -2217,6 +2219,10 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
     key_ctx.in_class_body = self.in_class_body;
     key_ctx.has_super_binding = self.has_super_binding;
     key_ctx.super_is_home_object = self.super_is_home_object;
+    // Propagate generator/async context so yield/await resolve correctly
+    // in computed property keys (e.g. [yield] inside a generator).
+    key_ctx.is_generator = self.is_generator;
+    key_ctx.is_async = self.is_async;
 
     key_ctx.emit_simple(Opcode.PUSH_LEX);
     ushort expr_reg = key_ctx.assignment_expr()!;
