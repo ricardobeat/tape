@@ -3170,18 +3170,14 @@ fn ushort? CompilerContext.array_literal(&self) {
 /// evaluated into `iter_reg` and the RParen was consumed.
 /// Uses the ES6 iterator protocol: Symbol.iterator → .next() → {value, done}.
 fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare) {
-    // Per-iteration lexical environments are required when the loop variable is a
-    // let/const binding captured by a closure inside the body (ES2015 §14.7.5.6
-    // CreatePerIterationEnvironment). Each iteration must see its own binding so
-    // closures created in different iterations capture distinct values.
-    //
-    // At non-global scope the capture pre-scan (pre_scan_captures) tells us
-    // whether var_name is actually captured; skip per-iter for loops with no
-    // closure (common hot path). At global scope the pre-scan is not run, so
-    // we conservatively enable per-iter for all global let/const for-of loops
-    // (overhead is negligible compared to the GETPROP-heavy for-of protocol).
-    bool needs_per_iter_env = !is_bare && is_lexical
-        && (self.is_global || self.is_captured_name(var_name));
+    // Per-iteration lexical environments are required for ALL let/const
+    // bindings in for-of loops (ES2015 §14.7.5.6 CreatePerIterationEnvironment).
+    // Each iteration must see its own binding so closures created in different
+    // iterations capture distinct values.  Previously this was gated on
+    // capture-analysis, but the spec mandates per-iter envs unconditionally
+    // for lexical bindings (even without closures) to preserve the correct
+    // scope chain for nested functions and direct eval.
+    bool needs_per_iter_env = !is_bare && is_lexical;
 
     // Declare loop variable register
     ushort loop_var;
@@ -3261,9 +3257,13 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
 
     // Per-iteration env prologue: each iteration creates a fresh declarative env
     // so closures in the body capture a distinct binding (spec §14.7.5.6).
+    // INITTZ marks the binding as TDZ in the fresh env before the value is
+    // written by PUTLEX/PUTLEX_C below — this ensures the env is consistent
+    // with block() semantics.
     if (needs_per_iter_env) {
         self.emit_simple(Opcode.PUSH_LEX);
         self.cur_lex_depth++;
+        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
     }
 
     // Step 5: Load callee + this, then call .next() each iteration
