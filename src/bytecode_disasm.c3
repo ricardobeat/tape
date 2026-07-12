@@ -201,6 +201,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.NEWREGEXP.ordinal]   = "NEWREGEXP",
     [Opcode.ARRSPRD.ordinal]     = "ARRSPRD",
     [Opcode.SPREAD_ARG.ordinal]  = "SPREAD_ARG",
+    [Opcode.FWD_ARGS.ordinal]    = "FWD_ARGS",
     [Opcode.CALL_S.ordinal]      = "CALL_S",
     [Opcode.OBJSPRD.ordinal]     = "OBJSPRD",
     [Opcode.SETPROTO.ordinal]    = "SETPROTO",
@@ -238,6 +239,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.CHKOBJ.ordinal]      = "CHKOBJ",
     [Opcode.ITER_CLOSE.ordinal]  = "ITER_CLOSE",
     [Opcode.CHKCTOR.ordinal]     = "CHKCTOR",
+    [Opcode.CHK_PROT.ordinal]    = "CHK_PROT",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

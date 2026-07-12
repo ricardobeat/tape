@@ -74,7 +74,7 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
         //   PUSH_LEX                      ; allocate lexical env
         //   GETVAR  r1, __super__          ; load superclass
         //   LDTHIS  r2                     ; load this
-        //   SPREAD_ARG r3, r23, r0         ; spread rest args, count→r23
+        //   FWD_ARGS r3, r23, r0           ; forward rest args directly (no @@iterator), count→r23
         //   SUPER_CALL_S r2, r1, r23       ; super(r1=superclass), result→r2
         //   POP_LEX
         //   RET r2
@@ -91,7 +91,7 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
         c[0] = bytecode::make_abc(Opcode.PUSH_LEX, 0, 0, 0);
         c[1] = bytecode::make_a_bc(Opcode.GETVAR, 1, 0);   // r1, constant idx 0
         c[2] = bytecode::make_abc(Opcode.LDUNDEF, 2, 0, 0);  // r2 = placeholder (this-slot for SUPER_CALL)
-        c[3] = bytecode::make_abc(Opcode.SPREAD_ARG, 3, 23, 0);  // r3.. = spread dest, r23 = count
+        c[3] = bytecode::make_abc(Opcode.FWD_ARGS, 3, 23, 0);  // r3.. = fwd dest, r23 = count (no @@iterator)
         c[4] = bytecode::make_abc(Opcode.SUPER_CALL_S, 2, 1, 23); // result=r2, callee=r1, nargs_reg=r23
         c[5] = bytecode::make_abc(Opcode.POP_LEX, 0, 0, 0);
         c[6] = bytecode::make_abc(Opcode.RET, 2, 0, 0);
@@ -706,6 +706,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             self.emit_abc(Opcode.GETPROP, (uint)base_proto_reg, (uint)base_reg, (uint)base_proto_key_reg);
             self.free_reg(base_proto_key_reg);
         }
+        // ES2015 §14.5.14 step 5.g.ii-iv: Type(protoParent) must be Object or Null.
+        self.emit_abc(Opcode.CHK_PROT, (uint)base_proto_reg, 0, 0);
         self.emit_abc(Opcode.SETPROTO, (uint)proto_reg, (uint)base_proto_reg, 0);
         // ctor.__proto__ = Base (static inheritance chain)
         self.emit_abc(Opcode.SETPROTO, (uint)ctor_reg, (uint)base_reg, 0);

@@ -370,6 +370,12 @@ enum Opcode : char {
     /// Spread elements of array C into registers starting at A.
     /// Count written to register B.  ABC format.
     SPREAD_ARG,
+    /// Forward elements of array C directly to argument registers starting
+    /// at A without calling @@iterator.  Unlike SPREAD_ARG, this reads
+    /// array elements by index (fast path) and does NOT invoke the iterator
+    /// protocol.  Used by the default derived constructor to forward args.
+    /// Count written to register B.  ABC format.
+    FWD_ARGS,
     /// `A = call B with nargs from valstack[C]` — function call with
     /// runtime argument count (for spread arguments).
     /// ABC format: A=result_reg, B=callee_reg, C=nargs_reg.
@@ -569,6 +575,12 @@ enum Opcode : char {
     /// A-only format: A=value_reg, B=0, C=0.
     CHKCTOR,
 
+    /// Validate that register A is an Object or Null.
+    /// Used after `Get(superclass, "prototype")` in class extends: if the
+    /// result is neither Object nor Null, throw TypeError (ES2015 §14.5.14
+    /// step 5.g.ii-iv).  A-only format: A=value_reg, B=0, C=0.
+    CHK_PROT,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -616,6 +628,7 @@ case PUTLEX:     return A_BC;
         case NEWREGEXP:  return A_BC;
         case ARRSPRD:    return ABC;
         case SPREAD_ARG: return ABC;
+        case FWD_ARGS:   return ABC;
         case CALL_S:     return ABC;
         case OBJSPRD:    return ABC;
         case SETPROTO:   return ABC;
@@ -666,6 +679,7 @@ case PUTLEX:     return A_BC;
         case ITER_CLOSE: return ABC;
         case CHKOBJ:     return ABC;
         case CHKCTOR:    return ABC;
+        case CHK_PROT:   return ABC;
 
         // Everything else: standard A, B, C
         default:        return ABC;

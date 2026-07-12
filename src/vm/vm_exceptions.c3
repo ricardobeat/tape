@@ -238,17 +238,49 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                         return vm.return_val;
                     }
                     if (callee_result != null) {
-                        if (!val.is_heap_allocated()) {
-                            if (callee_result.is_heap_allocated()) {
-                                vm.heap.decref_tval(callee_result);
+                        // ES2015 §9.2.2 step 13: constructor returning a
+                        // non-Object must use 'this' binding.  Derived
+                        // non-object non-undefined was already converted to
+                        // TypeError by the inner RET opcode's
+                        // derived_return_error flag.  Here we handle the
+                        // case where the return was intercepted by a finally
+                        // block: the inner RET set PENDING_RETURN but never
+                        // ran the constructor return logic.
+                        if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0) {
+                            if (val.is_object()) {
+                                if (!val.is_heap_allocated()) {
+                                    if (callee_result.is_heap_allocated()) {
+                                        vm.heap.decref_tval(callee_result);
+                                    }
+                                    *callee_result = val;
+                                } else if (val_pinned) {
+                                    vm.heap.decref_tval(callee_result);
+                                    *callee_result = val;
+                                    val_pinned = false;
+                                } else {
+                                    vm.heap.tval_copy_ref(callee_result, &val);
+                                }
+                            } else {
+                                // Non-object return (undefined) → use 'this' binding
+                                if (callee_result.is_heap_allocated()) {
+                                    vm.heap.decref_tval(callee_result);
+                                }
+                                *callee_result = callee_act.this_binding;
                             }
-                            *callee_result = val;
-                        } else if (val_pinned) {
-                            vm.heap.decref_tval(callee_result);
-                            *callee_result = val;
-                            val_pinned = false;
                         } else {
-                            vm.heap.tval_copy_ref(callee_result, &val);
+                            // Non-constructor path: plain return value copy
+                            if (!val.is_heap_allocated()) {
+                                if (callee_result.is_heap_allocated()) {
+                                    vm.heap.decref_tval(callee_result);
+                                }
+                                *callee_result = val;
+                            } else if (val_pinned) {
+                                vm.heap.decref_tval(callee_result);
+                                *callee_result = val;
+                                val_pinned = false;
+                            } else {
+                                vm.heap.tval_copy_ref(callee_result, &val);
+                            }
                         }
                     }
                     if (val_pinned) vm.heap.decref_tval(&val);
