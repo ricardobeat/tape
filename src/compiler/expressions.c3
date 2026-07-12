@@ -2328,6 +2328,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
         case TokenType.AWAIT:
         {
             if (!self.is_async) {
+                // In a module, `await` is always reserved (ES2024 §13.1.1) —
+                // it is never a plain IdentifierName, even outside an async
+                // function. Reject rather than treating it as an identifier.
+                if (self.is_module) {
+                    return COMPILE_ERROR~;
+                }
                 Token id_tok = self.advance()!;
                 if (self.check(TokenType.ARROW)) {
                     // `await => ...` could be an arrow function with one
