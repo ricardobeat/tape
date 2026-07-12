@@ -727,6 +727,10 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort res_void = self.alloc_reg();
             self.emit_abc(Opcode.VOID, (uint)res_void, (uint)op_void, 0);
             self.free_reg(op_void);
+            // void result is never a Reference — clear tracking so
+            // `delete void x.prop` returns true instead of patching DELPROP.
+            self.last_was_member = false;
+            self.last_was_getvar = false;
             return res_void;
 
         case TokenType.DELETE:
@@ -737,6 +741,7 @@ fn ushort? CompilerContext.unary_expr(&self) {
             // calls assignment_expr which resets lhs_mode.
             self.del_mode = true;
             self.last_was_member = false;
+            self.last_was_getvar = false;
             ushort op_del = self.unary_expr()!;
             self.del_mode = false;
 
@@ -1706,6 +1711,10 @@ fn ushort? CompilerContext.new_expr(&self) {
         }
     }
 
+    // The result of a `new` expression is never a Reference (ES2024 §13.3.5).
+    // Clear last_was_getvar so `delete new X()` correctly returns true
+    // instead of rejecting as "delete of unqualified identifier".
+    self.last_was_getvar = false;
     return ctor_reg;
 }
 
