@@ -261,6 +261,43 @@ fn TVal call_handler(TVal handler, TVal* arg, Heap* heap, void* vm) {
 }
 
 /// Microtask completion callback — resolves the downstream promise with the
+/// Make `downstream` adopt the state of native Promise `source` (Promise
+/// Resolution Procedure for a native promise). If `source` is already settled,
+/// settle `downstream` with the same state/result now. If still pending, attach
+/// a handler-less pass-through reaction so `downstream` settles when `source`
+/// does. Both promises must be ObjClass.PROMISE.
+fn void promise_adopt_native(Heap* heap, void* vm, HObject* source, HObject* downstream) {
+    if (source == null || downstream == null) return;
+    if (promise_get_state(downstream, PROMISE_PENDING) != PROMISE_PENDING) return;
+
+    uint sstate = promise_get_state(source, PROMISE_PENDING);
+    if (sstate != PROMISE_PENDING) {
+        TVal sresult = promise_get_result(source);
+        promise_settle(downstream, sstate, &sresult, heap);
+        promise_trigger_reactions(downstream, heap, vm);
+        return;
+    }
+
+    // Pending: attach a handler-less reaction whose `downstream` is our target.
+    // When `source` settles, promise_trigger_reactions takes the no-handler
+    // pass-through path and settles `downstream` with the same state/value.
+    HObject*? rxn_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = rxn_raw) return;
+    HObject* rxn = rxn_raw;
+    rxn.prototype = heap.object_proto;
+    TVal undef; undef.set_undefined();
+    HString* onf_key = builtin_intern_string(heap, "onFulfilled");
+    HString* onr_key = builtin_intern_string(heap, "onRejected");
+    HString* ds_key  = builtin_intern_string(heap, "downstream");
+    if (onf_key != null) rxn.put_prop(onf_key, undef, hobject::PROP_FLAGS_WEC);
+    if (onr_key != null) rxn.put_prop(onr_key, undef, hobject::PROP_FLAGS_WEC);
+    if (ds_key != null) {
+        TVal ds_tv; ds_tv.set_object(downstream);
+        rxn.put_prop(ds_key, ds_tv, hobject::PROP_FLAGS_WEC);
+    }
+    promise_add_reaction(source, rxn, heap);
+}
+
 /// handler's return value.  Registered as heap.microtask_after_fn during init.
 ///
 /// `downstream` is either:
@@ -313,8 +350,25 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
         return;
     }
 
-    // If the result is a thenable, follow it via the Promise Resolution
-    // Procedure.  The thenable will drive the downstream promise.
+    // Per Promise Resolution Procedure (§27.2.1.3.2): if the handler returned a
+    // value that is itself a Promise/thenable, the downstream promise ADOPTS
+    // its state rather than fulfilling with the promise object as a value.
+    //
+    // A native Promise: promise_coerce_thenable deliberately returns null for
+    // native promises, so handle adoption here — otherwise a returned
+    // `Promise.reject(e)` would (wrongly) FULFILL the downstream with the
+    // promise object. This is the fix for `.then(() => Promise.reject(e))`
+    // (and `await` of such a chain) never settling as rejected.
+    if (result.is_object() && result.get_heapptr() != null) {
+        HObject* rprom = (HObject*)result.get_heapptr();
+        if (rprom.flags.obj_class == hobject::ObjClass.PROMISE) {
+            promise_adopt_native(heap, vm, rprom, ds);
+            return;
+        }
+    }
+
+    // If the result is a (non-native) thenable, follow it via the Promise
+    // Resolution Procedure.  The thenable will drive the downstream promise.
     HObject*? coerced = promise_coerce_thenable(heap, result, vm);
     if (catch err_c = coerced) {
         // promise_coerce_thenable returns null for non-thenables — settle normally below
