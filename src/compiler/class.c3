@@ -378,6 +378,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // Check for computed key [expr]
         bool has_computed_key = false;
         uint computed_key_inner_idx = 0xFFFFFFFF;
+        // When the enclosing context is a generator/async, compile the key
+        // expression inline in the enclosing function so yield/await interact
+        // with the enclosing generator/async.  Store the result register here.
+        ushort computed_key_reg = 0xFFFF;
 
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!;  // consume `[`
@@ -396,12 +400,21 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 method_name = str_tok;
                 // Fall through to the static-prototype check below.
             } else {
-                // Generic computed key (variable, expression, etc.): compile the key
-                // expression as a 0-arg inner function, evaluated at class instantiation.
+                // Generic computed key (variable, expression, etc.).
                 has_computed_key = true;
-                CompiledFunction* key_func = self.compile_key_expr()!;
-                self.expect(TokenType.RBRACKET)!;
-                computed_key_inner_idx = self.add_inner_func(key_func);
+                // When the enclosing context is a generator or async function,
+                // the key expression may contain yield/await which must interact
+                // with the enclosing generator/async.  Compile inline in the
+                // enclosing function and store the result register.
+                if (self.is_generator || self.is_async) {
+                    computed_key_reg = self.assignment_expr()!;
+                    self.expect(TokenType.RBRACKET)!;
+                    computed_key_inner_idx = 0xFFFFFFFE;  // sentinel: inline
+                } else {
+                    CompiledFunction* key_func = self.compile_key_expr()!;
+                    self.expect(TokenType.RBRACKET)!;
+                    computed_key_inner_idx = self.add_inner_func(key_func);
+                }
                 method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
             }
         } else if (self.check(TokenType.IDENTIFIER)
@@ -428,9 +441,15 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                         // Computed getter/setter key
                         self.advance()!; // consume `[`
                         has_computed_key = true;
-                        CompiledFunction* accessor_key_func = self.compile_key_expr()!;
-                        self.expect(TokenType.RBRACKET)!;
-                        computed_key_inner_idx = self.add_inner_func(accessor_key_func);
+                        if (self.is_generator || self.is_async) {
+                            computed_key_reg = self.assignment_expr()!;
+                            self.expect(TokenType.RBRACKET)!;
+                            computed_key_inner_idx = 0xFFFFFFFE;  // sentinel: inline
+                        } else {
+                            CompiledFunction* accessor_key_func = self.compile_key_expr()!;
+                            self.expect(TokenType.RBRACKET)!;
+                            computed_key_inner_idx = self.add_inner_func(accessor_key_func);
+                        }
                         method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
                     } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)
                                || lexer::keyword_to_string(self.peek_type()).len > 0) {
@@ -588,6 +607,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             methods[method_count].is_getter = is_getter;
             methods[method_count].is_setter = is_setter;
             methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
+            methods[method_count].computed_key_reg = (uint)computed_key_reg;
             if (is_static && method_name.str_value == "name") {
                 class_has_static_name = true;
             }
@@ -720,7 +740,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         // Get the key register — either from computed key expression or static name
         ushort key_reg;
-        if (methods[mi].computed_key_inner_idx != 0xFFFFFFFF) {
+        if (methods[mi].computed_key_inner_idx == 0xFFFFFFFE) {
+            // Inline-compiled computed key (yield/await in generator/async).
+            // The expression was compiled inline during parsing and the result
+            // register was stored in computed_key_reg.
+            key_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)key_reg, methods[mi].computed_key_reg, 0);
+        } else if (methods[mi].computed_key_inner_idx != 0xFFFFFFFF) {
             // Computed key: CLOSURE + CALL to evaluate key expression
             // CALL convention: CALL result_reg, callee_reg, nargs
             // this must be at callee_reg + 1, args at callee_reg + 2, ...

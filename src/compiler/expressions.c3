@@ -3315,15 +3315,6 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
 
-    // Step 8: Assign to loop variable
-    self.emit_abc(Opcode.LDREG, (uint)loop_var, (uint)val_reg, 0);
-
-    if (is_bare) {
-        self.emit_a_bc(Opcode.PUTVAR, (uint)loop_var, name_idx);
-    } else {
-        self.emit_var_store(loop_var, name_idx, is_lexical, is_const);
-    }
-
     // Free loop-iteration temps (reverse order — stack discipline)
     self.free_reg(val_reg);
     self.free_reg(value_key_reg);
@@ -3348,6 +3339,7 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     } else {
         self.emit_var_store(loop_var, name_idx, is_lexical, is_const);
     }
+
 
     // Step 9: Body
     // In eval mode, reset eval_acc_reg at the start of each iteration body.
