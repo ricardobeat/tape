@@ -2377,20 +2377,17 @@ fn ushort? CompilerContext.primary_expr(&self) {
         }
 
         // `import(...)` — dynamic import expression (ES2020).
-        // For now, emits LDUNDEF (deferred to a later phase).
         case TokenType.IMPORT:
         {
             self.advance()!;  // consume 'import'
             if (!self.match(TokenType.LPAREN)) {
                 return self.fail("'import' as an expression must be followed by '(' (dynamic import)")~;
             }
-            // Parse the specifier argument (we discard it for now)
             ushort spec_reg = self.assignment_expr()!;
             self.expect(TokenType.RPAREN)!;
             self.free_reg(spec_reg);
-            // Dynamic import not yet implemented — return undefined
             ushort result = self.alloc_reg();
-            self.emit_abc(Opcode.LDUNDEF, (uint)result, 0, 0);
+            self.emit_abc(Opcode.DYN_IMPORT, (uint)result, (uint)spec_reg, 0);
             return result;
         }
 

@@ -225,6 +225,12 @@ struct Vm {
     // checked by opcode handlers that call vm_to_number)
     TVal throw_value;
     bool throw_pending;
+
+    // Number of Vm.run invocations currently on the C stack. Nonzero means
+    // the VM is mid-dispatch, so any module evaluation must go through the
+    // re-entrant path (execute_module_nested) instead of taking over
+    // activations[0]/valstack[0].
+    uint run_depth;
 }
 
 // ============================================================================

@@ -448,6 +448,14 @@ enum Opcode : char {
     /// ABC format: A=value_reg, B=0, C=0.
     AWAIT,
 
+    /// `import(specifier)` — dynamic import expression (ES2020).
+    /// Resolves, links and evaluates the requested module (re-entrantly when a
+    /// module body is already running) and stores a Promise in A that fulfills
+    /// with the module's namespace object or rejects with the module's
+    /// load/evaluation error.
+    /// ABC format: A=result_reg, B=specifier_reg, C=0.
+    DYN_IMPORT,
+
     /// Marks the boundary between parameter initialization and the function
     /// body in a generator function.  The compiler emits this once per
     /// generator body, immediately after all parameter default checks and
@@ -634,6 +642,7 @@ case PUTLEX:     return A_BC;
         case RETUNDEF:  return NONE;
         case RETUNDEF_GEN: return NONE;
         case AWAIT:     return ABC;
+        case DYN_IMPORT: return ABC;
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;

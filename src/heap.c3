@@ -394,6 +394,10 @@ struct Heap {
     uint        module_cache_count;
     uint        module_cache_cap;
     void*       module_hooks;       // ModuleHostHooks* — pluggable host callbacks
+    // Name of the module whose body is currently executing (empty when not
+    // inside a module evaluation). Base for resolving relative dynamic-import
+    // specifiers issued from functions that carry no filename of their own.
+    char[]      current_module_name;
 }
 
 // ============================================================================
@@ -1225,6 +1229,7 @@ fn void Heap.reset(&self) {
     // Free module cache
     self.free_module_cache();
     self.module_hooks = null;
+    self.current_module_name = {};
 
     // Destroy and reinitialize object pool allocators — all pool pages are
     // freed to libc, fresh pools start with clean bump + empty freelist.

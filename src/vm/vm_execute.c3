@@ -7,6 +7,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
 import duktape::builtins;
+import duktape::esm;
 import duktape::re_bindings;
 import std::io;
 import std::math;
@@ -1021,9 +1022,28 @@ fn bool? Vm.execute_module_async(Vm* vm, CompiledFunction* func, EnvRecord* env)
     return !rejected;
 }
 
+/// Execute a module body while the VM is already mid-dispatch (dynamic
+/// import from a running module or script). Unlike execute_in_env /
+/// execute_module_async — which take over activations[0] and valstack[0]
+/// and therefore destroy the caller's live frame — this saves the entire
+/// activation stack and runs the module in a fresh frame above the live
+/// registers, mirroring vm_call_fn_impl, then restores the caller's state.
+///
+/// Returns true when the module body evaluated to completion; false when it
+/// threw (sync body) or its evaluation promise rejected (async/TLA body) —
+/// in that case the thrown value / rejection reason is left in
+/// heap.error_value. Faults only on hard setup failure.
+fn bool? Vm.execute_module_nested(Vm* vm, CompiledFunction* func, EnvRecord* env) {
+    // Placeholder: replaced by the re-entrancy implementation.
+    return vm.execute_module_async(func, env);
+}
+
 /// Execute the bytecode dispatch loop. Assumes activation stack and registers
 /// are already set up by the caller.
 fn TVal? Vm.run(Vm* vm) {
+    vm.run_depth++;
+    defer vm.run_depth--;
+
     Dispatch ds;
     ds.vm = vm;
     ds.needs_restart = true;
@@ -2247,6 +2267,44 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.GEN_START:
             if (catch err = dispatch_generators(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
+
+        // === DYNAMIC IMPORT ===
+        case Opcode.DYN_IMPORT: {
+            // Read the specifier before any write to A (A may reuse B's slot).
+            TVal spec_tv = *rb;
+            HString*? spec_opt = vm_to_string(vm, &spec_tv);
+            // vm_to_string can call a user toString (re-enters the VM) — refresh.
+            ds.regs_base = ds.act.bottom;
+            if (vm.throw_pending) {
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
+            HString* spec_str = null;
+            if (try s = spec_opt) spec_str = s;
+            if (spec_str == null) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "invalid dynamic import specifier", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+            TVal? prom_opt = esm::dynamic_import(vm.heap, vm, spec_str.get_data());
+            // The nested module evaluation may have reallocated the valstack.
+            ds.regs_base = ds.act.bottom;
+            if (catch err = prom_opt) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "dynamic import failed", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+            TVal prom_tv = prom_opt;
+            TVal* dst = ds.regs_base + (uint)insn.a;
+            vm.heap.tval_copy_ref(dst, &prom_tv);
+            // Drop the caller-owned reference dynamic_import returned.
+            vm.heap.decref_tval(&prom_tv);
+            continue;
+        }
 
         // === RETURNS ===
         // RET / RETUNDEF are extremely hot in recursion; inline them here.

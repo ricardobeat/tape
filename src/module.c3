@@ -16,6 +16,7 @@ import duktape::hobject;
 import duktape::hstring;
 import duktape::lexer;
 import duktape::compiler;
+import duktape::builtins;
 import duktape::vm;
 import std::io;
 import libc;
@@ -643,6 +644,40 @@ fn int run_module_file(Heap* heap, Vm* vm, char[] path) {
         return 2;  // structural evaluation failure with no thrown value
     }
     return 0;
+}
+
+// ============================================================================
+// Dynamic import — `import(specifier)` (ES2020)
+// ============================================================================
+
+/// Resolve, link and evaluate the module named by `specifier` and return a
+/// Promise (as a TVal carrying one caller-owned reference — the caller must
+/// decref after storing it) that fulfills with the module's namespace object
+/// or rejects with the module's load/evaluation error. Load and evaluation
+/// failures reject the returned promise; a fault means promise allocation
+/// itself failed.
+///
+/// Relative specifiers resolve against the running module's name: the
+/// currently executing function's filename when it has one, else
+/// heap.current_module_name (maintained by execute_module around body runs).
+fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
+    HObject*? prom_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
+    if (catch err = prom_raw) return MODULE_ERROR~;
+    HObject* prom = prom_raw;
+    prom.prototype = heap.promise_proto;
+    builtins::promise_init(prom);
+    prom.as_header().incref();  // caller-owned reference
+
+    // Placeholder: reject unconditionally until the resolution/evaluation
+    // implementation lands.
+    TVal reason;
+    reason.set_undefined();
+    builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &reason, heap);
+    builtins::promise_trigger_reactions(prom, heap, (void*)vm);
+
+    TVal result;
+    result.set_object(prom);
+    return result;
 }
 
 // ============================================================================
