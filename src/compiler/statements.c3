@@ -1490,7 +1490,42 @@ fn void? CompilerContext.for_statement(&self) {
                     }
                 }
 
+                // ── TDZ scope for head bindings (spec §13.7.5.12) ──
+                // Before evaluating the RHS expression, a TDZ environment is
+                // created for the ForDeclaration names so that any reference
+                // to them inside the RHS throws a ReferenceError.
+                bool has_head_tdz = is_lexical && bind_count > 0;
+                if (has_head_tdz) {
+                    self.emit_simple(Opcode.PUSH_LEX);
+                    self.cur_lex_depth++;
+                    for (uint i = 0; i < bind_count; i++) {
+                        if (dbinds[i].is_synthetic) continue;
+                        HString* hs = (HString*)self.constants[dbinds[i].name_idx].get_heapptr();
+                        char[] bname = hs.get_data();
+                        uint name_idx = self.add_string_constant(bname);
+                        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+                        // Mark outer scope entry as captured so the compiler
+                        // emits GETVAR instead of LDREG — prevents bypassing
+                        // the TDZ sentinel in the new lex_env.
+                        for (uint j = 0; j < saved_scope; j++) {
+                            if (str_eq(self.scope_stack[j].name, bname)) {
+                                self.scope_stack[j].is_captured = true;
+                                self.has_captured_local = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 iter_reg = self.assignment_expr()!;
+
+                // Pop the TDZ scope — the head binding references are now
+                // resolved against the outer scope for the iterator protocol.
+                if (has_head_tdz) {
+                    self.emit_simple(Opcode.POP_LEX);
+                    self.cur_lex_depth--;
+                }
+
                 self.expect(TokenType.RPAREN)!;
 
                 // ── Outer iterator protocol setup ──
@@ -1526,8 +1561,26 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
                 // ── Loop ──
+                // Per-iteration lexical environment (ES2015 §14.7.5.6):
+                // For let/const destructuring, each iteration must create a fresh
+                // declarative environment so closures in the body capture distinct
+                // bindings per iteration.  INITTZ marks each binding as TDZ before
+                // the destructuring store writes the actual value.
                 uint loop_start = self.code_count;
                 self.push_loop(loop_start, true);
+
+                bool has_lex_destr = is_lexical && bind_count > 0;
+                if (has_lex_destr) {
+                    self.emit_simple(Opcode.PUSH_LEX);
+                    self.cur_lex_depth++;
+                    // TDZ-initialize each head binding in the fresh per-iter env.
+                    for (uint i = 0; i < bind_count; i++) {
+                        if (dbinds[i].is_synthetic) continue;
+                        HString* hs = (HString*)self.constants[dbinds[i].name_idx].get_heapptr();
+                        uint name_idx = self.add_string_constant(hs.get_data());
+                        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+                    }
+                }
 
                 ushort result_reg = self.alloc_reg();
                 self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
@@ -1568,12 +1621,26 @@ fn void? CompilerContext.for_statement(&self) {
 
                 self.statement()!;
 
+                // Per-iter env epilogue: pop before the back-edge.
+                // For continue: the continue statement's own POP_LEX unwinds
+                // cur_lex_depth back to the per-iter level, so continue lands
+                // on the JUMP below rather than double-popping.
+                if (has_lex_destr) {
+                    self.emit_simple(Opcode.POP_LEX);
+                    self.cur_lex_depth--;
+                }
+
                 self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
 
                 int back_offset = (int)loop_start - (int)self.code_count - 1;
                 self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
                 self.patch_jump(exit_jump);
+                // Exit path (done=true): pop per-iter env pushed at loop_start.
+                if (has_lex_destr) {
+                    self.emit_simple(Opcode.POP_LEX);
+                    self.cur_lex_depth--;
+                }
                 self.pop_loop();
 
                 self.free_reg(callee_this_reg);
@@ -1767,7 +1834,32 @@ fn void? CompilerContext.for_statement(&self) {
             if (try tok = self.lexer.peek()) {
                 if (tok.type == TokenType.IDENTIFIER && str_eq(tok.str_value, "of")) {
                     self.advance()!;  // consume "of"
+                    // ── TDZ scope for head binding (spec §13.7.5.12) ──
+                    // Before evaluating the RHS, a TDZ environment is created
+                    // for the head name so that typeof/name access inside the
+                    // RHS throws ReferenceError (temporal dead zone).
+                    if (is_lexical) {
+                        self.emit_simple(Opcode.PUSH_LEX);
+                        self.cur_lex_depth++;
+                        self.emit_a_bc(Opcode.INITTZ, 0, self.add_string_constant(name_tok.str_value));
+                        // Mark the outer scope entry as captured so the compiler
+                        // emits GETVAR instead of LDREG — without this, a
+                        // register-cached value from an outer scope would bypass
+                        // the TDZ sentinel in the new lex_env.
+                        for (uint j = 0; j < saved_scope; j++) {
+                            if (str_eq(self.scope_stack[j].name, name_tok.str_value)) {
+                                self.scope_stack[j].is_captured = true;
+                                self.has_captured_local = true;
+                                break;
+                            }
+                        }
+                    }
                     ushort iter_reg = self.assignment_expr()!;
+                    // Pop the TDZ scope after RHS evaluation.
+                    if (is_lexical) {
+                        self.emit_simple(Opcode.POP_LEX);
+                        self.cur_lex_depth--;
+                    }
                     self.expect(TokenType.RPAREN)!;
                     uint name_idx = self.add_string_constant(name_tok.str_value);
                     self.emit_forof_loop(name_tok.str_value, iter_reg, saved_scope, saved_reg, is_lexical, is_const, false)!;
