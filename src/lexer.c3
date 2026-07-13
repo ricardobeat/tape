@@ -341,7 +341,10 @@ fn bool is_identifier_part(uint cp) @inline {
 
 /// Check if a character is ASCII whitespace (space, tab, VT, FF, NBSP).
 fn bool is_whitespace(char c) {
-    return c == ' ' || c == '\t' || c == 0x0B || c == 0x0C || c == (char)0xA0;
+    // Single-byte ASCII WhiteSpace (ES §12.2): TAB, VT, FF, SP. Multi-byte
+    // whitespace (NBSP U+00A0, BOM U+FEFF, U+2028/U+2029) is handled by
+    // byte-sequence checks in skip_whitespace_and_comments.
+    return c == ' ' || c == '\t' || c == 0x0B || c == 0x0C;
 }
 
 // ============================================================================
@@ -618,6 +621,23 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
                 self.at_line_start = true;
                 continue;
             }
+        }
+
+        // U+00A0 no-break space — UTF-8: C2 A0. WhiteSpace (ES §12.2), not a
+        // line terminator, so it does not set seen_line_term.
+        if (c == (char)0xC2 && self.remaining() >= 2 && self.source[self.pos + 1] == (char)0xA0) {
+            self.pos += 2;
+            self.col++;
+            continue;
+        }
+
+        // U+FEFF zero-width no-break space (BOM) — UTF-8: EF BB BF. WhiteSpace
+        // (ES §12.2), not a line terminator.
+        if (c == (char)0xEF && self.remaining() >= 3
+            && self.source[self.pos + 1] == (char)0xBB && self.source[self.pos + 2] == (char)0xBF) {
+            self.pos += 3;
+            self.col++;
+            continue;
         }
 
         // Single-line comment
