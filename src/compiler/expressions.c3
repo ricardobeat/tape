@@ -2445,6 +2445,19 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 return self.fail("'import' as an expression must be followed by '(' (dynamic import)")~;
             }
             ushort spec_reg = self.assignment_expr()!;
+            // Optional second argument: import(specifier, options).
+            // Per ES2025 the options AssignmentExpression IS evaluated (it
+            // may have side effects, e.g. an awaited expression), but full
+            // import-attribute semantics (applying `with: {type: ...}`) are
+            // deferred — the result is simply discarded here.
+            if (self.match(TokenType.COMMA)) {
+                if (!self.check(TokenType.RPAREN)) {
+                    ushort options_reg = self.assignment_expr()!;
+                    self.free_reg(options_reg);
+                    // Allow a further trailing comma: import(x, opts,)
+                    self.match(TokenType.COMMA);
+                }
+            }
             self.expect(TokenType.RPAREN)!;
             self.free_reg(spec_reg);
             ushort result = self.alloc_reg();
