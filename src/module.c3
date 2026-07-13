@@ -821,6 +821,8 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
     HObject*? ns_opt = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = ns_opt) return MODULE_ERROR~;
     HObject* ns = ns_opt;
+    // Module Namespace Exotic Object: [[Prototype]] is always null (ECMA-262 §10.4.6).
+    ns.prototype = null;
 
     for (uint i = 0; i < source_mod.export_count; i++) {
         ExportEntry* ee = &source_mod.exports[i];
@@ -829,7 +831,7 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
         if (export_key == null) continue;
 
         // Look up the local binding in the source module's env
-        char[] lookup_name = ee.is_indirect ? ee.local_name : ee.local_name;
+        char[] lookup_name = ee.local_name;
         HString* local_key = heap.str_intern(lookup_name);
         if (local_key == null) continue;
 
@@ -845,7 +847,18 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
             val.set_undefined();
         }
 
-        ns.put_prop(export_key, val, hobject::PROP_FLAGS_WEC);
+        // Export bindings are {writable:true, enumerable:true, configurable:false}
+        // per the [[DefineOwnProperty]] semantics used to populate the namespace.
+        ns.put_prop(export_key, val, hobject::PROP_FLAGS_NEC);
+    }
+
+    // ns[Symbol.toStringTag] === "Module", {writable:false, enumerable:false, configurable:false}
+    // per ECMA-262 §28.3 (Module Namespace Object requirements).
+    HString* tostrtag_sym = builtins::ensure_tostringtag_symbol(heap);
+    if (tostrtag_sym != null) {
+        TVal tag_val;
+        tag_val.set_string(builtins::builtin_intern_string(heap, "Module"));
+        ns.put_prop(tostrtag_sym, tag_val, hobject::PROP_FLAGS_NNC);
     }
 
     return ns;
