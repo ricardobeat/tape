@@ -558,6 +558,19 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
         return 1;  // threw, but not the declared type — fail
     }
 
+    // `negative: phase: parse` tests expect an early (parse-time) error. Our
+    // compiler surfaces every early error as a compile error (src_rc == 2), so
+    // a compile error IS the expected outcome — the corpus's parse-negatives
+    // all declare SyntaxError, which is exactly what an early parse rejection
+    // represents. This mirrors the python runner's categorize_ce(), which maps
+    // a CE on a `negative: phase: parse` test to a pass. A parse-negative that
+    // compiled clean (src_rc != 2) failed to reject and is a real bug.
+    if (neg == NegPhase.PARSE) {
+        if (src_rc == 2) { return 0; }  // expected early error — pass
+        io::eprintfn("  FAIL: parse-negative did not reject at parse time");
+        return 1;
+    }
+
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 
