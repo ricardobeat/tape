@@ -1065,7 +1065,11 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         uint finally_target = self.code_count;
         self.emit_simple(Opcode.FINALLY);
         for (uint i = 0; i < iter_count; i++) {
-            self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 1, 0);
+            // B=2: auto-detect completion type — suppress .return() errors only
+            // when the pending completion is a throw (§7.4.6 steps 6/8); a return
+            // completion (e.g. generator .return() through a yield here) must
+            // propagate a throwing/non-object .return().
+            self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 2, 0);
         }
         self.emit_simple(Opcode.ENDFINALLY);
 

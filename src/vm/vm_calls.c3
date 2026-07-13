@@ -761,6 +761,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     // If yield fired inside a non-generator inner function
                     // (default expression thunk), place the resume value into
                     // the call result register so the code after CALL sees it.
+                    bool thunk_yield_resume = (gs.pending_resume_reg != 0xFFFF);
                     if (gs.pending_resume_reg != 0xFFFF && gs.pending_resume_reg < new_nregs_r) {
                         vm.heap.tval_copy_ref(&new_regs_r[gs.pending_resume_reg], &gs.resume_value);
                         gs.pending_resume_reg = 0xFFFF;
@@ -774,6 +775,64 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
 
                     // Save caller resume point before switching activation
                     ds.act.curr_pc = ds.curr_pc;
+
+                    // A .return()/.throw() that resumes a yield suspended inside a
+                    // non-generator thunk (e.g. `[x = yield]` default or `{}[yield]`
+                    // computed key) is an ABRUPT completion at the generator's
+                    // resume point — it must NOT resume normally with the value.
+                    // The generator's frame has been restored above; now inject the
+                    // completion into it so any enclosing try/finally (e.g. the
+                    // destructuring IteratorClose guard) runs before the generator
+                    // completes. Mirrors LOAD_RESUME's THROW/RETURN handling.
+                    if (thunk_yield_resume &&
+                        (gs.resume_kind == ResumeKind.RETURN || gs.resume_kind == ResumeKind.THROW)) {
+                        ResumeKind tk = gs.resume_kind;
+                        // Switch the dispatch state onto the restored generator
+                        // activation so the injection targets its catcher chain.
+                        ds.act = new_act_r;
+                        ds.curr_pc = new_act_r.curr_pc;
+                        ds.regs_base = new_act_r.bottom;
+                        ds.nregs = new_nregs_r;
+
+                        if (tk == ResumeKind.THROW) {
+                            gs.resume_kind = NEXT;
+                            TVal tval = gs.throw_value;
+                            if (!vm_throw_value(vm, tval, ds.act, &ds.curr_pc, &ds.needs_restart, true)) {
+                                gs.state = GEN_COMPLETED;
+                                vm.heap.resume_gen = null;
+                                vm.activation_count--;
+                                vm.has_error = true; vm.heap.has_error = true;
+                                if (new_act_r.retval != null) {
+                                    vm.heap.tval_copy_ref(new_act_r.retval, &tval);
+                                }
+                            }
+                            ds.needs_restart = true;
+                            return (TVal){};
+                        }
+
+                        // RETURN: route through the nearest enclosing finally in
+                        // the generator's catcher chain, else complete now.
+                        TVal ret_raw = gs.return_value;
+                        gs.resume_kind = NEXT;
+                        Catcher* ret_fin_cat = (Catcher*)ds.act.cat;
+                        while (ret_fin_cat != null && ret_fin_cat.finally_pc == null) {
+                            ret_fin_cat = (Catcher*)ret_fin_cat.parent;
+                        }
+                        if (ret_fin_cat != null && ret_fin_cat.finally_pc != null) {
+                            ret_fin_cat.return_val = ret_raw;
+                            if (!(ret_fin_cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+                                ret_fin_cat.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+                                ds.curr_pc = ret_fin_cat.finally_pc;
+                                ds.act.curr_pc = ds.curr_pc;
+                            }
+                            ds.needs_restart = true;
+                            return (TVal){};
+                        }
+                        gs.state = GEN_COMPLETED;
+                        vm.heap.resume_gen = null;
+                        vm_complete_generator_return(ds, &ret_raw);
+                        return (TVal){};
+                    }
 
                     ds.needs_restart = true;
                     return (TVal){};

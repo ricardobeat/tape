@@ -829,7 +829,19 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             //   B=1 — throw completion (body threw):
             //         suppress all errors from .return access / call; the
             //         original throw takes precedence (§7.4.6 steps 6,8).
+            //   B=2 — auto: emitted inside a finally that handles ANY completion.
+            //         Inspect the enclosing (in-finally) catcher's pending state:
+            //         a pending throw suppresses (§7.4.6 step 6/8), while a
+            //         pending return/break/continue or a normal completion
+            //         propagates .return() errors.
             bool is_throw_completion = (insn.b == 1);
+            if (insn.b == 2) {
+                is_throw_completion = false;
+                Catcher* icc = (Catcher*)ds.act.cat;
+                if (icc != null && !icc.thrown_val.is_undefined()) {
+                    is_throw_completion = true;
+                }
+            }
 
             if (!ra.is_object() || ra.get_heapptr() == null) return (TVal){};
             HObject* iter = (HObject*)ra.get_heapptr();
