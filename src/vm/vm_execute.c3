@@ -638,6 +638,16 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     this_tv.set_object(new_this);
 
     CompiledFunction* target = (*ctor.extra_ptr()).func.comp_func;
+    // Derived class constructors (`class X extends Y`) do NOT create `this`
+    // here — super() creates it inside the base [[Construct]] (ES2015 §9.2.2
+    // step 5). Start with an uninitialized (TDZ-sentinel) this_binding and mark
+    // the activation DERIVED so SUPER_CALL initializes it; otherwise the
+    // constructed instance (e.g. a Promise subclass) is lost and combinator
+    // capabilities read back as uninitialized.
+    bool is_derived_target = (target != null && target.is_derived_ctor());
+    if (is_derived_target) {
+        this_tv = env::tdz_sentinel();
+    }
     // Note: target == null is the correct signal for "not a compiled
     // function" (e.g. a built-in). A compiled function with num_regs == 0
     // (empty body, no locals/params referenced) is still a real constructor
@@ -742,7 +752,8 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     act.bottom = frame;
     act.retval = null;
     act.flags = ACT_FLAG_CONSTRUCT
-              | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0);
+              | (target.has_direct_eval() ? ACT_FLAG_DIRECT_EVAL : 0)
+              | (is_derived_target ? ACT_FLAG_DERIVED : 0);
     act.max_heap_reg = 0;
     act.caller_valstack_top = frame + nregs;
     act.this_binding = this_tv;
@@ -754,6 +765,37 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     uint copy_n = nargs < nregs ? nargs : nregs;
     for (uint i = 0; i < copy_n; i++) {
         vm.heap.tval_copy_ref(&frame[i], &args[i]);
+    }
+    // Rest parameter: collect overflow args (indices num_formals..nargs-1) into
+    // an array in the rest slot, mirroring the normal call path. Without this a
+    // rest-param function invoked through construct_fn (e.g. a derived class's
+    // implicit `constructor(...args){ super(...args); }`) sees the raw first arg
+    // in the rest slot instead of an array, so `super(...args)` forwards nothing
+    // and the base constructor's executor never runs.
+    if (target.has_rest()) {
+        uint formals = (uint)target.num_formals;
+        uint rest_idx = formals;
+        uint overflow = (nargs > formals) ? (nargs - formals) : 0;
+        if (rest_idx < nregs) {
+            HObject*? rest_arr_raw = vm.heap.alloc_object(hobject::ObjClass.ARRAY);
+            if (try rest_arr = rest_arr_raw) {
+                rest_arr.prototype = vm.heap.array_proto;
+                for (uint ri = 0; ri < overflow; ri++) {
+                    if (rest_idx + ri < nregs) {
+                        HString* rkey = vm.heap.int_to_hstring((long)ri);
+                        if (rkey != null) {
+                            rest_arr.put_prop(rkey, frame[rest_idx + ri], hobject::PROP_FLAGS_WEC);
+                        }
+                    }
+                }
+                HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+                TVal len_val; len_val.set_fastint((long)overflow);
+                rest_arr.put_prop(len_str, len_val, hobject::PROP_FLAGS_WEC);
+                frame[rest_idx].set_object(rest_arr);
+            } else {
+                frame[rest_idx].set_undefined();
+            }
+        }
     }
     if (target.uses_arguments()) {
         HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
@@ -791,7 +833,13 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     }
 
     // ES6 §12.3.5.2: if constructor returns an object, that's the new instance.
+    // For a derived constructor `this_tv` started as the TDZ sentinel; the real
+    // instance was bound by super() into the activation's this_binding, so read
+    // it back from there (act still points at vm.activations[0], pre-restore).
     TVal final_this = this_tv;
+    if (is_derived_target) {
+        final_this = act.this_binding;
+    }
     if (result.is_object() && result.get_heapptr() != null) {
         final_this = result;
     }
