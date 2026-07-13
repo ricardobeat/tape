@@ -2190,6 +2190,16 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
+    // Set .length from builtin metadata (ES2015 §17: "length" before "name")
+    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
+    {
+        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (length_str != null) {
+            TVal len_tv;
+            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
+            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
     // Set .name (non-writable, non-enumerable, configurable)
     HString* name_prop_key = builtin_intern_string(heap, "name");
     HString* name_val = builtin_intern_string(heap, name);
@@ -2197,19 +2207,6 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
         TVal name_tv;
         name_tv.set_string(name_val);
         func_obj.put_prop(name_prop_key, name_tv, hobject::PROP_FLAGS_NWC);
-    }
-    // Set .length from builtin metadata
-    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
-    {
-        // Every builtin function has an own .length (ES §20.2.4.1). When the
-        // metadata arity is unknown (-1, entry missing from builtin_get_metadata)
-        // default to 0 so the property still exists as an own NWC data property.
-        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-        if (length_str != null) {
-            TVal len_tv;
-            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
-            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
-        }
     }
     // Register on prototype — writable:true, enumerable:false, configurable:true (ES5 §15.3.5.1)
     TVal tv;
@@ -2292,6 +2289,16 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
     func_obj.prototype = heap.function_proto;
+    // Set .length from builtin metadata (ES2015 §17: "length" before "name")
+    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
+    {
+        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+        if (length_str != null) {
+            TVal len_tv;
+            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
+            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
+        }
+    }
     // Set .name (non-writable, non-enumerable, configurable)
     HString* name_prop_key = builtin_intern_string(heap, "name");
     HString* name_val = builtin_intern_string(heap, name);
@@ -2299,19 +2306,6 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
         TVal name_tv;
         name_tv.set_string(name_val);
         func_obj.put_prop(name_prop_key, name_tv, hobject::PROP_FLAGS_NWC);
-    }
-    // Set .length from builtin metadata
-    builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
-    {
-        // Every builtin function has an own .length (ES §20.2.4.1). When the
-        // metadata arity is unknown (-1, entry missing from builtin_get_metadata)
-        // default to 0 so the property still exists as an own NWC data property.
-        HString* length_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-        if (length_str != null) {
-            TVal len_tv;
-            len_tv.set_fastint((long)(meta.arity >= 0 ? meta.arity : 0));
-            func_obj.put_prop(length_str, len_tv, hobject::PROP_FLAGS_NWC);
-        }
     }
     // Register on prototype — writable:true, enumerable:false, configurable:true (ES5 §15.3.5.1)
     TVal tv;
@@ -2459,14 +2453,16 @@ fn bool register_simple_builtin(EnvRecord* global_env, Heap* heap, char[] name, 
 /// .name: non-writable, non-enumerable, configurable (ES6 §19)
 /// .length: non-writable, non-enumerable, configurable (ES5 §15.3.5.1)
 fn void set_func_ctor_name_length(HObject* func_obj, Heap* heap, char[] name, int length) {
+    // ES2015 §17: built-in function objects have "length" before "name" in
+    // own property insertion order.
+    HString* length_key = builtin_intern_string(heap, "length");
+    TVal length_tv; length_tv.set_fastint((long)length);
+    func_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+
     HString* name_key = builtin_intern_string(heap, "name");
     HString* name_hstr = builtin_intern_string(heap, name);
     TVal name_tv; name_tv.set_string(name_hstr);
     func_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
-
-    HString* length_key = builtin_intern_string(heap, "length");
-    TVal length_tv; length_tv.set_fastint((long)length);
-    func_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 }
 
 /// Set .name on a built-in constructor HObject (when .length is already set).
