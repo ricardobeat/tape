@@ -21,8 +21,13 @@ fn ushort CompilerContext.alloc_reg(&self) {
         self.max_reg = self.next_reg;
     }
     if (self.next_reg > MAX_REGISTERS) {
-        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max %d)", self.next_reg, MAX_REGISTERS - 1);
-        libc::abort();
+        // Out of registers: flag the overflow and clamp. finish() reports it
+        // as a COMPILE_ERROR; compilation continues only to keep the parser
+        // in sync — the emitted code is never run.
+        self.reg_overflow = true;
+        self.next_reg = (ushort)MAX_REGISTERS;
+        self.max_reg  = (ushort)MAX_REGISTERS;
+        return (ushort)(MAX_REGISTERS - 1);
     }
     return reg;
 }
@@ -35,24 +40,56 @@ fn ushort CompilerContext.alloc_regs(&self, ushort count) {
         self.max_reg = self.next_reg;
     }
     if (self.next_reg > MAX_REGISTERS) {
-        io::printfn("COMPILE ERROR: register limit exceeded (next_reg=%d, max %d)", self.next_reg, MAX_REGISTERS - 1);
-        libc::abort();
+        self.reg_overflow = true;
+        self.next_reg = (ushort)MAX_REGISTERS;
+        self.max_reg  = (ushort)MAX_REGISTERS;
+        return (ushort)(MAX_REGISTERS - 1);
     }
     return first;
 }
 
 /// Free a register (only frees if it's the top of the stack).
+/// Registers below reserved_regs (parameters, hoisted function-scope slots)
+/// are permanent for the function's lifetime and are never released — an
+/// expression that happens to return a parameter's register must not let a
+/// later temp allocation land on it and clobber the parameter.
 fn void CompilerContext.free_reg(&self, ushort reg) {
-    if (reg + 1 == self.next_reg) {
+    if (reg + 1 == self.next_reg && reg >= self.reserved_regs) {
         self.next_reg--;
     }
 }
 
-/// Free registers back to a saved point.
+/// Free registers back to a saved point (never below reserved_regs).
 fn void CompilerContext.free_regs_to(&self, ushort saved) {
+    if (saved < self.reserved_regs) {
+        saved = self.reserved_regs;
+    }
     if (self.next_reg > saved) {
         self.next_reg = saved;
     }
+}
+
+/// Reclaim every register at or above `base` that is not the slot of a live
+/// local binding. Called by statement() after each completed statement.
+///
+/// free_reg is LIFO (it only pops the top of the stack), so sub-expression
+/// shapes that must free a low register while a higher one is still live —
+/// e.g. a member call's 'this' object register, which sits below the call
+/// window it outlives — strand registers mid-expression. Statement
+/// boundaries are where nothing but declared locals may remain live, so
+/// this is the single point where the stack discipline is restored.
+/// Local slots allocated during the statement itself (declare_var runs
+/// inside var/let/const statements) are protected by flooring at the
+/// highest scope-tracked register.
+fn void CompilerContext.reclaim_stmt_regs(&self, ushort base) {
+    ushort floor = base;
+    for (uint i = 0; i < self.scope_depth; i++) {
+        ScopeEntry* e = &self.scope_stack[i];
+        if (e.kind != SCOPEMARK && e.reg >= floor) {
+            floor = e.reg + 1;
+        }
+    }
+    self.free_regs_to(floor);
 }
 
 /// Reserve the callee-frame region for an upcoming CALL whose callee value

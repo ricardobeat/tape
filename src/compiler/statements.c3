@@ -159,7 +159,11 @@ fn void mod_register_star_export(CompModuleDef* mod, uint req_idx) {
 // ============================================================================
 
 /// Parse and compile a single statement, dispatching on token type.
+/// After the statement completes, reclaim_stmt_regs releases any temporaries
+/// stranded above the statement's base watermark by non-LIFO free patterns
+/// (see reclaim_stmt_regs).
 fn void? CompilerContext.statement(&self) {
+    ushort stmt_base = self.next_reg;
     TokenType tt = self.peek_type();
 
     switch (tt) {
@@ -248,6 +252,8 @@ fn void? CompilerContext.statement(&self) {
             }
             self.expression_statement()!;
     }
+
+    self.reclaim_stmt_regs(stmt_base);
 }
 
 /// Check if a name is restricted in strict mode (ES5 §11.6.2.2, §12.10.1).

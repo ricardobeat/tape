@@ -329,6 +329,18 @@ struct CompilerContext {
     // stores and its runtime env.
     bool has_lexical_bindings;
 
+    // Set by alloc_reg/alloc_regs when the register budget is exhausted.
+    // Compilation continues with clamped registers to keep the parser in
+    // sync; finish() turns the flag into a COMPILE_ERROR so a pathological
+    // source fails the compile instead of aborting the host process.
+    bool reg_overflow;
+
+    // Permanent register floor: parameters and hoisted function-scope slots
+    // allocated before body statements begin. Set at each body-compile site
+    // (parse_function_body, inner/arrow bodies, program/eval/module entry);
+    // free_reg / free_regs_to never release registers below it.
+    ushort reserved_regs;
+
     // Closure tracking — set to true when a nested function is defined in
     // this function's body.  Combined with has_local_bindings to decide
     // needs_env: if the function has var bindings but no nested functions
@@ -592,6 +604,9 @@ fn void CompilerContext.emit_destruct_param_defaults(&self) {
 
 /// Finalise compilation: allocate a CompiledFunction and copy code/constants.
 fn CompiledFunction*? CompilerContext.finish(&self) {
+    if (self.reg_overflow) {
+        return self.fail("register limit exceeded")~;
+    }
     Heap* h = (Heap*)self.heap;
     // Allocate the CompiledFunction struct
     void* raw = h.alloc_func(h.heap_udata, CompiledFunction::size);

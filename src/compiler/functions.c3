@@ -2211,6 +2211,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Hoist var and function declarations to the top of the function scope.
     self.hoist_decls(false)!;
 
+    // Params and hoisted slots are now allocated — pin them for the body.
+    self.reserved_regs = self.next_reg;
+
     // Compile function body block
     self.block(true)!;
 
@@ -2682,6 +2685,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 
     // Hoist var and function declarations to the top of the inner function scope.
     inner_ctx.hoist_decls(false)!;
+
+    // Params and hoisted slots are now allocated — pin them for the body.
+    inner_ctx.reserved_regs = inner_ctx.next_reg;
 
     // Compile function body
     inner_ctx.block(true)!;
@@ -3238,6 +3244,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     if (arrow_ctx.check(TokenType.LBRACE)) {
         // Collect names captured by nested callables (plan 045).
         arrow_ctx.pre_scan_captures();
+        // Params are allocated — pin them for the body.
+        arrow_ctx.reserved_regs = arrow_ctx.next_reg;
         // Block body: { ... }
         arrow_ctx.advance()!;
         while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {
@@ -3463,6 +3471,8 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     if (arrow_ctx.check(TokenType.LBRACE)) {
         // Collect names captured by nested callables (plan 045).
         arrow_ctx.pre_scan_captures();
+        // Params are allocated — pin them for the body.
+        arrow_ctx.reserved_regs = arrow_ctx.next_reg;
         // Block body: { ... }
         arrow_ctx.advance()!;
         while (!arrow_ctx.check(TokenType.RBRACE) && !arrow_ctx.is_at_end()) {

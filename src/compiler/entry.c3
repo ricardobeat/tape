@@ -57,6 +57,7 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 
     // Parse statements until EOF
     ctx.hoist_lexical_tdz();
+    ctx.reserved_regs = ctx.next_reg;
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
@@ -119,6 +120,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
 
     // Parse statements until EOF
     ctx.hoist_lexical_tdz();
+    ctx.reserved_regs = ctx.next_reg;
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
@@ -221,6 +223,7 @@ fn CompiledFunction*? compile_module(Lexer* lex, void* heap, char[] module_name,
     // restricted-global SyntaxError check inside hoist_lexical_tdz is
     // skipped for modules (ctx.is_module) — this call cannot actually fail.
     ctx.hoist_lexical_tdz();
+    ctx.reserved_regs = ctx.next_reg;
     while (!ctx.is_at_end()) {
         ctx.statement()!;
     }
