@@ -1593,10 +1593,20 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
                 self.free_reg(next_key_reg);
 
+                // Persistent holder for the yielded value, allocated BELOW the
+                // callee window so it survives the outer .next() CALL frame
+                // overlay.  When the source is a generator, its suspended frame
+                // occupies the sliding window at/above callee_reg; running the
+                // inner (nested) destructuring's iterator protocol there would
+                // otherwise clobber a value held in a register inside that
+                // window on the next resume.  We copy the extracted value here,
+                // free the above-callee per-iteration temps, then destructure
+                // this holder — mirroring how the plain for-of copies to its
+                // loop variable and frees temps before the body.
+                ushort val_holder = self.alloc_persistent_reg();
+
                 ushort callee_reg = self.alloc_reg();
                 ushort callee_this_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-                self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
                 // ── Loop ──
                 // Per-iteration lexical environment (ES2015 §14.7.5.6):
@@ -1621,6 +1631,14 @@ fn void? CompilerContext.for_statement(&self) {
                     }
                 }
 
+                // Reload callee/this from the below-window next_reg/method_reg
+                // each iteration: a generator source (or any iterator that
+                // re-dispatches) resuming through the nested destructuring can
+                // overwrite the callee window, so refresh it before every
+                // .next() — mirrors the plain for-of loop.
+                self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+                self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
+
                 ushort result_reg = self.alloc_reg();
                 self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
 
@@ -1635,6 +1653,17 @@ fn void? CompilerContext.for_statement(&self) {
                 self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
                 self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
 
+                // Move the value into the below-callee holder, then release the
+                // above-callee protocol temps so the nested destructuring below
+                // runs at a watermark that does not overlap the outer iterator's
+                // (possibly generator) call frame.
+                self.emit_abc(Opcode.LDREG, (uint)val_holder, (uint)val_reg, 0);
+                self.free_reg(val_reg);
+                self.free_reg(value_key_reg);
+                self.free_reg(done_reg);
+                self.free_reg(done_key_reg);
+                self.free_reg(result_reg);
+
                 // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
                 // Wrap the destructuring + body in TRY/CATCH so that any abrupt
                 // completion (throw from destructuring, body, etc.) calls
@@ -1648,23 +1677,17 @@ fn void? CompilerContext.for_statement(&self) {
                 // rejects a null/undefined source even when empty, matching the
                 // object_destructure / object_destructure_assign wrappers.
                 if (!is_array_pattern) {
-                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_reg, 0, 0);
+                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_holder, 0, 0);
                 }
-                // Point every top-level bind at the per-iteration value register
-                // and run the same emit_destruct_bindings used by declarations,
+                // Point every top-level bind at the persistent value holder and
+                // run the same emit_destruct_bindings used by declarations,
                 // parameters, and assignment targets (iterator protocol, defaults,
                 // IteratorClose, done-latching all handled there).
                 for (uint bi = 0; bi < bind_count; bi++) {
-                    if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_reg;
+                    if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_holder;
                 }
                 self.emit_destruct_bindings(dbinds[..], bind_count, dgroup_regs[..], dbinding_regs[..],
                                             DestructStoreMode.DECLARE, is_lexical, is_const);
-
-                self.free_reg(val_reg);
-                self.free_reg(value_key_reg);
-                self.free_reg(done_reg);
-                self.free_reg(done_key_reg);
-                self.free_reg(result_reg);
 
                 self.statement()!;
 
@@ -1723,6 +1746,7 @@ fn void? CompilerContext.for_statement(&self) {
 
                 self.free_reg(callee_this_reg);
                 self.free_reg(callee_reg);
+                self.free_reg(val_holder);
                 self.free_reg(next_reg);
                 self.free_reg(method_reg);
                 self.free_reg(iter_reg);
@@ -2545,15 +2569,26 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
     self.free_reg(next_key_reg);
 
+    // Persistent value holder below the callee window (see the let/const
+    // for-of destructuring path for the rationale): a generator source resuming
+    // through the nested destructuring can clobber registers inside the .next()
+    // call frame, so the yielded value is copied here — below callee_reg — and
+    // the above-callee temps are freed before the destructuring runs.
+    ushort val_holder = self.alloc_persistent_reg();
+
     ushort callee_reg = self.alloc_reg();
     ushort callee_this_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
     // ── Loop ──
     uint loop_start = self.code_count;
     self.push_loop(loop_start, true);
     self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
+
+    // Reload callee/this from the below-window next_reg/method_reg every
+    // iteration so a generator (or re-dispatching iterator) that overwrote the
+    // callee window during the previous iteration's destructuring is healed.
+    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
 
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
@@ -2568,7 +2603,12 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     ushort val_reg = self.alloc_reg();
     self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
     self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
+    // Move value below the callee window, then release the above-callee temps.
+    self.emit_abc(Opcode.LDREG, (uint)val_holder, (uint)val_reg, 0);
+    self.free_reg(val_reg);
     self.free_reg(value_key_reg);
+    self.free_reg(done_reg);
+    self.free_reg(done_key_reg);
     self.free_reg(result_reg);
 
     // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
@@ -2584,10 +2624,10 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     // RequireObjectCoercible for object patterns (rejects null/undefined even
     // when empty); array patterns open the iterator inside the emitter.
     if (!is_array_pattern) {
-        self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_reg, 0, 0);
+        self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_holder, 0, 0);
     }
     for (uint bi = 0; bi < dcount; bi++) {
-        if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_reg;
+        if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_holder;
     }
     if (dcount > 0) {
         self.emit_destruct_bindings(dbinds[..], dcount, dgroup_regs[..], dbinding_regs[..],
@@ -2595,12 +2635,8 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     } else if (is_array_pattern) {
         // Empty array pattern `for ([] of ...)`: still GetIterator(value) and
         // immediately IteratorClose it per DestructuringAssignmentEvaluation.
-        self.emit_empty_array_iter(val_reg);
+        self.emit_empty_array_iter(val_holder);
     }
-
-    self.free_reg(val_reg);
-    self.free_reg(done_key_reg);
-    self.free_reg(done_reg);
 
     // Compile body
     self.statement()!;
@@ -2639,6 +2675,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
 
     self.free_reg(callee_this_reg);
     self.free_reg(callee_reg);
+    self.free_reg(val_holder);
     self.free_reg(next_reg);
     self.free_reg(method_reg);
     self.free_reg(iter_reg);
