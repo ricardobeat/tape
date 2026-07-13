@@ -769,6 +769,14 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
                 self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
 
+                // Latch [[done]] across the .next() + .done/.value reads: a throw
+                // from any of them sets [[Done]] before rethrowing, so the
+                // enclosing finally must NOT call IteratorClose for it
+                // (§7.4.6/§7.4.8). Park the iterator in save_reg and clear
+                // method_reg; restore only after a successful not-done step.
+                self.emit_abc(Opcode.LDREG, (uint)state.save_reg, (uint)state.method_reg, 0);
+                self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
+
                 self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
 
                 self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
@@ -780,6 +788,9 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
                 self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)val_key_reg);
                 self.free_reg(val_key_reg);
+                // Successful not-done step: restore the live iterator so an abrupt
+                // completion of the loop body (or a subsequent step) still closes it.
+                self.emit_abc(Opcode.LDREG, (uint)state.method_reg, (uint)state.save_reg, 0);
 
                 ushort push_key_reg = self.alloc_reg();
                 self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);
@@ -888,6 +899,16 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     }
                     DestructIterState* state = &iter_states[iter_idx];
 
+                    // Re-emit the deferred rest member-target evaluation now — AFTER
+                    // the iterator is opened but BEFORE collection — so a throw from
+                    // a side-effecting target (e.g. `...{}[thrower()]`) triggers
+                    // IteratorClose on the open iterator (ES2022 §13.15.5.3).
+                    if (binds[di].is_member_target && binds[di].deferred_code_count > 0) {
+                        for (uint di2 = 0; di2 < binds[di].deferred_code_count; di2++) {
+                            self.emit(binds[di].deferred_code[di2]);
+                        }
+                    }
+
                     ushort result_reg = self.alloc_reg();
                     ushort done_key_reg = self.alloc_reg();
                     ushort done_reg = self.alloc_reg();
@@ -896,6 +917,13 @@ fn void CompilerContext.emit_destruct_bindings(&self,
 
                     self.emit_abc(Opcode.LDREG, (uint)state.callee_reg, (uint)state.next_reg, 0);
                     self.emit_abc(Opcode.LDREG, (uint)state.callee_this_reg, (uint)state.method_reg, 0);
+
+                    // Latch [[done]] across .next()/.done/.value: a throw sets
+                    // [[Done]] before rethrowing, so the enclosing finally must
+                    // NOT IteratorClose for it (§7.4.6/§7.4.8). Park the iterator
+                    // in save_reg and clear method_reg; restore on a good step.
+                    self.emit_abc(Opcode.LDREG, (uint)state.save_reg, (uint)state.method_reg, 0);
+                    self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
 
                     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
 
@@ -908,6 +936,8 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
                     self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)val_key_reg);
                     self.free_reg(val_key_reg);
+                    // Good not-done step: restore the live iterator for close.
+                    self.emit_abc(Opcode.LDREG, (uint)state.method_reg, (uint)state.save_reg, 0);
 
                     ushort push_key_reg = self.alloc_reg();
                     self.emit_abc(Opcode.LDCONST, (uint)push_key_reg, self.add_string_constant("push"), 0);

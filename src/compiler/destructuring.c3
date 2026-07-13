@@ -448,7 +448,15 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 ushort tgt_obj  = 0xFFFF;
                 ushort tgt_key  = 0xFFFF;
                 uint   tgt_name = 0xFFFFFFFF;
+                // For member targets, save and NOP the evaluation bytecode so it
+                // can be re-emitted inside emit_destruct_bindings AFTER the inner
+                // iterator is opened. Per ES2022 §13.15.5.3, the rest target lref
+                // is evaluated after GetIterator, so a throw there (e.g. a
+                // side-effecting computed key `{}[thrower()]`) must run
+                // IteratorClose on the already-opened iterator.
+                uint pre_eval_code = self.code_count;
                 bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+                uint eval_code_count = self.code_count - pre_eval_code;
 
                 if (count < (uint)MAX_DESTRUCT_BINDS) {
                     binds[count].name_idx   = tgt_name;
@@ -460,6 +468,14 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                     binds[count].is_member_target  = is_member;
                     binds[count].member_obj_reg    = tgt_obj;
                     binds[count].member_prop_reg   = tgt_key;
+                    binds[count].deferred_code_count = 0;
+                    if (is_member && eval_code_count > 0 && eval_code_count <= 16) {
+                        for (uint i = 0; i < eval_code_count; i++) {
+                            binds[count].deferred_code[i] = self.code[pre_eval_code + i];
+                            self.code[pre_eval_code + i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
+                        }
+                        binds[count].deferred_code_count = (uint)eval_code_count;
+                    }
                     if (!is_member) {
                         // Copy name into name_buf for declare_var-style lookup.
                         // (Not needed for assignment — name_idx is enough for PUTVAR.)
