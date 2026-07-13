@@ -2816,18 +2816,33 @@ fn TVal? Vm.run(Vm* vm) {
                                     this_tv.set_object(cur.bindings);
                                     TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
                                     if (vm.heap.has_error) {
-                                        // Propagate error from getter
-                                        vm.has_error = true;
-                                        return VM_ERROR~;
+                                        // Route through vm_throw_value so a JS try/catch can
+                                        // still catch it and an async module/function body's
+                                        // uncaught throw rejects its own promise instead of
+                                        // hard-faulting the VM (mirrors dispatch_property's
+                                        // getter-throw handling in vm_property.c3).
+                                        vm.heap.has_error = false;
+                                        TVal err_val = vm.heap.error_value;
+                                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            vm.has_error = true;
+                                            vm.heap.has_error = true;
+                                            return VM_ERROR~;
+                                        }
+                                        found = true; // prevent duplicate error
+                                    } else {
+                                        vm.heap.tval_copy_ref(ra, &getter_val);
+                                        track_heap_store(ds.act, ra, (uint)insn.a);
+                                        found = true;
+                                        ic_env = cur;
+                                        ic_prop_idx = idx;
                                     }
-                                    vm.heap.tval_copy_ref(ra, &getter_val);
                                 } else {
                                     ra.set_undefined();
+                                    track_heap_store(ds.act, ra, (uint)insn.a);
+                                    found = true;
+                                    ic_env = cur;
+                                    ic_prop_idx = idx;
                                 }
-                                track_heap_store(ds.act, ra, (uint)insn.a);
-                                found = true;
-                                ic_env = cur;
-                                ic_prop_idx = idx;
                             } else {
                                 vm.heap.tval_copy_ref(ra, &v_raw);
                                 track_heap_store(ds.act, ra, (uint)insn.a);
@@ -2861,7 +2876,20 @@ fn TVal? Vm.run(Vm* vm) {
                                         TVal this_tv;
                                         this_tv.set_object(vcur.bindings);
                                         TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
-                                        if (vm.heap.has_error) { vm.has_error = true; return VM_ERROR~; }
+                                        if (vm.heap.has_error) {
+                                            // Route through vm_throw_value (see the lex_env
+                                            // accessor branch above for why: async body
+                                            // rejection + try/catch must both still work).
+                                            vm.heap.has_error = false;
+                                            TVal err_val = vm.heap.error_value;
+                                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                                vm.has_error = true;
+                                                vm.heap.has_error = true;
+                                                return VM_ERROR~;
+                                            }
+                                            found = true;
+                                            break;
+                                        }
                                         vm.heap.tval_copy_ref(ra, &getter_val);
                                     } else {
                                         ra.set_undefined();
@@ -2974,25 +3002,38 @@ fn TVal? Vm.run(Vm* vm) {
                             } else if (cur.bindings.get_prop_flags((uint)idx).is_accessor) {
                                 // Accessor property: invoke getter for typeof
                                 TVal getter = hobject::hobject_access_getter(v_raw);
+                                bool getter_threw = false;
                                 if (!getter.is_undefined() && !getter.is_null() && vm.heap.call_fn != null) {
                                     TVal this_tv;
                                     this_tv.set_object(cur.bindings);
                                     TVal getter_val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
                                     if (vm.heap.has_error) {
-                                        // Propagate error from getter
-                                        vm.has_error = true;
-                                        return VM_ERROR~;
+                                        // Route through vm_throw_value (see GETVAR's accessor
+                                        // branch above for why).
+                                        vm.heap.has_error = false;
+                                        TVal err_val = vm.heap.error_value;
+                                        if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            vm.has_error = true;
+                                            vm.heap.has_error = true;
+                                            return VM_ERROR~;
+                                        }
+                                        getter_threw = true;
+                                    } else {
+                                        HString* ts = typeof_string(vm, &getter_val);
+                                        vm.heap.set_reg_string(ra, ts);
                                     }
-                                    HString* ts = typeof_string(vm, &getter_val);
-                                    vm.heap.set_reg_string(ra, ts);
                                 } else {
                                     // No getter → typeof returns "undefined"
                                     HString* ts = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
                                     vm.heap.set_reg_string(ra, ts);
                                 }
                                 found = true;
-                                ic_env = cur;
-                                ic_prop_idx = idx;
+                                // A caught/rejected throw already unwound curr_pc/activations —
+                                // must not cache an IC entry keyed on this (now stale) pc_off.
+                                if (!getter_threw) {
+                                    ic_env = cur;
+                                    ic_prop_idx = idx;
+                                }
                             } else {
                                 HString* ts = typeof_string(vm, &v_raw);
                                 vm.heap.set_reg_string(ra, ts);
@@ -3021,9 +3062,20 @@ fn TVal? Vm.run(Vm* vm) {
                                         TVal this_tv2;
                                         this_tv2.set_object(vcur2.bindings);
                                         TVal getter_val2 = vm.heap.call_fn(vm, getter2, null, 0, this_tv2);
-                                        if (vm.heap.has_error) { vm.has_error = true; return VM_ERROR~; }
-                                        HString* ts2 = typeof_string(vm, &getter_val2);
-                                        vm.heap.set_reg_string(ra, ts2);
+                                        if (vm.heap.has_error) {
+                                            // Route through vm_throw_value (see GETVAR's
+                                            // accessor branch above for why).
+                                            vm.heap.has_error = false;
+                                            TVal err_val = vm.heap.error_value;
+                                            if (!vm_throw_value(vm, err_val, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                                vm.has_error = true;
+                                                vm.heap.has_error = true;
+                                                return VM_ERROR~;
+                                            }
+                                        } else {
+                                            HString* ts2 = typeof_string(vm, &getter_val2);
+                                            vm.heap.set_reg_string(ra, ts2);
+                                        }
                                     } else {
                                         HString* ts2 = (HString*)vm.heap.strs[heap::BuiltinStr.UNDEFINED];
                                         vm.heap.set_reg_string(ra, ts2);

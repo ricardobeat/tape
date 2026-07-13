@@ -2520,10 +2520,36 @@ fn void set_func_ctor_name(HObject* func_obj, Heap* heap, char[] name) {
 const char[] MODULE_BINDING_ENV_SLOT = "\xFFmoduleBindingEnv";
 const char[] MODULE_BINDING_KEY_SLOT = "\xFFmoduleBindingKey";
 
+/// Throw a ReferenceError "Cannot access '<name>' before initialization"
+/// through the builtin should_throw/throw_value channel (mirrors
+/// arr_throw_type_error in builtins/array.c3, but with ref_err_proto and
+/// an interpolated binding name).
+fn void module_binding_throw_tdz(BuiltinContext* ctx, HString* name) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.ref_err_proto;
+        char[256] buf;
+        int len = libc::snprintf(&buf, 256, "Cannot access '%s' before initialization", name.get_cstr());
+        char[] msg = len > 0 && len < 256 ? buf[:len] : buf[:0];
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
+}
+
 /// Native getter body: recover (source bindings object, binding key) from
 /// hidden slots on the getter function itself and read the live value.
-/// Returns undefined if the binding cannot be found (e.g. TDZ before the
-/// source module's declaration has executed).
+/// Returns undefined if the binding cannot be found. Throws a
+/// ReferenceError if the source slot still holds the TDZ sentinel (the
+/// exporting module's `let`/`const`/`class` declaration has not yet run) —
+/// ECMA-262 SS10.4.6.8 / SS16.2.1.5.5 GetBindingValue for a not-yet-initialized
+/// binding.
 ///
 /// A re-export chain (`export { x } from './a'` re-exported again by a
 /// third module) means the resolved slot in `bindings` can itself be an
@@ -2560,7 +2586,12 @@ fn void builtin_module_binding_getter(BuiltinContext* ctx) {
         *ctx.result = ctx.heap.call_fn(ctx.vm, getter, null, 0, this_tv);
         return;
     }
-    *ctx.result = bindings.prop_values()[idx];
+    TVal raw = bindings.prop_values()[idx];
+    if (env::is_tdz_sentinel(&raw)) {
+        module_binding_throw_tdz(ctx, key);
+        return;
+    }
+    *ctx.result = raw;
 }
 
 /// Build an accessor property VALUE (a boxed getter/setter pair, per

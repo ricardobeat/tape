@@ -26,6 +26,7 @@ struct CompExportEntry {
     char[] export_name;
     bool   is_indirect;
     uint   req_module_idx;
+    bool   is_lexical;      // true for a local `let`/`const`/`class` export
 }
 
 struct CompStarExportEntry {
@@ -108,13 +109,14 @@ fn void mod_register_import(CompModuleDef* mod, char[] local_name, char[] import
 }
 
 /// Register an export entry in the module.
-fn void mod_register_export(CompModuleDef* mod, char[] local_name, char[] export_name, bool is_indirect, uint req_idx) {
+fn void mod_register_export(CompModuleDef* mod, char[] local_name, char[] export_name, bool is_indirect, uint req_idx, bool is_lexical = false) {
     if (mod.export_count >= COMP_MAX_EXPORTS) return;
     uint idx = mod.export_count;
     mod.exports[idx].local_name = local_name;
     mod.exports[idx].export_name = export_name;
     mod.exports[idx].is_indirect = is_indirect;
     mod.exports[idx].req_module_idx = req_idx;
+    mod.exports[idx].is_lexical = is_lexical;
     mod.export_count++;
 }
 
@@ -4040,9 +4042,13 @@ fn void? CompilerContext.export_declaration(&self) {
                 mod_register_export(mod, local_names[i], export_names[i], true, req_idx);
             }
         } else {
-            // Local export: the names are local bindings
+            // Local export: the names are local bindings. Look up each
+            // name's declared kind so a re-export of an already-declared
+            // `let`/`const`/`class` binding is TDZ-eligible too (e.g.
+            // `let a = 1; export { a };`).
             for (uint i = 0; i < count; i++) {
-                mod_register_export(mod, local_names[i], export_names[i], false, 0);
+                bool lex = self.is_name_lexical(local_names[i]);
+                mod_register_export(mod, local_names[i], export_names[i], false, 0, lex);
             }
         }
 
@@ -4097,7 +4103,7 @@ fn void? CompilerContext.export_declaration(&self) {
         self.lexer.pushback(name_tok);
         self.lexer.pushback(saved_class);
         self.class_declaration()!;
-        mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0);
+        mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0, true);
         self.match(TokenType.SEMICOLON);
         return;
     }
@@ -4146,7 +4152,7 @@ fn void? CompilerContext.export_declaration(&self) {
             self.emit_var_store(reg, name_idx, is_lexical, is_const);
             if (self.is_global) self.free_reg(reg);
 
-            mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0);
+            mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0, is_lexical);
 
             if (!self.match(TokenType.COMMA)) break;
         }

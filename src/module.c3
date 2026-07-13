@@ -58,6 +58,12 @@ struct ExportEntry {
     char[] export_name;     // the exported name ("default" for default export)
     bool   is_indirect;     // true for `export { x } from './other'`
     uint   req_module_idx;  // for indirect exports
+    // True when the local binding is `let`/`const`/`class` (a lexical
+    // declaration subject to TDZ). False for `var`/`function` exports,
+    // which are hoisted/initialized and never observed as TDZ even when
+    // read before the exporting module's body has run. Unused (false) for
+    // indirect exports, whose TDZ-ness is determined by the source module.
+    bool   is_lexical;
 }
 
 struct StarExportEntry {
@@ -465,8 +471,17 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
         }
     }
 
-    // Declare local export bindings in the module env
-    // (These will be populated when the module body executes)
+    // Declare local export bindings in the module env, before the module
+    // body has run. A `var`/`function` export is hoisted/initialized (or
+    // will be set by DECLVAR when the body runs) so it pre-declares as
+    // plain `undefined`. A `let`/`const`/`class` export is lexical and
+    // must pre-declare as the TDZ sentinel (ECMA-262 SS10.4.6.8): the body's
+    // own INITTZ (emitted by hoist_lexical_tdz for every module-top-level
+    // lexical declaration) only overwrites this slot when the OWNING
+    // module's body actually executes, but a live-binding accessor from a
+    // cyclically-importing module can observe this env slot beforehand —
+    // it must see the sentinel, not undefined, so builtin_module_binding_getter
+    // (builtins/core.c3) throws instead of yielding a stale undefined.
     for (uint i = 0; i < mod.export_count; i++) {
         ExportEntry* ee = &mod.exports[i];
         if (ee.is_indirect) continue;
@@ -474,9 +489,13 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
         if (key == null) continue;
         // Check if already declared (from import resolution)
         if (!env::env_has(mod.env, key)) {
-            TVal undef;
-            undef.set_undefined();
-            env::env_declare(mod.env, key, undef);
+            TVal val;
+            if (ee.is_lexical) {
+                val = env::tdz_sentinel();
+            } else {
+                val.set_undefined();
+            }
+            env::env_declare(mod.env, key, val);
         }
     }
 

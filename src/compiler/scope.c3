@@ -109,6 +109,23 @@ fn ushort? CompilerContext.resolve_var(&self, char[] name) {
     return SCOPE_ERROR~;
 }
 
+/// Look up whether a name currently in scope was declared `let`/`const`
+/// (lexical) as opposed to `var`. Used by `export { name }` (no `from`
+/// clause) to decide whether the local export binding is TDZ-eligible.
+/// Defaults to false (treated as `var`) if the name isn't found in the
+/// scope stack — e.g. a top-level `function` declaration promoted straight
+/// to the module env, which is hoisted and never in TDZ.
+fn bool CompilerContext.is_name_lexical(&self, char[] name) {
+    uint i = self.scope_depth;
+    while (i > 0) {
+        i--;
+        if (str_eq(self.scope_stack[i].name, name)) {
+            return self.scope_stack[i].kind == LET || self.scope_stack[i].kind == CONST;
+        }
+    }
+    return false;
+}
+
 /// Resolve a variable name to its register REGARDLESS of capture status.
 /// Only for declaration-site checks (e.g. `var` redeclaration must reuse the
 /// existing binding, never re-declare and clobber the env value) — normal
