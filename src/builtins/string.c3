@@ -3556,6 +3556,13 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     if (empty_str != null) {
         (*proto.extra_ptr()).prim.primitive_value.set_string(empty_str);
     }
+    // String.prototype is a String exotic object, so it carries its own
+    // `length` data property (= 0 for the empty [[StringData]]), non-writable,
+    // non-enumerable, non-configurable (ES §22.1.3).
+    HString* proto_len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    TVal proto_len_tv;
+    proto_len_tv.set_fastint(0);
+    proto.put_prop(proto_len_key, proto_len_tv, hobject::PROP_FLAGS_NNC);
     heap.string_proto = proto;
 
     // Add .toString() method
