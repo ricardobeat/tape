@@ -220,6 +220,18 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         return COMPILE_ERROR~;
     }
 
+    if (!self.last_was_member && !self.last_was_getvar && !self.last_was_local_var) {
+        if (g_last_err_msg[0] == 0) {
+            g_last_err_line = self.lexer.line;
+            g_last_err_col  = self.lexer.col;
+            char[] msg = "Invalid left-hand side in assignment";
+            usz copy_len = msg.len < (g_last_err_msg.len - 1) ? msg.len : (g_last_err_msg.len - 1);
+            libc::memcpy(&g_last_err_msg[0], msg.ptr, copy_len);
+            g_last_err_msg[copy_len] = 0;
+        }
+        return COMPILE_ERROR~;
+    }
+
     // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
@@ -623,6 +635,15 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         left_is_local = right_is_local;  // propagate for chained ops
     }
 
+    // Restore the local-var flag for the final `left` before returning: the
+    // loop preamble unconditionally clears self.last_was_local_var on every
+    // iteration (including the first, before checking precedence), so by the
+    // time we reach `return` here it no longer reflects whether `left` is a
+    // live local variable register. Callers (assignment_expr, postfix_expr,
+    // unary_expr's prefix INC/DEC) rely on this flag to recognize a bare
+    // local-variable operand (e.g. `len = 0`, `k++`) as a valid
+    // SimpleAssignmentTarget alongside last_was_getvar/last_was_member.
+    self.last_was_local_var = left_is_local;
     return left;
 }
 
@@ -807,6 +828,9 @@ fn ushort? CompilerContext.unary_expr(&self) {
             if (self.last_was_optional_chain) {
                 return COMPILE_ERROR~;
             }
+            if (!self.last_was_member && !self.last_was_getvar && !self.last_was_local_var) {
+                return COMPILE_ERROR~;
+            }
             // postfix_expr leaves self.last_was_getvar / self.last_was_member
             // (and the member obj/prop registers) set so we can inspect the
             // LHS shape here. Member takes priority over getvar because for
@@ -849,6 +873,9 @@ fn ushort? CompilerContext.unary_expr(&self) {
             ushort op_dec = self.postfix_expr()!;
             self.lhs_mode = false;
             if (self.last_was_optional_chain) {
+                return COMPILE_ERROR~;
+            }
+            if (!self.last_was_member && !self.last_was_getvar && !self.last_was_local_var) {
                 return COMPILE_ERROR~;
             }
             // See INC case above for why member takes priority over getvar.
@@ -917,6 +944,15 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     // the operand and a postfix ++/--. If one is present, ASI forces a
     // semicolon here, so ++/-- belongs to the *next* statement instead.
     bool nl_before_postfix_op = self.lexer.seen_line_term;
+    // ES2024 §13.4.2/13.4.3 UpdateExpression: the operand must be a
+    // SimpleAssignmentTarget. Calls (`f()`), dynamic imports (`import(x)`),
+    // and other non-reference results are not — reject as an early
+    // SyntaxError rather than silently discarding the increment/decrement.
+    if ((tt == TokenType.INC || tt == TokenType.DEC) && !nl_before_postfix_op) {
+        if (!self.last_was_member && !lhs_was_getvar && !self.last_was_local_var) {
+            return COMPILE_ERROR~;
+        }
+    }
     if (tt == TokenType.INC && !nl_before_postfix_op) {
         if (self.last_was_optional_chain) {
             return COMPILE_ERROR~;
@@ -2413,6 +2449,13 @@ fn ushort? CompilerContext.primary_expr(&self) {
             self.free_reg(spec_reg);
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.DYN_IMPORT, (uint)result, (uint)spec_reg, 0);
+            // ImportCall produces a value, not a Reference (ES2024 §13.3.10):
+            // it is not a SimpleAssignmentTarget. Clear the same flags a call
+            // expression clears after emit_call so the assignment/update
+            // target checks reject `import(x)++`, `++import(x)`, and
+            // `import(x) = v` the same way they already reject `f()++`.
+            self.last_was_member = false;
+            self.last_was_getvar = false;
             return result;
         }
 
