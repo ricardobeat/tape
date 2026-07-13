@@ -319,7 +319,9 @@ const uint BUILTIN_PROXY_CALL                  = 423;
 const uint BUILTIN_TA_SPECIES_GET              = 424;
 const uint BUILTIN_EVAL_SCRIPT                 = 425;
 
-const uint BUILTIN_COUNT                       = 426;
+const uint BUILTIN_REGEXP_SPECIES_GETTER       = 426;
+
+const uint BUILTIN_COUNT                       = 427;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2908,6 +2910,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     // evalScript: aliased to eval until the global-declaration-instantiation
     // rework lands (plan 052); a spec evalScript runs as a global script.
     [BUILTIN_EVAL_SCRIPT]                = &builtin_eval,
+    [BUILTIN_REGEXP_SPECIES_GETTER]       = &builtin_regexp_species_getter,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
