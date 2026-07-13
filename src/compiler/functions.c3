@@ -1014,63 +1014,49 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         }
     }
 
-    // Close the TRY guard and emit the IteratorClose-on-error catch block.
+    // Close the TRY guard and emit the IteratorClose finally block.
+    //
+    // IteratorClose must run on EVERY abrupt completion of the destructuring —
+    // not just throw, but also a `return` completion (e.g. a generator `.return()`
+    // resuming a `yield` inside a target lref such as `[...{}[yield]]`) and
+    // break/continue. A catch-only handler fires on throw alone, so the guard is
+    // lowered as a try/FINALLY: the finally runs ITER_CLOSE for each iterator and
+    // ENDFINALLY then re-dispatches the pending completion (throw/return/break/
+    // continue/normal). On the normal path the finally still runs, which also
+    // covers §13.15.5.3 "if [[done]] is false, IteratorClose" for a
+    // partially-consumed iterator — so no separate normal-path close is needed.
     if (iter_try_addr != 0xFFFFFFFF && iter_count > 0) {
-        // Normal path: end the try region.
+        // Normal path: end the try region, then fall through to the finally.
+        // (The jump slot's finally offset also routes abrupt completions here.)
         self.emit_simple(Opcode.ENDTRY);
-        // Jump over the catch block (patched below).
-        uint jump_over = self.emit_jump(Opcode.JUMP);
 
-        // Catch block starts here — called on any abrupt completion.
-        uint catch_target = self.code_count;
-
-        // Consume the thrown value; it will be re-thrown after IteratorClose.
-        ushort err_reg = self.alloc_reg();
-        self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
-
-        // Call IteratorClose for each active iterator.  The ITER_CLOSE opcode
-        // is a no-op when method_reg is undefined (iterator already exhausted),
-        // so emitting it unconditionally is safe.
-        // B=1: throw completion — suppress errors from .return access/call
-        // (the original throw takes precedence, per ES2022 §7.4.6 steps 6,8).
+        // FINALLY block — entered on normal completion (fall-through) and on any
+        // abrupt completion (via the catcher's finally_pc).
+        uint finally_target = self.code_count;
+        self.emit_simple(Opcode.FINALLY);
         for (uint i = 0; i < iter_count; i++) {
             self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 1, 0);
         }
+        self.emit_simple(Opcode.ENDFINALLY);
 
-        // Re-throw the original error.
-        self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
-        self.free_reg(err_reg);
-
-        // Patch the jump to skip the catch block.
-        self.patch_jump(jump_over);
-
-        // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
-        uint catch_off = catch_target - iter_try_addr;
-        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
-        // Jump slot (NOP): finally_offset = 0.
-        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+        // Patch TRY: flags = finally (bit1). Jump slot BC = finally offset.
+        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 2, 0);
+        uint finally_off = finally_target - iter_try_addr;
+        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, finally_off);
     } else if (iter_try_addr != 0xFFFFFFFF) {
         // TRY was emitted but no iterators were set up (unusual: pure object binds
         // after the pre-scan flag — should not happen, but be safe).
         self.emit_simple(Opcode.ENDTRY);
-        uint catch_target_empty = self.code_count;
-        ushort dummy_reg = self.alloc_reg();
-        self.emit_abc(Opcode.CATCH, (uint)dummy_reg, 0, 0);
-        self.emit_abc(Opcode.THROW, (uint)dummy_reg, 0, 0);
-        self.free_reg(dummy_reg);
-        uint catch_off_empty = catch_target_empty - iter_try_addr;
-        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off_empty);
-        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+        uint finally_target_e = self.code_count;
+        self.emit_simple(Opcode.FINALLY);
+        self.emit_simple(Opcode.ENDFINALLY);
+        self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 2, 0);
+        uint finally_off_e = finally_target_e - iter_try_addr;
+        self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, finally_off_e);
     }
 
-    // Free iterator registers and emit IteratorClose on the normal path.
+    // Free iterator registers. IteratorClose already ran in the finally above.
     for (uint i = 0; i < iter_count; i++) {
-        // IteratorClose (ES2022 §7.4.6): notify the iterator that we
-        // are done consuming. The VM handler is a no-op when the
-        // iterator is exhausted or has no `.return` method, so this is
-        // safe to emit unconditionally. Without this, partially-consumed
-        // iterators (e.g. generators) leak resources.
-        self.emit_abc(Opcode.ITER_CLOSE, (uint)iter_states[i].method_reg, 0, 0);
         self.free_destruct_iter(&iter_states[i]);
     }
 }
