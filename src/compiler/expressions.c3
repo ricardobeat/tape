@@ -1100,13 +1100,24 @@ fn ushort? CompilerContext.call_expr(&self) {
 
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)prop_reg);
-            self.free_reg(prop_reg);
 
-            // If next token is a call, keep the object alive for 'this'
+            // A property access on a call result is itself a MemberExpression
+            // and a valid assignment/update target (`f().x = v`, `f().x++`).
+            // Record it so assignment_expr/postfix_expr can emit PUTPROP —
+            // mirrors member_expr's DOT branch. The obj (callee) and prop
+            // registers are kept live for the store; a following call
+            // (`f().m()`) clears the flag and consumes obj as 'this' below.
             if (self.check(TokenType.LPAREN) || self.check(TokenType.OPT_CHAIN) || self.is_next_template()) {
+                // Call/template follows: this is not a target; keep obj as 'this'.
+                self.free_reg(prop_reg);
+                self.last_was_member = false;
                 self.call_prop_obj_reg = callee;
             } else {
-                self.free_reg(callee);
+                self.last_was_member = true;
+                self.last_member_is_super = false;
+                self.last_member_obj_reg = callee;
+                self.last_member_prop_reg = prop_reg;
+                self.call_prop_obj_reg = callee;
             }
             callee = result;
         } else if (self.match(TokenType.LBRACKET)) {
@@ -1116,13 +1127,19 @@ fn ushort? CompilerContext.call_expr(&self) {
 
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
-            self.free_reg(idx_reg);
 
-            // If next token is a call, keep the object alive for 'this'
+            // Computed member on a call result — also a valid target
+            // (`f()[k] = v`). See the DOT branch above.
             if (self.check(TokenType.LPAREN) || self.check(TokenType.OPT_CHAIN)) {
+                self.free_reg(idx_reg);
+                self.last_was_member = false;
                 self.call_prop_obj_reg = callee;
             } else {
-                self.free_reg(callee);
+                self.last_was_member = true;
+                self.last_member_is_super = false;
+                self.last_member_obj_reg = callee;
+                self.last_member_prop_reg = idx_reg;
+                self.call_prop_obj_reg = callee;
             }
             callee = result;
         } else if (self.match(TokenType.OPT_CHAIN)) {
