@@ -229,6 +229,16 @@ fn bool env_declare_immutable(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_NNC);
 }
 
+/// Declare an accessor binding in the given environment (no chain walk).
+/// `accessor_value` must be a boxed getter/setter pair as produced by
+/// `hobject::hobject_create_accessors` (or the module-binding helper built
+/// on top of it). Used for live module import bindings, which must resolve
+/// through to the exporting module's current value rather than a snapshot.
+fn bool env_declare_accessor(EnvRecord* env, void* key, TVal accessor_value) @inline {
+    hobject::PropFlags flags = { .writable = false, .enumerable = true, .configurable = false, .is_accessor = true };
+    return env.bindings.put_prop(key, accessor_value, flags);
+}
+
 // ============================================================================
 // TDZ sentinel for let/const declarations
 // ============================================================================

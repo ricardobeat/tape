@@ -513,7 +513,13 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         }
     }
 
-    // Resolve import bindings: copy values from (now-executed) source modules
+    // Resolve import bindings against (now-executed) source modules. Both
+    // `import * as ns` and named `import { x }` install LIVE accessor
+    // bindings (ECMA-262 §16.2.1.6.2/§10.4.6): reads always re-resolve
+    // through to the source module's current env value, so a later
+    // mutation in the source module is observed by the importer and by
+    // the namespace object without any re-copy step. See
+    // install_live_binding for the shared implementation.
     for (uint i = 0; i < mod.import_count; i++) {
         ImportEntry* ie = &mod.imports[i];
         if (ie.req_module_idx >= mod.req_module_count) continue;
@@ -539,54 +545,22 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         // For example, `export default 42` stores the value under "*default*" but
         // exports it under the name "default".
         char[] src_local_name = resolve_export_local_name(source_mod, ie.import_name);
-
-        // Look up the exported binding in the source module's env
-        HString* key = heap.str_intern(src_local_name);
-        if (key == null) continue;
-
-        TVal val;
-        TVal? val_opt = env::env_get(source_mod.env, key);
-        if (catch err = val_opt) {
-            val.set_undefined();
-        } else {
-            val = val_opt;
-        }
-
-        // Declare the local binding with the imported value
         HString* local_key = heap.str_intern(ie.local_name);
-        if (local_key != null) {
-            env::env_declare(mod.env, local_key, val);
-        }
+        if (local_key == null) continue;
+        install_live_binding(heap, mod.env, local_key, source_mod, src_local_name);
     }
 
-    // Resolve indirect exports
+    // Resolve indirect exports (`export { x } from './other'`) as live
+    // bindings too — the re-export must observe the ultimate source
+    // module's current value, same as a named import.
     for (uint i = 0; i < mod.export_count; i++) {
         ExportEntry* ee = &mod.exports[i];
         if (!ee.is_indirect) continue;
-        if (ee.req_module_idx >= mod.req_module_count) continue;
-        ReqModuleEntry* rme = &mod.req_modules[ee.req_module_idx];
-        if (rme.resolved == null) continue;
-        ModuleDef* source_mod = (ModuleDef*)rme.resolved;
-
-        // Resolve the local name in the source module (handles "*default*" style names)
-        char[] src_local = resolve_export_local_name(source_mod, ee.local_name);
-        HString* source_key = heap.str_intern(src_local);
+        ExportBindingSource src = resolve_export_binding_source(mod, ee);
+        if (src.owner == null) continue;
         HString* export_key = heap.str_intern(ee.export_name);
-        if (source_key == null || export_key == null) continue;
-
-        TVal val;
-        TVal? val_opt;
-        if (source_mod.env != null) {
-            val_opt = env::env_get(source_mod.env, source_key);
-        } else {
-            val_opt = hobject::PROP_NOT_FOUND~;
-        }
-        if (catch err = val_opt) {
-            val.set_undefined();
-        } else {
-            val = val_opt;
-        }
-        env::env_declare(mod.env, export_key, val);
+        if (export_key == null) continue;
+        install_live_binding(heap, mod.env, export_key, src.owner, src.local_name);
     }
 
     // Execute module body in its own env. A module compiled with top-level
@@ -815,8 +789,109 @@ fn char[] resolve_export_local_name(ModuleDef* mod, char[] export_name) {
     return export_name; // fallback: identity
 }
 
+/// Resolve a ModuleDef.exports entry to the module and local binding name
+/// that actually OWNS the value — following one level of indirection for
+/// `export { x } from './other'` (ee.local_name there names a binding in
+/// the OTHER module, not in `mod`'s own env). Direct exports resolve to
+/// `mod` itself (with `resolve_export_local_name` applied for the
+/// `export default` "*default*" rename). Used by build_namespace_object so
+/// every export — direct or re-exported — installs a live accessor against
+/// its true owning env, never a same-module self-reference for indirect
+/// entries.
+///
+/// Returns { null, {} } when the indirection's target module isn't
+/// resolved (e.g. a load failure) — callers should treat that as
+/// "value unavailable" (undefined).
+struct ExportBindingSource {
+    ModuleDef* owner;
+    char[]     local_name;
+}
+fn ExportBindingSource resolve_export_binding_source(ModuleDef* mod, ExportEntry* ee) {
+    if (!ee.is_indirect) {
+        return { mod, ee.local_name };
+    }
+    if (ee.req_module_idx >= mod.req_module_count) {
+        return { null, {} };
+    }
+    ReqModuleEntry* rme = &mod.req_modules[ee.req_module_idx];
+    if (rme.resolved == null) {
+        return { null, {} };
+    }
+    ModuleDef* target = (ModuleDef*)rme.resolved;
+    char[] target_local = resolve_export_local_name(target, ee.local_name);
+    return { target, target_local };
+}
+
+/// Install a LIVE binding named `dest_key` in `dest_env`: reading it always
+/// re-resolves `src_local_name` in `source_mod.env.bindings` at access time.
+/// Shared by named imports, indirect re-exports, and (via
+/// build_namespace_object) namespace exports — the one place that answers
+/// "read this binding live" for the whole module pipeline.
+///
+/// Falls back to a plain `undefined` data binding when the source module has
+/// no env yet (e.g. a failed dependency), interning fails, or the target
+/// would be a direct self-reference (dest_env.bindings/dest_key identical to
+/// the source slot — e.g. a self-import of a name this module doesn't
+/// actually declare, such as one reachable only via an unresolved `export *`
+/// star-export). A self-pointing accessor's getter would call back into
+/// itself and recurse forever; since the slot never independently holds a
+/// value in that case, `undefined` is the correct (and only sane) result
+/// anyway.
+fn void install_live_binding(Heap* heap, EnvRecord* dest_env, HString* dest_key,
+                              ModuleDef* source_mod, char[] src_local_name) {
+    if (source_mod.env == null) {
+        TVal undef; undef.set_undefined();
+        env::env_declare(dest_env, dest_key, undef);
+        return;
+    }
+    HString* src_key = heap.str_intern(src_local_name);
+    if (src_key == null) {
+        TVal undef; undef.set_undefined();
+        env::env_declare(dest_env, dest_key, undef);
+        return;
+    }
+    if (dest_env.bindings == source_mod.env.bindings && dest_key == src_key) {
+        TVal undef; undef.set_undefined();
+        env::env_declare(dest_env, dest_key, undef);
+        return;
+    }
+    TVal accessor = builtins::make_module_binding_accessor(heap, source_mod.env.bindings, src_key);
+    if (accessor.is_undefined()) {
+        // Accessor allocation failed — degrade to a one-time snapshot rather
+        // than leaving the binding entirely undeclared.
+        TVal? val_opt = env::env_get(source_mod.env, src_key);
+        TVal val;
+        if (catch err = val_opt) { val.set_undefined(); } else { val = val_opt; }
+        env::env_declare(dest_env, dest_key, val);
+        return;
+    }
+    env::env_declare_accessor(dest_env, dest_key, accessor);
+}
+
+/// Byte-wise comparison of two identifier slices, used to sort namespace
+/// export keys into code-unit order (ECMA-262 §10.4.6.9). UTF-8 byte order
+/// agrees with UTF-16 code-unit order for the entire BMP (all codepoints
+/// below U+10000); it only diverges from true UTF-16 order for astral
+/// export names mixed with codepoints in U+E000-U+FFFF, an accepted edge
+/// case in this engine.
+fn bool export_name_less(char[] a, char[] b) {
+    usz n = a.len < b.len ? a.len : b.len;
+    for (usz i = 0; i < n; i++) {
+        if (a[i] != b[i]) return a[i] < b[i];
+    }
+    return a.len < b.len;
+}
+
 /// Build a Module Namespace Object for `import * as ns`.
-/// The returned HObject has one own enumerable property per export of source_mod.
+/// The returned HObject has one own enumerable property per export of
+/// source_mod, installed as a LIVE accessor via install_live_binding's
+/// shared machinery (make_module_binding_accessor) so a later mutation of
+/// the exported binding in source_mod is observed through ns.x /
+/// Object.keys(ns) / for-in without re-building the namespace.
+///
+/// Own string keys are inserted in sorted code-unit order so enumeration
+/// (which walks the prop table in insertion order) yields the spec-required
+/// sorted order; @@toStringTag is the only symbol key and is added last.
 fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
     HObject*? ns_opt = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = ns_opt) return MODULE_ERROR~;
@@ -824,36 +899,63 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
     // Module Namespace Exotic Object: [[Prototype]] is always null (ECMA-262 §10.4.6).
     ns.prototype = null;
 
-    for (uint i = 0; i < source_mod.export_count; i++) {
-        ExportEntry* ee = &source_mod.exports[i];
-        // Declare the export_name property on the namespace object
+    // Sort a local index array by export_name (insertion-sort — export
+    // counts are small, MAX_EXPORTS=64) rather than mutating source_mod's
+    // own exports table.
+    uint n = source_mod.export_count;
+    uint[MAX_EXPORTS] order;
+    for (uint i = 0; i < n; i++) order[i] = i;
+    for (uint i = 1; i < n; i++) {
+        uint idx = order[i];
+        char[] key_i = source_mod.exports[idx].export_name;
+        int j = (int)i - 1;
+        while (j >= 0 && export_name_less(key_i, source_mod.exports[order[j]].export_name)) {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = idx;
+    }
+
+    for (uint oi = 0; oi < n; oi++) {
+        ExportEntry* ee = &source_mod.exports[order[oi]];
         HString* export_key = heap.str_intern(ee.export_name);
         if (export_key == null) continue;
 
-        // Look up the local binding in the source module's env
-        char[] lookup_name = ee.local_name;
-        HString* local_key = heap.str_intern(lookup_name);
-        if (local_key == null) continue;
+        // Resolve to the module/local-name that actually owns the value —
+        // follows one level of indirection for `export { x } from './other'`
+        // so the accessor never points at a same-module self-reference.
+        ExportBindingSource src = resolve_export_binding_source(source_mod, ee);
 
-        TVal val;
-        if (source_mod.env != null) {
-            TVal? val_opt = env::env_get(source_mod.env, local_key);
-            if (catch err = val_opt) {
-                val.set_undefined();
-            } else {
-                val = val_opt;
+        TVal accessor;
+        accessor.set_undefined();
+        if (src.owner != null && src.owner.env != null) {
+            HString* local_key = heap.str_intern(src.local_name);
+            if (local_key != null) {
+                accessor = builtins::make_module_binding_accessor(heap, src.owner.env.bindings, local_key);
             }
-        } else {
-            val.set_undefined();
         }
 
-        // Export bindings are {writable:true, enumerable:true, configurable:false}
-        // per the [[DefineOwnProperty]] semantics used to populate the namespace.
-        ns.put_prop(export_key, val, hobject::PROP_FLAGS_NEC);
+        if (accessor.is_undefined()) {
+            // Allocation failure or missing env — degrade to a static
+            // undefined data property rather than dropping the export key.
+            TVal undef; undef.set_undefined();
+            ns.put_prop(export_key, undef, hobject::PROP_FLAGS_NEC);
+            continue;
+        }
+
+        // Export bindings are {enumerable:true, configurable:false} data-view
+        // semantics implemented as an accessor per the [[Get]] live-binding
+        // requirement; [[Writable]] is meaningless for accessors (the
+        // namespace has no [[Set]] — plain field left false by PROP_FLAGS
+        // convention below).
+        hobject::PropFlags acc_flags = { .writable = false, .enumerable = true, .configurable = false, .is_accessor = true };
+        ns.put_prop(export_key, accessor, acc_flags);
     }
 
     // ns[Symbol.toStringTag] === "Module", {writable:false, enumerable:false, configurable:false}
-    // per ECMA-262 §28.3 (Module Namespace Object requirements).
+    // per ECMA-262 §28.3 (Module Namespace Object requirements). Inserted
+    // last so it sorts after all string keys per §10.4.6.9 (symbols always
+    // follow strings in [[OwnPropertyKeys]] regardless of insertion order).
     HString* tostrtag_sym = builtins::ensure_tostringtag_symbol(heap);
     if (tostrtag_sym != null) {
         TVal tag_val;

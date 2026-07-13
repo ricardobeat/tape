@@ -321,7 +321,12 @@ const uint BUILTIN_EVAL_SCRIPT                 = 425;
 
 const uint BUILTIN_REGEXP_SPECIES_GETTER       = 426;
 
-const uint BUILTIN_COUNT                       = 427;
+/// Native getter for a live module binding (namespace export or named
+/// import). Reads ctx.callee_obj's hidden slots (source env bindings
+/// object + interned binding key) and returns the current value.
+const uint BUILTIN_MODULE_BINDING_GETTER       = 427;
+
+const uint BUILTIN_COUNT                       = 428;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2499,6 +2504,100 @@ fn void set_func_ctor_name(HObject* func_obj, Heap* heap, char[] name) {
 }
 
 // ============================================================================
+// Live module binding accessor
+// ============================================================================
+//
+// A module namespace export (`import * as ns`, `ns.x`) and a named import
+// (`import { x } from './s'`) must both observe the exporting module's
+// CURRENT binding value, not a value snapshotted at link/execute time
+// (ECMA-262 SS10.4.6 / SS16.2). Both cases are implemented as one native
+// accessor getter that closes over the source module's env bindings object
+// and the interned binding key, stored as hidden non-enumerable,
+// non-writable, non-configurable properties on the getter function object
+// (mirroring the Proxy revoker closure pattern in builtins/proxy.c3). The
+// getter re-reads env::env_get every call, so it is live by construction.
+
+const char[] MODULE_BINDING_ENV_SLOT = "\xFFmoduleBindingEnv";
+const char[] MODULE_BINDING_KEY_SLOT = "\xFFmoduleBindingKey";
+
+/// Native getter body: recover (source bindings object, binding key) from
+/// hidden slots on the getter function itself and read the live value.
+/// Returns undefined if the binding cannot be found (e.g. TDZ before the
+/// source module's declaration has executed).
+///
+/// A re-export chain (`export { x } from './a'` re-exported again by a
+/// third module) means the resolved slot in `bindings` can itself be an
+/// accessor property installed by this same mechanism (one live binding
+/// pointing at another). Such a slot is unwrapped and its getter invoked
+/// via ctx.heap.call_fn, exactly mirroring GETVAR's own accessor-chase —
+/// a single non-recursive lookup would otherwise return the boxed
+/// getter/setter pair instead of the underlying value.
+fn void builtin_module_binding_getter(BuiltinContext* ctx) {
+    ctx.result.set_undefined();
+    if (ctx.callee_obj == null) return;
+    HString* env_slot_key = ctx.heap.str_intern(MODULE_BINDING_ENV_SLOT);
+    HString* key_slot_key = ctx.heap.str_intern(MODULE_BINDING_KEY_SLOT);
+    if (env_slot_key == null || key_slot_key == null) return;
+
+    int env_idx = ctx.callee_obj.find_prop_idx((void*)env_slot_key);
+    int key_idx = ctx.callee_obj.find_prop_idx((void*)key_slot_key);
+    if (env_idx < 0 || key_idx < 0) return;
+
+    TVal env_tv = ctx.callee_obj.prop_values()[env_idx];
+    TVal key_tv = ctx.callee_obj.prop_values()[key_idx];
+    if (!env_tv.is_object() || !key_tv.is_string()) return;
+
+    HObject* bindings = (HObject*)env_tv.get_heapptr();
+    HString* key = (HString*)key_tv.get_heapptr();
+    int idx = bindings.find_prop_idx((void*)key);
+    if (idx < 0) return;
+
+    if (bindings.get_prop_flags((uint)idx).is_accessor) {
+        TVal slot = bindings.prop_values()[idx];
+        TVal getter = hobject::hobject_access_getter(slot);
+        if (!getter.is_object()) return;
+        TVal this_tv; this_tv.set_object(bindings);
+        *ctx.result = ctx.heap.call_fn(ctx.vm, getter, null, 0, this_tv);
+        return;
+    }
+    *ctx.result = bindings.prop_values()[idx];
+}
+
+/// Build an accessor property VALUE (a boxed getter/setter pair, per
+/// hobject_create_accessors) that live-reads `key` from `source_bindings`
+/// (a module env's `.bindings` HObject). Callers install it with
+/// `put_prop(key, value, accessor_flags)`, setting PropFlags.is_accessor.
+/// Returns an undefined TVal on allocation failure (caller should skip the
+/// property rather than fail the whole namespace/import).
+fn TVal make_module_binding_accessor(Heap* heap, HObject* source_bindings, HString* key) {
+    TVal undef_result;
+    undef_result.set_undefined();
+
+    HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = func_raw) return undef_result;
+    HObject* func_obj = func_raw;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MODULE_BINDING_GETTER;
+    func_obj.flags.callable = true;
+    func_obj.flags.constructable = false;
+    func_obj.prototype = heap.function_proto;
+
+    HString* env_slot_key = heap.str_intern(MODULE_BINDING_ENV_SLOT);
+    HString* key_slot_key = heap.str_intern(MODULE_BINDING_KEY_SLOT);
+    if (env_slot_key == null || key_slot_key == null) return undef_result;
+
+    TVal env_tv; env_tv.set_object(source_bindings);
+    TVal key_tv; key_tv.set_string(key);
+    func_obj.put_prop((void*)env_slot_key, env_tv, hobject::PROP_FLAGS_NWC);
+    func_obj.put_prop((void*)key_slot_key, key_tv, hobject::PROP_FLAGS_NWC);
+
+    TVal getter_tv;
+    getter_tv.set_object(func_obj);
+    TVal undef;
+    undef.set_undefined();
+    return hobject::hobject_create_accessors(heap, getter_tv, undef);
+}
+
+// ============================================================================
 // Dispatch table
 // ============================================================================
 
@@ -2930,6 +3029,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     // rework lands (plan 052); a spec evalScript runs as a global script.
     [BUILTIN_EVAL_SCRIPT]                = &builtin_eval,
     [BUILTIN_REGEXP_SPECIES_GETTER]       = &builtin_regexp_species_getter,
+    [BUILTIN_MODULE_BINDING_GETTER]       = &builtin_module_binding_getter,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
