@@ -74,13 +74,25 @@ struct DestructBind {
     // decouples the store decision from is_local_var_reg register-number guessing
     // (a fresh temp can collide with reserved low registers like r0).
     bool   assign_needs_putvar;
-    // Deferred member-target evaluation: for for-of destructuring, the target
-    // evaluation code (e.g. {}[thrower()]) must run AFTER the inner iterator
-    // is opened by emit_destruct_bindings. The bytecode emitted during
-    // collect_arr_assign_binds is saved here, NOPped out, and re-emitted
-    // inside emit_destruct_bindings before PUTPROP.
-    Instruction[16] deferred_code;
-    uint deferred_code_count;
+    // Deferred member-target evaluation: per ES2022 §13.15.5, the target lref
+    // (e.g. {}[thrower()]) is evaluated AFTER the inner iterator is opened, so
+    // a throw during evaluation runs IteratorClose. collect_assign_target only
+    // parses past the target (its code and registers are discarded) and stores
+    // a lexer snapshot here; emit_destruct_bindings re-parses the target at the
+    // point of use via emit_deferred_target, so its registers are allocated at
+    // the emission watermark and cannot collide with live destructuring state.
+    // Heap-allocated (a Lexer embeds a 4KB ident_buf); null = not deferred.
+    // Owned by the bind from collect until emit_deferred_target frees it.
+    DeferredTarget* deferred_target;
+}
+
+/// Lexer position captured by collect_assign_target for a deferred member
+/// target, restored into the same Lexer object by emit_deferred_target.
+/// (Restoring in place keeps token str_value slices into ident_buf valid.)
+struct DeferredTarget {
+    Lexer lexer;
+    Token[4] pushback;
+    uint pushback_count;
 }
 
 /// Check if a candidate param name already exists in the seen-params table.
@@ -659,6 +671,13 @@ fn void CompilerContext.emit_destruct_bindings(&self,
         if (binds[di].is_synthetic && !binds[di].is_object && binds[di].key_idx == 0xFFFF) {
             group_regs[di] = self.alloc_persistent_reg();
         }
+        if (binds[di].deferred_target != null) {
+            // Stable pair for a deferred member target's evaluated object/key:
+            // allocated below every iterator/push callee window so the values
+            // survive the protocol CALLs up to the final PUTPROP.
+            binds[di].member_obj_reg  = self.alloc_persistent_reg();
+            binds[di].member_prop_reg = self.alloc_persistent_reg();
+        }
         if (!binds[di].is_object) has_array_binds = true;
     }
 
@@ -899,14 +918,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     }
                     DestructIterState* state = &iter_states[iter_idx];
 
-                    // Re-emit the deferred rest member-target evaluation now — AFTER
+                    // Emit the deferred rest member-target evaluation now — AFTER
                     // the iterator is opened but BEFORE collection — so a throw from
                     // a side-effecting target (e.g. `...{}[thrower()]`) triggers
                     // IteratorClose on the open iterator (ES2022 §13.15.5.3).
-                    if (binds[di].is_member_target && binds[di].deferred_code_count > 0) {
-                        for (uint di2 = 0; di2 < binds[di].deferred_code_count; di2++) {
-                            self.emit(binds[di].deferred_code[di2]);
-                        }
+                    if (binds[di].deferred_target != null) {
+                        self.emit_deferred_target(&binds[di]);
                     }
 
                     ushort result_reg = self.alloc_reg();
@@ -977,14 +994,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                         iter_count++;
                         self.emit_destruct_iter_setup(src_reg, &iter_states[iter_idx]);
                     }
-                    // Re-emit deferred member-target evaluation code BEFORE
+                    // Emit the deferred member-target evaluation BEFORE
                     // IteratorStep, per ES2022 §13.15.5.6: the target lref is
                     // evaluated before IteratorStep, so any throw here triggers
                     // IteratorClose on the already-opened inner iterator.
-                    if (binds[di].is_member_target && binds[di].deferred_code_count > 0) {
-                        for (uint di2 = 0; di2 < binds[di].deferred_code_count; di2++) {
-                            self.emit(binds[di].deferred_code[di2]);
-                        }
+                    if (binds[di].deferred_target != null) {
+                        self.emit_deferred_target(&binds[di]);
                     }
                     self.emit_destruct_iter_next(&iter_states[iter_idx], bind_reg);
                 }

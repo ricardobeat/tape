@@ -376,6 +376,80 @@ fn bool? CompilerContext.parse_assign_target_lhs(&self,
     return self.fail("invalid assignment target in destructuring pattern")~;
 }
 
+/// Parse a leaf assignment target into a DestructBind, deferring member
+/// targets. Per ES2022 §13.15.5 the target lref is evaluated after the
+/// iterator is opened, so for member expressions the collection-time parse
+/// only advances the lexer — its code and registers are discarded — and a
+/// lexer snapshot is stored for emit_deferred_target to re-parse inside the
+/// IteratorClose guard.
+fn void? CompilerContext.collect_assign_target(&self, DestructBind* bind)
+{
+    DeferredTarget* snap = (DeferredTarget*)libc::malloc(DeferredTarget::size);
+    snap.lexer = *self.lexer;
+    snap.pushback = self.pushback_stack;
+    snap.pushback_count = self.pushback_count;
+    uint pre_code = self.code_count;
+    ushort pre_reg = self.next_reg;
+
+    ushort tgt_obj  = 0xFFFF;
+    ushort tgt_key  = 0xFFFF;
+    uint   tgt_name = 0xFFFFFFFF;
+    bool? is_member_res = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name);
+    if (catch err = is_member_res) {
+        libc::free(snap);
+        return err~;
+    }
+    bool is_member = is_member_res;
+
+    bind.name_idx         = tgt_name;
+    bind.is_member_target = is_member;
+    bind.member_obj_reg   = tgt_obj;
+    bind.member_prop_reg  = tgt_key;
+    if (is_member) {
+        self.code_count = pre_code;
+        self.free_regs_to(pre_reg);
+        bind.deferred_target = snap;
+    } else {
+        libc::free(snap);
+    }
+}
+
+/// Re-parse and emit a member target deferred by collect_assign_target.
+/// Called by emit_destruct_bindings inside the IteratorClose guard. The
+/// evaluated object/key land in fresh registers at the current watermark and
+/// are copied down into the bind's pre-allocated persistent pair (below every
+/// iterator/push callee window, so they survive the protocol CALLs up to the
+/// final PUTPROP); the parse temporaries are then released.
+fn void CompilerContext.emit_deferred_target(&self, DestructBind* bind)
+{
+    DeferredTarget* snap = bind.deferred_target;
+    Lexer saved = *self.lexer;
+    Token[4] saved_pb = self.pushback_stack;
+    uint saved_pbc = self.pushback_count;
+    *self.lexer = snap.lexer;
+    self.pushback_stack = snap.pushback;
+    self.pushback_count = snap.pushback_count;
+    defer {
+        *self.lexer = saved;
+        self.pushback_stack = saved_pb;
+        self.pushback_count = saved_pbc;
+        bind.deferred_target = null;
+        libc::free(snap);
+    }
+
+    ushort pre_reg = self.next_reg;
+    ushort tgt_obj  = 0xFFFF;
+    ushort tgt_key  = 0xFFFF;
+    uint   tgt_name = 0xFFFFFFFF;
+    if (catch self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)) {
+        // Unreachable: the same token stream parsed successfully at collection.
+        return;
+    }
+    self.emit_abc(Opcode.LDREG, (uint)bind.member_obj_reg, (uint)tgt_obj, 0);
+    self.emit_abc(Opcode.LDREG, (uint)bind.member_prop_reg, (uint)tgt_key, 0);
+    self.free_regs_to(pre_reg);
+}
+
 /// Parse array destructuring assignment: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
 /// Returns the RHS register (destructuring assignment evaluates to RHS value).
@@ -444,43 +518,21 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                     self.collect_arr_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
                 }
             } else {
-                // Leaf rest target: identifier or member expression.
-                ushort tgt_obj  = 0xFFFF;
-                ushort tgt_key  = 0xFFFF;
-                uint   tgt_name = 0xFFFFFFFF;
-                // For member targets, save and NOP the evaluation bytecode so it
-                // can be re-emitted inside emit_destruct_bindings AFTER the inner
-                // iterator is opened. Per ES2022 §13.15.5.3, the rest target lref
-                // is evaluated after GetIterator, so a throw there (e.g. a
-                // side-effecting computed key `{}[thrower()]`) must run
-                // IteratorClose on the already-opened iterator.
-                uint pre_eval_code = self.code_count;
-                bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
-                uint eval_code_count = self.code_count - pre_eval_code;
-
+                // Leaf rest target: identifier or member expression (member
+                // targets are deferred — see collect_assign_target).
+                DestructBind overflow;
+                DestructBind* b = count < (uint)MAX_DESTRUCT_BINDS ? &binds[count] : &overflow;
+                self.collect_assign_target(b)!;
+                if (b == &overflow && overflow.deferred_target != null) {
+                    libc::free(overflow.deferred_target);
+                }
                 if (count < (uint)MAX_DESTRUCT_BINDS) {
-                    binds[count].name_idx   = tgt_name;
                     binds[count].key_idx    = 0xFFFF;   // 0xFFFF = rest sentinel
                     binds[count].index      = elem_idx;
                     binds[count].is_object  = false;
                     binds[count].arg_idx    = 0xFFFF;
                     binds[count].parent_idx = 0xFFFF;
-                    binds[count].is_member_target  = is_member;
-                    binds[count].member_obj_reg    = tgt_obj;
-                    binds[count].member_prop_reg   = tgt_key;
-                    binds[count].deferred_code_count = 0;
-                    if (is_member && eval_code_count > 0 && eval_code_count <= 16) {
-                        for (uint i = 0; i < eval_code_count; i++) {
-                            binds[count].deferred_code[i] = self.code[pre_eval_code + i];
-                            self.code[pre_eval_code + i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
-                        }
-                        binds[count].deferred_code_count = (uint)eval_code_count;
-                    }
-                    if (!is_member) {
-                        // Copy name into name_buf for declare_var-style lookup.
-                        // (Not needed for assignment — name_idx is enough for PUTVAR.)
-                        binds[count].name_len = 0;
-                    }
+                    binds[count].name_len   = 0;
                     count++;
                 }
             }
@@ -523,39 +575,21 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 }
             }
         } else {
-            // Leaf assignment target: identifier or member expression.
-            ushort tgt_obj  = 0xFFFF;
-            ushort tgt_key  = 0xFFFF;
-            uint   tgt_name = 0xFFFFFFFF;
-
-            // For member targets, save and NOP the evaluation bytecode so it
-            // can be re-emitted inside emit_destruct_bindings (after the inner
-            // iterator is opened). This ensures correct IteratorClose when the
-            // target evaluation throws in for-of destructuring (ES2022 §13.15.5.6).
-            uint pre_eval_code = self.code_count;
-            bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
-            uint eval_code_count = self.code_count - pre_eval_code;
-
+            // Leaf assignment target: identifier or member expression (member
+            // targets are deferred — see collect_assign_target).
+            DestructBind overflow;
+            DestructBind* b = count < (uint)MAX_DESTRUCT_BINDS ? &binds[count] : &overflow;
+            self.collect_assign_target(b)!;
+            if (b == &overflow && overflow.deferred_target != null) {
+                libc::free(overflow.deferred_target);
+            }
             if (count < (uint)MAX_DESTRUCT_BINDS) {
-                binds[count].name_idx          = tgt_name;
                 binds[count].key_idx           = (uint)elem_idx;  // array index
                 binds[count].index             = elem_idx;
                 binds[count].is_object         = false;
                 binds[count].arg_idx           = 0xFFFF;
                 binds[count].parent_idx        = 0xFFFF;
-                binds[count].is_member_target  = is_member;
-                binds[count].member_obj_reg    = tgt_obj;
-                binds[count].member_prop_reg   = tgt_key;
                 binds[count].name_len          = 0;
-                // Save and NOP the target evaluation bytecode for deferred emission.
-                binds[count].deferred_code_count = 0;
-                if (is_member && eval_code_count > 0 && eval_code_count <= 16) {
-                    for (uint i = 0; i < eval_code_count; i++) {
-                        binds[count].deferred_code[i] = self.code[pre_eval_code + i];
-                        self.code[pre_eval_code + i] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
-                    }
-                    binds[count].deferred_code_count = (uint)eval_code_count;
-                }
                 count++;
             }
 
@@ -564,8 +598,8 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 if (count > 0) {
                     binds[count - 1].has_default = true;
                     char[] iname = "";
-                    if (!is_member) {
-                        HString* nhs = (HString*)self.constants[tgt_name].get_heapptr();
+                    if (!b.is_member_target) {
+                        HString* nhs = (HString*)self.constants[b.name_idx].get_heapptr();
                         iname = nhs.get_data();
                     }
                     CompiledFunction* default_func = self.compile_default_expr(iname)!;
@@ -594,11 +628,11 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     //   - a rest element with any of the above targets (`...a`, `...obj.x`)
     //   - a hole (elision: leading or interior commas)
     //
-    // For member-expression targets, `parse_assign_target_lhs` emits code
-    // to evaluate the object and key into fresh registers NOW (before the
-    // RHS iterator is set up). The resulting registers are stored in
-    // `binds[i].member_obj_reg` / `member_prop_reg`; `emit_destruct_bindings`
-    // will emit PUTPROP instead of PUTVAR for these entries.
+    // Member-expression targets are deferred (see collect_assign_target):
+    // collection only parses past the target, and `emit_destruct_bindings`
+    // re-parses and evaluates it after the RHS iterator is opened, storing
+    // the object/key in `binds[i].member_obj_reg` / `member_prop_reg` and
+    // emitting PUTPROP instead of PUTVAR for these entries.
     //
     // Nested patterns are handled by delegating back to the shared
     // `collect_arr_param_binds` / `collect_obj_param_binds` machinery (which
