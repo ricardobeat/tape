@@ -20,6 +20,7 @@ struct JsonParseCtx {
     uint pos;
     uint len;
     Heap* heap;
+    bool error;  // set on parse error to distinguish from valid undefined
 }
 
 fn void json_skip_ws(JsonParseCtx* jctx) {
@@ -56,6 +57,7 @@ fn uint json_parse_hex4(JsonParseCtx* jctx) {
 }
 
 /// Parse a JSON string (between quotes).
+/// Returns null on parse error (unterminated string, invalid escape, etc.).
 fn HString*? json_parse_string(JsonParseCtx* jctx) {
     if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '\"') {
         return null;
@@ -134,6 +136,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
 
     // Integer part
     if (jctx.pos >= jctx.len) {
+        jctx.error = true;
         TVal r; r.set_undefined(); return r;
     }
     if (jctx.src[jctx.pos] == '0') {
@@ -144,6 +147,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
             jctx.pos++;
         }
     } else {
+        jctx.error = true;
         TVal r; r.set_undefined(); return r;
     }
 
@@ -151,6 +155,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
     if (jctx.pos < jctx.len && jctx.src[jctx.pos] == '.') {
         jctx.pos++;
         if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
+            jctx.error = true;
             TVal r; r.set_undefined(); return r;
         }
         while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
@@ -165,6 +170,7 @@ fn TVal json_parse_number(JsonParseCtx* jctx) {
             jctx.pos++;
         }
         if (jctx.pos >= jctx.len || jctx.src[jctx.pos] < '0' || jctx.src[jctx.pos] > '9') {
+            jctx.error = true;
             TVal r; r.set_undefined(); return r;
         }
         while (jctx.pos < jctx.len && jctx.src[jctx.pos] >= '0' && jctx.src[jctx.pos] <= '9') {
@@ -212,7 +218,8 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
         while (true) {
             json_skip_ws(jctx);
             TVal elem = json_parse_value(jctx);
-            if (elem.is_undefined() && elem.get_heapptr() == null && jctx.pos < jctx.len) {
+            if (jctx.error || (elem.is_undefined() && elem.get_heapptr() == null && jctx.pos < jctx.len)) {
+                jctx.error = true;
                 TVal r; r.set_undefined(); return r; // parse error
             }
             json_skip_ws(jctx);
@@ -224,6 +231,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
             idx++;
 
             if (jctx.pos >= jctx.len) {
+                jctx.error = true;
                 TVal r; r.set_undefined(); return r;
             }
             if (jctx.src[jctx.pos] == ',') {
@@ -235,6 +243,7 @@ fn TVal json_parse_array(JsonParseCtx* jctx) {
     }
 
     if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ']') {
+        jctx.error = true;
         TVal r; r.set_undefined(); return r;
     }
     jctx.pos++; // skip ']'
@@ -266,23 +275,31 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
         while (true) {
             json_skip_ws(jctx);
             if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '\"') {
+                jctx.error = true;
                 TVal r; r.set_undefined(); return r;
             }
             HString*? key_str = json_parse_string(jctx);
             if (try k = key_str) {
+                if (k == null) {
+                    jctx.error = true;
+                    TVal r; r.set_undefined(); return r;
+                }
                 json_skip_ws(jctx);
                 if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != ':') {
+                    jctx.error = true;
                     TVal r; r.set_undefined(); return r;
                 }
                 jctx.pos++; // skip ':'
                 json_skip_ws(jctx);
                 TVal val = json_parse_value(jctx);
-                if (val.is_undefined() && val.get_heapptr() == null && jctx.pos < jctx.len) {
+                if (jctx.error || (val.is_undefined() && val.get_heapptr() == null && jctx.pos < jctx.len)) {
+                    jctx.error = true;
                     TVal r; r.set_undefined(); return r;
                 }
                 obj.put_prop(k, val, hobject::PROP_FLAGS_WEC);
                 json_skip_ws(jctx);
                 if (jctx.pos >= jctx.len) {
+                    jctx.error = true;
                     TVal r; r.set_undefined(); return r;
                 }
                 if (jctx.src[jctx.pos] == ',') {
@@ -291,12 +308,14 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
                     break;
                 }
             } else {
+                jctx.error = true;
                 TVal r; r.set_undefined(); return r;
             }
         }
     }
 
     if (jctx.pos >= jctx.len || jctx.src[jctx.pos] != '}') {
+        jctx.error = true;
         TVal r; r.set_undefined(); return r;
     }
     jctx.pos++; // skip '}'
@@ -306,10 +325,12 @@ fn TVal json_parse_object(JsonParseCtx* jctx) {
     return result;
 }
 
-/// Parse a JSON value.
+/// Parse a JSON value. Returns undefined on error; callers must also check
+/// jctx.error to distinguish "valid undefined" from parse failure.
 fn TVal json_parse_value(JsonParseCtx* jctx) {
     json_skip_ws(jctx);
     if (jctx.pos >= jctx.len) {
+        jctx.error = true;
         TVal r; r.set_undefined(); return r;
     }
 
@@ -320,8 +341,11 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
             {
                 HString*? s = json_parse_string(jctx);
                 if (try str = s) {
-                    TVal r; r.set_string(str); return r;
+                    if (str != null) {
+                        TVal r; r.set_string(str); return r;
+                    }
                 }
+                jctx.error = true;
                 TVal r; r.set_undefined(); return r;
             }
         case '{':
@@ -337,7 +361,7 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.pos += 4;
                 TVal r; r.set_boolean(true); return r;
             }
-            { TVal r; r.set_undefined(); return r; }
+            { jctx.error = true; TVal r; r.set_undefined(); return r; }
         case 'f':
             // false
             if (jctx.pos + 5 <= jctx.len &&
@@ -348,7 +372,7 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.pos += 5;
                 TVal r; r.set_boolean(false); return r;
             }
-            { TVal r; r.set_undefined(); return r; }
+            { jctx.error = true; TVal r; r.set_undefined(); return r; }
         case 'n':
             // null
             if (jctx.pos + 4 <= jctx.len &&
@@ -358,12 +382,12 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
                 jctx.pos += 4;
                 TVal r; r.set_null(); return r;
             }
-            { TVal r; r.set_undefined(); return r; }
+            { jctx.error = true; TVal r; r.set_undefined(); return r; }
         case '-':
         case '0'..'9':
             return json_parse_number(jctx);
         default:
-            { TVal r; r.set_undefined(); return r; }
+            { jctx.error = true; TVal r; r.set_undefined(); return r; }
     }
 }
 
@@ -576,11 +600,12 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
     jctx.pos = 0;
     jctx.len = len;
     jctx.heap = ctx.heap;
+    jctx.error = false;
 
     TVal result = json_parse_value(&jctx);
 
-    // Check parse error (undefined == error)
-    if (result.is_undefined() && result.get_heapptr() == null) {
+    // Check parse error (jctx.error or undefined sentinel)
+    if (jctx.error || (result.is_undefined() && result.get_heapptr() == null)) {
         json_throw_syntax_error(ctx, "Unexpected token in JSON");
         return;
     }
@@ -648,40 +673,109 @@ fn void builtin_json_parse(BuiltinContext* ctx) {
 // ============================================================================
 
 /// Helper: append a JSON-escaped string to a buffer.
+/// Handles well-formed JSON stringify (ES2019): lone surrogates are escaped
+/// as \uXXXX rather than passed through as broken UTF-8.
 fn usz json_escape_string(char* src, uint len, char* buf, usz buf_size) {
     usz pos = 0;
     if (pos < buf_size) buf[pos++] = '\"';
-    for (uint i = 0; i < len && pos < buf_size; i++) {
+    char[16] hex_digits = { '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
+    for (uint i = 0; i < len && pos < buf_size; ) {
         char c = src[i];
-        switch (c) {
-            case '\"': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = '\"'; break;
-            case '\\': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = '\\'; break;
-            case '\b': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'b'; break;
-            case '\f': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'f'; break;
-            case '\n': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'n'; break;
-            case '\r': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 'r'; break;
-            case '\t': if (pos + 2 > buf_size) { break; } buf[pos++] = '\\'; buf[pos++] = 't'; break;
-            default:
-                if ((c & 0x80) != 0) {
-                    // Non-ASCII: pass through as-is (valid UTF-8)
-                    if (pos >= buf_size) break;
-                    buf[pos++] = c;
-                } else if (c < 0x20) {
-                    // Control char: \uXXXX
-                    if (pos + 6 > buf_size) break;
-                    buf[pos++] = '\\';
-                    buf[pos++] = 'u';
-                    buf[pos++] = '0';
-                    buf[pos++] = '0';
-                    char[16] hex_digits = { '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
-                    buf[pos++] = hex_digits[(c >> 4) & 0xF];
-                    buf[pos++] = hex_digits[c & 0xF];
-                } else {
-                    // Regular ASCII
-                    if (pos >= buf_size) break;
-                    buf[pos++] = c;
+        if (c == '\"') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = '\"'; i++; }
+        else if (c == '\\') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = '\\'; i++; }
+        else if (c == '\b') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = 'b'; i++; }
+        else if (c == '\f') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = 'f'; i++; }
+        else if (c == '\n') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = 'n'; i++; }
+        else if (c == '\r') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = 'r'; i++; }
+        else if (c == '\t') { if (pos + 2 > buf_size) break; buf[pos++] = '\\'; buf[pos++] = 't'; i++; }
+        else if (c < 0x20) {
+            // Control char: \u00XX
+            if (pos + 6 > buf_size) break;
+            buf[pos++] = '\\'; buf[pos++] = 'u'; buf[pos++] = '0'; buf[pos++] = '0';
+            buf[pos++] = hex_digits[(c >> 4) & 0xF]; buf[pos++] = hex_digits[c & 0xF];
+            i++;
+        }
+        else if ((c & 0x80) == 0) {
+            // Regular ASCII
+            if (pos >= buf_size) break;
+            buf[pos++] = (char)c; i++;
+        }
+        else if ((c & 0xE0) == 0xC0) {
+            // 2-byte UTF-8: 110xxxxx 10xxxxxx
+            uint cp = (uint)((int)c & 0x1F) << 6;
+            if (i + 1 < len) { cp |= (uint)((int)src[i+1] & 0x3F); i += 2; }
+            else { i++; continue; }
+            // Not a surrogate — pass through
+            if (pos + 2 > buf_size) break;
+            buf[pos++] = (char)(0xC0 | (cp >> 6));
+            buf[pos++] = (char)(0x80 | (cp & 0x3F));
+        }
+        else if ((c & 0xF0) == 0xE0) {
+            // 3-byte UTF-8: 1110xxxx 10xxxxxx 10xxxxxx
+            uint cp = (uint)((int)c & 0x0F) << 12;
+            uint next_i = i + 3;
+            if (i + 2 < len) {
+                cp |= (uint)((int)src[i+1] & 0x3F) << 6;
+                cp |= (uint)((int)src[i+2] & 0x3F);
+            } else { i++; continue; }
+            // Check for surrogate pair: high surrogate (U+D800..U+DBFF) followed
+            // by low surrogate (U+DC00..U+DFFF) → combine into supplementary char
+            if (cp >= 0xD800 && cp <= 0xDBFF && next_i + 3 <= len) {
+                char nc = src[next_i];
+                if ((nc & 0xF0) == 0xE0) {
+                    uint cp2 = (uint)((int)nc & 0x0F) << 12;
+                    cp2 |= (uint)((int)src[next_i+1] & 0x3F) << 6;
+                    cp2 |= (uint)((int)src[next_i+2] & 0x3F);
+                    if (cp2 >= 0xDC00 && cp2 <= 0xDFFF) {
+                        // Valid surrogate pair — combine to supplementary code point
+                        uint supplementary = 0x10000 + (cp - 0xD800) * 0x400 + (cp2 - 0xDC00);
+                        i = next_i + 3;
+                        // Encode as 4-byte UTF-8
+                        if (pos + 4 > buf_size) break;
+                        buf[pos++] = (char)(0xF0 | (supplementary >> 18));
+                        buf[pos++] = (char)(0x80 | ((supplementary >> 12) & 0x3F));
+                        buf[pos++] = (char)(0x80 | ((supplementary >> 6) & 0x3F));
+                        buf[pos++] = (char)(0x80 | (supplementary & 0x3F));
+                        continue;
+                    }
                 }
-                break;
+            }
+            i = next_i;
+            // Lone surrogate — escape as \uXXXX (well-formed JSON stringify)
+            if (cp >= 0xD800 && cp <= 0xDFFF) {
+                if (pos + 6 > buf_size) break;
+                buf[pos++] = '\\'; buf[pos++] = 'u';
+                buf[pos++] = hex_digits[(cp >> 12) & 0xF];
+                buf[pos++] = hex_digits[(cp >> 8) & 0xF];
+                buf[pos++] = hex_digits[(cp >> 4) & 0xF];
+                buf[pos++] = hex_digits[cp & 0xF];
+            } else {
+                // Normal BMP character — pass through as 3-byte UTF-8
+                if (pos + 3 > buf_size) break;
+                buf[pos++] = (char)(0xE0 | (cp >> 12));
+                buf[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                buf[pos++] = (char)(0x80 | (cp & 0x3F));
+            }
+        }
+        else if ((c & 0xF8) == 0xF0) {
+            // 4-byte UTF-8: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            uint cp = (uint)(c & 0x07) << 18;
+            if (i + 3 < len) {
+                cp |= (uint)((int)src[i+1] & 0x3F) << 12;
+                cp |= (uint)((int)src[i+2] & 0x3F) << 6;
+                cp |= (uint)((int)src[i+3] & 0x3F);
+                i += 4;
+            } else { i++; continue; }
+            // Pass through as 4-byte UTF-8
+            if (pos + 4 > buf_size) break;
+            buf[pos++] = (char)(0xF0 | (cp >> 18));
+            buf[pos++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            buf[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos++] = (char)(0x80 | (cp & 0x3F));
+        }
+        else {
+            // Invalid UTF-8 lead byte — skip
+            i++;
         }
     }
     if (pos < buf_size) buf[pos++] = '\"';
@@ -939,9 +1033,14 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
     }
 
     // Step 5-12: Determine if value should be omitted
-    // undefined and functions → omit
+    // undefined, functions, and symbols → omit
     if (val.is_undefined()) { *omit = true; return val; }
     if (val.is_lightfunc()) { *omit = true; return val; }
+    // Symbol primitives: STRING tag with is_symbol flag → omit per ES §24.5.3
+    if (val.is_string() && val.get_heapptr() != null) {
+        HString* hs = (HString*)val.get_heapptr();
+        if (hs.is_symbol()) { *omit = true; return val; }
+    }
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.get_class() == ObjClass.FUNCTION) { *omit = true; return val; }
@@ -1744,7 +1843,17 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
             }
         }
 
-        if (space_arg.is_fastint()) {
+        // Symbol space → ignored (gap stays empty per ES §24.5.2.1 step 8a)
+        bool is_sym_space = false;
+        if (space_arg.is_string() && space_arg.get_heapptr() != null) {
+            HString* sym_check = (HString*)space_arg.get_heapptr();
+            if (sym_check.is_symbol()) {
+                is_sym_space = true;
+            }
+        }
+        if (is_sym_space) {
+            // Skip — leave gap empty
+        } else if (space_arg.is_fastint()) {
             // ES5 §15.12.3 step 6: min(10, ToInteger(space)); if < 1, gap is empty
             long si = space_arg.get_fastint();
             if (si < 0) si = 0;
