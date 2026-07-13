@@ -795,6 +795,15 @@ fn double builtin_string_to_number(HString* hstr) {
         }
     }
 
+    // --- Reject sign-prefixed hex/binary/octal literals ---
+    // ES2015 §7.1.3.1: +0x... / -0x... etc. are not valid StringNumericLiterals.
+    if ((p[0] == '+' || p[0] == '-')) {
+        char* q = p + 1;
+        if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) return double::nan;
+        if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) return double::nan;
+        if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) return double::nan;
+    }
+
     // --- Hex integer literal (0x...) ---
     if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         uint j = 2;
@@ -814,10 +823,13 @@ fn double builtin_string_to_number(HString* hstr) {
             val = (val << 4) | digit;
             j++;
         }
-        // Trailing must be whitespace
-        while (p[j] != 0) {
-            if (!is_ecma_whitespace(p[j])) return double::nan;
-            j++;
+        // Trailing must be whitespace (codepoint-aware)
+        uint trail_pos = (uint)((p + j) - cstr);
+        while (trail_pos < blen) {
+            uint seq_len = 0;
+            uint cp = decode_codepoint_at(cstr, trail_pos, blen, &seq_len);
+            if (seq_len == 0 || !is_ecma_ws_codepoint(cp)) return double::nan;
+            trail_pos += seq_len;
         }
         return (double)val;
     }
@@ -833,9 +845,12 @@ fn double builtin_string_to_number(HString* hstr) {
             val = val * 2.0 + (double)(p[j] - '0');
             j++;
         }
-        while (p[j] != 0) {
-            if (!is_ecma_whitespace(p[j])) return double::nan;
-            j++;
+        uint trail_pos = (uint)((p + j) - cstr);
+        while (trail_pos < blen) {
+            uint seq_len = 0;
+            uint cp = decode_codepoint_at(cstr, trail_pos, blen, &seq_len);
+            if (seq_len == 0 || !is_ecma_ws_codepoint(cp)) return double::nan;
+            trail_pos += seq_len;
         }
         return val;
     }
@@ -849,9 +864,12 @@ fn double builtin_string_to_number(HString* hstr) {
             val = val * 8.0 + (double)(p[j] - '0');
             j++;
         }
-        while (p[j] != 0) {
-            if (!is_ecma_whitespace(p[j])) return double::nan;
-            j++;
+        uint trail_pos = (uint)((p + j) - cstr);
+        while (trail_pos < blen) {
+            uint seq_len = 0;
+            uint cp = decode_codepoint_at(cstr, trail_pos, blen, &seq_len);
+            if (seq_len == 0 || !is_ecma_ws_codepoint(cp)) return double::nan;
+            trail_pos += seq_len;
         }
         return val;
     }
@@ -882,12 +900,15 @@ fn double builtin_string_to_number(HString* hstr) {
         }
     }
 
-    // Trailing characters must be whitespace only
-    while (*endptr != 0) {
-        if (!is_ecma_whitespace(*endptr)) {
+    // Trailing characters must be whitespace only (codepoint-aware for multi-byte Unicode ws)
+    uint trail_pos = (uint)(endptr - cstr);
+    while (trail_pos < blen) {
+        uint seq_len = 0;
+        uint cp = decode_codepoint_at(cstr, trail_pos, blen, &seq_len);
+        if (seq_len == 0 || !is_ecma_ws_codepoint(cp)) {
             return double::nan;
         }
-        endptr++;
+        trail_pos += seq_len;
     }
 
     return result;
@@ -918,11 +939,13 @@ fn void builtin_to_number(TVal* val, TVal* result) {
             return;
         case STRING: {
             double d = builtin_string_to_number((HString*)val.get_heapptr());
-            // Try fastint preservation
-            long fi = (long)d;
-            if ((double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
-                result.set_fastint(fi);
-                return;
+            // Try fastint preservation — but not for -0 (fastint can't represent it)
+            if (d != 0.0 || !math::signbit(d)) {
+                long fi = (long)d;
+                if ((double)fi == d && fi >= types::DUK_MIN_SAFE_INT && fi <= types::DUK_MAX_SAFE_INT) {
+                    result.set_fastint(fi);
+                    return;
+                }
             }
             result.set_number(d);
             return;
