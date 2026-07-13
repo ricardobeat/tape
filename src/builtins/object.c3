@@ -232,45 +232,89 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
         }
     }
 
-    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    // Phase 1: ALL integer-indexed properties merged from named props + dense
+    // array, sorted by numeric index (ES2015 §9.1.11.1 OrdinaryOwnPropertyKeys).
     {
-        uint int_count = 0;
+        // Count integer-indexed named properties
+        uint named_int_count = 0;
         for (uint i = 0; i < obj.prop_count; i++) {
             if (obj.prop_key_at(i) != null && ((HString*)obj.prop_key_at(i)).is_arridx()) {
-                int_count++;
+                named_int_count++;
             }
         }
-        if (int_count > 0) {
-            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
+        // Count dense array indices that are not also in the named property table
+        uint dense_int_count = 0;
+        if (obj.array_size > 0) {
+            for (uint i = 0; i < obj.array_size; i++) {
+                if (!obj.array_part()[i].is_undefined()) {
+                    HString* ki = ctx.heap.int_to_hstring((long)i);
+                    if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                    dense_int_count++;
+                }
+            }
+        }
+        uint total_int = named_int_count + dense_int_count;
+        if (total_int > 0) {
+            // Sort buffer: [index, source_index, source_type] triples
+            // source_type: 0 = named prop (index into prop table), 1 = dense array index
+            usz sort_size = (usz)(total_int * 3 * 4);
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, sort_size);
             if (sort_buf != null) {
                 uint p = 0;
+                // Add integer-indexed named properties
                 for (uint i = 0; i < obj.prop_count; i++) {
                     if (obj.prop_key_at(i) != null) {
                         HString* key = (HString*)obj.prop_key_at(i);
                         if (key.is_arridx()) {
-                            sort_buf[p * 2] = key.array_index();
-                            sort_buf[p * 2 + 1] = i;
+                            sort_buf[p * 3] = key.array_index();
+                            sort_buf[p * 3 + 1] = i;     // prop table index
+                            sort_buf[p * 3 + 2] = 0;     // source: named prop
                             p++;
                         }
                     }
                 }
-                // Insertion sort by arridx
-                for (uint i = 1; i < int_count; i++) {
-                    uint t0 = sort_buf[i * 2];
-                    uint t1 = sort_buf[i * 2 + 1];
+                // Add dense array indices (not already in named props)
+                for (uint i = 0; i < obj.array_size; i++) {
+                    if (!obj.array_part()[i].is_undefined()) {
+                        HString* ki = ctx.heap.int_to_hstring((long)i);
+                        if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                        sort_buf[p * 3] = (uint)i;
+                        sort_buf[p * 3 + 1] = i;         // dense array index
+                        sort_buf[p * 3 + 2] = 1;         // source: dense array
+                        p++;
+                    }
+                }
+                total_int = p;
+                // Insertion sort by numeric index
+                for (uint i = 1; i < total_int; i++) {
+                    uint t0 = sort_buf[i * 3];
+                    uint t1 = sort_buf[i * 3 + 1];
+                    uint t2 = sort_buf[i * 3 + 2];
                     uint j = i;
-                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
-                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
-                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                    while (j > 0 && sort_buf[(j - 1) * 3] > t0) {
+                        sort_buf[j * 3] = sort_buf[(j - 1) * 3];
+                        sort_buf[j * 3 + 1] = sort_buf[(j - 1) * 3 + 1];
+                        sort_buf[j * 3 + 2] = sort_buf[(j - 1) * 3 + 2];
                         j--;
                     }
-                    sort_buf[j * 2] = t0;
-                    sort_buf[j * 2 + 1] = t1;
+                    sort_buf[j * 3] = t0;
+                    sort_buf[j * 3 + 1] = t1;
+                    sort_buf[j * 3 + 2] = t2;
                 }
-                for (uint i = 0; i < int_count; i++) {
-                    uint si = sort_buf[i * 2 + 1];
-                    if (obj.get_prop_flags(si).enumerable) {
-                        HString* key = (HString*)obj.prop_key_at(si);
+                // Emit sorted integer-indexed keys
+                for (uint i = 0; i < total_int; i++) {
+                    uint src_type = sort_buf[i * 3 + 2];
+                    if (src_type == 0) {
+                        // Named property — check enumerable
+                        uint prop_idx = sort_buf[i * 3 + 1];
+                        if (obj.get_prop_flags(prop_idx).enumerable) {
+                            HString* key = (HString*)obj.prop_key_at(prop_idx);
+                            key_buf[key_count++] = key;
+                        }
+                    } else {
+                        // Dense array index — always enumerable
+                        HString* key = ctx.heap.int_to_hstring((long)sort_buf[i * 3]);
+                        if (key == null) { ctx.heap.free_func(ctx.heap.heap_udata, sort_buf); return key_count; }
                         key_buf[key_count++] = key;
                     }
                 }
@@ -286,18 +330,6 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
             if (key.is_arridx()) continue;
             if (obj.flags.exotic_stringobj && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
             if (obj.flags.exotic_array && (void*)key == (void*)ctx.heap.strs[heap::BuiltinStr.LENGTH]) continue;
-            key_buf[key_count++] = key;
-        }
-    }
-    // Dense array indices (as strings)
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            if (obj.flags.exotic_array) {
-                HString* ki = ctx.heap.int_to_hstring((long)i);
-                if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
-            }
-            HString* key = ctx.heap.int_to_hstring((long)i);
-            if (key == null) return key_count;
             key_buf[key_count++] = key;
         }
     }
@@ -497,46 +529,85 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
 
-    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    // Phase 1: ALL integer-indexed properties merged from named props + dense
+    // array, sorted by numeric index (ES2015 §9.1.11.1 OrdinaryOwnPropertyKeys).
     {
-        uint int_count = 0;
+        // Count integer-indexed named properties
+        uint named_int_count = 0;
         for (uint i = 0; i < obj.prop_count; i++) {
             if (obj.prop_key_at(i) != null && ((HString*)obj.prop_key_at(i)).is_arridx()) {
-                int_count++;
+                named_int_count++;
             }
         }
-        if (int_count > 0) {
-            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
+        // Count dense array indices not in named property table
+        uint dense_int_count = 0;
+        if (obj.array_size > 0) {
+            for (uint i = 0; i < obj.array_size; i++) {
+                if (!obj.array_part()[i].is_undefined()) {
+                    HString* ki = ctx.heap.int_to_hstring((long)i);
+                    if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                    dense_int_count++;
+                }
+            }
+        }
+        uint total_int = named_int_count + dense_int_count;
+        if (total_int > 0) {
+            usz sort_size = (usz)(total_int * 3 * 4);
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, sort_size);
             if (sort_buf != null) {
                 uint p = 0;
+                // Add integer-indexed named properties (all, not just enumerable — this is getOwnPropertyNames)
                 for (uint i = 0; i < obj.prop_count; i++) {
                     if (obj.prop_key_at(i) != null) {
                         HString* key = (HString*)obj.prop_key_at(i);
                         if (key.is_arridx()) {
-                            sort_buf[p * 2] = key.array_index();
-                            sort_buf[p * 2 + 1] = i;
+                            sort_buf[p * 3] = key.array_index();
+                            sort_buf[p * 3 + 1] = i;
+                            sort_buf[p * 3 + 2] = 0;  // source: named prop
                             p++;
                         }
                     }
                 }
-                // Insertion sort by arridx
-                for (uint i = 1; i < int_count; i++) {
-                    uint t0 = sort_buf[i * 2];
-                    uint t1 = sort_buf[i * 2 + 1];
+                // Add dense array indices
+                for (uint i = 0; i < obj.array_size; i++) {
+                    if (!obj.array_part()[i].is_undefined()) {
+                        HString* ki = ctx.heap.int_to_hstring((long)i);
+                        if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                        sort_buf[p * 3] = (uint)i;
+                        sort_buf[p * 3 + 1] = i;
+                        sort_buf[p * 3 + 2] = 1;  // source: dense array
+                        p++;
+                    }
+                }
+                total_int = p;
+                // Insertion sort by numeric index
+                for (uint i = 1; i < total_int; i++) {
+                    uint t0 = sort_buf[i * 3];
+                    uint t1 = sort_buf[i * 3 + 1];
+                    uint t2 = sort_buf[i * 3 + 2];
                     uint j = i;
-                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
-                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
-                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                    while (j > 0 && sort_buf[(j - 1) * 3] > t0) {
+                        sort_buf[j * 3] = sort_buf[(j - 1) * 3];
+                        sort_buf[j * 3 + 1] = sort_buf[(j - 1) * 3 + 1];
+                        sort_buf[j * 3 + 2] = sort_buf[(j - 1) * 3 + 2];
                         j--;
                     }
-                    sort_buf[j * 2] = t0;
-                    sort_buf[j * 2 + 1] = t1;
+                    sort_buf[j * 3] = t0;
+                    sort_buf[j * 3 + 1] = t1;
+                    sort_buf[j * 3 + 2] = t2;
                 }
-                for (uint i = 0; i < int_count; i++) {
-                    uint si = sort_buf[i * 2 + 1];
-                    HString* key = (HString*)obj.prop_key_at(si);
-                    if (key.is_symbol()) continue;  // Skip symbol keys
-                    key_buf[key_count++] = key;
+                for (uint i = 0; i < total_int; i++) {
+                    uint src_type = sort_buf[i * 3 + 2];
+                    if (src_type == 0) {
+                        uint prop_idx = sort_buf[i * 3 + 1];
+                        HString* key = (HString*)obj.prop_key_at(prop_idx);
+                        if (key.is_symbol()) continue;
+                        key_buf[key_count++] = key;
+                    } else {
+                        HString* key = ctx.heap.int_to_hstring((long)sort_buf[i * 3]);
+                        if (key == null) { ctx.heap.free_func(ctx.heap.heap_udata, sort_buf); ctx.result.set_undefined(); return; }
+                        key_buf[key_count++] = key;
+                    }
                 }
                 ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
             }
@@ -549,14 +620,6 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_arridx()) continue;
             if (key.is_symbol()) continue;  // Skip symbol keys
-            key_buf[key_count++] = key;
-        }
-    }
-    // Dense array indices (as strings)
-    for (uint i = 0; i < obj.array_size; i++) {
-        if (!obj.array_part()[i].is_undefined()) {
-            HString* key = ctx.heap.int_to_hstring((long)i);
-            if (key == null) { ctx.result.set_undefined(); return; }
             key_buf[key_count++] = key;
         }
     }
@@ -3608,23 +3671,29 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
 // ============================================================================
 /// Object.setPrototypeOf(obj, proto) — sets the prototype of obj to proto.
 fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
-    if (ctx.argc < 2) {
-        ctx.result.set_undefined();
+    if (ctx.argc < 1) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Object.setPrototypeOf requires an object");
         return;
     }
     TVal obj_val = ctx.regs[ctx.base_reg];
-    TVal proto_val = ctx.regs[ctx.base_reg + 1];
-    // TypeError if obj is not an object (null/undefined/primitive)
+    // ES2015 §19.1.2.19 step 1: RequireObjectCoercible(O) — throw TypeError for null/undefined
     if (obj_val.is_null() || obj_val.is_undefined()) {
         builtin_throw(ctx, ctx.heap.type_err_proto, "Object.setPrototypeOf requires an object");
         return;
     }
-    // TypeError if proto is not an object or null
+    // ES2015 §19.1.2.19 step 2: If Type(proto) is neither Object nor Null, throw TypeError
+    TVal proto_val;
+    if (ctx.argc >= 2) {
+        proto_val = ctx.regs[ctx.base_reg + 1];
+    } else {
+        // Missing proto arg → undefined, which is neither Object nor Null
+        proto_val.set_undefined();
+    }
     if (!proto_val.is_null() && !proto_val.is_object()) {
         builtin_throw(ctx, ctx.heap.type_err_proto, "Object.setPrototypeOf requires an object or null");
         return;
     }
-    // Only set prototype on objects (not primitives)
+    // ES2015 §19.1.2.19 step 3: If Type(O) is not Object, return O
     if (!obj_val.is_object()) {
         *ctx.result = obj_val;
         return;
@@ -4567,6 +4636,17 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     length_tv.set_fastint(1);
     obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
 
+    // Set Object.name (ES2015 §19: "length" before "name")
+    HString* name_key_obj = builtin_intern_string(heap, "name");
+    if (name_key_obj != null) {
+        HString* name_val_obj = builtin_intern_string(heap, "Object");
+        if (name_val_obj != null) {
+            TVal name_tv_obj;
+            name_tv_obj.set_string(name_val_obj);
+            obj.put_prop(name_key_obj, name_tv_obj, hobject::PROP_FLAGS_NWC);
+        }
+    }
+
     // Add static methods to Object constructor
     // ES5 §15.2.3.x: builtin methods have [[Writable]]:true, [[Enumerable]]:false, [[Configurable]]:true
     HString* keys_key = builtin_intern_string(heap, "keys");
@@ -4736,7 +4816,6 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     }
     TVal obj_val;
     obj_val.set_object(obj);
-    set_func_ctor_name_length(obj, heap, "Object", 1);
     env::env_declare_nonenum(global_env, obj_key, obj_val);
 
     return true;
