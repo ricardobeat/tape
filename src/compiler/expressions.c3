@@ -737,6 +737,24 @@ fn ushort? CompilerContext.unary_expr(&self) {
             }
             // Fallback: normal typeof expr
             ushort op_typeof = self.unary_expr()!;
+            // If the operand was a member expression (obj.prop / obj[idx]),
+            // member_expr keeps the obj/prop registers live in case the
+            // access is an assignment target (allocation order is obj, prop,
+            // then op_typeof's GETPROP result, so obj is lowest on the stack).
+            // typeof never assigns, so free prop/op_typeof and write the
+            // TYPEOF result into obj's register (reusing the lowest of the
+            // three) rather than allocating a new register on top — that
+            // would sit above prop/obj and make freeing them no-ops, since
+            // free_reg only pops the top of the LIFO register stack.
+            if (self.last_was_member) {
+                ushort obj_reg = self.last_member_obj_reg;
+                ushort prop_reg = self.last_member_prop_reg;
+                self.last_was_member = false;
+                self.emit_abc(Opcode.TYPEOF, (uint)obj_reg, (uint)op_typeof, 0);
+                self.free_reg(op_typeof);
+                self.free_reg(prop_reg);
+                return obj_reg;
+            }
             ushort res_typeof = self.alloc_reg();
             self.emit_abc(Opcode.TYPEOF, (uint)res_typeof, (uint)op_typeof, 0);
             self.free_reg(op_typeof);
