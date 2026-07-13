@@ -144,19 +144,12 @@ UNSUPPORTED_PATTERN = re.compile(
     r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
     # Complex features deferred
     r"SharedArrayBuffer|Atomics|BigInt|WeakRef|FinalizationRegistry|"
-    r"Proxy|"
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
     # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
     # iteration family (async function*, for-await-of). Tests that exercise
     # only async-iteration were producing ~1,249 unintended CEs.
     r"async-iteration|Symbol\.asyncIterator|"
-    # Symbol not yet implemented
-    r"Symbol|"
-    # regexp v-flag not yet implemented
-    r"regexp-v-flag|"
-    # String.prototype.toWellFormed / isWellFormed deferred
-    r"String\.prototype\.toWellFormed|String\.prototype\.isWellFormed|"
     # Class features not yet implemented
     r"class-methods-private|class-static-methods-private|"
     r"class-fields-private|class-fields-public|"
@@ -165,8 +158,6 @@ UNSUPPORTED_PATTERN = re.compile(
     # Other unimplemented ES features
     r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
     r"|Reflect"
-    r"|Symbol"
-    r"|well-formed-json-stringify"
     r")\b"
 )
 
@@ -251,20 +242,6 @@ SKIP_FILES = {
     # B46 — contradictory assertions (array[1] === 'b' plus '1' in array === false)
     # cannot both hold for any conformant [[Get]] / [[HasProperty]] implementation.
     "built-ins/Array/prototype/sort/precise-getter-deletes-predecessor.js",
-    # toFixed tests that use undeclared variables (fail in strict-only mode)
-    "built-ins/Number/prototype/toFixed/S15.7.4.5_A1.3_T01.js",
-    "built-ins/Number/prototype/toFixed/S15.7.4.5_A1.3_T02.js",
-    "built-ins/Number/prototype/toFixed/S15.7.4.5_A1.4_T01.js",
-    # String wrapper == comparison shortcuts to [[StringData]] without calling overridden valueOf
-    "built-ins/String/S15.5.5.1_A5.js",
-    # Function hoisting inside return statement (compiler bug)
-    "built-ins/String/S15.5.2.1_A1_T13.js",
-    # localeCompare needs proper Unicode collation (not byte-level comparison)
-    "built-ins/String/prototype/localeCompare/15.5.4.9_CE.js",
-    # split with eval + global toString override
-    "built-ins/String/prototype/split/checking-by-using-eval.js",
-    # replace on Number instance with regex + function replacer
-    "built-ins/String/prototype/replace/S15.5.4.11_A1_T16.js",
 }
 
 PHASES = [
