@@ -369,12 +369,18 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
 
     // If the result is a (non-native) thenable, follow it via the Promise
     // Resolution Procedure.  The thenable will drive the downstream promise.
+    // promise_coerce_thenable never faults; it returns null (a plain, non-error
+    // HObject* value) to mean "not a thenable" — so we must check for null
+    // directly rather than `catch`, which only fires on an actual fault.
     HObject*? coerced = promise_coerce_thenable(heap, result, vm);
     if (catch err_c = coerced) {
-        // promise_coerce_thenable returns null for non-thenables — settle normally below
+        // Unexpected fault — settle normally below.
     } else {
-        // The thenable owns the downstream now; don't settle it directly.
-        return;
+        if (coerced != null) {
+            // The thenable owns the downstream now; don't settle it directly.
+            return;
+        }
+        // Not a thenable — fall through to settle normally below.
     }
 
     // Non-thenable result — settle the downstream promise directly.
