@@ -173,6 +173,29 @@ Pass: `module-import-rejection`, `module-import-rejection-body`,
   `promise_adopt_native`. This was a pre-existing bug independent of modules;
   verified no regressions across 361 built-ins/Promise tests.
 
+**FOLLOWUP PASS (2026-07-13, later): review + fix cluster.** After the review
+below, five pre-existing/adjacent bugs were fixed via parallel agents, each
+independently regression-verified before merge:
+- **Promise chains never settled for non-thenable handler results.**
+  `promise_coerce_thenable` signals "not a thenable" with a *null return*, not
+  a fault, but `promise_microtask_after` distinguished the cases with
+  `if (catch)` — dead code — so every non-thenable `.then` result (undefined,
+  numbers, strings, objects) left the derived promise pending. Fixed to check
+  `!= null`. built-ins/Promise 432→557 PASS; dynamic-import 188→286.
+- **Module namespace is now a proper exotic object**: null [[Prototype]],
+  exports {w,e,¬c} (`PROP_FLAGS_NEC`), `ns[@@toStringTag]="Module"` {¬w,¬e,¬c}.
+  namespace subdir 28→42 PASS. (Own-key order deferred — needs prop-table work.)
+- **`import(x)` is not a SimpleAssignmentTarget**: `import('')++`, `= v`, etc.
+  now early-SyntaxError (shares the call-expression reject path; also fixed a
+  latent `binary_expr` bug that dropped `last_was_local_var`). 0 PASS
+  regressions across 2100+ assignment/update tests; 50 FAIL→CE.
+- **`import(spec, options)` 2nd arg** parsed (evaluated+ignored; full attribute
+  semantics deferred). NOTE: import-attributes + import-defer are in the
+  run_test262.py skip regex (Stage-3), so these are correctness wins, not
+  official scored gains.
+Net after followups: dynamic-import ~286+ PASS (from 50 pre-feature), module
+dirs 226→237, zero crashes/timeouts.
+
 **DONE (2026-07-13): all 4 targets PASS.** Dynamic `import()` landed:
 `DYN_IMPORT` opcode (A=result, B=specifier) + `esm::dynamic_import`
 (resolve → link → evaluate → settle a promise with the namespace object or
