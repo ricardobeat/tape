@@ -749,7 +749,18 @@ fn ushort? CompilerContext.unary_expr(&self) {
             if (self.last_was_member) {
                 ushort obj_reg = self.last_member_obj_reg;
                 ushort prop_reg = self.last_member_prop_reg;
+                bool obj_is_local = self.last_member_obj_is_local;
                 self.last_was_member = false;
+                if (obj_is_local) {
+                    // obj_reg is a live local variable (e.g. `typeof d.value`):
+                    // it must NOT be clobbered — writing the TYPEOF result into
+                    // it would corrupt the variable. In RHS mode member_expr has
+                    // already freed prop_reg, leaving op_typeof (the GETPROP
+                    // result) as the only owned temp on top of the stack, so
+                    // write the result in-place there and return it.
+                    self.emit_abc(Opcode.TYPEOF, (uint)op_typeof, (uint)op_typeof, 0);
+                    return op_typeof;
+                }
                 self.emit_abc(Opcode.TYPEOF, (uint)obj_reg, (uint)op_typeof, 0);
                 self.free_reg(op_typeof);
                 self.free_reg(prop_reg);
@@ -1801,6 +1812,10 @@ fn ushort? CompilerContext.member_expr(&self) {
     // not inherit a stale true value from a prior expression.
     self.last_was_member = false;
     ushort obj = self.primary_expr()!;
+    // Whether `obj` is still the bare base operand (not yet replaced by a
+    // GETPROP result temp). Only the base can be a live local register; once
+    // a `.prop`/`[idx]` step runs, `obj` becomes a fresh temp.
+    bool obj_is_base_local = self.last_was_local_var;
 
     for (;;) {
         if (self.match(TokenType.DOT)) {
@@ -1839,6 +1854,7 @@ fn ushort? CompilerContext.member_expr(&self) {
             self.last_member_is_super = false;
             self.last_member_obj_reg = obj;
             self.last_member_prop_reg = prop_reg;
+            self.last_member_obj_is_local = obj_is_base_local;
 
             if (self.del_mode || self.lhs_mode) {
                 // LHS / delete mode: keep obj/prop alive for possible PUTPROP/DELPROP
@@ -1884,6 +1900,7 @@ fn ushort? CompilerContext.member_expr(&self) {
                 }
             }
             obj = result;
+            obj_is_base_local = false;
         } else if (self.match(TokenType.LBRACKET)) {
             // Computed member access — not a direct identifier reference.
             self.callee_is_eval = false;
@@ -1902,6 +1919,7 @@ fn ushort? CompilerContext.member_expr(&self) {
             self.last_member_is_super = false;
             self.last_member_obj_reg = obj;
             self.last_member_prop_reg = idx_reg;
+            self.last_member_obj_is_local = obj_is_base_local;
 
             if (self.del_mode || self.lhs_mode) {
                 // LHS / delete mode: keep obj/idx alive for possible PUTPROP/DELPROP
@@ -1936,6 +1954,7 @@ fn ushort? CompilerContext.member_expr(&self) {
                 }
             }
             obj = result;
+            obj_is_base_local = false;
         } else {
             break;
         }

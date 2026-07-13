@@ -242,6 +242,10 @@ struct CompilerContext {
     bool last_was_member;
     ushort last_member_obj_reg;
     ushort last_member_prop_reg;
+    /// True when last_member_obj_reg is a live local-variable register (the
+    /// member base was a bare local, e.g. `d.value`), so it must NOT be
+    /// overwritten as a scratch destination — doing so corrupts the variable.
+    bool last_member_obj_is_local;
     /// True when the recorded member expression is a `super.x` / `super[x]`
     /// reference — its store form must use PUTPROP_SUPER (receiver = this).
     bool last_member_is_super;
