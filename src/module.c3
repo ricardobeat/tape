@@ -763,7 +763,7 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
         builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &fulfill_val, heap);
     } else {
         fulfill_val.set_object(ns_opt);
-        builtins::promise_settle(prom, 1, &fulfill_val, heap);
+        builtins::promise_settle(prom, builtins::PROMISE_FULFILLED, &fulfill_val, heap);
     }
     builtins::promise_trigger_reactions(prom, heap, (void*)vm);
 
