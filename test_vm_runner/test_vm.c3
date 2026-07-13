@@ -9,11 +9,25 @@ import duktape::hstring;
 import duktape::lexer;
 import duktape::types;
 import duktape::bytecode;
+import duktape::esm;
 import std::io;
 import libc;
 
 fn int main(String[] args) {
     vm::test262_host_enabled = true;
+    // `--module <path>` drives the full ESM resolve->link->evaluate pipeline.
+    if (args.len > 2 && args[1] == "--module") {
+        String mpath = args[2];
+        Heap*? mhp = heap::create(null, null, null, null, null);
+        if (catch h = mhp) { io::eprintfn("Failed heap"); return 1; }
+        defer mhp.destroy();
+        Vm*? mv = vm::vm_create(mhp);
+        if (catch err = mv) { io::eprintfn("VM failed"); return 1; }
+        defer vm::vm_destroy(mv);
+        int rc = esm::run_module_file(mhp, mv, (char[])mpath);
+        if (rc != 0) io::eprintfn("module rc=%d", rc);
+        return rc;
+    }
     String path = args.len > 1 ? args[1] : "test/simple.js";
     char[]? source = file::load_temp(path);
     if (catch err = source) { io::eprintfn("Failed to read"); return 1; }

@@ -63,6 +63,8 @@ struct ExportEntry {
     // which are hoisted/initialized and never observed as TDZ even when
     // read before the exporting module's body has run. Unused (false) for
     // indirect exports, whose TDZ-ness is determined by the source module.
+    // Function-declaration exports are tracked separately (ModuleDef.func_decls)
+    // and instantiated at link time, so they don't need a flag here.
     bool   is_lexical;
 }
 
@@ -100,6 +102,16 @@ const uint MAX_IMPORTS      = 64;
 const uint MAX_EXPORTS      = 64;
 const uint MAX_STAR_EXPORTS = 16;
 const uint MAX_REQ_MODULES  = 32;
+const uint MAX_FUNC_DECLS   = 128;
+
+/// A top-level `function` declaration in a module body. Recorded by the
+/// compiler during hoist_global_fn_decls so the linker can instantiate the
+/// closure once, during InitializeEnvironment (ECMA-262 16.2.1.5.5 step 17),
+/// rather than the body re-instantiating it on every evaluation.
+struct FuncDeclEntry {
+    char[] name;            // the declared function's binding name
+    uint   inner_func_idx;  // index into mod.func.inner_funcs
+}
 
 struct ModuleDef {
     char[]                module_name;    // normalized path / identifier
@@ -114,6 +126,11 @@ struct ModuleDef {
     uint                          star_export_count;
     ReqModuleEntry[MAX_REQ_MODULES] req_modules;
     uint                          req_module_count;
+    // Top-level function declarations, instantiated eagerly at link time.
+    // Layout note: CompModuleDef mirrors every field up to here, so this
+    // array must appear in both structs at the same position.
+    FuncDeclEntry[MAX_FUNC_DECLS] func_decls;
+    uint                          func_decl_count;
 
     // Compiled bytecode for this module's body
     bytecode::CompiledFunction*   func;
@@ -371,7 +388,7 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
 
 /// Link a module: resolve import bindings from source modules' envs.
 /// Phase 1 (initial): import bindings are copied at link time.
-fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
+fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_env) {
     if (mod.status == ModuleStatus.LINKED || mod.status == ModuleStatus.EVALUATED) return true;
     // LINKING means we're already linking this module further up the call
     // stack — a dependency cycle (including a self-import). Treat it as done to
@@ -392,6 +409,15 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
     EnvRecord*? env_opt = env::env_create_declarative(heap, global_env);
     if (catch err = env_opt) return false;
     mod.env = env_opt;
+    // Register the env bindings as a GC root so objects stored in the module
+    // env (imported bindings, and — below — eagerly instantiated exported
+    // function closures) survive collection between link and evaluation.
+    // execute_module only roots the env in the path where it creates the env
+    // itself; when link_module creates it first (the normal path), that block
+    // is skipped, so root it here.
+    if (mod.env.bindings != null) {
+        heap.register_gc_root(mod.env.bindings.as_header());
+    }
 
     // Link dependencies first
     for (uint i = 0; i < mod.req_module_count; i++) {
@@ -399,7 +425,7 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
         if (rme.resolved == null) continue;
         ModuleDef* dep = (ModuleDef*)rme.resolved;
         if (dep.status != ModuleStatus.LINKED && dep.status != ModuleStatus.EVALUATED) {
-            if (!link_module(heap, dep, global_env)) return false;
+            if (!link_module(heap, vm, dep, global_env)) return false;
         }
     }
 
@@ -471,23 +497,52 @@ fn bool link_module(Heap* heap, ModuleDef* mod, EnvRecord* global_env) {
         }
     }
 
-    // Declare local export bindings in the module env, before the module
-    // body has run. A `var`/`function` export is hoisted/initialized (or
-    // will be set by DECLVAR when the body runs) so it pre-declares as
-    // plain `undefined`. A `let`/`const`/`class` export is lexical and
-    // must pre-declare as the TDZ sentinel (ECMA-262 SS10.4.6.8): the body's
-    // own INITTZ (emitted by hoist_lexical_tdz for every module-top-level
-    // lexical declaration) only overwrites this slot when the OWNING
-    // module's body actually executes, but a live-binding accessor from a
-    // cyclically-importing module can observe this env slot beforehand —
-    // it must see the sentinel, not undefined, so builtin_module_binding_getter
+    // Instantiate top-level `function` declarations (ECMA-262 16.2.1.5.5
+    // step 17). InitializeEnvironment creates each function's closure once,
+    // during linking, before ANY module body runs. This is what makes a
+    // cyclic early import observe the hoisted function (not undefined) AND
+    // keeps the binding's identity stable — the module body no longer emits
+    // CLOSURE+DECLVAR for these (see hoist_global_fn_decls). The closure
+    // captures the module env as both var and lex environment (its top-level
+    // enclosing scope), exactly as the CLOSURE opcode would.
+    if (mod.func != null) {
+        for (uint i = 0; i < mod.func_decl_count; i++) {
+            FuncDeclEntry* fd = &mod.func_decls[i];
+            if (fd.inner_func_idx >= mod.func.inner_count) continue;
+            HString* key = heap.str_intern(fd.name);
+            if (key == null) continue;
+            bytecode::CompiledFunction* tmpl = mod.func.get_inner(fd.inner_func_idx);
+            HObject* fn_obj = vm::instantiate_closure(vm, tmpl, mod.env, mod.env);
+            TVal val;
+            if (fn_obj != null) {
+                val.set_object(fn_obj);
+            } else {
+                val.set_undefined();
+            }
+            // A function declaration wins over any earlier binding of the same
+            // name (last-declaration hoisting), so declare unconditionally.
+            env::env_declare(mod.env, key, val);
+        }
+    }
+
+    // Declare remaining local export bindings in the module env, before the
+    // module body has run. A `var` export pre-declares as plain `undefined`
+    // (the body's DECLVAR sets it later). A `let`/`const`/`class` export is
+    // lexical and must pre-declare as the TDZ sentinel (ECMA-262 SS10.4.6.8):
+    // the body's own INITTZ (emitted by hoist_lexical_tdz for every
+    // module-top-level lexical declaration) only overwrites this slot when the
+    // OWNING module's body actually executes, but a live-binding accessor from
+    // a cyclically-importing module can observe this env slot beforehand — it
+    // must see the sentinel, not undefined, so builtin_module_binding_getter
     // (builtins/core.c3) throws instead of yielding a stale undefined.
+    // Function-declaration exports are already bound above and are skipped by
+    // the env_has check.
     for (uint i = 0; i < mod.export_count; i++) {
         ExportEntry* ee = &mod.exports[i];
         if (ee.is_indirect) continue;
         HString* key = heap.str_intern(ee.local_name);
         if (key == null) continue;
-        // Check if already declared (from import resolution)
+        // Check if already declared (from import resolution or as a function).
         if (!env::env_has(mod.env, key)) {
             TVal val;
             if (ee.is_lexical) {
@@ -517,6 +572,8 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         mod.env = env_opt;
         // Register the env bindings as a GC root so that objects stored in module
         // envs (e.g. exported functions) are not swept between module evaluations.
+        // (In the normal pipeline link_module creates + roots the env first, so
+        // this branch only runs for a module evaluated without a prior link.)
         if (mod.env.bindings != null) {
             heap.register_gc_root(mod.env.bindings.as_header());
         }
@@ -647,7 +704,7 @@ fn int run_module_file(Heap* heap, Vm* vm, char[] path) {
     if (catch err = mod_opt) { return 2; }
     ModuleDef* mod = mod_opt;
 
-    if (!link_module(heap, mod, vm.global_env)) { return 2; }
+    if (!link_module(heap, vm, mod, vm.global_env)) { return 2; }
 
     // Evaluation. execute_module returns false when the module body (or a
     // dependency's body) throws; the thrown value persists in heap.error_value
@@ -721,7 +778,7 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
     }
 
     if (!rejected) {
-        if (!link_module(heap, mod, vm.global_env)) {
+        if (!link_module(heap, vm, mod, vm.global_env)) {
             reason = module_type_error(heap, "cannot link module");
             rejected = true;
         }

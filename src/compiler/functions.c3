@@ -1815,6 +1815,23 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
 
             uint inner_idx = self.add_inner_func(inner);
 
+            // In a module, top-level function declarations are instantiated
+            // during InitializeEnvironment (ECMA-262 16.2.1.5.5 step 17): the
+            // linker creates each closure once, before ANY module body runs,
+            // so cyclic early imports observe the hoisted function and its
+            // identity stays stable across evaluation. Record the declaration
+            // for the linker and DO NOT emit body-level CLOSURE+DECLVAR — that
+            // would re-instantiate a fresh closure on every evaluation and
+            // change the export's identity. Scripts (non-module) keep the
+            // in-body instantiation below.
+            if (self.is_module && self.current_module != null) {
+                mod_register_func_decl(self.get_module_def(), name_tok2.str_value, inner_idx);
+                self.free_reg(func_reg);
+                prev_toplevel = TokenType.RBRACE;
+                has_prev = true;
+                continue;
+            }
+
             // Emit CLOSURE + DECLVAR
             self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
             uint name_idx = self.add_string_constant(name_tok2.str_value);

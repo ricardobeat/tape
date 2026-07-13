@@ -62,6 +62,13 @@ const uint COMP_MAX_IMPORTS      = 64;
 const uint COMP_MAX_EXPORTS      = 64;
 const uint COMP_MAX_STAR_EXPORTS = 16;
 const uint COMP_MAX_REQ_MODULES  = 32;
+const uint COMP_MAX_FUNC_DECLS   = 128;
+
+/// Layout must match module::FuncDeclEntry.
+struct CompFuncDeclEntry {
+    char[] name;
+    uint   inner_func_idx;
+}
 
 /// Compiler-side view of ModuleDef — field layout must match module::ModuleDef.
 struct CompModuleDef {
@@ -75,6 +82,25 @@ struct CompModuleDef {
     uint                                star_export_count;
     CompReqModuleEntry[COMP_MAX_REQ_MODULES] req_modules;
     uint                                req_module_count;
+    CompFuncDeclEntry[COMP_MAX_FUNC_DECLS] func_decls;
+    uint                                func_decl_count;
+}
+
+/// Register a top-level module function declaration for eager link-time
+/// instantiation (deduplicates by name — a later declaration of the same
+/// name replaces the earlier inner_func_idx, mirroring last-wins hoisting).
+fn void mod_register_func_decl(CompModuleDef* mod, char[] name, uint inner_func_idx) {
+    for (uint i = 0; i < mod.func_decl_count; i++) {
+        if (str_eq(mod.func_decls[i].name, name)) {
+            mod.func_decls[i].inner_func_idx = inner_func_idx;
+            return;
+        }
+    }
+    if (mod.func_decl_count >= COMP_MAX_FUNC_DECLS) return;
+    uint idx = mod.func_decl_count;
+    mod.func_decls[idx].name = name;
+    mod.func_decls[idx].inner_func_idx = inner_func_idx;
+    mod.func_decl_count++;
 }
 
 /// Register a required module specifier, returning its index (deduplicates).
@@ -3951,10 +3977,12 @@ fn void? CompilerContext.export_declaration(&self) {
             uint inner_idx = self.add_inner_func(inner);
 
             ushort func_reg = self.declare_var("*default*", VAR);
-            self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
-            uint name_idx = self.add_string_constant("*default*");
-            self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
-            if (self.is_global) self.free_reg(func_reg);
+            // `export default function` is a hoisted function declaration bound
+            // to *default* at link time (ECMA-262 16.2.1.5.5 step 17). Record
+            // it for the linker and suppress body CLOSURE+DECLVAR so a cyclic
+            // early import of the default export sees the hoisted function.
+            mod_register_func_decl(mod, "*default*", inner_idx);
+            self.free_reg(func_reg);
 
             mod_register_export(mod, "*default*", "default", false, 0);
             self.match(TokenType.SEMICOLON);
@@ -4048,6 +4076,10 @@ fn void? CompilerContext.export_declaration(&self) {
             // `let a = 1; export { a };`).
             for (uint i = 0; i < count; i++) {
                 bool lex = self.is_name_lexical(local_names[i]);
+                // A re-export of a top-level `function` declaration needs no
+                // special handling here: the function is already recorded in
+                // func_decls (by hoist_global_fn_decls) and bound at link time,
+                // and this export simply aliases that local binding.
                 mod_register_export(mod, local_names[i], export_names[i], false, 0, lex);
             }
         }
@@ -4082,10 +4114,12 @@ fn void? CompilerContext.export_declaration(&self) {
 
         uint inner_idx = self.add_inner_func(inner);
 
-        self.emit_a_bc(Opcode.CLOSURE, (uint)func_reg, inner_idx);
-        uint name_idx = self.add_string_constant(name_tok.str_value);
-        self.emit_a_bc(Opcode.DECLVAR, (uint)func_reg, name_idx);
-        if (self.is_global) self.free_reg(func_reg);
+        // A top-level `export function` declaration is instantiated at link
+        // time (ECMA-262 16.2.1.5.5 step 17), not by the body — record it for
+        // the linker and suppress body CLOSURE+DECLVAR so a cyclic early
+        // import sees the hoisted function and its identity stays stable.
+        mod_register_func_decl(mod, name_tok.str_value, inner_idx);
+        self.free_reg(func_reg);
 
         mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0);
         self.match(TokenType.SEMICOLON);

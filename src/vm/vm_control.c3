@@ -172,6 +172,96 @@ fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, cha
     }
 }
 
+/// Instantiate a function closure from a CompiledFunction template, capturing
+/// the given var/lex environments. Sets .name/.length and, for constructable
+/// functions, .prototype (with .constructor). Returns null only on allocation
+/// failure. Shared by the CLOSURE opcode and by the ESM linker, which
+/// instantiates exported `function` declarations eagerly at link time so a
+/// cyclic early import observes the hoisted function rather than `undefined`
+/// (ECMA-262 16.2.1.5.5 step 17).
+fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* var_env, EnvRecord* lex_env) {
+    HObject*? func_obj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch _e = func_obj_raw) return null;
+    HObject* func_obj = func_obj_raw;
+
+    // Generator function objects inherit from GeneratorFunction.prototype,
+    // all other functions inherit from Function.prototype (ES6 §25.2.3).
+    if (template.is_async() && vm.heap.async_func_proto != null) {
+        func_obj.prototype = vm.heap.async_func_proto;
+    } else if (template.is_generator() && vm.heap.generator_func_proto != null) {
+        func_obj.prototype = vm.heap.generator_func_proto;
+    } else {
+        func_obj.prototype = vm.heap.function_proto;
+    }
+    func_obj.flags.callable = true;
+    func_obj.flags.constructable = template.is_constructable();
+    (*func_obj.extra_ptr()).func.comp_func = template;
+    (*func_obj.extra_ptr()).func.var_env = var_env;
+    (*func_obj.extra_ptr()).func.lex_env = lex_env;
+
+    // Set .name property (ES6 §14.1.20: non-writable, non-enumerable, configurable)
+    // Always set name — anonymous functions get "" per spec
+    char[] name_data = template.get_name();
+    HString* name_hstr;
+    if (name_data.len > 0) {
+        name_hstr = intern_string(vm, name_data);
+    } else {
+        name_hstr = (HString*)vm.heap.strs[heap::BuiltinStr.EMPTY];
+    }
+    if (name_hstr != null) {
+        TVal name_tv;
+        name_tv.set_string(name_hstr);
+        func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable)
+    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+    TVal len_val;
+    len_val.set_fastint((long)template.num_formals);
+    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
+
+    // Only constructable functions get a .prototype property.
+    // Arrow functions, async functions, and class methods are
+    // not constructable and must not have .prototype (ES6 §14.2.16,
+    // ES2017 §14.7.5, ES2015 §14.3.9 — DefineMethod creates
+    // functions without .prototype).
+    if (template.is_constructable()) {
+        // ES5 §13.2.2 step 15: create .prototype property on the function
+        // (plain object with .constructor).  For regular functions the
+        // flags are {writable:true, enumerable:false, configurable:false}.
+        // For class constructors ES2015 §14.5.14 step 25 requires
+        // {writable:false, enumerable:false, configurable:false} so
+        // that `class C { static ['prototype']() {} }` throws TypeError.
+        hobject::PropFlags proto_pflags = template.is_class_ctor()
+            ? hobject::PROP_FLAGS_NNC   // non-writable, non-enumerable, non-configurable
+            : hobject::PROP_FLAGS_WENC;  // writable, non-enumerable, non-configurable
+        HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try proto_obj = proto_obj_raw) {
+            if (template.is_generator() && vm.heap.generator_proto != null) {
+                // Generator function .prototype inherits from Generator.prototype
+                proto_obj.prototype = vm.heap.generator_proto;
+                // .constructor is inherited from Generator.prototype,
+                // no need to set it here.
+            } else {
+                proto_obj.prototype = vm.heap.object_proto;
+                // Set .constructor on the prototype object
+                // ES5 §13.2.2 step 17: {writable:true, enumerable:false, configurable:true}
+                HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+                TVal constr_val;
+                constr_val.set_object(func_obj);
+                proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WC);
+            }
+            // Set .prototype on the function
+            HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+            TVal proto_tv;
+            proto_tv.set_object(proto_obj);
+            func_obj.put_prop(proto_key, proto_tv, proto_pflags);
+        }
+    }
+
+    return func_obj;
+}
+
 /// Sub-dispatch for CLOSURE, GETBOUND opcodes.
 fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -180,84 +270,8 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             uint bc = insn.get_bc();
             if (bc < vm.current_func.inner_count) {
                 CompiledFunction* template = vm.current_func.inner_funcs[bc];
-
-                HObject*? func_obj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
-                if (try func_obj = func_obj_raw) {
-                    // Generator function objects inherit from GeneratorFunction.prototype,
-                    // all other functions inherit from Function.prototype (ES6 §25.2.3).
-                    if (template.is_async() && vm.heap.async_func_proto != null) {
-                        func_obj.prototype = vm.heap.async_func_proto;
-                    } else if (template.is_generator() && vm.heap.generator_func_proto != null) {
-                        func_obj.prototype = vm.heap.generator_func_proto;
-                    } else {
-                        func_obj.prototype = vm.heap.function_proto;
-                    }
-                    func_obj.flags.callable = true;
-                    func_obj.flags.constructable = template.is_constructable();
-                    (*func_obj.extra_ptr()).func.comp_func = template;
-                    (*func_obj.extra_ptr()).func.var_env = ds.act.var_env;
-                    (*func_obj.extra_ptr()).func.lex_env = ds.act.lex_env;
-
-                    // Set .name property (ES6 §14.1.20: non-writable, non-enumerable, configurable)
-                    // Always set name — anonymous functions get "" per spec
-                    char[] name_data = template.get_name();
-                    HString* name_hstr;
-                    if (name_data.len > 0) {
-                        name_hstr = intern_string(vm, name_data);
-                    } else {
-                        name_hstr = (HString*)vm.heap.strs[heap::BuiltinStr.EMPTY];
-                    }
-                    if (name_hstr != null) {
-                        TVal name_tv;
-                        name_tv.set_string(name_hstr);
-                        func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
-                    }
-
-                    // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable)
-                    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    TVal len_val;
-                    len_val.set_fastint((long)template.num_formals);
-                    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
-
-                    // Only constructable functions get a .prototype property.
-                    // Arrow functions, async functions, and class methods are
-                    // not constructable and must not have .prototype (ES6 §14.2.16,
-                    // ES2017 §14.7.5, ES2015 §14.3.9 — DefineMethod creates
-                    // functions without .prototype).
-                    if (template.is_constructable()) {
-                        // ES5 §13.2.2 step 15: create .prototype property on the function
-                        // (plain object with .constructor).  For regular functions the
-                        // flags are {writable:true, enumerable:false, configurable:false}.
-                        // For class constructors ES2015 §14.5.14 step 25 requires
-                        // {writable:false, enumerable:false, configurable:false} so
-                        // that `class C { static ['prototype']() {} }` throws TypeError.
-                        hobject::PropFlags proto_pflags = template.is_class_ctor()
-                            ? hobject::PROP_FLAGS_NNC   // non-writable, non-enumerable, non-configurable
-                            : hobject::PROP_FLAGS_WENC;  // writable, non-enumerable, non-configurable
-                        HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-                        if (try proto_obj = proto_obj_raw) {
-                            if (template.is_generator() && vm.heap.generator_proto != null) {
-                                // Generator function .prototype inherits from Generator.prototype
-                                proto_obj.prototype = vm.heap.generator_proto;
-                                // .constructor is inherited from Generator.prototype,
-                                // no need to set it here.
-                            } else {
-                                proto_obj.prototype = vm.heap.object_proto;
-                                // Set .constructor on the prototype object
-                                // ES5 §13.2.2 step 17: {writable:true, enumerable:false, configurable:true}
-                                HString* constr_key = (HString*)vm.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
-                                TVal constr_val;
-                                constr_val.set_object(func_obj);
-                                proto_obj.put_prop(constr_key, constr_val, hobject::PROP_FLAGS_WC);
-                            }
-                            // Set .prototype on the function
-                            HString* proto_key = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
-                            TVal proto_tv;
-                            proto_tv.set_object(proto_obj);
-                            func_obj.put_prop(proto_key, proto_tv, proto_pflags);
-                        }
-                    }
-
+                HObject* func_obj = instantiate_closure(vm, template, ds.act.var_env, ds.act.lex_env);
+                if (func_obj != null) {
                     ra.set_object(func_obj);
                     track_heap_store(ds.act, ra, (uint)insn.a);
                 } else {
