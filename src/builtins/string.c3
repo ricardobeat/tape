@@ -89,22 +89,26 @@ fn void builtin_string(BuiltinContext* ctx) {
 }
 
 /// ToUint16 abstract operation (ES5 §9.7).
-fn uint to_uint16(TVal* val) {
-    TVal num;
-    builtin_to_number(val, &num);
-    double n;
-    if (num.is_fastint()) {
-        n = (double)num.get_fastint();
-    } else if (num.is_number()) {
-        n = num.get_number();
-    } else {
-        return 0;
-    }
+/// 1. Let number be ? ToNumber(argument).
+/// 2. If number is NaN, +0, -0, +∞, or -∞, return +0.
+/// 3. Let int = truncate(number).
+/// 4. Let int16bit be int modulo 2^16 (always non-negative).
+/// 5. Return int16bit.
+fn uint to_uint16(BuiltinContext* ctx, TVal* val) {
+    double n = builtin_to_number_vm(ctx, val);
+    if (ctx.should_throw) return 0;
     if (math::is_nan(n) || n == 0.0 || n == double::inf || n == -double::inf) return 0;
-    double pos_int = math::abs(n);
-    pos_int = math::floor(pos_int);
-    long int_val = (long)pos_int;
-    return (uint)(ushort)(int)(int_val & 0xFFFF);
+    // Step 3: truncate toward zero
+    double truncated = n >= 0 ? math::floor(n) : -math::floor(-n);
+    // Step 4: modulo 2^16 (always non-negative)
+    // For values within safe integer range, use integer modulo (exact).
+    if (truncated >= -9007199254740992.0 && truncated <= 9007199254740992.0) {
+        long int_val = (long)truncated;
+        return (uint)(int_val & 0xFFFF);
+    }
+    // For very large values, use floating-point approach.
+    double mod = truncated - math::floor(truncated / 65536.0) * 65536.0;
+    return (uint)(ushort)mod;
 }
 
 /// String.fromCharCode (ES5 §15.5.3.2)
@@ -122,7 +126,7 @@ fn void builtin_string_fromcharcode(BuiltinContext* ctx) {
     usz offset = 0;
     ushort max_args = ctx.argc;
     for (ushort i = 0; i < max_args; i++) {
-        uint cu = to_uint16(&ctx.regs[ctx.base_reg + i]);
+        uint cu = to_uint16(ctx, &ctx.regs[ctx.base_reg + i]);
         if (cu < 128) {
             buf[offset++] = (char)cu;
         } else if (cu < 2048) {
@@ -167,7 +171,11 @@ fn void builtin_string_fromcodepoint(BuiltinContext* ctx) {
         } else if (arg.is_undefined() || arg.is_null()) {
             d = 0.0;
         } else {
-            d = builtin_to_number_getdouble(ctx, arg);
+            d = builtin_to_number_vm(ctx, arg);
+            if (ctx.should_throw) {
+                ctx.heap.free_func(ctx.heap.heap_udata, buf);
+                return;
+            }
         }
         // Check: must be integral Number in [0, 0x10FFFF]
         if (math::is_nan(d) || math::is_inf(d) || d != math::trunc(d) || d < 0 || d > 0x10FFFF) {
@@ -3538,11 +3546,16 @@ fn void builtin_string_proto_search(BuiltinContext* ctx) {
     }
 }
 fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
-    // Create String.prototype
+    // Create String.prototype — an exotic String object with [[StringData]] = ""
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.STRING);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype in later phases
+    // Set [[StringData]] to "" so valueOf/toString work on String.prototype itself.
+    HString* empty_str = builtin_intern_string(heap, "");
+    if (empty_str != null) {
+        (*proto.extra_ptr()).prim.primitive_value.set_string(empty_str);
+    }
     heap.string_proto = proto;
 
     // Add .toString() method

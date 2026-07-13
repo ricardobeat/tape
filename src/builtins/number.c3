@@ -623,10 +623,34 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (!set_num_static_prop(num, heap, "MAX_SAFE_INTEGER", (double)types::DUK_MAX_SAFE_INT)) return false;
     // Add Number.MIN_SAFE_INTEGER (ES6 §20.1.2.8) — -(2^53 - 1)
     if (!set_num_static_prop(num, heap, "MIN_SAFE_INTEGER", (double)types::DUK_MIN_SAFE_INT)) return false;
-    // Add Number.parseInt (ES6 §20.1.2.12) — same as global parseInt
-    if (!register_string_proto_method(num, heap, "parseInt", BUILTIN_PARSE_INT)) return false;
-    // Add Number.parseFloat (ES6 §20.1.2.13) — same as global parseFloat
-    if (!register_string_proto_method(num, heap, "parseFloat", BUILTIN_PARSE_FLOAT)) return false;
+    // Add Number.parseInt (ES6 §20.1.2.12) — MUST be the same function object as global parseInt.
+    // Look up the global parseInt (already registered) and put it directly on Number.
+    {
+        HString* parse_int_key = builtin_intern_string(heap, "parseInt");
+        if (parse_int_key == null) return false;
+        TVal? global_pi_opt = env::env_get(global_env, parse_int_key);
+        TVal global_pi;
+        if (try pi = global_pi_opt) {
+            global_pi = pi;
+        } else {
+            // Fallback: create a new lightfunc if global lookup fails
+            global_pi.set_lightfunc((void*)(usz)BUILTIN_PARSE_INT);
+        }
+        num.put_prop(parse_int_key, global_pi, hobject::PROP_FLAGS_WC);
+    }
+    // Add Number.parseFloat (ES6 §20.1.2.13) — MUST be the same function object as global parseFloat.
+    {
+        HString* parse_float_key = builtin_intern_string(heap, "parseFloat");
+        if (parse_float_key == null) return false;
+        TVal? global_pf_opt = env::env_get(global_env, parse_float_key);
+        TVal global_pf;
+        if (try pf = global_pf_opt) {
+            global_pf = pf;
+        } else {
+            global_pf.set_lightfunc((void*)(usz)BUILTIN_PARSE_FLOAT);
+        }
+        num.put_prop(parse_float_key, global_pf, hobject::PROP_FLAGS_WC);
+    }
 
     // Register Number constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Number");
