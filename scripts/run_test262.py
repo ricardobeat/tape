@@ -144,6 +144,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
     # Complex features deferred
     r"SharedArrayBuffer|Atomics|BigInt|WeakRef|FinalizationRegistry|"
+    r"Proxy|"
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
     # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
@@ -158,6 +159,8 @@ UNSUPPORTED_PATTERN = re.compile(
     # Other unimplemented ES features
     r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
     r"|Reflect"
+    r"|Symbol"
+    r"|well-formed-json-stringify"
     r")\b"
 )
 
