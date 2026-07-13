@@ -235,6 +235,40 @@ fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
     }
 }
 
+/// True when the builtin behind `fn_idx` is a constructor. Builtin FUNCTION
+/// objects are allocated with flags.constructable=true by default, so the flag
+/// cannot distinguish `new DataView(...)` from `new String.prototype.charAt` —
+/// classify by function index instead: the lightfunc constructor table plus the
+/// constructors installed as full HObjects (typed arrays, ArrayBuffer,
+/// DataView, Proxy).
+fn bool builtin_fn_is_constructor(Vm* vm, uint fn_idx) {
+    if (lightfunc_get_proto(vm, fn_idx) != null) return true;
+    switch (fn_idx) {
+        case builtins::BUILTIN_INT8ARRAY:
+        case builtins::BUILTIN_UINT8ARRAY:
+        case builtins::BUILTIN_UINT8CLAMPEDARRAY:
+        case builtins::BUILTIN_INT16ARRAY:
+        case builtins::BUILTIN_UINT16ARRAY:
+        case builtins::BUILTIN_INT32ARRAY:
+        case builtins::BUILTIN_UINT32ARRAY:
+        case builtins::BUILTIN_FLOAT32ARRAY:
+        case builtins::BUILTIN_FLOAT64ARRAY:
+        case builtins::BUILTIN_ARRAYBUFFER:
+        case builtins::BUILTIN_DATAVIEW:
+        case builtins::BUILTIN_PROXY:
+            return true;
+        case builtins::BUILTIN_PROXY_CALL:
+            // Callable proxy trampoline: constructability mirrors the proxy
+            // target and is checked via flags.constructable before dispatch.
+            return true;
+        case builtins::BUILTIN_ASYNC_FUNCTION:
+            // %AsyncFunction% / %AsyncGeneratorFunction% intrinsic constructor.
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn TVal get_prop_with_proto(HObject* obj, void* key) {
     TVal? result = obj.get_prop_proto(key);
     if (try v = result) {

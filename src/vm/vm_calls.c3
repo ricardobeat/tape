@@ -358,12 +358,21 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     if (lf_extended_top > vm.valstack_top) { vm.valstack_top = lf_extended_top; }
                 }
 
+                // Local result slot: builtins write pass-through results as
+                // borrowed references (no incref). Written directly into a
+                // register, a borrowed value below the frame's max_heap_reg
+                // high-water mark is over-decrefed by decref_callee_regs at
+                // RET and freed prematurely. The local + tval_copy_ref makes
+                // the register reference owned (and survives a valstack
+                // realloc inside the builtin) — same pattern as the HObject
+                // builtin path below.
+                TVal lf_result; lf_result.set_undefined();
                 builtins::BuiltinContext ctx;
                 ctx.vm = vm;
                 ctx.regs = vm.valstack;
                 ctx.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
                 ctx.argc = (ushort)nargs;
-                ctx.result = ds.regs_base + result_reg;
+                ctx.result = &lf_result;
                 ctx.heap = vm.heap;
                 ctx.this_val = ds.regs_base[callee_reg + 1];
                 ctx.is_constructor = false;
@@ -390,6 +399,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     nargs = ctx.re_nargs;
                     // Fall through to OBJECT handling
                 } else {
+                    vm.heap.tval_copy_ref(ds.regs_base + result_reg, &lf_result);
+                    track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                     return (TVal){};
                 }
             }
@@ -433,12 +444,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         TVal* extended_top = ds.act.bottom + ds.nregs + 4;
                         if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
                     }
+                    // Local result slot: keeps the register reference owned
+                    // (borrowed pass-through results would be over-decrefed by
+                    // the RET sweep) and survives valstack reallocs. See the
+                    // lightfunc CALL path above.
+                    TVal bound_result; bound_result.set_undefined();
                     builtins::BuiltinContext ctx;
                     ctx.vm = vm;
                     ctx.regs = vm.valstack;
                     ctx.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
                     ctx.argc = (ushort)nargs;
-                    ctx.result = ds.regs_base + result_reg;
+                    ctx.result = &bound_result;
                     ctx.heap = vm.heap;
                     ctx.this_val = ds.regs_base[callee_reg + 1];
                     ctx.is_constructor = false;
@@ -464,12 +480,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // Safety: re-dispatch may produce a lightfunc (e.g., bound eval)
                         if (func_val.is_lightfunc()) {
                             uint lf_idx = (uint)(usz)func_val.get_heapptr();
+                            TVal inner_result; inner_result.set_undefined();
                             builtins::BuiltinContext inner;
                             inner.vm = vm;
                             inner.regs = vm.valstack;
                             inner.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
                             inner.argc = (ushort)nargs;
-                            inner.result = ds.regs_base + result_reg;
+                            inner.result = &inner_result;
                             inner.heap = vm.heap;
                             inner.this_val = ds.regs_base[callee_reg + 1];
                             inner.is_constructor = false;
@@ -485,7 +502,10 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                 if (!vm_throw_value(vm, inner.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return vm_uncaught_error(vm, &inner.throw_value);
                                 }
+                                return (TVal){};
                             }
+                            vm.heap.tval_copy_ref(ds.regs_base + result_reg, &inner_result);
+                            track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                             return (TVal){};
                         }
                         if (func_val.is_object()) {
@@ -517,6 +537,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                     return (TVal){};
                                 }
                                 vm.heap.tval_copy_ref(ds.regs_base + result_reg, &bound_inner_result);
+                                track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                                 return (TVal){};
                             }
                             // Fall through to compiled function handling below
@@ -524,6 +545,8 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             return (TVal){};
                         }
                     } else {
+                        vm.heap.tval_copy_ref(ds.regs_base + result_reg, &bound_result);
+                        track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                         return (TVal){};
                     }
                 } else {
@@ -564,6 +587,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
 
                     if (!ctx.needs_re_dispatch) {
                         vm.heap.tval_copy_ref(ds.regs_base + result_reg, &builtin_result);
+                        track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                     }
 
                     if (ctx.needs_re_dispatch) {
@@ -573,12 +597,19 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // Safety: check for lightfunc before casting to HObject*
                         if (func_val.is_lightfunc()) {
                             uint lf_idx = (uint)(usz)func_val.get_heapptr();
+                            // Local result slot: a borrowed pass-through result
+                            // written straight into the register file would be
+                            // over-decrefed by the RET sweep (this exact path —
+                            // boundFn(...) re-dispatching to a pass-through
+                            // lightfunc like Promise.resolve — freed a live
+                            // promise prematurely).
+                            TVal inner_result; inner_result.set_undefined();
                             builtins::BuiltinContext inner;
                             inner.vm = vm;
                             inner.regs = vm.valstack;
                             inner.base_reg = (ushort)((ds.act.bottom - vm.valstack) + callee_reg + 2);
                             inner.argc = (ushort)nargs;
-                            inner.result = ds.regs_base + result_reg;
+                            inner.result = &inner_result;
                             inner.heap = vm.heap;
                             inner.this_val = ds.regs_base[callee_reg + 1];
                             inner.is_constructor = false;
@@ -594,7 +625,10 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                 if (!vm_throw_value(vm, inner.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                     return vm_uncaught_error(vm, &inner.throw_value);
                                 }
+                                return (TVal){};
                             }
+                            vm.heap.tval_copy_ref(ds.regs_base + result_reg, &inner_result);
+                            track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                             return (TVal){};
                         }
                         if (func_val.is_object()) {
@@ -626,6 +660,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                     return (TVal){};
                                 }
                                 vm.heap.tval_copy_ref(ds.regs_base + result_reg, &bfn_inner_result);
+                                track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
                                 return (TVal){};
                             }
                             if ((*hobj.extra_ptr()).func.comp_func != null) {
@@ -1795,7 +1830,12 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 ctx.argc = (ushort)nargs;
                 ctx.result = ds.regs_base + result_reg;
                 ctx.heap = vm.heap;
-                ctx.this_val = ds.regs_base[callee_reg + 1];
+                // [[Construct]]: the this slot at callee_reg+1 is not written by the
+                // compiler for `new` — its content is stale frame data. Constructor
+                // builtins allocate their own instance and ignore this_val; pass
+                // undefined so non-constructor builtins fail their receiver checks
+                // deterministically instead of acting on garbage.
+                ctx.this_val.set_undefined();
                 ctx.is_constructor = true;
                 ctx.needs_re_dispatch = false;
                 ctx.re_nargs = 0;
@@ -1858,7 +1898,12 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.argc = (ushort)nargs;
                     ctx.result = ds.regs_base + result_reg;
                     ctx.heap = vm.heap;
-                    ctx.this_val = ds.regs_base[callee_reg + 1];
+                    // [[Construct]]: the this slot at callee_reg+1 is not written by the
+                    // compiler for `new` — its content is stale frame data. Constructor
+                    // builtins allocate their own instance and ignore this_val; pass
+                    // undefined so non-constructor builtins fail their receiver checks
+                    // deterministically instead of acting on garbage.
+                    ctx.this_val.set_undefined();
                     ctx.is_constructor = false;
                     ctx.needs_re_dispatch = false;
                     ctx.re_nargs = 0;
@@ -1890,6 +1935,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             } else if (hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
                 if ((*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
                     uint fn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                    // ES §10.3: built-in functions are constructors only when
+                    // specified. `new String.prototype.charAt` must throw here;
+                    // the flags.constructable default cannot express this (see
+                    // builtin_fn_is_constructor).
+                    if (!builtin_fn_is_constructor(vm, fn_idx)) {
+                        HString* nc_type_str = typeof_string(vm, &func_val);
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", nc_type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    }
                     // Local result to avoid stale ptr if heap.call_fn triggers valstack realloc.
                     TVal ctor_result; ctor_result.set_undefined();
                     builtins::BuiltinContext ctx;
@@ -1899,7 +1955,12 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ctx.argc = (ushort)nargs;
                     ctx.result = &ctor_result;
                     ctx.heap = vm.heap;
-                    ctx.this_val = ds.regs_base[callee_reg + 1];
+                    // [[Construct]]: the this slot at callee_reg+1 is not written by the
+                    // compiler for `new` — its content is stale frame data. Constructor
+                    // builtins allocate their own instance and ignore this_val; pass
+                    // undefined so non-constructor builtins fail their receiver checks
+                    // deterministically instead of acting on garbage.
+                    ctx.this_val.set_undefined();
                     ctx.is_constructor = true;
                     ctx.needs_re_dispatch = false;
                     ctx.re_nargs = 0;
