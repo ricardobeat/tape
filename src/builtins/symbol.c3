@@ -646,12 +646,38 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Register Symbol.prototype[Symbol.toPrimitive] — ES6 §19.4.3.5
     // This is a function that returns the this value (the symbol itself).
+    // Installed as a real function object (not a lightfunc) so it carries the
+    // spec-mandated own `.name` = "[Symbol.toPrimitive]" and `.length` = 1
+    // (§19.4.3.5: the property is {[[Writable]]:false,[[Enumerable]]:false,
+    // [[Configurable]]:true}).
     {
         HString* toprim_key = ensure_toprimitive_symbol(heap);
         if (toprim_key != null) {
+            HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (catch err = fn_raw) return false;
+            HObject* fn_obj = fn_raw;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE;
+            fn_obj.flags.callable = true;
+            fn_obj.prototype = heap.function_proto;
+
+            HString* tp_name = builtin_intern_string(heap, "[Symbol.toPrimitive]");
+            if (tp_name != null) {
+                TVal name_tv;
+                name_tv.set_string(tp_name);
+                HString* name_key = builtin_intern_string(heap, "name");
+                fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (length_key != null) {
+                TVal len_tv;
+                len_tv.set_fastint(1);
+                fn_obj.put_prop(length_key, len_tv, hobject::PROP_FLAGS_NWC);
+            }
+
             TVal toprim_fn;
-            toprim_fn.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE);
-            proto.put_prop(toprim_key, toprim_fn, hobject::PROP_FLAGS_WC);
+            toprim_fn.set_object(fn_obj);
+            // §19.4.3.5: {[[Writable]]:false,[[Enumerable]]:false,[[Configurable]]:true}
+            proto.put_prop(toprim_key, toprim_fn, hobject::PROP_FLAGS_NWC);
         }
     }
 

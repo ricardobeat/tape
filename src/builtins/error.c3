@@ -239,11 +239,19 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
     // Get 'this' value (stored at base_reg - 1 in the value stack)
     TVal this_val = ctx.regs[ctx.base_reg - 1];
 
+    // ES2015 §19.5.3.4 step 2-3: if `this` is not an Object, throw a TypeError.
+    // (Covers Error.prototype.toString.call(undefined) and calling it as a
+    // plain function with no receiver.)
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Error.prototype.toString called on non-object");
+        return;
+    }
+
     // Default name is "Error"
     HString* name_str = builtin_intern_string(ctx.heap, "Error");
     HString* msg_str  = builtin_intern_string(ctx.heap, "");
 
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
+    {
         HObject* obj = (HObject*)this_val.get_heapptr();
 
         // Read .name property
