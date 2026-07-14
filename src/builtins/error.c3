@@ -254,22 +254,34 @@ fn void builtin_error_prototype_to_string(BuiltinContext* ctx) {
     {
         HObject* obj = (HObject*)this_val.get_heapptr();
 
-        // Read .name property
+        // ES2015 §19.5.3.4 step 3: let name be ? Get(O, "name"). We must use a
+        // full [[Get]] (not get_prop_proto) so accessor getters on the
+        // prototype chain are invoked — and so their throws propagate via
+        // ctx.should_throw per ES2017 §25.4.1.5 step 7 (test262 get-throws).
         HString* name_key = builtin_intern_string(ctx.heap, "name");
-        TVal? name_prop = obj.get_prop_proto(name_key);
+        TVal? name_prop = builtins_generic_get(obj, name_key, ctx);
+        if (ctx.should_throw) return;
         if (try nv = name_prop) {
             if (!nv.is_undefined()) {
-                HString* tmp = builtin_to_string(ctx.heap, &nv);
+                // ES2015 §19.5.3.4 step 4: ? ToString(name) — ToString on a
+                // Symbol must throw TypeError per ES2022 §7.1.4, and on an
+                // Object must invoke toPrimitive (h.string/valueOf) first per
+                // §7.1.1. builtin_to_string_vm handles both; builtin_to_string
+                // would silently stringify a Symbol as "Symbol(desc)".
+                HString* tmp = builtin_to_string_vm(ctx, &nv);
+                if (ctx.should_throw) return;
                 if (tmp != null) name_str = tmp;
             }
         }
 
-        // Read .message property
+        // ES2015 §19.5.3.4 step 5: let msg be ? Get(O, "message"); step 6: ? ToString(msg)
         HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        TVal? msg_prop = obj.get_prop_proto(msg_key);
+        TVal? msg_prop = builtins_generic_get(obj, msg_key, ctx);
+        if (ctx.should_throw) return;
         if (try mv = msg_prop) {
             if (!mv.is_undefined()) {
-                HString* tmp = builtin_to_string(ctx.heap, &mv);
+                HString* tmp = builtin_to_string_vm(ctx, &mv);
+                if (ctx.should_throw) return;
                 if (tmp != null) {
                     msg_str = tmp;
                 }
