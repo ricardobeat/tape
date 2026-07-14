@@ -665,6 +665,43 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
             continue;
         }
 
+        // Other Zs whitespace (ES §12.2):
+        //   U+1680 OGHAM SPACE MARK           — UTF-8: E1 9A 80
+        //   U+2000..U+200A                    — UTF-8: E2 80 80..E2 80 8A
+        //   U+202F NARROW NO-BREAK SPACE      — UTF-8: E2 80 AF
+        //   U+205F MEDIUM MATHEMATICAL SPACE  — UTF-8: E2 81 9F
+        //   U+3000 IDEOGRAPHIC SPACE          — UTF-8: E3 80 80
+        if (c == (char)0xE1 && self.remaining() >= 3
+            && self.source[self.pos + 1] == (char)0x9A
+            && self.source[self.pos + 2] == (char)0x80) {
+            self.pos += 3;
+            self.col++;
+            continue;
+        }
+        if (c == (char)0xE2 && self.remaining() >= 3
+            && self.source[self.pos + 1] == (char)0x80) {
+            char e2b = self.source[self.pos + 2];
+            if ((e2b >= (char)0x80 && e2b <= (char)0x8A) || e2b == (char)0xAF) {
+                self.pos += 3;
+                self.col++;
+                continue;
+            }
+        }
+        if (c == (char)0xE2 && self.remaining() >= 3
+            && self.source[self.pos + 1] == (char)0x81
+            && self.source[self.pos + 2] == (char)0x9F) {
+            self.pos += 3;
+            self.col++;
+            continue;
+        }
+        if (c == (char)0xE3 && self.remaining() >= 3
+            && self.source[self.pos + 1] == (char)0x80
+            && self.source[self.pos + 2] == (char)0x80) {
+            self.pos += 3;
+            self.col++;
+            continue;
+        }
+
         // U+FEFF zero-width no-break space (BOM) — UTF-8: EF BB BF. WhiteSpace
         // (ES §12.2), not a line terminator.
         if (c == (char)0xEF && self.remaining() >= 3
