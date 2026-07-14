@@ -590,7 +590,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             }
         }
 
-        CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len], false, class_elem_src_start)!;
+        CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len], false, class_elem_src_start, true)!;
 
         self.is_constructable = saved_constructable;
         self.is_generator = saved_is_generator;

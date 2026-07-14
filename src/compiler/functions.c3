@@ -2214,8 +2214,12 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     // Params and hoisted slots are now allocated — pin them for the body.
     self.reserved_regs = self.next_reg;
 
-    // Compile function body block
-    self.block(true)!;
+    // Compile function body block. Function bodies parsed as expressions
+    // (function expressions, method values, etc.) are not statement
+    // boundaries: a `/` following the closing `}` continues the enclosing
+    // expression as division, not a RegularExpressionLiteral. Suppress the
+    // block-close regex hint in that case (see Lexer.note_block_close doc).
+    self.block(true, is_expr)!;
 
     // Pop the function-level lexical scope.
     // NOTE: for functions with explicit return, this POP_LEX won't execute,
@@ -2339,7 +2343,7 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
 /// is tagged with `is_namebinding`, signalling the VM to bind `name` to the
 /// function object in a fresh lexical environment at call time (per ES2015
 /// §14.1.20 NamedEvaluation).
-fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name, bool is_named_expr = false, uint src_start = 0xFFFFFFFF) {
+fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name, bool is_named_expr = false, uint src_start = 0xFFFFFFFF, bool is_expr = false) {
     // Create a new CompilerContext for the inner function
     CompilerContext inner_ctx;
     inner_ctx.init(self.lexer, self.heap);
@@ -2689,8 +2693,12 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Params and hoisted slots are now allocated — pin them for the body.
     inner_ctx.reserved_regs = inner_ctx.next_reg;
 
-    // Compile function body
-    inner_ctx.block(true)!;
+    // Compile function body. When this function is being parsed as an
+    // expression (function expression, method value, etc.) the closing `}`
+    // is not a statement boundary — the whole function is an operand, so a
+    // following `/` must be read as division, not a RegularExpressionLiteral
+    // (see Lexer.note_block_close doc).
+    inner_ctx.block(true, is_expr)!;
     // Capture body-end position so Function.prototype.toString returns the
     // exact source span (without trailing whitespace / line-terminators).
     uint inner_body_end_pos = inner_ctx.lexer.pos;
@@ -2864,7 +2872,7 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     // async flag, then restore the enclosing one.
     self.is_async = is_async_expr;
     // Use the byte offset of `function` captured right after expect() above.
-    CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit, fexpr_src_start)!;
+    CompiledFunction* inner = self.compile_inner_function(name, name_is_explicit, fexpr_src_start, true)!;
     self.is_async = saved_is_async;
 
     // Restore generator flag
@@ -2901,7 +2909,7 @@ fn ushort? CompilerContext.function_expr_body(&self, uint src_start = 0xFFFFFFFF
     // caller doesn't supply one, fall back to the position of the `(` that
     // opens the parameter list (which is what we have just consumed).
     uint mexpr_src_start = src_start != 0xFFFFFFFF ? src_start : self.lexer.token_start;
-    CompiledFunction* inner = self.compile_inner_function(name, false, mexpr_src_start)!;
+    CompiledFunction* inner = self.compile_inner_function(name, false, mexpr_src_start, true)!;
 
     uint inner_idx = self.add_inner_func(inner);
 

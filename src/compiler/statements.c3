@@ -625,7 +625,7 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
 
 /// Parse a block: { statement* }
 /// If `check_directives` is true, checks for "use strict" directive prologue at the start.
-fn void? CompilerContext.block(&self, bool check_directives) {
+fn void? CompilerContext.block(&self, bool check_directives, bool suppress_regex_hint = false) {
     self.expect(TokenType.LBRACE)!;
     uint saved_depth = self.scope_depth;
     ushort saved_reg = self.next_reg;
@@ -681,7 +681,13 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     // A `}` closing a BlockStatement is a statement boundary: per the
     // ECMAScript lexical grammar, a following `/` starts a
     // RegularExpressionLiteral, not division (see Lexer.note_block_close doc).
-    self.lexer.note_block_close();
+    // Function bodies compiled as *expressions* (function expressions, arrow
+    // bodies used as call arguments, etc.) are not statement boundaries — the
+    // whole `function(){...}` is itself an operand, so a following `/` must
+    // be read as division. Callers pass suppress_regex_hint=true for those.
+    if (!suppress_regex_hint) {
+        self.lexer.note_block_close();
+    }
 
     // Pop the lexical scope, removing any let/const bindings from this block
     if (has_lex) {
