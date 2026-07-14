@@ -1146,6 +1146,29 @@ fn void? CompilerContext.while_statement(&self) {
     self.match(TokenType.SEMICOLON);
 }
 
+/// Copy a classic for-loop's lexical head bindings into a fresh environment
+/// (ES2015 §14.7.4.9 CreatePerIterationEnvironment).  All values must be read
+/// before the old environment is popped: after the pop, later bindings in a
+/// multi-declarator head are no longer reachable.
+fn void CompilerContext.emit_create_per_iteration_env(&self,
+    uint[] name_idxs, bool[] is_const, uint count)
+{
+    ushort[8] temps;
+    for (uint i = 0; i < count; i++) {
+        temps[i] = self.alloc_reg();
+        self.emit_a_bc(Opcode.GETVAR, (uint)temps[i], name_idxs[i]);
+    }
+    self.emit_simple(Opcode.POP_LEX);
+    self.emit_simple(Opcode.PUSH_LEX);
+    for (uint i = 0; i < count; i++) {
+        Opcode store_op = is_const[i] ? Opcode.PUTLEX_C : Opcode.PUTLEX;
+        self.emit_a_bc(store_op, (uint)temps[i], name_idxs[i]);
+    }
+    for (uint i = count; i > 0; i--) {
+        self.free_reg(temps[i - 1]);
+    }
+}
+
 /// Parse for statement (basic for, for-in, for-of).
 fn void? CompilerContext.for_statement(&self) {
     self.expect(TokenType.FOR)!;
@@ -1848,6 +1871,13 @@ fn void? CompilerContext.for_statement(&self) {
                 return;
             } else {
                 // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
+                // A lexical head owns one environment for the whole loop.  The
+                // destructuring helpers emit PUTLEX/PUTLEX_C while evaluating the
+                // initializer, so install that environment before they run (the
+                // common exit path below emits the matching POP_LEX).
+                if (is_lexical) {
+                    self.emit_simple(Opcode.PUSH_LEX);
+                }
                 if (after_decl == TokenType.LBRACKET) {
                     self.advance()!; // consume '['
                     self.array_destructure(decl_kind, is_lexical, is_const)!;
@@ -2207,6 +2237,15 @@ fn void? CompilerContext.for_statement(&self) {
         }
     }
 
+    // ForBodyEvaluation performs CreatePerIterationEnvironment once before
+    // the first test/body evaluation, as well as after every completed body.
+    // This separates closures created by the head initializer from closures
+    // created by the test and first body iteration.
+    if (needs_periterenv) {
+        self.emit_create_per_iteration_env(
+            periterenv_name_idxs[..], periterenv_is_const[..], periterenv_count);
+    }
+
     // ----------------------------------------------------------------
     // Step 2: Emit initial JUMP → cond_label and record body_label.
     // ----------------------------------------------------------------
@@ -2297,24 +2336,8 @@ fn void? CompilerContext.for_statement(&self) {
     // from that same env through its captured reference.
     uint incr_label = self.code_count;
     if (needs_periterenv) {
-        ushort pi_tmp = self.alloc_reg();
-        for (uint pi = 0; pi < periterenv_count; pi++) {
-            // GETVAR walks the lex_env chain and returns the current (post-body)
-            // value of the binding. Both INC_VAR (i++) and PUTVAR (x = expr)
-            // update the env, so the env is always authoritative here.
-            self.emit_a_bc(Opcode.GETVAR, (uint)pi_tmp, periterenv_name_idxs[pi]);
-            if (pi == 0) {
-                // Pop/push once — all bindings go into the same fresh env.
-                self.emit_simple(Opcode.POP_LEX);
-                self.emit_simple(Opcode.PUSH_LEX);
-            }
-            if (periterenv_is_const[pi]) {
-                self.emit_a_bc(Opcode.PUTLEX_C, (uint)pi_tmp, periterenv_name_idxs[pi]);
-            } else {
-                self.emit_a_bc(Opcode.PUTLEX, (uint)pi_tmp, periterenv_name_idxs[pi]);
-            }
-        }
-        self.free_reg(pi_tmp);
+        self.emit_create_per_iteration_env(
+            periterenv_name_idxs[..], periterenv_is_const[..], periterenv_count);
     }
     if (self.loop_depth > 0) {
         self.loop_stack[self.loop_depth - 1].continue_target = incr_label;
@@ -3494,6 +3517,8 @@ fn void? CompilerContext.switch_statement(&self) {
 /// Parse a labeled statement: `identifier : statement`.
 /// Supports labeled break and continue (ES5 §12.12).
 fn void? CompilerContext.labeled_statement(&self, char[] name) {
+    uint saved_label_count = self.label_count;
+
     // Check for duplicate labels
     for (uint i = 0; i < self.label_count; i++) {
         if (str_eq(self.labels[i].name, name)) {
@@ -3524,6 +3549,12 @@ fn void? CompilerContext.labeled_statement(&self, char[] name) {
         self.statement()!;
         self.pop_loop(); // patches all breaks targeting this label
     }
+
+    // Labels are visible only while their labelled item is being compiled.
+    // Keeping completed labels in the function-wide table incorrectly rejects
+    // later statements that reuse the same label name (ES5 for-loop tests do
+    // this several times in one script).
+    self.label_count = saved_label_count;
 }
 
 /// Parse break statement.
