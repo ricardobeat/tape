@@ -1212,6 +1212,17 @@ fn ushort? CompilerContext.call_expr(&self) {
             ushort idx_reg = self.expression()!;
             self.expect(TokenType.RBRACKET)!;
 
+            // GETPROP writes the ToPropertyKey-coerced string back into its
+            // key register (to keep ToPropertyKey idempotent when a compound
+            // assignment reuses the same reg for a follow-up PUTPROP). If the
+            // key expression resolved directly to a live local var register,
+            // that writeback would corrupt the local — copy to a fresh temp.
+            if (self.is_local_var_reg(idx_reg)) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)idx_reg, 0);
+                idx_reg = tmp;
+            }
+
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
 
@@ -1262,6 +1273,15 @@ fn ushort? CompilerContext.call_expr(&self) {
                 // a?.[expr] — result is never a referenceable member
                 ushort idx_reg = self.expression()!;
                 self.expect(TokenType.RBRACKET)!;
+
+                // See computed-member note above (LBRACKET case at ~line 1210):
+                // GETPROP writes ToPropertyKey back into its key register, so
+                // an idx_reg that aliases a live local must be copied first.
+                if (self.is_local_var_reg(idx_reg)) {
+                    ushort tmp = self.alloc_reg();
+                    self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)idx_reg, 0);
+                    idx_reg = tmp;
+                }
 
                 ushort result = self.alloc_reg();
                 self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
@@ -1823,6 +1843,11 @@ fn ushort? CompilerContext.new_expr(&self) {
             ushort idx_reg = self.expression()!;
             self.call_prop_obj_reg = saved_prop_obj;
             self.expect(TokenType.RBRACKET)!;
+            if (self.is_local_var_reg(idx_reg)) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)idx_reg, 0);
+                idx_reg = tmp;
+            }
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
             // Check if this is a method call: new X()[idx](args)
@@ -1968,6 +1993,14 @@ fn ushort? CompilerContext.member_expr(&self) {
             ushort idx_reg = self.expression()!;
             self.lhs_mode = saved_lhs;
             self.expect(TokenType.RBRACKET)!;
+
+            // See LBRACKET note in call_expr: GETPROP writes the coerced key
+            // back into idx_reg, which would clobber a live local var.
+            if (self.is_local_var_reg(idx_reg)) {
+                ushort tmp = self.alloc_reg();
+                self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)idx_reg, 0);
+                idx_reg = tmp;
+            }
 
             ushort result = self.alloc_reg();
             self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)idx_reg);
